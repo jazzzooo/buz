@@ -312,13 +312,14 @@ pub fn Parser(comptime enc: Encoding) type {
         };
 
         pub fn init(allocator: std.mem.Allocator, input: []const enc.unit()) @This() {
+            const start = Pos.from(enc.bomLen(input));
             return .{
                 .input = input,
                 .allocator = allocator,
-                .pos = .from(0),
+                .pos = start,
                 .line_indent = .none,
                 .line = .from(1),
-                .token = .eof(.{ .start = .from(0), .indent = .none, .line = .from(1) }),
+                .token = .eof(.{ .start = start, .indent = .none, .line = .from(1) }),
                 // .key = null,
                 // .literal = null,
                 .context = .init(allocator),
@@ -731,15 +732,15 @@ pub fn Parser(comptime enc: Encoding) type {
                 .eof => {},
                 .document_start => {},
                 .document_end => {
-                    const document_end_line = self.token.line;
-                    try self.scan(.{});
+                    var document_end_line = self.token.line;
 
                     // consume all bare documents
                     while (self.token.data == .document_end) {
+                        document_end_line = self.token.line;
                         try self.scan(.{});
                     }
 
-                    if (self.token.line == document_end_line) {
+                    if (self.token.data != .eof and self.token.line == document_end_line) {
                         return unexpectedToken();
                     }
                 },
@@ -878,7 +879,11 @@ pub fn Parser(comptime enc: Encoding) type {
         fn parseBlockSequence(self: *@This()) ParseError!Expr {
             const sequence_start = self.token.start;
             const sequence_indent = self.token.indent;
-            // const sequence_line = self.token.line;
+            const sequence_line = self.token.line;
+
+            if (self.explicit_document_start_line) |document_start_line| {
+                if (document_start_line == sequence_line) return unexpectedToken();
+            }
 
             try self.block_indents.push(sequence_indent);
             defer self.block_indents.pop();
@@ -2445,7 +2450,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
 
                 '-' => {
-                    if (self.line_indent == .none and self.remainStartsWith("---") and self.isAnyOrEofAt(" \t\n\r", 3)) {
+                    if (self.isDocumentIndicator("---")) {
                         return ctx.done();
                     }
 
@@ -2462,7 +2467,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
 
                 '.' => {
-                    if (self.line_indent == .none and self.remainStartsWith("...") and self.isAnyOrEofAt(" \t\n\r", 3)) {
+                    if (self.isDocumentIndicator("...")) {
                         return ctx.done();
                     }
 
@@ -3112,16 +3117,12 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
 
                 else => |c| {
-                    if (self.line_indent == .none) {
-                        const document_indicator = switch (c) {
-                            '-' => self.remainStartsWith("---"),
-                            '.' => self.remainStartsWith("..."),
-                            else => false,
-                        };
-                        if (document_indicator and self.isAnyOrEofAt(" \t\n\r", 3)) {
-                            return ctx.done(false);
-                        }
-                    }
+                    const document_indicator = switch (c) {
+                        '-' => self.isDocumentIndicator("---"),
+                        '.' => self.isDocumentIndicator("..."),
+                        else => false,
+                    };
+                    if (document_indicator) return ctx.done(false);
 
                     if (self.block_indents.get()) |block_indent| {
                         if (self.line_indent.isLessThanOrEqual(block_indent)) {
@@ -3178,26 +3179,18 @@ pub fn Parser(comptime enc: Encoding) type {
 
             var text: std.array_list.Managed(enc.unit()) = .init(self.allocator);
 
-            var nl = false;
-
             next: switch (self.next()) {
                 0 => return error.UnexpectedCharacter,
 
                 '.' => {
-                    if (nl and self.line_indent == .none and self.remainStartsWith("...") and self.isSWhiteOrBCharAt(3)) {
-                        return error.UnexpectedDocumentEnd;
-                    }
-                    nl = false;
+                    if (self.isDocumentIndicator("...")) return error.UnexpectedDocumentEnd;
                     try text.append('.');
                     self.inc(1);
                     continue :next self.next();
                 },
 
                 '-' => {
-                    if (nl and self.line_indent == .none and self.remainStartsWith("---") and self.isSWhiteOrBCharAt(3)) {
-                        return error.UnexpectedDocumentStart;
-                    }
-                    nl = false;
+                    if (self.isDocumentIndicator("---")) return error.UnexpectedDocumentStart;
                     try text.append('-');
                     self.inc(1);
                     continue :next self.next();
@@ -3206,7 +3199,6 @@ pub fn Parser(comptime enc: Encoding) type {
                 '\r',
                 '\n',
                 => {
-                    nl = true;
                     self.newline();
                     self.inc(1);
                     switch (self.foldLines()) {
@@ -3224,7 +3216,6 @@ pub fn Parser(comptime enc: Encoding) type {
                 ' ',
                 '\t',
                 => {
-                    nl = false;
                     const off = self.pos;
                     self.inc(1);
                     self.skipSWhite();
@@ -3235,7 +3226,6 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
 
                 '\'' => {
-                    nl = false;
                     self.inc(1);
                     if (self.next() == '\'') {
                         try text.append('\'');
@@ -3259,7 +3249,6 @@ pub fn Parser(comptime enc: Encoding) type {
                     });
                 },
                 else => |c| {
-                    nl = false;
                     try text.append(c);
                     self.inc(1);
                     continue :next self.next();
@@ -3279,26 +3268,18 @@ pub fn Parser(comptime enc: Encoding) type {
             const scalar_indent = self.line_indent;
             var text: std.array_list.Managed(enc.unit()) = .init(self.allocator);
 
-            var nl = false;
-
             next: switch (self.next()) {
                 0 => return error.UnexpectedCharacter,
 
                 '.' => {
-                    if (nl and self.line_indent == .none and self.remainStartsWith("...") and self.isSWhiteOrBCharAt(3)) {
-                        return error.UnexpectedDocumentEnd;
-                    }
-                    nl = false;
+                    if (self.isDocumentIndicator("...")) return error.UnexpectedDocumentEnd;
                     try text.append('.');
                     self.inc(1);
                     continue :next self.next();
                 },
 
                 '-' => {
-                    if (nl and self.line_indent == .none and self.remainStartsWith("---") and self.isSWhiteOrBCharAt(3)) {
-                        return error.UnexpectedDocumentStart;
-                    }
-                    nl = false;
+                    if (self.isDocumentIndicator("---")) return error.UnexpectedDocumentStart;
                     try text.append('-');
                     self.inc(1);
                     continue :next self.next();
@@ -3319,14 +3300,12 @@ pub fn Parser(comptime enc: Encoding) type {
                             return error.UnexpectedCharacter;
                         }
                     }
-                    nl = true;
                     continue :next self.next();
                 },
 
                 ' ',
                 '\t',
                 => {
-                    nl = false;
                     const off = self.pos;
                     self.inc(1);
                     self.skipSWhite();
@@ -3337,7 +3316,6 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
 
                 '"' => {
-                    nl = false;
                     self.inc(1);
                     return .scalar(.{
                         .start = start,
@@ -3354,7 +3332,6 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
 
                 '\\' => {
-                    nl = false;
                     self.inc(1);
                     switch (self.next()) {
                         '\r',
@@ -3425,7 +3402,6 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
 
                 else => |c| {
-                    nl = false;
                     try text.append(c);
                     self.inc(1);
                     continue :next self.next();
@@ -3812,7 +3788,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 '-' => {
                     const start = self.pos;
 
-                    if (self.line_indent == .none and self.remainStartsWith(enc.literal("---")) and self.isSWhiteOrBCharOrEofAt(3)) {
+                    if (self.isDocumentIndicator("---")) {
                         self.inc(3);
                         break :next .documentStart(.{
                             .start = start,
@@ -3892,7 +3868,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 '.' => {
                     const start = self.pos;
 
-                    if (self.line_indent == .none and self.remainStartsWith(enc.literal("...")) and self.isSWhiteOrBCharOrEofAt(3)) {
+                    if (self.isDocumentIndicator("...")) {
                         self.inc(3);
                         break :next .documentEnd(.{
                             .start = start,
@@ -4089,18 +4065,11 @@ pub fn Parser(comptime enc: Encoding) type {
                 '#' => {
                     const start = self.pos;
 
-                    const prev = if (start == .zero) 0 else self.input[start.cast() - 1];
-                    switch (prev) {
-                        0,
-                        ' ',
-                        '\t',
-                        '\n',
-                        '\r',
-                        => {},
-                        else => {
-                            // TODO: prove this is unreachable
-                            return error.UnexpectedCharacter;
-                        },
+                    if (!self.isAtLineStart()) {
+                        switch (self.input[start.cast() - 1]) {
+                            ' ', '\t' => {},
+                            else => return error.UnexpectedCharacter,
+                        }
                     }
 
                     self.inc(1);
@@ -4413,7 +4382,23 @@ pub fn Parser(comptime enc: Encoding) type {
             }
         }
 
-        fn isSWhiteOrBCharOrEofAt(self: *@This(), n: usize) bool {
+        fn isAtLineStart(self: *const @This()) bool {
+            const pos = self.pos.cast();
+            if (pos == enc.bomLen(self.input)) return true;
+            if (pos == 0) return false;
+            return switch (self.input[pos - 1]) {
+                '\n', '\r' => true,
+                else => false,
+            };
+        }
+
+        fn isDocumentIndicator(self: *const @This(), comptime indicator: []const u8) bool {
+            return self.isAtLineStart() and
+                self.remainStartsWith(enc.literal(indicator)) and
+                self.isSWhiteOrBCharOrEofAt(indicator.len);
+        }
+
+        fn isSWhiteOrBCharOrEofAt(self: *const @This(), n: usize) bool {
             const pos = self.pos.add(n);
             if (pos.isLessThan(self.input.len)) {
                 const c = self.input[pos.cast()];
@@ -4422,24 +4407,7 @@ pub fn Parser(comptime enc: Encoding) type {
             return true;
         }
 
-        fn isSWhiteOrBCharAt(self: *@This(), n: usize) bool {
-            const pos = self.pos.add(n);
-            if (pos.isLessThan(self.input.len)) {
-                const c = self.input[pos.cast()];
-                return c == ' ' or c == '\t' or c == '\n' or c == '\r';
-            }
-            return false;
-        }
-
         fn isAnyAt(self: *const @This(), values: []const enc.unit(), n: usize) bool {
-            const pos = self.pos.add(n);
-            if (pos.isLessThan(self.input.len)) {
-                return std.mem.indexOfScalar(enc.unit(), values, self.input[pos.cast()]) != null;
-            }
-            return false;
-        }
-
-        fn isAnyOrEofAt(self: *const @This(), values: []const enc.unit(), n: usize) bool {
             const pos = self.pos.add(n);
             if (pos.isLessThan(self.input.len)) {
                 return std.mem.indexOfScalar(enc.unit(), values, self.input[pos.cast()]) != null;
@@ -5439,6 +5407,14 @@ pub const Encoding = enum {
             .latin1 => str,
             .utf8 => str,
             .utf16 => std.unicode.utf8ToUtf16LeStringLiteral(str),
+        };
+    }
+
+    pub fn bomLen(comptime encoding: Encoding, input: []const encoding.unit()) usize {
+        return switch (encoding) {
+            .latin1 => 0,
+            .utf8 => if (std.mem.startsWith(u8, input, "\xEF\xBB\xBF")) 3 else 0,
+            .utf16 => if (input.len != 0 and input[0] == 0xFEFF) 1 else 0,
         };
     }
 
