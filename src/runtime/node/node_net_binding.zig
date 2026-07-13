@@ -38,7 +38,7 @@ pub fn setDefaultAutoSelectFamily(global: *jsc.JSGlobalObject) jsc.JSValue {
 ///
 /// If this becomes used in more places, and especially if it can be read by other threads, we may
 /// need to store it as a field in the VirtualMachine instead of in a `threadlocal`.
-pub threadlocal var autoSelectFamilyAttemptTimeoutDefault: u32 = 250;
+pub threadlocal var autoSelectFamilyAttemptTimeoutDefault: u32 = 500;
 
 pub fn getDefaultAutoSelectFamilyAttemptTimeout(global: *jsc.JSGlobalObject) jsc.JSValue {
     return jsc.JSFunction.create(global, "getDefaultAutoSelectFamilyAttemptTimeout", (struct {
