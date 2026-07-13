@@ -300,6 +300,7 @@ pub fn Parser(comptime enc: Encoding) type {
         whitespace_buf: std.array_list.Managed(Whitespace),
 
         stack_check: bun.StackCheck,
+        merge_props_budget: usize,
 
         const Whitespace = union(enum) {
             source: struct {
@@ -328,6 +329,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 .tag_handles = .init(allocator),
                 .whitespace_buf = .init(allocator),
                 .stack_check = .init(),
+                .merge_props_budget = MappingProps.max_merged_properties,
             };
         }
 
@@ -781,6 +783,7 @@ pub fn Parser(comptime enc: Encoding) type {
             _ = mapping_line;
 
             var props: MappingProps = .init(self.allocator);
+            defer props.deinit();
 
             {
                 try self.context.set(.flow_in);
@@ -845,7 +848,7 @@ pub fn Parser(comptime enc: Encoding) type {
                         });
                     } else {
                         const value = try self.parseNode(.{});
-                        try props.appendMaybeMerge(key, value);
+                        try props.appendMaybeMerge(key, value, &self.merge_props_budget);
                     }
 
                     if (self.token.data == .collect_entry) {
@@ -916,33 +919,90 @@ pub fn Parser(comptime enc: Encoding) type {
             };
         }
 
+        fn yamlMergeKeyExprHash(key: Expr) u64 {
+            return switch (key.data) {
+                .e_null => 0,
+                .e_boolean => |boolean| 1 + @as(u64, @intFromBool(boolean.value)),
+                .e_number => |number| @bitCast(if (number.value == 0) @as(f64, 0) else number.value),
+                .e_string => |string| string.hash(),
+                .e_array => |array| @intCast(@intFromPtr(array)),
+                .e_object => |object| @intCast(@intFromPtr(object)),
+                else => std.math.maxInt(u64),
+            };
+        }
+
         const MappingProps = struct {
+            const MergeKeyContext = struct {
+                pub fn hash(_: @This(), key: Expr) u64 {
+                    return yamlMergeKeyExprHash(key);
+                }
+
+                pub fn eql(_: @This(), l: Expr, r: Expr) bool {
+                    return yamlMergeKeyExprEql(l, r);
+                }
+            };
+
+            const MergeKeyIndex = std.HashMap(
+                Expr,
+                void,
+                MergeKeyContext,
+                std.hash_map.default_max_load_percentage,
+            );
+
+            /// Bounds amplification from a small document merging one large anchor many times.
+            pub const max_merged_properties = 1024 * 1024;
+
             #list: bun.collections.ArrayList(G.Property),
+            key_index: MergeKeyIndex,
+            merged_objects: std.AutoHashMap(*const E.Object, void),
+            indexed_count: usize = 0,
 
             pub fn init(allocator: std.mem.Allocator) MappingProps {
-                return .{ .#list = .initIn(allocator) };
+                return .{
+                    .#list = .initIn(allocator),
+                    .key_index = .init(allocator),
+                    .merged_objects = .init(allocator),
+                };
             }
 
-            pub fn merge(self: *MappingProps, merge_props: []const G.Property) OOM!void {
-                try self.#list.ensureUnusedCapacity(merge_props.len);
-                var iter = std.mem.reverseIterator(merge_props);
-                next_merge_prop: while (iter.next()) |merge_prop| {
-                    const merge_key = merge_prop.key.?;
-                    for (self.#list.items()) |existing_prop| {
-                        const existing_key = existing_prop.key.?;
-                        if (yamlMergeKeyExprEql(existing_key, merge_key)) {
-                            continue :next_merge_prop;
-                        }
-                    }
-                    self.#list.appendAssumeCapacity(merge_prop);
+            pub fn deinit(self: *MappingProps) void {
+                self.#list.deinitShallow();
+                self.key_index.deinit();
+                self.merged_objects.deinit();
+            }
+
+            fn merge(self: *MappingProps, merge_props: []const G.Property, budget: *usize) OOM!void {
+                try self.#list.ensureUnusedCapacity(@min(merge_props.len, budget.*));
+
+                while (self.indexed_count < self.#list.items().len) : (self.indexed_count += 1) {
+                    const existing_key = self.#list.items()[self.indexed_count].key.?;
+                    _ = try self.key_index.getOrPut(existing_key);
                 }
+
+                var iter = std.mem.reverseIterator(merge_props);
+                while (iter.next()) |merge_prop| {
+                    const merge_key = merge_prop.key.?;
+                    const indexed = try self.key_index.getOrPut(merge_key);
+                    if (indexed.found_existing) continue;
+
+                    if (budget.* == 0) return error.OutOfMemory;
+                    budget.* -= 1;
+                    self.#list.appendAssumeCapacity(merge_prop);
+                    self.indexed_count = self.#list.items().len;
+                }
+            }
+
+            fn mergeObject(self: *MappingProps, object: *const E.Object, budget: *usize) OOM!void {
+                const merged = try self.merged_objects.getOrPut(object);
+                if (merged.found_existing) return;
+                try self.merge(object.properties.slice(), budget);
             }
 
             pub fn append(self: *MappingProps, prop: G.Property) OOM!void {
                 try self.#list.append(prop);
             }
 
-            pub fn appendMaybeMerge(self: *MappingProps, key: Expr, value: Expr) OOM!void {
+            pub fn appendMaybeMerge(self: *MappingProps, key: Expr, value: Expr, budget: *usize) OOM!void {
                 if (switch (key.data) {
                     .e_string => |key_str| !key_str.eqlComptime("<<"),
                     else => true,
@@ -951,7 +1011,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 }
 
                 return switch (value.data) {
-                    .e_object => |value_obj| self.merge(value_obj.properties.slice()),
+                    .e_object => |value_obj| self.mergeObject(value_obj, budget),
                     .e_array => |value_arr| {
                         for (value_arr.items.slice()) |item| {
                             const item_obj = switch (item.data) {
@@ -959,7 +1019,7 @@ pub fn Parser(comptime enc: Encoding) type {
                                 else => continue,
                             };
 
-                            try self.merge(item_obj.properties.slice());
+                            try self.mergeObject(item_obj, budget);
                         }
                     },
 
@@ -990,6 +1050,7 @@ pub fn Parser(comptime enc: Encoding) type {
             defer self.block_indents.pop();
 
             var props: MappingProps = .init(self.allocator);
+            defer props.deinit();
 
             {
                 // try self.context.set(.block_in);
@@ -1021,7 +1082,7 @@ pub fn Parser(comptime enc: Encoding) type {
                     else => .init(E.Null, .{}, mapping_value_start.loc()),
                 };
 
-                try props.appendMaybeMerge(first_key, value);
+                try props.appendMaybeMerge(first_key, value, &self.merge_props_budget);
             }
 
             if (self.context.get() == .flow_in) {
@@ -1093,7 +1154,7 @@ pub fn Parser(comptime enc: Encoding) type {
                     },
                 };
 
-                try props.appendMaybeMerge(key, value);
+                try props.appendMaybeMerge(key, value, &self.merge_props_budget);
             }
 
             return .init(E.Object, .{ .properties = props.moveList() }, mapping_start.loc());
