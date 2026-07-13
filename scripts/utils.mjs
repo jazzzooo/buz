@@ -1615,17 +1615,7 @@ export function getAbi() {
     return "musl";
   }
 
-  const arch = getArch() === "x64" ? "x86_64" : "aarch64";
-  const muslLibPath = `/lib/ld-musl-${arch}.so.1`;
-  if (existsSync(muslLibPath)) {
-    return "musl";
-  }
-
-  const gnuLibPath = `/lib/ld-linux-${arch}.so.2`;
-  if (existsSync(gnuLibPath)) {
-    return "gnu";
-  }
-
+  // Ask ldd first: both loaders can be installed at once (e.g. Arch with musl, Alpine with gcompat).
   const { error, stdout } = spawnSync(["ldd", "--version"]);
   if (!error) {
     if (/musl/i.test(stdout)) {
@@ -1634,6 +1624,17 @@ export function getAbi() {
     if (/gnu|glibc/i.test(stdout)) {
       return "gnu";
     }
+  }
+
+  const x64 = getArch() === "x64";
+  const muslLibPath = `/lib/ld-musl-${x64 ? "x86_64" : "aarch64"}.so.1`;
+  if (existsSync(muslLibPath)) {
+    return "musl";
+  }
+
+  const gnuLibPath = x64 ? "/lib/ld-linux-x86-64.so.2" : "/lib/ld-linux-aarch64.so.1";
+  if (existsSync(gnuLibPath)) {
+    return "gnu";
   }
 }
 
