@@ -1202,15 +1202,18 @@ async function spawnSafe(options) {
       subprocess.stdout.on("end", () => {
         beforeDone(resolve);
       });
+      // Stop accumulating past 128 MB: a runaway test's output otherwise
+      // grows `buffer` to V8's max string length and crashes the runner.
+      const maxBuffer = 128 * 1024 * 1024;
       subprocess.stdout.on("data", chunk => {
         const text = chunk.toString("utf-8");
         stdout?.(text);
-        buffer += text;
+        if (buffer.length < maxBuffer) buffer += text;
       });
       subprocess.stderr.on("data", chunk => {
         const text = chunk.toString("utf-8");
         stderr?.(text);
-        buffer += text;
+        if (buffer.length < maxBuffer) buffer += text;
       });
     } catch (error) {
       spawnError = error;
