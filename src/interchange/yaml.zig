@@ -2002,6 +2002,55 @@ pub fn Parser(comptime enc: Encoding) type {
                     }
                 }
 
+                fn isCoreSchemaNumber(text: []const enc.unit(), has_sign: bool) bool {
+                    if (text.len == 0) return false;
+
+                    if (!has_sign and text.len > 2 and text[0] == '0') {
+                        const digits = text[2..];
+                        switch (text[1]) {
+                            'x' => {
+                                for (digits) |c| switch (c) {
+                                    '0'...'9', 'a'...'f', 'A'...'F' => {},
+                                    else => return false,
+                                };
+                                return true;
+                            },
+                            'o' => {
+                                for (digits) |c| switch (c) {
+                                    '0'...'7' => {},
+                                    else => return false,
+                                };
+                                return true;
+                            },
+                            else => {},
+                        }
+                    }
+
+                    var i: usize = 0;
+                    while (i < text.len and text[i] >= '0' and text[i] <= '9') : (i += 1) {}
+                    var has_digits = i != 0;
+
+                    if (i < text.len and text[i] == '.') {
+                        i += 1;
+                        const fraction_start = i;
+                        while (i < text.len and text[i] >= '0' and text[i] <= '9') : (i += 1) {}
+                        has_digits = has_digits or i != fraction_start;
+                    }
+
+                    if (!has_digits) return false;
+
+                    if (i < text.len and (text[i] == 'e' or text[i] == 'E')) {
+                        i += 1;
+                        if (i < text.len and (text[i] == '+' or text[i] == '-')) i += 1;
+
+                        const exponent_start = i;
+                        while (i < text.len and text[i] >= '0' and text[i] <= '9') : (i += 1) {}
+                        if (i == exponent_start) return false;
+                    }
+
+                    return i == text.len;
+                }
+
                 pub fn tryResolveNumber(
                     ctx: *@This(),
                     parser: *Parser(enc),
@@ -2125,19 +2174,9 @@ pub fn Parser(comptime enc: Encoding) type {
 
                     const start = parser.pos;
 
-                    var decimal = parser.next() == '.';
-                    var x = false;
-                    var o = false;
-                    var e = false;
-                    var @"+" = false;
-                    var @"-" = false;
-                    var hex = false;
-
                     if (first_char != .negative and first_char != .positive) {
                         parser.inc(1);
                     }
-
-                    var first = true;
 
                     const end, const valid = end: switch (parser.next()) {
 
@@ -2154,18 +2193,12 @@ pub fn Parser(comptime enc: Encoding) type {
                         '\n',
                         '\r',
                         ':',
-                        => {
-                            if (first and (first_char == .positive or first_char == .negative)) {
-                                break :end .{ parser.pos, false };
-                            }
-                            break :end .{ parser.pos, true };
-                        },
+                        => .{ parser.pos, true },
 
                         ',',
                         ']',
                         '}',
                         => {
-                            first = false;
                             switch (parser.context.get()) {
                                 // it's valid for ',' ']' '}' to end the scalar
                                 // in flow context
@@ -2179,116 +2212,19 @@ pub fn Parser(comptime enc: Encoding) type {
                             }
                         },
 
-                        '0' => {
-                            defer first = false;
-                            parser.inc(1);
-                            if (first) {
-                                switch (parser.next()) {
-                                    'b',
-                                    'B',
-                                    => {
-                                        break :end .{ parser.pos, false };
-                                    },
-                                    else => |c| {
-                                        continue :end c;
-                                    },
-                                }
-                            }
-                            continue :end parser.next();
-                        },
-
-                        '1'...'9',
+                        '0'...'9',
+                        'a'...'f',
+                        'A'...'F',
+                        'x',
+                        'o',
+                        '.',
+                        '+',
+                        '-',
                         => {
-                            first = false;
                             parser.inc(1);
                             continue :end parser.next();
                         },
-
-                        'e',
-                        'E',
-                        => {
-                            first = false;
-                            if (e) {
-                                hex = true;
-                            }
-                            e = true;
-                            parser.inc(1);
-                            continue :end parser.next();
-                        },
-
-                        'a'...'d',
-                        'f',
-                        'A'...'D',
-                        'F',
-                        => |c| {
-                            hex = true;
-
-                            if (first) {
-                                if (c == 'b' or c == 'B') {
-                                    break :end .{ parser.pos, false };
-                                }
-                            }
-                            first = false;
-
-                            parser.inc(1);
-                            continue :end parser.next();
-                        },
-
-                        'x' => {
-                            first = false;
-                            if (x) {
-                                break :end .{ parser.pos, false };
-                            }
-
-                            x = true;
-                            parser.inc(1);
-                            continue :end parser.next();
-                        },
-
-                        'o' => {
-                            first = false;
-                            if (o) {
-                                break :end .{ parser.pos, false };
-                            }
-
-                            o = true;
-                            parser.inc(1);
-                            continue :end parser.next();
-                        },
-
-                        '.' => {
-                            first = false;
-                            if (decimal) {
-                                break :end .{ parser.pos, false };
-                            }
-
-                            decimal = true;
-                            parser.inc(1);
-                            continue :end parser.next();
-                        },
-
-                        '+' => {
-                            first = false;
-                            if (x) {
-                                break :end .{ parser.pos, false };
-                            }
-                            @"+" = true;
-                            parser.inc(1);
-                            continue :end parser.next();
-                        },
-                        '-' => {
-                            first = false;
-                            if (@"-") {
-                                break :end .{ parser.pos, false };
-                            }
-                            @"-" = true;
-                            parser.inc(1);
-                            continue :end parser.next();
-                        },
-                        else => {
-                            first = false;
-                            break :end .{ parser.pos, false };
-                        },
+                        else => .{ parser.pos, false },
                     };
 
                     try ctx.appendUnknownSourceSlice(start, end);
@@ -2297,14 +2233,22 @@ pub fn Parser(comptime enc: Encoding) type {
                         return;
                     }
 
+                    const number = parser.slice(start, end);
+                    const has_sign = first_char == .negative or first_char == .positive;
+                    if (!isCoreSchemaNumber(number, has_sign)) {
+                        return;
+                    }
+
                     var scalar: NodeScalar = scalar: {
-                        if (x or o or hex) {
-                            const unsigned = std.fmt.parseUnsigned(u64, parser.slice(start, end), 0) catch {
+                        const prefixed_integer = !has_sign and number.len > 2 and number[0] == '0' and
+                            (number[1] == 'x' or number[1] == 'o');
+                        if (prefixed_integer) {
+                            const unsigned = std.fmt.parseUnsigned(u64, number, 0) catch {
                                 return;
                             };
                             break :scalar .{ .number = @floatFromInt(unsigned) };
                         }
-                        const float = bun.jsc.wtf.parseDouble(parser.slice(start, end)) catch {
+                        const float = bun.jsc.wtf.parseDouble(number) catch {
                             return;
                         };
 
