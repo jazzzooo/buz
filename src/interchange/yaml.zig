@@ -301,6 +301,7 @@ pub fn Parser(comptime enc: Encoding) type {
 
         stack_check: bun.StackCheck,
         merge_props_budget: usize,
+        alias_expansion: AliasExpansion,
 
         const Whitespace = union(enum) {
             source: struct {
@@ -330,6 +331,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 .whitespace_buf = .init(allocator),
                 .stack_check = .init(),
                 .merge_props_budget = MappingProps.max_merged_properties,
+                .alias_expansion = .init(allocator),
             };
         }
 
@@ -339,6 +341,7 @@ pub fn Parser(comptime enc: Encoding) type {
             self.anchors.deinit();
             self.tag_handles.deinit();
             self.whitespace_buf.deinit();
+            self.alias_expansion.deinit();
             // std.debug.assert(self.future == null);
         }
 
@@ -402,6 +405,9 @@ pub fn Parser(comptime enc: Encoding) type {
                 invalid_indentation: struct {
                     pos: Pos,
                 },
+                excessive_aliasing: struct {
+                    pos: Pos,
+                },
 
                 pub fn addToLog(this: *const Error, source: *const logger.Source, log: *logger.Log) (OOM || error{StackOverflow})!void {
                     switch (this.*) {
@@ -446,6 +452,9 @@ pub fn Parser(comptime enc: Encoding) type {
                         .invalid_indentation => |e| {
                             try log.addError(source, e.pos.loc(), "Tab characters cannot be used as indentation");
                         },
+                        .excessive_aliasing => |e| {
+                            try log.addError(source, e.pos.loc(), "Excessive aliasing");
+                        },
                     }
                 }
             };
@@ -485,6 +494,7 @@ pub fn Parser(comptime enc: Encoding) type {
                         error.UnexpectedDocumentEnd => .{ .unexpected_document_end = .{ .pos = parser.pos } },
                         error.MultipleYamlDirectives => .{ .multiple_yaml_directives = .{ .pos = parser.token.start } },
                         error.InvalidIndentation => .{ .invalid_indentation = .{ .pos = parser.pos } },
+                        error.ExcessiveAliasing => .{ .excessive_aliasing = .{ .pos = parser.token.start } },
                     },
                 };
             }
@@ -514,6 +524,7 @@ pub fn Parser(comptime enc: Encoding) type {
             UnexpectedDocumentEnd,
             MultipleYamlDirectives,
             InvalidIndentation,
+            ExcessiveAliasing,
             StackOverflow,
             // ScalarTypeMismatch,
 
@@ -1408,6 +1419,88 @@ pub fn Parser(comptime enc: Encoding) type {
             });
         }
 
+        const AliasExpansion = struct {
+            const Error = OOM || error{ExcessiveAliasing};
+            const max_nodes = 16 * 1024 * 1024;
+
+            budget: usize = max_nodes,
+            costs: std.AutoHashMap(*const anyopaque, usize),
+            stack: std.array_list.Managed(Expr),
+
+            fn init(allocator: std.mem.Allocator) AliasExpansion {
+                return .{
+                    .costs = .init(allocator),
+                    .stack = .init(allocator),
+                };
+            }
+
+            fn deinit(self: *AliasExpansion) void {
+                self.costs.deinit();
+                self.stack.deinit();
+            }
+
+            fn collectionKey(node: Expr) ?*const anyopaque {
+                return switch (node.data) {
+                    .e_array => |array| @ptrCast(array),
+                    .e_object => |object| @ptrCast(object),
+                    else => null,
+                };
+            }
+
+            fn ensureCapacity(self: *AliasExpansion, cost: usize, additional: usize) Error!void {
+                const remaining = self.budget - cost;
+                if (self.stack.items.len > remaining or additional > remaining - self.stack.items.len) {
+                    return error.ExcessiveAliasing;
+                }
+                try self.stack.ensureUnusedCapacity(additional);
+            }
+
+            fn charge(self: *AliasExpansion, root: Expr) Error!void {
+                self.stack.clearRetainingCapacity();
+                try self.ensureCapacity(0, 1);
+                self.stack.appendAssumeCapacity(root);
+
+                var cost: usize = 0;
+                while (self.stack.pop()) |node| {
+                    if (collectionKey(node)) |cache_key| {
+                        if (self.costs.get(cache_key)) |cached_cost| {
+                            if (cached_cost > self.budget - cost) return error.ExcessiveAliasing;
+                            cost += cached_cost;
+                            continue;
+                        }
+                    }
+
+                    if (cost == self.budget) return error.ExcessiveAliasing;
+                    cost += 1;
+
+                    switch (node.data) {
+                        .e_array => |array| {
+                            const items = array.items.slice();
+                            try self.ensureCapacity(cost, items.len);
+                            self.stack.appendSliceAssumeCapacity(items);
+                        },
+                        .e_object => |object| {
+                            var child_count: usize = 0;
+                            for (object.properties.slice()) |prop| {
+                                child_count += @intFromBool(prop.key != null);
+                                child_count += @intFromBool(prop.value != null);
+                            }
+
+                            try self.ensureCapacity(cost, child_count);
+                            for (object.properties.slice()) |prop| {
+                                if (prop.key) |child| self.stack.appendAssumeCapacity(child);
+                                if (prop.value) |child| self.stack.appendAssumeCapacity(child);
+                            }
+                        },
+                        else => {},
+                    }
+                }
+
+                if (collectionKey(root)) |cache_key| try self.costs.put(cache_key, cost);
+                self.budget -= cost;
+            }
+        };
+
         fn parseNode(self: *@This(), opts: ParseNodeOptions) ParseError!Expr {
             if (!self.stack_check.isSafeToRecurse()) {
                 try bun.throwStackOverflow();
@@ -1475,6 +1568,8 @@ pub fn Parser(comptime enc: Encoding) type {
                         // fill in the data pointer at the index with the node.
                         return error.UnresolvedAlias;
                     };
+
+                    try self.alias_expansion.charge(copy);
 
                     // update position from the anchor node to the alias node.
                     copy.loc = alias_start.loc();
