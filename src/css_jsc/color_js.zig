@@ -327,15 +327,10 @@ pub fn jsFunctionColor(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFram
                                     break :color bun.String.createFormat("rgba({d}, {d}, {d}, {d})", .{ rgba.red, rgba.green, rgba.blue, rgba.alphaF32() });
                                 },
                                 .ansi_16 => {
-                                    const ansi_16_color = Ansi256.get16(rgba.red, rgba.green, rgba.blue);
-                                    // 16-color ansi, foreground text color
-                                    break :color bun.String.cloneLatin1(&[_]u8{
-                                        // 0x1b is the escape character
-                                        // 38 is the foreground color code
-                                        // 5 is the 16-color mode
-                                        // {d} is the color index
-                                        0x1b, '[', '3', '8', ';', '5', ';', ansi_16_color, 'm',
-                                    });
+                                    // 16-color ansi foreground: palette 0-7 is SGR 30-37, bright 8-15 is SGR 90-97
+                                    const idx: u32 = Ansi256.get16(rgba.red, rgba.green, rgba.blue);
+                                    const sgr = if (idx < 8) 30 + idx else 82 + idx;
+                                    break :color bun.String.createFormat("\x1b[{d}m", .{sgr});
                                 },
                                 .ansi_16m => {
                                     // true color ansi
