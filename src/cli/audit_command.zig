@@ -702,9 +702,14 @@ fn printEnhancedAuditReport(
             try result.value_ptr.vulnerabilities.append(vulnerability);
         }
 
-        var package_iter = audit_result.vulnerable_packages.iterator();
-        while (package_iter.next()) |entry| {
-            const package_info = entry.value_ptr;
+        var package_names = std.array_list.Managed([]const u8).init(allocator);
+        defer package_names.deinit();
+        var name_iter = audit_result.vulnerable_packages.keyIterator();
+        while (name_iter.next()) |name| try package_names.append(name.*);
+        strings.sortAsc(package_names.items);
+
+        for (package_names.items) |package_name| {
+            const package_info = audit_result.vulnerable_packages.getPtr(package_name).?;
 
             if (package_info.vulnerabilities.items.len > 0) {
                 const main_vuln = package_info.vulnerabilities.items[0];
