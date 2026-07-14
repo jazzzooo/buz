@@ -6,23 +6,22 @@ pub const YAML = struct {
 
         var parser: Parser(.utf8) = .init(allocator, source.contents);
 
-        const stream = parser.parse() catch |e| {
+        const roots = parser.parse() catch |e| {
             const err = parser.errorDetails(e);
             try err.addToLog(source, log);
             return error.SyntaxError;
         };
 
-        return switch (stream.docs.items.len) {
+        return switch (roots.items.len) {
             0 => .init(E.Null, .{}, .Empty),
-            1 => stream.docs.items[0].root,
+            1 => roots.items[0],
             else => {
-
                 // multi-document yaml streams are converted into arrays
 
-                var items: bun.BabyList(Expr) = try .initCapacity(allocator, stream.docs.items.len);
+                var items: bun.BabyList(Expr) = try .initCapacity(allocator, roots.items.len);
 
-                for (stream.docs.items) |doc| {
-                    items.appendAssumeCapacity(doc.root);
+                for (roots.items) |root| {
+                    items.appendAssumeCapacity(root);
                 }
 
                 return .init(E.Array, .{ .items = items }, .Empty);
@@ -340,10 +339,19 @@ pub fn Parser(comptime enc: Encoding) type {
             return error.UnexpectedToken;
         }
 
-        pub fn parse(self: *@This()) ParseError!Stream {
+        fn parse(self: *@This()) ParseError!std.array_list.Managed(Expr) {
             try self.scan(.{ .first_scan = true });
 
-            return try self.parseStream();
+            var roots: std.array_list.Managed(Expr) = .init(self.allocator);
+
+            // we want one null document if eof, not zero documents.
+            var first = true;
+            while (first or self.token.data != .eof) {
+                first = false;
+                try roots.append(try self.parseDocument());
+            }
+
+            return roots;
         }
 
         const ParseError = OOM || error{
@@ -363,22 +371,6 @@ pub fn Parser(comptime enc: Encoding) type {
             ExcessiveAliasing,
             StackOverflow,
         };
-
-        pub fn parseStream(self: *@This()) ParseError!Stream {
-            var docs: std.array_list.Managed(Document) = .init(self.allocator);
-
-            // we want one null document if eof, not zero documents.
-            var first = true;
-            while (first or self.token.data != .eof) {
-                first = false;
-
-                const doc = try self.parseDocument();
-
-                try docs.append(doc);
-            }
-
-            return .{ .docs = docs };
-        }
 
         fn peek(self: *const @This(), comptime n: usize) enc.unit() {
             const pos = self.pos.add(n);
@@ -507,7 +499,7 @@ pub fn Parser(comptime enc: Encoding) type {
             return error.InvalidDirective;
         }
 
-        pub fn parseDocument(self: *@This()) ParseError!Document {
+        fn parseDocument(self: *@This()) ParseError!Expr {
             self.anchors.clearRetainingCapacity();
             self.tag_handles.clearRetainingCapacity();
 
@@ -562,7 +554,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
             }
 
-            return .{ .root = root };
+            return root;
         }
 
         fn parseFlowSequence(self: *@This()) ParseError!Expr {
@@ -4855,14 +4847,6 @@ pub fn Parser(comptime enc: Encoding) type {
         const Directive = enum {
             yaml,
             other,
-        };
-
-        pub const Document = struct {
-            root: Expr,
-        };
-
-        pub const Stream = struct {
-            docs: std.array_list.Managed(Document),
         };
     };
 }
