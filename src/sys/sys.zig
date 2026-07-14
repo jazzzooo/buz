@@ -3164,7 +3164,7 @@ pub fn setNoSigpipe(fd: bun.FD) Maybe(void) {
     return .success;
 }
 
-const socketpair_t = if (Environment.isLinux) i32 else c_uint;
+const socketpair_t = c_uint;
 const NonblockingStatus = enum { blocking, nonblocking };
 
 /// libc socketpair() except it defaults to:
@@ -3214,7 +3214,7 @@ pub fn socketpairImpl(domain: socketpair_t, socktype: socketpair_t, protocol: so
 
     if (comptime Environment.isLinux) {
         while (true) {
-            const nonblock_flag: i32 = if (nonblocking_status == .nonblocking) linux.SOCK.NONBLOCK else 0;
+            const nonblock_flag: c_uint = if (nonblocking_status == .nonblocking) linux.SOCK.NONBLOCK else 0;
             const rc = std.os.linux.socketpair(domain, socktype | linux.SOCK.CLOEXEC | nonblock_flag, protocol, &fds_i);
             if (Maybe([2]bun.FD).errnoSys(rc, .socketpair)) |err| {
                 if (err.getErrno() == .INTR) continue;
