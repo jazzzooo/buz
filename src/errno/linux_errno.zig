@@ -228,13 +228,9 @@ pub fn getErrno(rc: anytype) E {
     const Type = @TypeOf(rc);
 
     return switch (Type) {
-        // raw system calls from std.os.linux.* will return usize
+        // raw system calls from std.os.linux.* return usize or u64
         // the errno is stored in this value
-        usize => {
-            const signed: isize = @bitCast(rc);
-            const int = if (signed > -4096 and signed < 0) -signed else 0;
-            return @enumFromInt(int);
-        },
+        usize, u64 => std.os.linux.errno(rc),
 
         // glibc system call wrapper returns i32/int
         // the errno is stored in a thread local variable
