@@ -90,10 +90,7 @@ fn fromNow() TimeLike {
     //        If both tv_nsec fields are specified as UTIME_OMIT, then no file
     //        ownership or permission checks are performed, and the file
     //        timestamps are not modified, but other error conditions may still
-    return .{
-        .sec = 0,
-        .nsec = if (Environment.isLinux) std.os.linux.UTIME.NOW else bun.c.UTIME_NOW,
-    };
+    return std.posix.UTIME.NOW;
 }
 
 const std = @import("std");
