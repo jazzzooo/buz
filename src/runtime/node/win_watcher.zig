@@ -6,7 +6,7 @@ pub const PathWatcherManager = struct {
     const options = @import("../../bundler/options.zig");
     const log = Output.scoped(.PathWatcherManager, .visible);
 
-    watchers: bun.StringArrayHashMapUnmanaged(*PathWatcher) = .{},
+    watchers: bun.StringArrayHashMap(*PathWatcher) = .empty,
     vm: *jsc.VirtualMachine,
     deinit_on_last_watcher: bool = false,
 
@@ -67,7 +67,7 @@ pub const PathWatcher = struct {
     handle: uv.uv_fs_event_t,
     manager: ?*PathWatcherManager,
     emit_in_progress: bool = false,
-    handlers: std.AutoArrayHashMapUnmanaged(*anyopaque, ChangeEvent) = .{},
+    handlers: std.array_hash_map.Auto(*anyopaque, ChangeEvent) = .empty,
 
     pub const new = bun.TrivialNew(PathWatcher);
 

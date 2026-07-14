@@ -21,7 +21,7 @@
 
 const SSLContextCache = @This();
 
-map: std.ArrayHashMapUnmanaged(Digest, *Entry, DigestContext, false) = .empty,
+map: std.array_hash_map.Custom(Digest, *Entry, DigestContext, false) = .empty,
 mutex: bun.Mutex = .{},
 ops_since_compact: u32 = 0,
 

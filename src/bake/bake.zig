@@ -191,8 +191,8 @@ pub const SplitBundlerOptions = struct {
 const BuildConfigSubset = struct {
     loader: ?bun.schema.api.LoaderMap = null,
     ignoreDCEAnnotations: ?bool = null,
-    conditions: bun.StringArrayHashMapUnmanaged(void) = .{},
-    drop: bun.StringArrayHashMapUnmanaged(void) = .{},
+    conditions: bun.StringArrayHashMap(void) = .empty,
+    drop: bun.StringArrayHashMap(void) = .empty,
     env: bun.schema.api.DotEnvBehavior = ._none,
     env_prefix: ?[]const u8 = null,
     define: bun.schema.api.StringMap = .{ .keys = &.{}, .values = &.{} },
@@ -249,7 +249,7 @@ pub const Framework = struct {
     // static_routers: [][]const u8,
     server_components: ?ServerComponents = null,
     react_fast_refresh: ?ReactFastRefresh = null,
-    built_in_modules: bun.StringArrayHashMapUnmanaged(BuiltInModule) = .{},
+    built_in_modules: bun.StringArrayHashMap(BuiltInModule) = .empty,
 
     /// Bun provides built-in support for using React as a framework.
     /// Depends on externally provided React
@@ -277,7 +277,7 @@ pub const Framework = struct {
                 },
             }),
             // .static_routers = try arena.dupe([]const u8, &.{"public"}),
-            .built_in_modules = bun.StringArrayHashMapUnmanaged(BuiltInModule).init(arena, &.{
+            .built_in_modules = bun.StringArrayHashMap(BuiltInModule).init(arena, &.{
                 "bun-framework-react/client.tsx",
                 "bun-framework-react/server.tsx",
                 "bun-framework-react/ssr.tsx",
@@ -522,12 +522,12 @@ pub const Framework = struct {
                     "registerClientReference",
             };
         };
-        const built_in_modules: bun.StringArrayHashMapUnmanaged(BuiltInModule) = built_in_modules: {
+        const built_in_modules: bun.StringArrayHashMap(BuiltInModule) = built_in_modules: {
             const array = try opts.getArray(global, "builtInModules") orelse
-                break :built_in_modules .{};
+                break :built_in_modules .empty;
 
             const len = try array.getLength(global);
-            var files: bun.StringArrayHashMapUnmanaged(BuiltInModule) = .{};
+            var files: bun.StringArrayHashMap(BuiltInModule) = .empty;
             try files.ensureTotalCapacity(arena, len);
 
             var it = try array.arrayIterator(global);

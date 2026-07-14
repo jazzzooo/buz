@@ -7,7 +7,7 @@ pub const ThreadPool = struct {
     io_pool: *ThreadPoolLib,
     worker_pool: *ThreadPoolLib,
     worker_pool_is_owned: bool = false,
-    workers_assignments: std.AutoArrayHashMap(std.Thread.Id, *Worker) = std.AutoArrayHashMap(std.Thread.Id, *Worker).init(bun.default_allocator),
+    workers_assignments: std.array_hash_map.Auto(std.Thread.Id, *Worker) = std.array_hash_map.Auto(std.Thread.Id, *Worker).empty,
     workers_assignments_lock: bun.Mutex = .{},
     v2: *BundleV2,
 
@@ -182,7 +182,7 @@ pub const ThreadPool = struct {
         {
             this.workers_assignments_lock.lock();
             defer this.workers_assignments_lock.unlock();
-            const entry = this.workers_assignments.getOrPut(id) catch unreachable;
+            const entry = this.workers_assignments.getOrPut(bun.default_allocator, id) catch unreachable;
             if (entry.found_existing) {
                 return entry.value_ptr.*;
             }

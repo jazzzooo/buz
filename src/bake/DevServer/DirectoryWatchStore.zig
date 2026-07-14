@@ -10,7 +10,7 @@ const DirectoryWatchStore = @This();
 // TODO: when a file fixes its resolution, there is no code specifically to remove the watchers.
 
 /// List of active watchers. Can be re-ordered on removal
-watches: bun.StringArrayHashMapUnmanaged(Entry),
+watches: bun.StringArrayHashMap(Entry),
 dependencies: ArrayListUnmanaged(Dep),
 /// Dependencies cannot be re-ordered. This list tracks what indexes are free.
 dependencies_free_list: ArrayListUnmanaged(Dep.Index),

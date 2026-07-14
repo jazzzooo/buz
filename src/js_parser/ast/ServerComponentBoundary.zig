@@ -28,9 +28,9 @@ ssr_source_index: Index.Int,
 pub const List = struct {
     list: std.MultiArrayList(ServerComponentBoundary) = .{},
     /// Used to facilitate fast lookups into `items` by `.source_index`
-    map: Map = .{},
+    map: Map = .empty,
 
-    const Map = std.ArrayHashMapUnmanaged(void, void, struct {}, true);
+    const Map = std.array_hash_map.Custom(void, void, struct {}, true);
 
     /// Can only be called on the bundler thread.
     pub fn put(

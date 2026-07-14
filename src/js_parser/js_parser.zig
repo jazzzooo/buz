@@ -487,14 +487,14 @@ pub const Part = struct {
     declared_symbols: DeclaredSymbol.List = .{},
 
     /// An estimate of the number of uses of all symbols used within this part.
-    symbol_uses: SymbolUseMap = .{},
+    symbol_uses: SymbolUseMap = .empty,
 
     /// This tracks property accesses off of imported symbols. We don't know
     /// during parsing if an imported symbol is going to be an inlined enum
     /// value or not. This is only known during linking. So we defer adding
     /// a dependency on these imported symbols until we know whether the
     /// property access is an inlined enum value or not.
-    import_symbol_property_uses: SymbolPropertyUseMap = .{},
+    import_symbol_property_uses: SymbolPropertyUseMap = .empty,
 
     /// The indices of the other parts in this file that are needed if this part
     /// is needed.
@@ -529,8 +529,8 @@ pub const Part = struct {
         import_to_convert_from_require,
     };
 
-    pub const SymbolUseMap = std.ArrayHashMapUnmanaged(Ref, Symbol.Use, RefHashCtx, false);
-    pub const SymbolPropertyUseMap = std.ArrayHashMapUnmanaged(Ref, bun.StringHashMapUnmanaged(Symbol.Use), RefHashCtx, false);
+    pub const SymbolUseMap = std.array_hash_map.Custom(Ref, Symbol.Use, RefHashCtx, false);
+    pub const SymbolPropertyUseMap = std.array_hash_map.Custom(Ref, bun.StringHashMapUnmanaged(Symbol.Use), RefHashCtx, false);
 
     pub fn jsonStringify(self: *const Part, writer: anytype) !void {
         return writer.write(self.stmts);

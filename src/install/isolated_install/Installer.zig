@@ -19,7 +19,7 @@ pub const Installer = struct {
 
     supported_backend: std.atomic.Value(PackageInstall.Method),
 
-    trusted_dependencies_from_update_requests: std.AutoArrayHashMapUnmanaged(TruncatedPackageNameHash, void),
+    trusted_dependencies_from_update_requests: std.array_hash_map.Auto(TruncatedPackageNameHash, void),
 
     /// Absolute path to the global virtual store (`<cache_dir>/links`). When
     /// non-null, npm/git/tarball entries are materialized once into this
@@ -295,8 +295,8 @@ pub const Installer = struct {
         // fix: check if the task is unblocked after the task returns blocked, and only set/unset
         // blocked from the main thread.
 
-        var parent_dedupe: std.AutoArrayHashMap(Store.Entry.Id, void) = .init(bun.default_allocator);
-        defer parent_dedupe.deinit();
+        var parent_dedupe: std.array_hash_map.Auto(Store.Entry.Id, void) = .empty;
+        defer parent_dedupe.deinit(bun.default_allocator);
 
         if (!this.isTaskBlocked(entry_id, &parent_dedupe)) {
             // .monotonic is okay because the task isn't running right now.
@@ -311,7 +311,7 @@ pub const Installer = struct {
 
     /// Called from both the main thread (via `onTaskBlocked` and `resumeUnblockedTasks`) and the
     /// task thread (via `run`). `parent_dedupe` should not be shared between threads.
-    fn isTaskBlocked(this: *Installer, entry_id: Store.Entry.Id, parent_dedupe: *std.AutoArrayHashMap(Store.Entry.Id, void)) bool {
+    fn isTaskBlocked(this: *Installer, entry_id: Store.Entry.Id, parent_dedupe: *std.array_hash_map.Auto(Store.Entry.Id, void)) bool {
         const entries = this.store.entries.slice();
         const entry_deps = entries.items(.dependencies);
         const entry_steps = entries.items(.step);
@@ -320,7 +320,7 @@ pub const Installer = struct {
         for (deps.slice()) |dep| {
             if (entry_steps[dep.entry_id.get()].load(.acquire) != .done) {
                 parent_dedupe.clearRetainingCapacity();
-                if (this.store.isCycle(entry_id, dep.entry_id, parent_dedupe)) {
+                if (this.store.isCycle(bun.default_allocator, entry_id, dep.entry_id, parent_dedupe)) {
                     continue;
                 }
                 return true;
@@ -400,8 +400,8 @@ pub const Installer = struct {
         const entries = this.store.entries.slice();
         const entry_steps = entries.items(.step);
 
-        var parent_dedupe: std.AutoArrayHashMap(Store.Entry.Id, void) = .init(bun.default_allocator);
-        defer parent_dedupe.deinit();
+        var parent_dedupe: std.array_hash_map.Auto(Store.Entry.Id, void) = .empty;
+        defer parent_dedupe.deinit(bun.default_allocator);
 
         for (0..this.store.entries.len) |id_int| {
             const entry_id: Store.Entry.Id = .from(@intCast(id_int));
@@ -1049,8 +1049,8 @@ pub const Installer = struct {
                     // preinstall scripts need to run before binaries can be linked. Block here if any dependencies
                     // of this entry are not finished. Do not count cycles towards blocking.
 
-                    var parent_dedupe: std.AutoArrayHashMap(Store.Entry.Id, void) = .init(bun.default_allocator);
-                    defer parent_dedupe.deinit();
+                    var parent_dedupe: std.array_hash_map.Auto(Store.Entry.Id, void) = .empty;
+                    defer parent_dedupe.deinit(bun.default_allocator);
 
                     if (installer.isTaskBlocked(this.entry_id, &parent_dedupe)) {
                         return .blocked;

@@ -2954,7 +2954,7 @@ pub const api = struct {
     };
 
     pub const NpmRegistryMap = struct {
-        scopes: bun.StringArrayHashMapUnmanaged(NpmRegistry) = .{},
+        scopes: bun.StringArrayHashMap(NpmRegistry) = .empty,
 
         pub fn decode(reader: anytype) anyerror!NpmRegistryMap {
             var this = std.mem.zeroes(NpmRegistryMap);

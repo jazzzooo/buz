@@ -219,7 +219,7 @@ pub fn Visit(
                                     p.import_items_for_namespace.put(
                                         p.allocator,
                                         ref,
-                                        ImportItemForNamespaceMap.init(p.allocator),
+                                        .empty,
                                     ) catch unreachable;
                                     continue;
                                 }

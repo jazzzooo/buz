@@ -214,7 +214,8 @@ pub const Archiver = struct {
         pluckers: []Plucker = &[_]Plucker{},
         overwrite_list: bun.StringArrayHashMap(void),
         all_files: EntryMap,
-        pub const EntryMap = std.ArrayHashMap(u64, [*c]u8, U64Context, false);
+        allocator: std.mem.Allocator,
+        pub const EntryMap = std.array_hash_map.Custom(u64, [*c]u8, U64Context, false);
 
         pub const U64Context = struct {
             pub fn hash(_: @This(), k: u64) u32 {
@@ -314,7 +315,7 @@ pub const Archiver = struct {
                                 path_to_use = temp_buf[0 .. path_to_use_.len + 1];
                             }
 
-                            const overwrite_entry = try ctx.overwrite_list.getOrPut(path_to_use);
+                            const overwrite_entry = try ctx.overwrite_list.getOrPut(ctx.allocator, path_to_use);
                             if (!overwrite_entry.found_existing) {
                                 overwrite_entry.key_ptr.* = try appender.append(@TypeOf(path_to_use), path_to_use);
                             }
@@ -579,7 +580,7 @@ pub const Archiver = struct {
                                         @as(u64, 0);
 
                                     if (comptime ContextType != void and @hasDecl(std.meta.Child(ContextType), "appendMutable")) {
-                                        const result = ctx.?.all_files.getOrPutAdapted(hash, Context.U64Context{}) catch unreachable;
+                                        const result = ctx.?.all_files.getOrPutAdapted(ctx.?.allocator, hash, Context.U64Context{}) catch unreachable;
                                         if (!result.found_existing) {
                                             result.value_ptr.* = (try appender.appendMutable(@TypeOf(path_slice), path_slice)).ptr;
                                         }

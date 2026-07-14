@@ -482,6 +482,7 @@ pub const Loader = struct {
                             const expr_data = js_ast.Expr.Data{ .e_string = &e_strings[0] };
 
                             _ = try to_string.getOrPutValue(
+                                allocator,
                                 key_str,
                                 .init(.{
                                     .can_be_removed_if_unused = true,
@@ -506,6 +507,7 @@ pub const Loader = struct {
                                 const expr_data = js_ast.Expr.Data{ .e_string = &e_strings[0] };
 
                                 _ = try to_string.getOrPutValue(
+                                    allocator,
                                     framework_defaults.keys[key_i],
                                     .init(.{
                                         .can_be_removed_if_unused = true,
@@ -537,6 +539,7 @@ pub const Loader = struct {
                         const expr_data = js_ast.Expr.Data{ .e_string = &e_strings[0] };
 
                         _ = try to_string.getOrPutValue(
+                            allocator,
                             key_str,
                             .init(.{
                                 .can_be_removed_if_unused = true,
@@ -554,7 +557,7 @@ pub const Loader = struct {
             const value = framework_defaults.values[i];
 
             if (!to_string.contains(key) and !to_json.contains(key)) {
-                _ = try to_json.getOrPutValue(key, value);
+                _ = try to_json.getOrPutValue(allocator, key, value);
             }
         }
     }
@@ -563,14 +566,14 @@ pub const Loader = struct {
         return Loader{
             .map = map,
             .allocator = allocator,
-            .custom_files_loaded = bun.StringArrayHashMap(logger.Source).init(allocator),
+            .custom_files_loaded = bun.StringArrayHashMap(logger.Source).empty,
         };
     }
 
     pub fn loadProcess(this: *Loader) OOM!void {
         if (this.did_load_process) return;
 
-        try this.map.map.ensureTotalCapacity(std.os.environ.len);
+        try this.map.map.ensureTotalCapacity(this.map.allocator, std.os.environ.len);
         for (std.os.environ) |_env| {
             var env = bun.span(_env);
             if (strings.indexOfChar(env, '=')) |i| {
@@ -884,7 +887,7 @@ pub const Loader = struct {
 
         var file = bun.openFile(file_path, .{ .mode = .read_only }) catch {
             // prevent retrying
-            try this.custom_files_loaded.put(file_path, logger.Source.initPathString(file_path, ""));
+            try this.custom_files_loaded.put(this.allocator, file_path, logger.Source.initPathString(file_path, ""));
             return;
         };
         defer file.close();
@@ -893,7 +896,7 @@ pub const Loader = struct {
             if (comptime Environment.isWindows) {
                 const pos = try file.getEndPos();
                 if (pos == 0) {
-                    try this.custom_files_loaded.put(file_path, logger.Source.initPathString(file_path, ""));
+                    try this.custom_files_loaded.put(this.allocator, file_path, logger.Source.initPathString(file_path, ""));
                     return;
                 }
 
@@ -903,7 +906,7 @@ pub const Loader = struct {
             const stat = try file.stat();
 
             if (stat.size == 0 or stat.kind != .file) {
-                try this.custom_files_loaded.put(file_path, logger.Source.initPathString(file_path, ""));
+                try this.custom_files_loaded.put(this.allocator, file_path, logger.Source.initPathString(file_path, ""));
                 return;
             }
 
@@ -919,7 +922,7 @@ pub const Loader = struct {
                 }
 
                 // prevent retrying
-                try this.custom_files_loaded.put(file_path, logger.Source.initPathString(file_path, ""));
+                try this.custom_files_loaded.put(this.allocator, file_path, logger.Source.initPathString(file_path, ""));
                 return;
             },
             else => {
@@ -942,7 +945,7 @@ pub const Loader = struct {
             true,
         );
 
-        try this.custom_files_loaded.put(file_path, source.*);
+        try this.custom_files_loaded.put(this.allocator, file_path, source.*);
     }
 };
 
@@ -1159,7 +1162,7 @@ const Parser = struct {
                 continue;
             };
             const value = try this.parseValue(is_process);
-            const entry = try map.map.getOrPut(key);
+            const entry = try map.map.getOrPut(map.allocator, key);
             if (entry.found_existing) {
                 if (entry.index < count) {
                     // Allow keys defined later in the same file to override keys defined earlier
@@ -1222,7 +1225,8 @@ pub const Map = struct {
 
     const GetOrPutResult = HashTable.GetOrPutResult;
 
-    map: HashTable,
+    map: HashTable = .empty,
+    allocator: std.mem.Allocator,
 
     pub fn createNullDelimitedEnvMap(this: *Map, arena: std.mem.Allocator) OOM![:null]?[*:0]const u8 {
         var env_map = &this.map;
@@ -1303,21 +1307,21 @@ pub const Map = struct {
     }
 
     pub inline fn init(allocator: std.mem.Allocator) Map {
-        return Map{ .map = HashTable.init(allocator) };
+        return .{ .allocator = allocator };
     }
 
     pub inline fn put(this: *Map, key: string, value: string) OOM!void {
         if (Environment.isWindows and Environment.allow_assert) {
             bun.assert(bun.strings.indexOfChar(key, '\x00') == null);
         }
-        try this.map.put(key, .{
+        try this.map.put(this.allocator, key, .{
             .value = value,
             .conditional = false,
         });
     }
 
     pub fn ensureUnusedCapacity(this: *Map, additional_count: usize) OOM!void {
-        return this.map.ensureUnusedCapacity(additional_count);
+        return this.map.ensureUnusedCapacity(this.allocator, additional_count);
     }
 
     pub fn putAssumeCapacity(this: *Map, key: string, value: string) void {
@@ -1331,7 +1335,7 @@ pub const Map = struct {
     }
 
     pub inline fn putAllocKeyAndValue(this: *Map, allocator: std.mem.Allocator, key: string, value: string) OOM!void {
-        const gop = try this.map.getOrPut(key);
+        const gop = try this.map.getOrPut(this.allocator, key);
         gop.value_ptr.* = .{
             .value = try allocator.dupe(u8, value),
             .conditional = false,
@@ -1342,7 +1346,7 @@ pub const Map = struct {
     }
 
     pub inline fn putAllocKey(this: *Map, allocator: std.mem.Allocator, key: string, value: string) OOM!void {
-        const gop = try this.map.getOrPut(key);
+        const gop = try this.map.getOrPut(this.allocator, key);
         gop.value_ptr.* = .{
             .value = value,
             .conditional = false,
@@ -1353,14 +1357,14 @@ pub const Map = struct {
     }
 
     pub inline fn putAllocValue(this: *Map, allocator: std.mem.Allocator, key: string, value: string) OOM!void {
-        try this.map.put(key, .{
+        try this.map.put(this.allocator, key, .{
             .value = try allocator.dupe(u8, value),
             .conditional = false,
         });
     }
 
     pub inline fn getOrPutWithoutValue(this: *Map, key: string) OOM!GetOrPutResult {
-        return this.map.getOrPut(key);
+        return this.map.getOrPut(this.allocator, key);
     }
 
     pub fn jsonStringify(self: *const @This(), writer: anytype) !void {
@@ -1392,14 +1396,14 @@ pub const Map = struct {
     }
 
     pub inline fn putDefault(this: *Map, key: string, value: string) OOM!void {
-        _ = try this.map.getOrPutValue(key, .{
+        _ = try this.map.getOrPutValue(this.allocator, key, .{
             .value = value,
             .conditional = false,
         });
     }
 
     pub inline fn getOrPut(this: *Map, key: string, value: string) OOM!void {
-        _ = try this.map.getOrPutValue(key, .{
+        _ = try this.map.getOrPutValue(this.allocator, key, .{
             .value = value,
             .conditional = false,
         });
@@ -1410,7 +1414,10 @@ pub const Map = struct {
     }
 
     pub fn cloneWithAllocator(this: *const Map, new_allocator: std.mem.Allocator) OOM!Map {
-        return .{ .map = try this.map.cloneWithAllocator(new_allocator) };
+        return .{
+            .map = try this.map.clone(new_allocator),
+            .allocator = new_allocator,
+        };
     }
 };
 

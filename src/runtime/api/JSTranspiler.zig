@@ -27,7 +27,7 @@ const default_transform_options: api.TransformOptions = brk: {
 pub const Config = struct {
     transform: api.TransformOptions = default_transform_options,
     default_loader: options.Loader = options.Loader.jsx,
-    macro_map: MacroMap = MacroMap{},
+    macro_map: MacroMap = .empty,
     tsconfig: ?*TSConfigJSON = null,
     tsconfig_buf: []const u8 = "",
     macros_buf: []const u8 = "",
@@ -453,7 +453,7 @@ pub const TransformTask = struct {
     js_instance: *JSTranspiler,
     log: logger.Log,
     err: ?anyerror = null,
-    macro_map: MacroMap = MacroMap{},
+    macro_map: MacroMap = .empty,
     tsconfig: ?*TSConfigJSON = null,
     loader: Loader,
     global: *JSGlobalObject,

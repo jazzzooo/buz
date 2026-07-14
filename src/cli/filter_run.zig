@@ -460,7 +460,7 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
 
     // Get list of packages that match the configuration
     var scripts = std.array_list.Managed(ScriptConfig).init(ctx.allocator);
-    // var scripts = std.ArrayHashMap([]const u8, ScriptConfig).init(ctx.allocator);
+    // var scripts = std.array_hash_map.Custom([]const u8, ScriptConfig).init(ctx.allocator);
     while (try package_json_iter.next()) |package_json_path| {
         const dirpath = std.fs.path.dirname(package_json_path) orelse Global.crash();
         const path = bun.strings.withoutTrailingSlash(dirpath);

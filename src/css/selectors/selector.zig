@@ -438,7 +438,7 @@ pub fn isCompatible(selectors: []const parser.Selector, targets: css.targets.Tar
 /// A selector is considered unused if it contains a class or id component that exists in the set of unused symbols.
 pub fn isUnused(
     selectors: []const parser.Selector,
-    unused_symbols: *const std.StringArrayHashMapUnmanaged(void),
+    unused_symbols: *const std.array_hash_map.String(void),
     symbols: *const css.SymbolList,
     parent_is_unused: bool,
 ) bool {
@@ -453,7 +453,7 @@ pub fn isUnused(
 
 fn isSelectorUnused(
     selector: *const parser.Selector,
-    unused_symbols: *const std.StringArrayHashMapUnmanaged(void),
+    unused_symbols: *const std.array_hash_map.String(void),
     symbols: *const css.SymbolList,
     parent_is_unused: bool,
 ) bool {

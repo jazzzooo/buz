@@ -2,7 +2,7 @@ const OverrideMap = @This();
 
 const debug = Output.scoped(.OverrideMap, .visible);
 
-map: std.ArrayHashMapUnmanaged(PackageNameHash, Dependency, ArrayIdentityContext.U64, false) = .{},
+map: std.array_hash_map.Custom(PackageNameHash, Dependency, ArrayIdentityContext.U64, false) = .empty,
 
 /// In the future, this `get` function should handle multi-level resolutions. This is difficult right
 /// now because given a Dependency ID, there is no fast way to trace it to its package.

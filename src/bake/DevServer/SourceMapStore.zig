@@ -10,7 +10,7 @@ const Self = @This();
 /// See `SourceId` for what the content of u64 is.
 pub const Key = bun.GenericIndex(u64, .{ "Key of", Self });
 
-entries: AutoArrayHashMapUnmanaged(Key, Entry),
+entries: AutoArrayHashMap(Key, Entry),
 /// When a HTML bundle is loaded, it places a "weak reference" to the
 /// script's source map. This reference is held until either:
 /// - The script loads and moves the ref into "strongly held" by the HmrSocket
@@ -563,5 +563,5 @@ const dumpBundle = DevServer.dumpBundle;
 const mapLog = DevServer.mapLog;
 
 const std = @import("std");
-const AutoArrayHashMapUnmanaged = std.AutoArrayHashMapUnmanaged;
+const AutoArrayHashMap = std.array_hash_map.Auto;
 const Allocator = std.mem.Allocator;

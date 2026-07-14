@@ -11,7 +11,7 @@ const log = Output.scoped(.barrel, .hidden);
 
 pub const RequestedExports = union(enum) {
     all,
-    partial: bun.StringArrayHashMapUnmanaged(void),
+    partial: bun.StringArrayHashMap(void),
 };
 
 const BarrelExportResolution = struct {
@@ -84,7 +84,7 @@ fn applyBarrelOptimizationImpl(this: *BundleV2, parse_result: *ParseTask.Result)
     var needed_records_stack_buffer: [8192]u8 = undefined;
     var needed_records_stack: std.heap.BufferFirstAllocator = .init(&needed_records_stack_buffer, this.allocator());
     const needed_records_alloc = needed_records_stack.allocator();
-    var needed_records = std.AutoArrayHashMapUnmanaged(u32, void){};
+    var needed_records = std.array_hash_map.Auto(u32, void).empty;
     defer needed_records.deinit(needed_records_alloc);
 
     for (ast.export_star_import_records) |record_idx| {
@@ -132,7 +132,7 @@ fn applyBarrelOptimizationImpl(this: *BundleV2, parse_result: *ParseTask.Result)
         var needed_paths_stack_buffer: [4096]u8 = undefined;
         var needed_paths_stack: std.heap.BufferFirstAllocator = .init(&needed_paths_stack_buffer, this.allocator());
         const needed_paths_alloc = needed_paths_stack.allocator();
-        var needed_paths = bun.StringArrayHashMapUnmanaged(void){};
+        var needed_paths = bun.StringArrayHashMap(void).empty;
         defer needed_paths.deinit(needed_paths_alloc);
 
         for (needed_records.keys()) |rec_idx| {
@@ -209,7 +209,7 @@ const BarrelWorkItem = struct { barrel_source_index: u32, alias: []const u8, is_
 
 /// Resolve, process, and patch import records for a single barrel.
 /// Used to inline-resolve deferred records whose source_index is still invalid.
-fn resolveBarrelRecords(this: *BundleV2, barrel_idx: u32, barrels_to_resolve: *std.AutoArrayHashMapUnmanaged(u32, void)) i32 {
+fn resolveBarrelRecords(this: *BundleV2, barrel_idx: u32, barrels_to_resolve: *std.array_hash_map.Auto(u32, void)) i32 {
     const graph_ast = this.graph.ast.slice();
     const barrel_ir = &graph_ast.items(.import_records)[barrel_idx];
     const target = graph_ast.items(.target)[barrel_idx];
@@ -253,7 +253,7 @@ pub fn scheduleBarrelDeferredImports(this: *BundleV2, result: *ParseTask.Result.
     var named_ir_indices_stack_buffer: [4096]u8 = undefined;
     var named_ir_indices_stack: std.heap.BufferFirstAllocator = .init(&named_ir_indices_stack_buffer, this.allocator());
     const named_ir_indices_alloc = named_ir_indices_stack.allocator();
-    var named_ir_indices = std.AutoArrayHashMapUnmanaged(u32, void){};
+    var named_ir_indices = std.array_hash_map.Auto(u32, void).empty;
     defer named_ir_indices.deinit(named_ir_indices_alloc);
 
     // In dev server mode, patchImportRecordSourceIndices skips saving source_indices
@@ -274,7 +274,7 @@ pub fn scheduleBarrelDeferredImports(this: *BundleV2, result: *ParseTask.Result.
     // its index, so the direct path lookup below fails for those entries.
     // Build a fallback: raw specifier → surviving record's resolved path
     // text, using non-unused records in this file. See #28886.
-    var dedup_fallback = bun.StringArrayHashMapUnmanaged([]const u8){};
+    var dedup_fallback = bun.StringArrayHashMap([]const u8).empty;
     defer dedup_fallback.deinit(this.allocator());
     if (this.transpiler.options.dev_server != null) {
         for (file_import_records.slice()) |ir_probe| {
@@ -435,7 +435,7 @@ pub fn scheduleBarrelDeferredImports(this: *BundleV2, result: *ParseTask.Result.
     // dedup via requested_exports to prevent cycles.
     const initial_queue_len = queue.items.len;
 
-    var barrels_to_resolve = std.AutoArrayHashMapUnmanaged(u32, void){};
+    var barrels_to_resolve = std.array_hash_map.Auto(u32, void).empty;
     var barrels_to_resolve_stack_buffer: [1024]u8 = undefined;
     var barrels_to_resolve_stack: std.heap.BufferFirstAllocator = .init(&barrels_to_resolve_stack_buffer, this.allocator());
     const barrels_to_resolve_alloc = barrels_to_resolve_stack.allocator();

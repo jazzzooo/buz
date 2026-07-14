@@ -237,8 +237,8 @@ pub fn findImportedFilesInCSSOrder(this: *LinkerContext, temp_allocator: std.mem
     // file. This works because in CSS, the last instance of a declaration
     // overrides all previous instances of that declaration.
     {
-        var source_index_duplicates = std.AutoArrayHashMap(u32, BabyList(u32)).init(temp_allocator);
-        var external_path_duplicates = std.StringArrayHashMap(BabyList(u32)).init(temp_allocator);
+        var source_index_duplicates = std.array_hash_map.Auto(u32, BabyList(u32)).empty;
+        var external_path_duplicates = std.array_hash_map.String(BabyList(u32)).empty;
 
         var i: u32 = visitor.order.len;
         next_backward: while (i != 0) {
@@ -246,7 +246,7 @@ pub fn findImportedFilesInCSSOrder(this: *LinkerContext, temp_allocator: std.mem
             const entry = visitor.order.at(i);
             switch (entry.kind) {
                 .source_index => |idx| {
-                    const gop = bun.handleOom(source_index_duplicates.getOrPut(idx.get()));
+                    const gop = bun.handleOom(source_index_duplicates.getOrPut(temp_allocator, idx.get()));
                     if (!gop.found_existing) {
                         gop.value_ptr.* = BabyList(u32){};
                     }
@@ -264,7 +264,7 @@ pub fn findImportedFilesInCSSOrder(this: *LinkerContext, temp_allocator: std.mem
                     bun.handleOom(gop.value_ptr.append(temp_allocator, i));
                 },
                 .external_path => |p| {
-                    const gop = bun.handleOom(external_path_duplicates.getOrPut(p.text));
+                    const gop = bun.handleOom(external_path_duplicates.getOrPut(temp_allocator, p.text));
                     if (!gop.found_existing) {
                         gop.value_ptr.* = BabyList(u32){};
                     }

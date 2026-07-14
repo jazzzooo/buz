@@ -70,18 +70,18 @@ server_graph: IncrementalGraph(.server),
 /// Barrel files with deferred (is_unused) import records. These files must
 /// be re-parsed on every incremental build because the set of needed exports
 /// may have changed. Populated by applyBarrelOptimization.
-barrel_files_with_deferrals: bun.StringArrayHashMapUnmanaged(void) = .{},
+barrel_files_with_deferrals: bun.StringArrayHashMap(void) = .empty,
 /// Accumulated barrel export requests across all builds. Maps barrel file
 /// path → set of export names that have been requested. This ensures that
 /// when a barrel is re-parsed in an incremental build, exports requested
 /// by non-stale files (from previous builds) are still kept.
-barrel_needed_exports: bun.StringArrayHashMapUnmanaged(bun.StringHashMapUnmanaged(void)) = .{},
+barrel_needed_exports: bun.StringArrayHashMap(bun.StringHashMapUnmanaged(void)) = .empty,
 /// State populated during bundling and hot updates. Often cleared
 incremental_result: IncrementalResult,
 /// Quickly retrieve a framework route's index from its entry point file. These
 /// are populated as the routes are discovered. The route may not be bundled OR
 /// navigatable, such as the case where a layout's index is looked up.
-route_lookup: AutoArrayHashMapUnmanaged(IncrementalGraph(.server).FileIndex, RouteIndexAndRecurseFlag),
+route_lookup: AutoArrayHashMap(IncrementalGraph(.server).FileIndex, RouteIndexAndRecurseFlag),
 /// This acts as a duplicate of the lookup table in uws, but only for HTML routes
 /// Used to identify what route a connected WebSocket is on, so that only
 /// the active pages are notified of a hot updates.
@@ -94,7 +94,7 @@ source_maps: SourceMapStore,
 /// All bundling failures are stored until a file is saved and rebuilt.
 /// They are stored in the wire format the HMR runtime expects so that
 /// serialization only happens once.
-bundling_failures: std.ArrayHashMapUnmanaged(
+bundling_failures: std.array_hash_map.Custom(
     SerializedFailure,
     void,
     SerializedFailure.ArrayHashContextViaOwner,
@@ -106,7 +106,7 @@ frontend_only: bool,
 /// The Plugin API is missing a way to attach filesystem watchers (addWatchFile)
 /// This special case makes `bun-plugin-tailwind` work, which is a requirement
 /// to ship initial incremental bundling support for HTML files.
-has_tailwind_plugin_hack: ?bun.StringArrayHashMapUnmanaged(void) = null,
+has_tailwind_plugin_hack: ?bun.StringArrayHashMap(void) = null,
 
 // These values are handles to the functions in `hmr-runtime-server.ts`.
 // For type definitions, see `./bake.private.d.ts`
@@ -199,7 +199,7 @@ current_bundle: ?struct {
     /// Resolution failures are grouped by incremental graph file index.
     /// Unlike parse failures (`handleParseTaskFailure`), the resolution
     /// failures can be created asynchronously, and out of order.
-    resolution_failure_entries: AutoArrayHashMapUnmanaged(SerializedFailure.Owner.Packed, bun.logger.Log),
+    resolution_failure_entries: AutoArrayHashMap(SerializedFailure.Owner.Packed, bun.logger.Log),
 
     /// 1. Always make sure to deinit this promise
     /// 2. Always drain microtasks after resolving it
@@ -210,7 +210,7 @@ current_bundle: ?struct {
 /// will immediately enqueue this.
 next_bundle: struct {
     /// A list of `RouteBundle`s which have active requests to bundle it.
-    route_queue: AutoArrayHashMapUnmanaged(RouteBundle.Index, void),
+    route_queue: AutoArrayHashMap(RouteBundle.Index, void),
     /// If a reload event exists and should be drained. The information
     /// for this watch event is in one of the `watch_events`
     reload_event: ?*HotReloadEvent,
@@ -272,7 +272,7 @@ pub const RouteBundle = @import("./DevServer/RouteBundle.zig");
 
 const DeferredPromise = struct {
     strong: jsc.JSPromise.Strong = .empty,
-    route_bundle_indices: std.AutoArrayHashMapUnmanaged(RouteBundle.Index, void) = .{},
+    route_bundle_indices: std.array_hash_map.Auto(RouteBundle.Index, void) = .empty,
 
     pub fn setRouteBundleState(self: *DeferredPromise, dev: *DevServer, state: RouteBundle.State) void {
         for (self.route_bundle_indices.keys()) |route_bundle_index| {
@@ -4310,7 +4310,7 @@ const RouteIndexAndRecurseFlag = packed struct(u32) {
 /// File paths are always absolute paths. Files may be bundled for multiple
 /// targets.
 pub const EntryPointList = struct {
-    set: bun.StringArrayHashMapUnmanaged(Flags),
+    set: bun.StringArrayHashMap(Flags),
 
     pub const empty: EntryPointList = .{ .set = .{} };
 
@@ -4780,5 +4780,5 @@ const Request = uws.Request;
 
 const std = @import("std");
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
-const AutoArrayHashMapUnmanaged = std.AutoArrayHashMapUnmanaged;
+const AutoArrayHashMap = std.array_hash_map.Auto;
 const Allocator = std.mem.Allocator;

@@ -434,7 +434,7 @@ pub const JSBundler = struct {
             }
         };
 
-        pub const List = bun.StringArrayHashMapUnmanaged(Config);
+        pub const List = bun.StringArrayHashMap(Config);
 
         pub fn fromJS(globalThis: *jsc.JSGlobalObject, config: jsc.JSValue, plugins: *?*Plugin, allocator: std.mem.Allocator) JSError!Config {
             var this = Config{

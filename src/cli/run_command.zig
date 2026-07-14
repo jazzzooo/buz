@@ -1029,12 +1029,12 @@ pub const RunCommand = struct {
             shell_out.shell = ShellCompletions.Shell.fromEnv(@TypeOf(shell), shell);
         }
 
-        var results = ResultList.init(ctx.allocator);
+        var results: ResultList = .empty;
         var descriptions = std.array_list.Managed(string).init(ctx.allocator);
 
         if (filter != .script_exclude) {
             if (default_completions) |defaults| {
-                try results.ensureUnusedCapacity(defaults.len);
+                try results.ensureUnusedCapacity(ctx.allocator, defaults.len);
                 for (defaults) |item| {
                     _ = results.getOrPutAssumeCapacity(item);
                 }
@@ -1066,7 +1066,7 @@ pub const RunCommand = struct {
                                 const slice = path_buf[0 .. dir_slice.len + base.len :0];
                                 if (!(bun.sys.isExecutableFilePath(slice))) continue;
                                 // we need to dupe because the string pay point to a pointer that only exists in the current scope
-                                _ = try results.getOrPut(this_transpiler.fs.filename_store.append(@TypeOf(base), base) catch continue);
+                                _ = try results.getOrPut(ctx.allocator, this_transpiler.fs.filename_store.append(@TypeOf(base), base) catch continue);
                             }
                         }
                     }
@@ -1089,7 +1089,7 @@ pub const RunCommand = struct {
                             !strings.contains(name, ".d.cts") and
                             value.kind(&this_transpiler.fs.fs, true) == .file)
                         {
-                            _ = try results.getOrPut(this_transpiler.fs.filename_store.append(@TypeOf(name), name) catch continue);
+                            _ = try results.getOrPut(ctx.allocator, this_transpiler.fs.filename_store.append(@TypeOf(name), name) catch continue);
                         }
                     }
                 }
@@ -1099,7 +1099,7 @@ pub const RunCommand = struct {
         if (filter == Filter.script_exclude or filter == Filter.script or filter == Filter.all or filter == Filter.all_plus_bun_js or filter == Filter.script_and_descriptions) {
             if (root_dir_info.enclosing_package_json) |package_json| {
                 if (package_json.scripts) |scripts| {
-                    try results.ensureUnusedCapacity(scripts.count());
+                    try results.ensureUnusedCapacity(ctx.allocator, scripts.count());
                     if (filter == Filter.script_and_descriptions) {
                         try descriptions.ensureUnusedCapacity(scripts.count());
                     }

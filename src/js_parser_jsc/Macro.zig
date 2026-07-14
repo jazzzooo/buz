@@ -6,7 +6,7 @@ pub fn isMacroPath(str: string) bool {
 }
 
 pub const MacroContext = struct {
-    pub const MacroMap = std.AutoArrayHashMap(i32, Macro);
+    pub const MacroMap = std.array_hash_map.Auto(i32, Macro);
 
     resolver: *Resolver,
     env: *DotEnv.Loader,
@@ -21,7 +21,7 @@ pub const MacroContext = struct {
 
     pub fn init(transpiler: *Transpiler) MacroContext {
         return MacroContext{
-            .macros = MacroMap.init(default_allocator),
+            .macros = .empty,
             .resolver = &transpiler.resolver,
             .env = transpiler.env,
             .remap = transpiler.options.macro_remap,
@@ -93,7 +93,7 @@ pub const MacroContext = struct {
             &specifier_buf_len,
         );
 
-        const macro_entry = this.macros.getOrPut(hash) catch unreachable;
+        const macro_entry = this.macros.getOrPut(default_allocator, hash) catch unreachable;
         if (!macro_entry.found_existing) {
             macro_entry.value_ptr.* = Macro.init(
                 default_allocator,

@@ -393,8 +393,8 @@ pub fn migrateNPMLockfile(
     var string_buf = this.stringBuf();
 
     if (workspace_map) |wksp| {
-        try this.workspace_paths.ensureTotalCapacity(allocator, wksp.map.unmanaged.entries.len);
-        try this.workspace_versions.ensureTotalCapacity(allocator, wksp.map.unmanaged.entries.len);
+        try this.workspace_paths.ensureTotalCapacity(allocator, wksp.map.entries.len);
+        try this.workspace_versions.ensureTotalCapacity(allocator, wksp.map.entries.len);
 
         for (wksp.map.keys(), wksp.map.values()) |k, v| {
             const name_hash = stringHash(v.name);
@@ -699,7 +699,7 @@ pub fn migrateNPMLockfile(
             }
             if (expr.data != .e_array) return error.InvalidNPMLockfile;
             const arr: *E.Array = expr.data.e_array;
-            var map = bun.StringArrayHashMapUnmanaged(void){};
+            var map = bun.StringArrayHashMap(void).empty;
             try map.ensureTotalCapacity(allocator, arr.items.len);
             for (arr.items.slice()) |item| {
                 map.putAssumeCapacity(item.asString(allocator) orelse return error.InvalidNPMLockfile, {});

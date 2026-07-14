@@ -69,7 +69,7 @@ pub const BundlePackage = enum {
     always,
     never,
 
-    pub const Map = bun.StringArrayHashMapUnmanaged(BundlePackage);
+    pub const Map = bun.StringArrayHashMap(BundlePackage);
 };
 
 const bun = @import("bun");

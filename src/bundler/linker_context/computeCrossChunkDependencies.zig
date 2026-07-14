@@ -8,16 +8,16 @@ pub fn computeCrossChunkDependencies(c: *LinkerContext, chunks: []Chunk) bun.OOM
     for (chunk_metas) |*meta| {
         // these must be global allocator
         meta.* = .{
-            .imports = ChunkMeta.Map.init(bun.default_allocator),
-            .exports = ChunkMeta.Map.init(bun.default_allocator),
-            .dynamic_imports = std.AutoArrayHashMap(Index.Int, void).init(bun.default_allocator),
+            .imports = .empty,
+            .exports = .empty,
+            .dynamic_imports = std.array_hash_map.Auto(Index.Int, void).empty,
         };
     }
     defer {
         for (chunk_metas) |*meta| {
-            meta.imports.deinit();
-            meta.exports.deinit();
-            meta.dynamic_imports.deinit();
+            meta.imports.deinit(bun.default_allocator);
+            meta.exports.deinit(bun.default_allocator);
+            meta.dynamic_imports.deinit(bun.default_allocator);
         }
         c.allocator().free(chunk_metas);
     }
@@ -106,7 +106,7 @@ const CrossChunkDependencies = struct {
                         // include its hash when we're calculating the hashes of all
                         // dependencies of this chunk.
                         if (other_chunk_index != chunk_index)
-                            chunk_meta.dynamic_imports.put(other_chunk_index, {}) catch unreachable;
+                            chunk_meta.dynamic_imports.put(bun.default_allocator, other_chunk_index, {}) catch unreachable;
                     }
                 }
 
@@ -164,7 +164,7 @@ const CrossChunkDependencies = struct {
                     // be moved to a separate chunk than the use of a symbol even if
                     // the definition and use of that symbol are originally from the
                     // same source file.
-                    imports.put(ref_to_use, {}) catch unreachable;
+                    imports.put(bun.default_allocator, ref_to_use, {}) catch unreachable;
                 }
             }
         }
@@ -196,20 +196,20 @@ const CrossChunkDependencies = struct {
                         if (comptime Environment.allow_assert)
                             debug("Cross-chunk export: {s}", .{deps.symbols.get(target_ref).?.original_name});
 
-                        imports.put(target_ref, {}) catch unreachable;
+                        imports.put(bun.default_allocator, target_ref, {}) catch unreachable;
                     }
                 }
 
                 // Ensure "exports" is included if the current output format needs it
                 // https://github.com/evanw/esbuild/blob/v0.27.2/internal/linker/linker.go#L1049-L1051
                 if (flags.force_include_exports_for_entry_point) {
-                    imports.put(deps.exports_refs[chunk.entry_point.source_index], {}) catch unreachable;
+                    imports.put(bun.default_allocator, deps.exports_refs[chunk.entry_point.source_index], {}) catch unreachable;
                 }
 
                 // Include the wrapper if present
                 // https://github.com/evanw/esbuild/blob/v0.27.2/internal/linker/linker.go#L1053-L1056
                 if (flags.wrap != .none) {
-                    imports.put(deps.wrapper_refs[chunk.entry_point.source_index], {}) catch unreachable;
+                    imports.put(bun.default_allocator, deps.wrapper_refs[chunk.entry_point.source_index], {}) catch unreachable;
                 }
             }
         }
@@ -246,7 +246,7 @@ fn computeCrossChunkDependenciesWithChunkMetas(c: *LinkerContext, chunks: []Chun
                             .ref = import_ref,
                         });
                     }
-                    _ = chunk_metas[other_chunk_index].exports.getOrPut(import_ref) catch unreachable;
+                    _ = chunk_metas[other_chunk_index].exports.getOrPut(bun.default_allocator, import_ref) catch unreachable;
                 } else {
                     debug("{s} imports from itself (chunk {d})", .{ symbol.original_name, chunk_index });
                 }

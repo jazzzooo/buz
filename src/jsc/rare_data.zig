@@ -256,7 +256,7 @@ pub const RefCountedEnvValue = struct {
 };
 
 pub const AWSSignatureCache = struct {
-    cache: bun.StringArrayHashMap([DIGESTED_HMAC_256_LEN]u8) = bun.StringArrayHashMap([DIGESTED_HMAC_256_LEN]u8).init(bun.default_allocator),
+    cache: bun.StringArrayHashMap([DIGESTED_HMAC_256_LEN]u8) = bun.StringArrayHashMap([DIGESTED_HMAC_256_LEN]u8).empty,
     date: u64 = 0,
     lock: bun.Mutex = .{},
 
@@ -285,18 +285,18 @@ pub const AWSSignatureCache = struct {
         this.lock.lock();
         defer this.lock.unlock();
         if (this.date == 0) {
-            this.cache = bun.StringArrayHashMap([DIGESTED_HMAC_256_LEN]u8).init(bun.default_allocator);
+            this.cache = bun.StringArrayHashMap([DIGESTED_HMAC_256_LEN]u8).empty;
         } else if (this.date != numeric_day) {
             // day changed so we clean the old cache
             this.clean();
         }
         this.date = numeric_day;
-        bun.handleOom(this.cache.put(bun.handleOom(bun.default_allocator.dupe(u8, key)), value));
+        bun.handleOom(this.cache.put(bun.default_allocator, bun.handleOom(bun.default_allocator.dupe(u8, key)), value));
     }
     pub fn deinit(this: *@This()) void {
         this.date = 0;
         this.clean();
-        this.cache.deinit();
+        this.cache.deinit(bun.default_allocator);
     }
 };
 
@@ -388,7 +388,8 @@ pub fn mimeTypeFromString(this: *RareData, allocator: std.mem.Allocator, str: []
 }
 
 pub const HotMap = struct {
-    _map: bun.StringArrayHashMap(Entry),
+    _map: bun.StringArrayHashMap(Entry) = .empty,
+    allocator: std.mem.Allocator,
 
     const HTTPServer = jsc.API.HTTPServer;
     const HTTPSServer = jsc.API.HTTPSServer;
@@ -408,9 +409,7 @@ pub const HotMap = struct {
     });
 
     pub fn init(allocator: std.mem.Allocator) HotMap {
-        return .{
-            ._map = bun.StringArrayHashMap(Entry).init(allocator),
-        };
+        return .{ .allocator = allocator };
     }
 
     pub fn get(this: *HotMap, key: []const u8, comptime Type: type) ?*Type {
@@ -423,12 +422,12 @@ pub const HotMap = struct {
     }
 
     pub fn insert(this: *HotMap, key: []const u8, ptr: anytype) void {
-        const entry = bun.handleOom(this._map.getOrPut(key));
+        const entry = bun.handleOom(this._map.getOrPut(this.allocator, key));
         if (entry.found_existing) {
             @panic("HotMap already contains key");
         }
 
-        entry.key_ptr.* = bun.handleOom(this._map.allocator.dupe(u8, key));
+        entry.key_ptr.* = bun.handleOom(this.allocator.dupe(u8, key));
         entry.value_ptr.* = Entry.init(ptr);
     }
 
@@ -438,7 +437,7 @@ pub const HotMap = struct {
         const is_same_slice = key_to_free.ptr == key.ptr and key_to_free.len == key.len;
         _ = this._map.orderedRemove(key);
         bun.debugAssert(!is_same_slice);
-        bun.default_allocator.free(key_to_free);
+        this.allocator.free(key_to_free);
     }
 };
 

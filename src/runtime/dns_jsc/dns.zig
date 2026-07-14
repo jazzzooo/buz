@@ -1946,7 +1946,8 @@ pub const Resolver = struct {
     ref_count: RefCount,
     channel: ?*c_ares.Channel = null,
     vm: *jsc.VirtualMachine,
-    polls: PollsMap,
+    polls: PollsMap = .empty,
+    allocator: std.mem.Allocator,
     options: c_ares.ChannelOptions = .{},
 
     event_loop_timer: EventLoopTimer = .{
@@ -1976,7 +1977,7 @@ pub const Resolver = struct {
     pub const fromJS = js.fromJS;
     pub const fromJSDirect = js.fromJSDirect;
 
-    const PollsMap = std.AutoArrayHashMap(c_ares.ares_socket_t, *PollType);
+    const PollsMap = std.array_hash_map.Auto(c_ares.ares_socket_t, *PollType);
 
     const PollType = if (Environment.isWindows)
         UvDnsPoll
@@ -2000,7 +2001,7 @@ pub const Resolver = struct {
         return .{
             .ref_count = .init(),
             .vm = vm,
-            .polls = Resolver.PollsMap.init(allocator),
+            .allocator = allocator,
             .pending_host_cache_cares = PendingCache.empty,
             .pending_host_cache_native = PendingCache.empty,
             .pending_srv_cache_cares = SrvPendingCache.empty,
@@ -2565,7 +2566,7 @@ pub const Resolver = struct {
                 return;
             }
 
-            const poll_entry = bun.handleOom(this.polls.getOrPut(fd));
+            const poll_entry = bun.handleOom(this.polls.getOrPut(this.allocator, fd));
             if (!poll_entry.found_existing) {
                 const poll = UvDnsPoll.new(.{
                     .parent = this,
@@ -2601,7 +2602,7 @@ pub const Resolver = struct {
                 return;
             }
 
-            const poll_entry = this.polls.getOrPut(fd) catch unreachable;
+            const poll_entry = this.polls.getOrPut(this.allocator, fd) catch unreachable;
 
             if (!poll_entry.found_existing) {
                 poll_entry.value_ptr.* = Async.FilePoll.init(vm, .fromNative(fd), .{}, Resolver, this);

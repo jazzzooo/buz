@@ -302,7 +302,7 @@ pub const StandaloneModuleGraph = struct {
 
     pub fn fromBytes(allocator: std.mem.Allocator, raw_bytes: []u8, offsets: Offsets) !StandaloneModuleGraph {
         if (raw_bytes.len == 0) return StandaloneModuleGraph{
-            .files = bun.StringArrayHashMap(File).init(allocator),
+            .files = bun.StringArrayHashMap(File).empty,
         };
 
         const modules_list_bytes = sliceTo(raw_bytes, offsets.modules_ptr);
@@ -312,8 +312,8 @@ pub const StandaloneModuleGraph = struct {
             return error.@"Corrupted module graph: entry point ID is greater than module list count";
         }
 
-        var modules = bun.StringArrayHashMap(File).init(allocator);
-        try modules.ensureTotalCapacity(modules_list.len);
+        var modules = bun.StringArrayHashMap(File).empty;
+        try modules.ensureTotalCapacity(allocator, modules_list.len);
         for (modules_list) |module| {
             modules.putAssumeCapacity(
                 sliceToZ(raw_bytes, module.name),
@@ -578,7 +578,7 @@ pub const StandaloneModuleGraph = struct {
             var graph = try fromBytes(allocator, @alignCast(output_bytes), offsets);
             defer {
                 graph.files.unlockPointers();
-                graph.files.deinit();
+                graph.files.deinit(allocator);
             }
 
             bun.assert_eql(graph.files.count(), modules.items.len);

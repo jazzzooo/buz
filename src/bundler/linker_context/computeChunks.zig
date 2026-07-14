@@ -14,11 +14,11 @@ pub noinline fn computeChunks(
     defer arena.deinit();
 
     var temp_allocator = arena.allocator();
-    var js_chunks = bun.StringArrayHashMap(Chunk).init(temp_allocator);
-    try js_chunks.ensureUnusedCapacity(this.graph.entry_points.len);
+    var js_chunks = bun.StringArrayHashMap(Chunk).empty;
+    try js_chunks.ensureUnusedCapacity(temp_allocator, this.graph.entry_points.len);
 
     // Key is the hash of the CSS order. This deduplicates identical CSS files.
-    var css_chunks = std.AutoArrayHashMap(u64, Chunk).init(temp_allocator);
+    var css_chunks = std.array_hash_map.Auto(u64, Chunk).empty;
     var js_chunks_with_css: usize = 0;
 
     // Maps entry point IDs to their index in js_chunks.values().
@@ -28,7 +28,7 @@ pub noinline fn computeChunks(
 
     const entry_source_indices = this.graph.entry_points.items(.source_index);
     const css_asts = this.graph.ast.items(.css);
-    var html_chunks = bun.StringArrayHashMap(Chunk).init(temp_allocator);
+    var html_chunks = bun.StringArrayHashMap(Chunk).empty;
     const loaders = this.parse_graph.input_files.items(.loader);
     const ast_targets = this.graph.ast.items(.target);
 
@@ -67,7 +67,7 @@ pub noinline fn computeChunks(
 
         // Put this early on in this loop so that CSS-only entry points work.
         if (has_html_chunk) {
-            const html_chunk_entry = try html_chunks.getOrPut(js_chunk_key);
+            const html_chunk_entry = try html_chunks.getOrPut(temp_allocator, js_chunk_key);
             if (!html_chunk_entry.found_existing) {
                 html_chunk_entry.value_ptr.* = .{
                     .entry_point = .{
@@ -95,7 +95,7 @@ pub noinline fn computeChunks(
                 for (order.slice()) |x| x.hash(&hasher);
                 break :brk hasher.final();
             };
-            const css_chunk_entry = try css_chunks.getOrPut(hash_to_use);
+            const css_chunk_entry = try css_chunks.getOrPut(temp_allocator, hash_to_use);
             if (!css_chunk_entry.found_existing) {
                 // const css_chunk_entry = try js_chunks.getOrPut();
                 css_chunk_entry.value_ptr.* = .{
@@ -124,7 +124,7 @@ pub noinline fn computeChunks(
 
         // Create a chunk for the entry point here to ensure that the chunk is
         // always generated even if the resulting file is empty
-        const js_chunk_entry = try js_chunks.getOrPut(js_chunk_key);
+        const js_chunk_entry = try js_chunks.getOrPut(temp_allocator, js_chunk_key);
         entry_point_to_js_chunk_idx[entry_id_] = @intCast(js_chunk_entry.index);
         js_chunk_entry.value_ptr.* = .{
             .entry_point = .{
@@ -165,7 +165,7 @@ pub noinline fn computeChunks(
                     break :brk hasher.final();
                 };
 
-                const css_chunk_entry = try css_chunks.getOrPut(hash_to_use);
+                const css_chunk_entry = try css_chunks.getOrPut(temp_allocator, hash_to_use);
 
                 js_chunk_entry.value_ptr.content.javascript.css_chunks = try this.allocator().dupe(u32, &.{
                     @intCast(css_chunk_entry.index),
@@ -173,7 +173,7 @@ pub noinline fn computeChunks(
                 js_chunks_with_css += 1;
 
                 if (!css_chunk_entry.found_existing) {
-                    var css_files_with_parts_in_chunk = std.AutoArrayHashMapUnmanaged(Index.Int, usize){};
+                    var css_files_with_parts_in_chunk = std.array_hash_map.Auto(Index.Int, usize).empty;
                     for (order.slice()) |entry| {
                         if (entry.kind == .source_index) {
                             bun.handleOom(css_files_with_parts_in_chunk.put(this.allocator(), entry.kind.source_index.get(), 0));
@@ -236,7 +236,7 @@ pub noinline fn computeChunks(
 
                     if (this.graph.code_splitting) {
                         const js_chunk_key = try temp_allocator.dupe(u8, entry_bits.bytes(this.graph.entry_points.len));
-                        var js_chunk_entry = try js_chunks.getOrPut(js_chunk_key);
+                        var js_chunk_entry = try js_chunks.getOrPut(temp_allocator, js_chunk_key);
 
                         if (!js_chunk_entry.found_existing) {
                             const is_browser_chunk_from_server_build = could_be_browser_target_from_server_build and ast_targets[source_index.get()] == .browser;

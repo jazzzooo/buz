@@ -1435,7 +1435,7 @@ pub const EnvironmentVariables = struct {
     pub export fn Bun__getEnvCount(globalObject: *jsc.JSGlobalObject, ptr: *[*][]const u8) usize {
         const bunVM = globalObject.bunVM();
         ptr.* = bunVM.transpiler.env.map.map.keys().ptr;
-        return bunVM.transpiler.env.map.map.unmanaged.entries.len;
+        return bunVM.transpiler.env.map.map.entries.len;
     }
 
     pub export fn Bun__getEnvKey(ptr: [*][]const u8, i: usize, data_ptr: *[*]const u8) usize {

@@ -2,7 +2,7 @@ const IndexStringMap = @This();
 
 pub const Index = bun.ast.Index;
 
-map: std.AutoArrayHashMapUnmanaged(Index.Int, []const u8) = .{},
+map: std.array_hash_map.Auto(Index.Int, []const u8) = .empty,
 
 pub fn deinit(self: *IndexStringMap, allocator: std.mem.Allocator) void {
     for (self.map.values()) |value| {

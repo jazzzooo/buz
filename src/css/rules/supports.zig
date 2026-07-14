@@ -114,7 +114,7 @@ pub const SupportsCondition = union(enum) {
         var expected_type: ?i32 = null;
         var conditions = ArrayList(SupportsCondition).empty;
         const mapalloc: std.mem.Allocator = input.allocator();
-        var seen_declarations = std.ArrayHashMap(
+        var seen_declarations = std.array_hash_map.Custom(
             SeenDeclKey,
             usize,
             struct {
@@ -133,8 +133,8 @@ pub const SupportsCondition = union(enum) {
                 }
             },
             false,
-        ).init(mapalloc);
-        defer seen_declarations.deinit();
+        ).empty;
+        defer seen_declarations.deinit(mapalloc);
 
         while (true) {
             const Closure = struct {
@@ -176,6 +176,7 @@ pub const SupportsCondition = union(enum) {
                             const property_id = in_parens.declaration.property_id;
                             const value = in_parens.declaration.value;
                             seen_declarations.put(
+                                mapalloc,
                                 .{ property_id.withPrefix(css.VendorPrefix{ .none = true }), value },
                                 0,
                             ) catch |err| bun.handleOom(err);
@@ -195,7 +196,7 @@ pub const SupportsCondition = union(enum) {
                                 cond.declaration.property_id.addPrefix(property_id.prefix());
                             }
                         } else {
-                            bun.handleOom(seen_declarations.put(key, conditions.items.len));
+                            bun.handleOom(seen_declarations.put(mapalloc, key, conditions.items.len));
                             conditions.append(input.allocator(), SupportsCondition{ .declaration = .{
                                 .property_id = property_id,
                                 .value = value,

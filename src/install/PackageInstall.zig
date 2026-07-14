@@ -36,7 +36,7 @@ pub const PackageInstall = struct {
         /// Package name hash -> number of scripts skipped.
         /// Multiple versions of the same package might add to the count, and each version
         /// might have a different number of scripts
-        packages_with_blocked_scripts: std.AutoArrayHashMapUnmanaged(TruncatedPackageNameHash, usize) = .{},
+        packages_with_blocked_scripts: std.array_hash_map.Auto(TruncatedPackageNameHash, usize) = .empty,
     };
 
     pub const Method = enum(u8) {

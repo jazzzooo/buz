@@ -2,7 +2,7 @@ last_part: *js_ast.Part,
 // files in node modules will not get hot updates, so the code generation
 // can be a bit more concise for re-exports
 is_in_node_modules: bool,
-imports_seen: bun.StringArrayHashMapUnmanaged(ImportRef) = .{},
+imports_seen: bun.StringArrayHashMap(ImportRef) = .empty,
 export_star_props: std.ArrayListUnmanaged(G.Property) = .empty,
 export_props: std.ArrayListUnmanaged(G.Property) = .empty,
 stmts: std.ArrayListUnmanaged(Stmt) = .empty,

@@ -416,8 +416,8 @@ pub fn asPropertyStringMap(expr: *const Expr, name: string, allocator: std.mem.A
     }
 
     if (count == 0) return null;
-    var map = bun.StringArrayHashMap(string).init(allocator);
-    map.ensureUnusedCapacity(count) catch return null;
+    var map = bun.StringArrayHashMap(string).empty;
+    map.ensureUnusedCapacity(allocator, count) catch return null;
 
     for (obj.properties.slice()) |prop| {
         const key = prop.key.?.asString(allocator) orelse continue;

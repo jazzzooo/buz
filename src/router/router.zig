@@ -216,7 +216,7 @@ const RouteLoader = struct {
     config: Options.RouteConfig,
     route_dirname_len: u16 = 0,
 
-    dedupe_dynamic: std.AutoArrayHashMap(u32, string),
+    dedupe_dynamic: std.array_hash_map.Auto(u32, string),
     log: *Logger.Log,
     index: ?*Route = null,
     static_list: bun.StringHashMap(*Route),
@@ -283,7 +283,7 @@ const RouteLoader = struct {
         }
 
         {
-            const entry = this.dedupe_dynamic.getOrPutValue(route.full_hash, route.abs_path.slice()) catch unreachable;
+            const entry = this.dedupe_dynamic.getOrPutValue(this.allocator, route.full_hash, route.abs_path.slice()) catch unreachable;
             if (entry.found_existing) {
                 const source = Logger.Source.initEmptyFile(route.abs_path.slice());
                 this.log.addErrorFmt(
@@ -326,11 +326,11 @@ const RouteLoader = struct {
             .fs = resolver.fs,
             .config = config,
             .static_list = bun.StringHashMap(*Route).init(allocator),
-            .dedupe_dynamic = std.AutoArrayHashMap(u32, string).init(allocator),
+            .dedupe_dynamic = std.array_hash_map.Auto(u32, string).empty,
             .all_routes = .{},
             .route_dirname_len = route_dirname_len,
         };
-        defer this.dedupe_dynamic.deinit();
+        defer this.dedupe_dynamic.deinit(allocator);
         this.load(ResolverType, resolver, root_dir_info, base_dir);
         if (this.all_routes.items.len == 0) return Routes{
             .static = this.static_list,

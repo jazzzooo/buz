@@ -89,7 +89,7 @@ const FileCoverage = struct {
     fnf: u32 = 0,
     fnh: u32 = 0,
     /// 1-based line number → summed hit count.
-    da: std.AutoArrayHashMapUnmanaged(u32, u32) = .empty,
+    da: std.array_hash_map.Auto(u32, u32) = .empty,
 
     fn lh(self: *const FileCoverage) u32 {
         var n: u32 = 0;
@@ -108,7 +108,7 @@ pub fn mergeCoverageFragments(paths: []const []const u8, opts: *TestCommand.Code
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    var by_file: bun.StringArrayHashMapUnmanaged(FileCoverage) = .empty;
+    var by_file: bun.StringArrayHashMap(FileCoverage) = .empty;
 
     for (paths) |path| {
         const data = switch (bun.sys.File.readFrom(bun.FD.cwd(), path, arena)) {

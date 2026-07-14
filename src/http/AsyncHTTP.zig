@@ -394,7 +394,7 @@ pub fn onAsyncHTTPCallback(this: *AsyncHTTP, async_http: *AsyncHTTP, result: HTT
     }
 
     if (bun.http.socket_async_http_abort_tracker.capacity() > 10_000 and bun.http.socket_async_http_abort_tracker.count() < 100) {
-        bun.http.socket_async_http_abort_tracker.shrinkAndFree(bun.http.socket_async_http_abort_tracker.count());
+        bun.http.socket_async_http_abort_tracker.shrinkAndFree(bun.default_allocator, bun.http.socket_async_http_abort_tracker.count());
     }
 
     if (result.has_more) {

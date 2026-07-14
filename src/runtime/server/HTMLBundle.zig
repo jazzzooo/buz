@@ -279,13 +279,13 @@ pub const Route = struct {
 
         if (bun.cli.Command.get().args.serve_define) |define| {
             bun.assert(define.keys.len == define.values.len);
-            try config.define.map.ensureUnusedCapacity(define.keys.len);
-            config.define.map.unmanaged.entries.len = define.keys.len;
+            try config.define.map.ensureUnusedCapacity(config.define.allocator, define.keys.len);
+            config.define.map.entries.len = define.keys.len;
             @memcpy(config.define.map.keys(), define.keys);
             for (config.define.map.values(), define.values) |*to, from| {
-                to.* = bun.handleOom(config.define.map.allocator.dupe(u8, from));
+                to.* = bun.handleOom(config.define.allocator.dupe(u8, from));
             }
-            try config.define.map.reIndex();
+            try config.define.map.reIndex(config.define.allocator);
         }
 
         if (!is_development) {

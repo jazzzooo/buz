@@ -1,4 +1,4 @@
-const DepIdSet = std.ArrayHashMapUnmanaged(DependencyID, void, ArrayIdentityContext, false);
+const DepIdSet = std.array_hash_map.Custom(DependencyID, void, ArrayIdentityContext, false);
 
 pub const DefaultTrustedCommand = struct {
     pub fn exec() !void {
@@ -26,7 +26,7 @@ pub const UntrustedCommand = struct {
         const resolutions: []Install.Resolution = packages.items(.resolution);
         const buf = pm.lockfile.buffers.string_bytes.items;
 
-        var untrusted_dep_ids: std.AutoArrayHashMapUnmanaged(DependencyID, void) = .{};
+        var untrusted_dep_ids: std.array_hash_map.Auto(DependencyID, void) = .empty;
         defer untrusted_dep_ids.deinit(ctx.allocator);
 
         // loop through dependencies and get trusted and untrusted deps with lifecycle scripts
@@ -48,7 +48,7 @@ pub const UntrustedCommand = struct {
             return;
         }
 
-        var untrusted_deps: std.AutoArrayHashMapUnmanaged(DependencyID, Lockfile.Package.Scripts.List) = .{};
+        var untrusted_deps: std.array_hash_map.Auto(DependencyID, Lockfile.Package.Scripts.List) = .empty;
         defer untrusted_deps.deinit(ctx.allocator);
 
         var tree_iterator = Lockfile.Tree.Iterator(.node_modules).init(pm.lockfile);
@@ -183,7 +183,7 @@ pub const TrustCommand = struct {
         const resolutions: []Install.Resolution = packages.items(.resolution);
         const scripts: []Lockfile.Package.Scripts = packages.items(.scripts);
 
-        var untrusted_dep_ids: DepIdSet = .{};
+        var untrusted_dep_ids: DepIdSet = .empty;
         defer untrusted_dep_ids.deinit(ctx.allocator);
 
         for (pm.lockfile.buffers.dependencies.items, pm.lockfile.buffers.resolutions.items, 0..) |dep, package_id, i| {
@@ -210,8 +210,8 @@ pub const TrustCommand = struct {
         var node_modules_path: bun.AbsPath(.{ .sep = .auto }) = .initTopLevelDir();
         defer node_modules_path.deinit();
 
-        var package_names_to_add: bun.StringArrayHashMapUnmanaged(void) = .{};
-        var scripts_at_depth: std.AutoArrayHashMapUnmanaged(usize, std.ArrayListUnmanaged(struct {
+        var package_names_to_add: bun.StringArrayHashMap(void) = .empty;
+        var scripts_at_depth: std.array_hash_map.Auto(usize, std.ArrayListUnmanaged(struct {
             package_id: PackageID,
             scripts_list: Lockfile.Package.Scripts.List,
             skip: bool,

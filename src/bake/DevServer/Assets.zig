@@ -3,11 +3,11 @@ pub const Assets = @This();
 
 /// Keys are absolute paths, sharing memory with the keys in IncrementalGraph(.client)
 /// Values are indexes into files
-path_map: bun.StringArrayHashMapUnmanaged(EntryIndex),
+path_map: bun.StringArrayHashMap(EntryIndex),
 /// Content-addressable store. Multiple paths can point to the same content
 /// hash, which is tracked by the `refs` array. One reference is held to
 /// contained StaticRoute instances when they are stored.
-files: AutoArrayHashMapUnmanaged(u64, *StaticRoute),
+files: AutoArrayHashMap(u64, *StaticRoute),
 /// Indexed by the same index of `files`. The value is never `0`.
 refs: ArrayListUnmanaged(u32),
 /// When mutating `files`'s keys, the map must be reindexed to function.
@@ -189,5 +189,5 @@ const memoryCostArrayList = DevServer.memoryCostArrayList;
 
 const std = @import("std");
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
-const AutoArrayHashMapUnmanaged = std.AutoArrayHashMapUnmanaged;
+const AutoArrayHashMap = std.array_hash_map.Auto;
 const Allocator = std.mem.Allocator;

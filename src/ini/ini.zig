@@ -48,7 +48,7 @@ pub const Parser = struct {
         var iter = std.mem.splitScalar(u8, this.src, '\n');
         var head: *E.Object = this.out.data.e_object;
 
-        // var duplicates = bun.StringArrayHashMapUnmanaged(u32){};
+        // var duplicates = bun.StringArrayHashMap(u32).empty;
         // defer duplicates.deinit(allocator);
 
         var rope_stack_buffer: [6]Rope = undefined;
@@ -1150,19 +1150,20 @@ pub fn loadNpmrc(
         ;
         // The line that sets the auth token should only apply to the @myorg scope
         // The line that sets the username would apply to both @myorg and @another
+        const url_map_allocator = parser.arena.allocator();
         var url_map = url_map: {
-            var url_map = bun.StringArrayHashMap(bun.URL).init(parser.arena.allocator());
-            try url_map.ensureTotalCapacity(registry_map.scopes.keys().len);
+            var url_map = bun.StringArrayHashMap(bun.URL).empty;
+            try url_map.ensureTotalCapacity(url_map_allocator, registry_map.scopes.keys().len);
 
             for (registry_map.scopes.keys(), registry_map.scopes.values()) |*k, *v| {
                 const url = bun.URL.parse(v.url);
-                try url_map.put(k.*, url);
+                try url_map.put(url_map_allocator, k.*, url);
             }
 
             break :url_map url_map;
         };
 
-        defer url_map.deinit();
+        defer url_map.deinit(url_map_allocator);
 
         var iter = bun.ini.ConfigIterator{
             .config = parser.out.data.e_object,

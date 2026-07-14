@@ -519,8 +519,8 @@ pub const MinifyContext = struct {
     handler: *css.DeclarationHandler,
     important_handler: *css.DeclarationHandler,
     handler_context: css.PropertyHandlerContext,
-    unused_symbols: *const std.StringArrayHashMapUnmanaged(void),
-    custom_media: ?std.StringArrayHashMapUnmanaged(custom_media.CustomMediaRule),
+    unused_symbols: *const std.array_hash_map.String(void),
+    custom_media: ?std.array_hash_map.String(custom_media.CustomMediaRule),
     extra: *const css.StylesheetExtra,
     css_modules: bool,
     err: ?css.MinifyError = null,
@@ -562,7 +562,7 @@ pub fn StyleRuleKey(comptime R: type) type {
         const This = @This();
 
         pub fn HashMap(comptime V: type) type {
-            return std.ArrayHashMapUnmanaged(
+            return std.array_hash_map.Custom(
                 StyleRuleKey(R),
                 V,
                 struct {

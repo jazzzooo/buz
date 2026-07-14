@@ -281,7 +281,7 @@ pub const FontFamily = union(enum) {
     family_name: []const u8,
 
     pub fn HashMap(comptime V: type) type {
-        return std.ArrayHashMapUnmanaged(FontFamily, V, struct {
+        return std.array_hash_map.Custom(FontFamily, V, struct {
             pub fn hash(_: @This(), key: FontFamily) u32 {
                 var hasher = std.hash.Wyhash.init(0);
                 key.hash(&hasher);

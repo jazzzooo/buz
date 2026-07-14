@@ -10,10 +10,10 @@ concurrent_task: jsc.ConcurrentTask,
 /// The watcher is not able to peek into IncrementalGraph to know what files
 /// to invalidate, so the watch events are de-duplicated and passed along.
 /// The keys are owned by the file watcher.
-files: bun.StringArrayHashMapUnmanaged(void),
+files: bun.StringArrayHashMap(void),
 /// Directories are watched so that resolution failures can be solved.
 /// The keys are owned by the file watcher.
-dirs: bun.StringArrayHashMapUnmanaged(void),
+dirs: bun.StringArrayHashMap(void),
 /// Same purpose as `files` but keys do not have an owner.
 extra_files: std.ArrayListUnmanaged(u8),
 /// Initialized by the WatcherAtomics.watcherAcquireEvent

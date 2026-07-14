@@ -18,13 +18,13 @@ allocator: Allocator,
 scratch: Scratch = .{},
 
 scripts: Scripts = .{},
-workspace_paths: NameHashMap = .{},
-workspace_versions: VersionHashMap = .{},
+workspace_paths: NameHashMap = .empty,
+workspace_versions: VersionHashMap = .empty,
 
 /// Optional because `trustedDependencies` in package.json might be an
 /// empty list or it might not exist
 trusted_dependencies: ?TrustedDependenciesSet = null,
-patched_dependencies: PatchedDependenciesMap = .{},
+patched_dependencies: PatchedDependenciesMap = .empty,
 overrides: OverrideMap = .{},
 catalogs: CatalogMap = .{},
 
@@ -375,11 +375,11 @@ pub fn loadFromBytes(this: *Lockfile, pm: ?*PackageManager, buf: []u8, allocator
     this.format = FormatVersion.current;
     this.scripts = .{};
     this.trusted_dependencies = null;
-    this.workspace_paths = .{};
-    this.workspace_versions = .{};
+    this.workspace_paths = .empty;
+    this.workspace_versions = .empty;
     this.overrides = .{};
     this.catalogs = .{};
-    this.patched_dependencies = .{};
+    this.patched_dependencies = .empty;
 
     const load_result = Lockfile.Serializer.load(this, &stream, allocator, log, pm) catch |err| {
         return LoadResult{ .err = .{ .step = .parse_file, .value = err, .lockfile_path = "bun.lockb", .format = .binary } };
@@ -944,7 +944,7 @@ pub fn hoist(
         .install_root_dependencies = install_root_dependencies,
         .workspace_filters = workspace_filters,
         .packages_to_install = packages_to_install,
-        .pending_optional_peers = .init(allocator),
+        .pending_optional_peers = .empty,
     };
 
     try (Tree{}).processSubtree(
@@ -1361,8 +1361,8 @@ pub fn initEmpty(this: *Lockfile, allocator: Allocator) void {
         .scratch = Scratch.init(allocator),
         .scripts = .{},
         .trusted_dependencies = null,
-        .workspace_paths = .{},
-        .workspace_versions = .{},
+        .workspace_paths = .empty,
+        .workspace_versions = .empty,
         .overrides = .{},
         .catalogs = .{},
         .meta_hash = zero_hash,
@@ -2133,10 +2133,10 @@ pub fn hasTrustedDependency(this: *const Lockfile, name: []const u8, resolution:
     return resolution.tag == .npm and default_trusted_dependencies.has(name);
 }
 
-pub const NameHashMap = std.ArrayHashMapUnmanaged(PackageNameHash, String, ArrayIdentityContext.U64, false);
-pub const TrustedDependenciesSet = std.ArrayHashMapUnmanaged(TruncatedPackageNameHash, void, ArrayIdentityContext, false);
-pub const VersionHashMap = std.ArrayHashMapUnmanaged(PackageNameHash, Semver.Version, ArrayIdentityContext.U64, false);
-pub const PatchedDependenciesMap = std.ArrayHashMapUnmanaged(PackageNameAndVersionHash, PatchedDep, ArrayIdentityContext.U64, false);
+pub const NameHashMap = std.array_hash_map.Custom(PackageNameHash, String, ArrayIdentityContext.U64, false);
+pub const TrustedDependenciesSet = std.array_hash_map.Custom(TruncatedPackageNameHash, void, ArrayIdentityContext, false);
+pub const VersionHashMap = std.array_hash_map.Custom(PackageNameHash, Semver.Version, ArrayIdentityContext.U64, false);
+pub const PatchedDependenciesMap = std.array_hash_map.Custom(PackageNameAndVersionHash, PatchedDep, ArrayIdentityContext.U64, false);
 pub const PatchedDep = extern struct {
     /// e.g. "patches/is-even@1.0.0.patch"
     path: String,

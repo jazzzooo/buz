@@ -7,7 +7,7 @@ const Timer = @This();
 /// The task queue runs after the event loop tasks have been run
 /// Therefore, there is a race condition where you cancel the task after it has already been enqueued
 /// In that case, it shouldn't run. It should be skipped.
-pub const TimeoutMap = std.AutoArrayHashMapUnmanaged(
+pub const TimeoutMap = std.array_hash_map.Auto(
     i32,
     *EventLoopTimer,
 );
@@ -38,9 +38,9 @@ pub const All = struct {
 
     // We split up the map here to avoid storing an extra "repeat" boolean
     maps: struct {
-        setTimeout: TimeoutMap = .{},
-        setInterval: TimeoutMap = .{},
-        setImmediate: TimeoutMap = .{},
+        setTimeout: TimeoutMap = .empty,
+        setInterval: TimeoutMap = .empty,
+        setImmediate: TimeoutMap = .empty,
 
         pub inline fn get(this: *@This(), kind: Kind) *TimeoutMap {
             return switch (kind) {

@@ -1103,19 +1103,11 @@ pub const StringHashMapContext = struct {
 };
 
 pub fn StringArrayHashMap(comptime Type: type) type {
-    return std.ArrayHashMap([]const u8, Type, StringArrayHashMapContext, true);
+    return std.array_hash_map.Custom([]const u8, Type, StringArrayHashMapContext, true);
 }
 
 pub fn CaseInsensitiveASCIIStringArrayHashMap(comptime Type: type) type {
-    return std.ArrayHashMap([]const u8, Type, CaseInsensitiveASCIIStringContext, true);
-}
-
-pub fn CaseInsensitiveASCIIStringArrayHashMapUnmanaged(comptime Type: type) type {
-    return std.ArrayHashMapUnmanaged([]const u8, Type, CaseInsensitiveASCIIStringContext, true);
-}
-
-pub fn StringArrayHashMapUnmanaged(comptime Type: type) type {
-    return std.ArrayHashMapUnmanaged([]const u8, Type, StringArrayHashMapContext, true);
+    return std.array_hash_map.Custom([]const u8, Type, CaseInsensitiveASCIIStringContext, true);
 }
 
 pub fn StringHashMap(comptime Type: type) type {
@@ -1564,34 +1556,36 @@ pub var auto_reload_on_crash = false;
 
 pub const options = @import("./bundler/options.zig");
 pub const StringSet = struct {
-    map: Map,
+    map: Map = .empty,
+    allocator: std.mem.Allocator,
 
     pub const Map = StringArrayHashMap(void);
 
     pub fn clone(self: *const StringSet) !StringSet {
-        var new_map = Map.init(self.map.allocator);
-        try new_map.ensureTotalCapacity(self.map.count());
-        for (self.map.keys()) |key| {
-            new_map.putAssumeCapacity(try self.map.allocator.dupe(u8, key), {});
+        var new_map: Map = .empty;
+        errdefer {
+            for (new_map.keys()) |key| self.allocator.free(key);
+            new_map.deinit(self.allocator);
         }
-        return StringSet{
+        try new_map.ensureTotalCapacity(self.allocator, self.map.count());
+        for (self.map.keys()) |key| {
+            new_map.putAssumeCapacity(try self.allocator.dupe(u8, key), {});
+        }
+        return .{
             .map = new_map,
+            .allocator = self.allocator,
         };
     }
 
     pub fn init(allocator: std.mem.Allocator) StringSet {
-        return StringSet{
-            .map = Map.init(allocator),
-        };
+        return .{ .allocator = allocator };
     }
 
     /// Initialize an empty StringSet at comptime (for use as a static constant).
     /// WARNING: The resulting set must not be mutated. Any attempt to call insert(),
     /// clone(), or other allocating methods will result in undefined behavior.
     pub fn initComptime() StringSet {
-        return StringSet{
-            .map = Map.initContext(undefined, .{}),
-        };
+        return .{ .allocator = undefined };
     }
 
     pub fn isEmpty(self: *const StringSet) bool {
@@ -1607,9 +1601,9 @@ pub const StringSet = struct {
     }
 
     pub fn insert(self: *StringSet, key: []const u8) !void {
-        const entry = try self.map.getOrPut(key);
+        const entry = try self.map.getOrPut(self.allocator, key);
         if (!entry.found_existing) {
-            entry.key_ptr.* = try self.map.allocator.dupe(u8, key);
+            entry.key_ptr.* = try self.allocator.dupe(u8, key);
         }
     }
 
@@ -1623,38 +1617,40 @@ pub const StringSet = struct {
 
     pub fn clearAndFree(self: *StringSet) void {
         for (self.map.keys()) |key| {
-            self.map.allocator.free(key);
+            self.allocator.free(key);
         }
-        self.map.clearAndFree();
+        self.map.clearAndFree(self.allocator);
     }
 
     pub fn deinit(self: *StringSet) void {
         for (self.map.keys()) |key| {
-            self.map.allocator.free(key);
+            self.allocator.free(key);
         }
 
-        self.map.deinit();
+        self.map.deinit(self.allocator);
     }
 };
 
 pub const schema = @import("./options_types/schema.zig");
 
 pub const StringMap = struct {
-    map: Map,
+    map: Map = .empty,
+    allocator: std.mem.Allocator,
     dupe_keys: bool = false,
 
     pub const Map = StringArrayHashMap([]const u8);
 
     pub fn clone(self: StringMap) !StringMap {
-        return StringMap{
-            .map = try self.map.clone(),
+        return .{
+            .map = try self.map.clone(self.allocator),
+            .allocator = self.allocator,
             .dupe_keys = self.dupe_keys,
         };
     }
 
     pub fn init(allocator: std.mem.Allocator, dupe_keys: bool) StringMap {
-        return StringMap{
-            .map = Map.init(allocator),
+        return .{
+            .allocator = allocator,
             .dupe_keys = dupe_keys,
         };
     }
@@ -1679,15 +1675,15 @@ pub const StringMap = struct {
     }
 
     pub fn insert(self: *StringMap, key: []const u8, value: []const u8) !void {
-        const entry = try self.map.getOrPut(key);
+        const entry = try self.map.getOrPut(self.allocator, key);
         if (!entry.found_existing) {
             if (self.dupe_keys)
-                entry.key_ptr.* = try self.map.allocator.dupe(u8, key);
+                entry.key_ptr.* = try self.allocator.dupe(u8, key);
         } else {
-            self.map.allocator.free(entry.value_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
         }
 
-        entry.value_ptr.* = try self.map.allocator.dupe(u8, value);
+        entry.value_ptr.* = try self.allocator.dupe(u8, value);
     }
     pub const put = insert;
 
@@ -1701,16 +1697,16 @@ pub const StringMap = struct {
 
     pub fn deinit(self: *StringMap) void {
         for (self.map.values()) |value| {
-            self.map.allocator.free(value);
+            self.allocator.free(value);
         }
 
         if (self.dupe_keys) {
             for (self.map.keys()) |key| {
-                self.map.allocator.free(key);
+                self.allocator.free(key);
             }
         }
 
-        self.map.deinit();
+        self.map.deinit(self.allocator);
     }
 };
 

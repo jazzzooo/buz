@@ -127,9 +127,9 @@ workspace_package_json_cache: WorkspacePackageJSONCache = .{},
 // the original packages that are updating.
 //
 // dependency name -> original version information
-updating_packages: bun.StringArrayHashMapUnmanaged(PackageUpdateInfo) = .{},
+updating_packages: bun.StringArrayHashMap(PackageUpdateInfo) = .empty,
 
-patched_dependencies_to_remove: std.ArrayHashMapUnmanaged(PackageNameAndVersionHash, void, ArrayIdentityContext.U64, false) = .{},
+patched_dependencies_to_remove: std.array_hash_map.Custom(PackageNameAndVersionHash, void, ArrayIdentityContext.U64, false) = .empty,
 
 active_lifecycle_scripts: LifecycleScriptSubprocess.List,
 last_reported_slow_lifecycle_script_at: u64 = 0,

@@ -226,7 +226,7 @@ pub fn NewParser_(
         imports_to_convert_from_require: List(DeferredImportNamespace) = .empty,
         unwrap_all_requires: bool = false,
 
-        commonjs_named_exports: js_ast.Ast.CommonJSNamedExports = .{},
+        commonjs_named_exports: js_ast.Ast.CommonJSNamedExports = .empty,
         commonjs_named_exports_deoptimized: bool = false,
         commonjs_module_exports_assigned_deoptimized: bool = false,
         commonjs_named_exports_needs_conversion: u32 = std.math.maxInt(u32),
@@ -483,7 +483,7 @@ pub fn NewParser_(
         ts_namespace: RecentlyVisitedTSNamespace = .{},
         top_level_enums: std.ArrayListUnmanaged(Ref) = .empty,
 
-        scopes_in_order_for_enum: std.AutoArrayHashMapUnmanaged(logger.Loc, []ScopeOrder) = .{},
+        scopes_in_order_for_enum: std.array_hash_map.Auto(logger.Loc, []ScopeOrder) = .empty,
 
         // If this is true, then all top-level statements are wrapped in a try/catch
         will_wrap_module_in_try_catch_for_using: bool = false,
@@ -723,7 +723,7 @@ pub fn NewParser_(
                             },
                             .import_record_id = import_record_index,
                         }) catch |err| bun.handleOom(err);
-                        bun.handleOom(p.import_items_for_namespace.put(p.allocator, namespace_ref, ImportItemForNamespaceMap.init(p.allocator)));
+                        bun.handleOom(p.import_items_for_namespace.put(p.allocator, namespace_ref, .empty));
                         p.recordUsage(namespace_ref);
 
                         if (!state.is_require_immediately_assigned_to_decl) {
@@ -2719,7 +2719,7 @@ pub fn NewParser_(
                     const name = p.loadNameFromRef(name_loc.ref.?);
                     const ref = try p.declareSymbol(.other, name_loc.loc, name);
                     try p.is_import_item.put(p.allocator, ref, {});
-                    try p.macro.refs.put(ref, .{
+                    try p.macro.refs.put(p.allocator, ref, .{
                         .import_record_id = id,
                         .name = "default",
                     });
@@ -2729,14 +2729,14 @@ pub fn NewParser_(
                     const name = p.loadNameFromRef(stmt.namespace_ref);
                     const ref = try p.declareSymbol(.other, star, name);
                     stmt.namespace_ref = ref;
-                    try p.macro.refs.put(ref, .{ .import_record_id = id });
+                    try p.macro.refs.put(p.allocator, ref, .{ .import_record_id = id });
                 }
 
                 for (stmt.items) |item| {
                     const name = p.loadNameFromRef(item.name.ref.?);
                     const ref = try p.declareSymbol(.other, item.name.loc, name);
                     try p.is_import_item.put(p.allocator, ref, {});
-                    try p.macro.refs.put(ref, .{
+                    try p.macro.refs.put(p.allocator, ref, .{
                         .import_record_id = id,
                         .name = item.alias,
                     });
@@ -2787,7 +2787,7 @@ pub fn NewParser_(
                 stmt.namespace_ref = try p.declareSymbol(.import, star, name);
 
                 if (comptime track_symbol_usage_during_parse_pass) {
-                    p.parse_pass_symbol_uses.put(name, .{
+                    p.parse_pass_symbol_uses.put(p.allocator, name, .{
                         .ref = stmt.namespace_ref,
                         .import_record_index = stmt.import_record_index,
                     }) catch unreachable;
@@ -2802,11 +2802,11 @@ pub fn NewParser_(
                 try scope.generated.append(p.allocator, stmt.namespace_ref);
             }
 
-            var item_refs = ImportItemForNamespaceMap.init(p.allocator);
+            var item_refs: ImportItemForNamespaceMap = .empty;
             const count_excluding_namespace = @as(u16, @intCast(stmt.items.len)) +
                 @as(u16, @intCast(@intFromBool(stmt.default_name != null)));
 
-            try item_refs.ensureUnusedCapacity(count_excluding_namespace);
+            try item_refs.ensureUnusedCapacity(p.allocator, count_excluding_namespace);
             // Even though we allocate ahead of time here
             // we cannot use putAssumeCapacity because a symbol can have existing links
             // those may write to this hash table, so this estimate may be innaccurate
@@ -2834,7 +2834,7 @@ pub fn NewParser_(
                 if (macro_remap) |*remap| {
                     if (remap.get("default")) |remapped_path| {
                         const new_import_id = p.addImportRecord(.stmt, path.loc, remapped_path);
-                        try p.macro.refs.put(ref, .{
+                        try p.macro.refs.put(p.allocator, ref, .{
                             .import_record_id = new_import_id,
                             .name = "default",
                         });
@@ -2852,14 +2852,14 @@ pub fn NewParser_(
                 }
 
                 if (comptime track_symbol_usage_during_parse_pass) {
-                    p.parse_pass_symbol_uses.put(name, .{
+                    p.parse_pass_symbol_uses.put(p.allocator, name, .{
                         .ref = ref,
                         .import_record_index = stmt.import_record_index,
                     }) catch unreachable;
                 }
 
                 if (comptime ParsePassSymbolUsageType != void) {
-                    p.parse_pass_symbol_uses.put(name, .{
+                    p.parse_pass_symbol_uses.put(p.allocator, name, .{
                         .ref = ref,
                         .import_record_index = stmt.import_record_index,
                     }) catch unreachable;
@@ -2895,7 +2895,7 @@ pub fn NewParser_(
                 if (macro_remap) |*remap| {
                     if (remap.get(item.alias)) |remapped_path| {
                         const new_import_id = p.addImportRecord(.stmt, path.loc, remapped_path);
-                        try p.macro.refs.put(ref, .{
+                        try p.macro.refs.put(p.allocator, ref, .{
                             .import_record_id = new_import_id,
                             .name = item.alias,
                         });
@@ -2912,7 +2912,7 @@ pub fn NewParser_(
                 }
 
                 if (comptime track_symbol_usage_during_parse_pass) {
-                    p.parse_pass_symbol_uses.put(name, .{
+                    p.parse_pass_symbol_uses.put(p.allocator, name, .{
                         .ref = ref,
                         .import_record_index = stmt.import_record_index,
                     }) catch unreachable;
@@ -2938,7 +2938,7 @@ pub fn NewParser_(
 
                 return p.s(S.Empty{}, loc);
             } else if (remap_count > 0) {
-                item_refs.shrinkAndFree(stmt.items.len + @as(usize, @intFromBool(stmt.default_name != null)));
+                item_refs.shrinkAndFree(p.allocator, stmt.items.len + @as(usize, @intFromBool(stmt.default_name != null)));
             }
 
             if (path.import_tag != .none or path.loader != null) {
@@ -6792,7 +6792,7 @@ pub fn NewParser_(
                 .require_transposer = undefined,
                 .require_resolve_transposer = undefined,
                 .source = source,
-                .macro = MacroState.init(allocator),
+                .macro = MacroState.init(),
                 .current_scope = scope,
                 .module_scope = scope,
                 .scopes_in_order = scope_order,

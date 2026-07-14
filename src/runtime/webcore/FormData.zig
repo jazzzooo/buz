@@ -6,7 +6,7 @@ pub const FormData = struct {
     buffer: []const u8,
     const log = Output.scoped(.FormData, .visible);
 
-    pub const Map = std.ArrayHashMapUnmanaged(
+    pub const Map = std.array_hash_map.Custom(
         bun.Semver.String,
         Field.Entry,
         bun.Semver.String.ArrayHashContext,

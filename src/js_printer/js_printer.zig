@@ -398,7 +398,7 @@ pub const Options = struct {
     module_info: ?*analyze_transpiled_module.ModuleInfo = null,
     input_files_for_dev_server: ?[]logger.Source = null,
 
-    commonjs_named_exports: js_ast.Ast.CommonJSNamedExports = .{},
+    commonjs_named_exports: js_ast.Ast.CommonJSNamedExports = .empty,
     commonjs_named_exports_deoptimized: bool = false,
     commonjs_module_exports_assigned_deoptimized: bool = false,
     commonjs_named_exports_ref: Ref = Ref.None,

@@ -72,11 +72,11 @@ pub const PostinstallOptimizer = enum {
     }
 
     pub const List = struct {
-        dynamic: Map = .{},
+        dynamic: Map = .empty,
         disable_default_native_binlinks: bool = false,
         disable_default_ignore: bool = false,
 
-        pub const Map = std.ArrayHashMapUnmanaged(PackageNameHash, PostinstallOptimizer, install.ArrayIdentityContext.U64, false);
+        pub const Map = std.array_hash_map.Custom(PackageNameHash, PostinstallOptimizer, install.ArrayIdentityContext.U64, false);
 
         pub fn isNativeBinlinkEnabled(this: *const @This()) bool {
             if (this.dynamic.count() == 0) {

@@ -342,7 +342,7 @@ pub fn GlobWalker_(
         basename_excluding_special_syntax_component_idx: u32 = 0,
 
         patternComponents: ArrayList(Component) = .empty,
-        matchedPaths: MatchedMap = .{},
+        matchedPaths: MatchedMap = .empty,
         i: u32 = 0,
 
         dot: bool = false,
@@ -373,7 +373,7 @@ pub fn GlobWalker_(
         /// `foo/**/*`
         ///
         /// Use `.keys()` to get the matched paths
-        const MatchedMap = std.ArrayHashMapUnmanaged(BunString, void, struct {
+        const MatchedMap = std.array_hash_map.Custom(BunString, void, struct {
             pub fn hash(_: @This(), this: BunString) u32 {
                 bun.assert(this.tag == .ZigString);
                 const slice = this.byteSlice();

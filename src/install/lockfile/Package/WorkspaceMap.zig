@@ -1,6 +1,7 @@
 const WorkspaceMap = @This();
 
-map: Map,
+map: Map = .empty,
+allocator: std.mem.Allocator,
 
 const Map = bun.StringArrayHashMap(Entry);
 pub const Entry = struct {
@@ -10,9 +11,7 @@ pub const Entry = struct {
 };
 
 pub fn init(allocator: std.mem.Allocator) WorkspaceMap {
-    return .{
-        .map = Map.init(allocator),
-    };
+    return .{ .allocator = allocator };
 }
 
 pub fn keys(self: WorkspaceMap) []const string {
@@ -34,11 +33,11 @@ pub fn insert(self: *WorkspaceMap, key: string, value: Entry) !void {
         }
     }
 
-    const entry = try self.map.getOrPut(key);
+    const entry = try self.map.getOrPut(self.allocator, key);
     if (!entry.found_existing) {
-        entry.key_ptr.* = try self.map.allocator.dupe(u8, key);
+        entry.key_ptr.* = try self.allocator.dupe(u8, key);
     } else {
-        self.map.allocator.free(entry.value_ptr.name);
+        self.allocator.free(entry.value_ptr.name);
     }
 
     entry.value_ptr.* = .{
@@ -54,14 +53,14 @@ pub fn sort(self: *WorkspaceMap, sort_ctx: anytype) void {
 
 pub fn deinit(self: *WorkspaceMap) void {
     for (self.map.values()) |value| {
-        self.map.allocator.free(value.name);
+        self.allocator.free(value.name);
     }
 
     for (self.map.keys()) |key| {
-        self.map.allocator.free(key);
+        self.allocator.free(key);
     }
 
-    self.map.deinit();
+    self.map.deinit(self.allocator);
 }
 
 fn processWorkspaceName(

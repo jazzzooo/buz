@@ -41,7 +41,7 @@ pub const PathWatcherManager = struct {
     /// Dedup map: dedup key → PathWatcher. The key is the resolved path with a one-byte
     /// suffix encoding `recursive` (so `fs.watch(p)` and `fs.watch(p, {recursive:true})`
     /// don't share — they want different OS registrations on every platform).
-    watchers: bun.StringArrayHashMapUnmanaged(*PathWatcher) = .{},
+    watchers: bun.StringArrayHashMap(*PathWatcher) = .empty,
 
     /// Platform-specific state (inotify fd / kqueue fd + dispatch maps + thread).
     /// On macOS this is empty — FSEvents owns its own thread via `fs_events.zig`.
@@ -99,7 +99,7 @@ pub const PathWatcher = struct {
     /// `manager.mutex` on all platforms — every emit path (inotify/kqueue reader
     /// threads and the Darwin FSEvents callback) holds it while iterating, so
     /// attach/detach can never race with dispatch.
-    handlers: std.AutoArrayHashMapUnmanaged(*anyopaque, ChangeEvent) = .{},
+    handlers: std.array_hash_map.Auto(*anyopaque, ChangeEvent) = .empty,
 
     /// Per-platform per-watch state (inotify wds, kqueue fds, or the FSEventsWatcher).
     platform: Platform.Watch = .{},
@@ -590,7 +590,7 @@ const Linux = struct {
 
             manager.mutex.lock();
             // Track which PathWatchers got at least one event so we flush() each once.
-            var touched: std.AutoArrayHashMapUnmanaged(*PathWatcher, void) = .{};
+            var touched: std.array_hash_map.Auto(*PathWatcher, void) = .empty;
             defer touched.deinit(bun.default_allocator);
 
             var i: usize = 0;
@@ -778,7 +778,7 @@ const Kqueue = struct {
     /// ident (fd number) → entry (by value — avoids a per-entry heap alloc for
     /// recursive trees). `udata` on the kevent carries a monotonic generation number
     /// so the reader can reject stale events after the fd is recycled.
-    entries: std.AutoArrayHashMapUnmanaged(i32, KqEntry) = .{},
+    entries: std.array_hash_map.Auto(i32, KqEntry) = .empty,
     /// Bumped on every `addOne` and stored in both `KqEntry.gen` and `kev.udata`.
     next_gen: usize = 1,
 
@@ -902,7 +902,7 @@ const Kqueue = struct {
             if (count <= 0) continue;
 
             manager.mutex.lock();
-            var touched: std.AutoArrayHashMapUnmanaged(*PathWatcher, void) = .{};
+            var touched: std.array_hash_map.Auto(*PathWatcher, void) = .empty;
             defer touched.deinit(bun.default_allocator);
 
             for (events[0..@intCast(count)]) |kev| {

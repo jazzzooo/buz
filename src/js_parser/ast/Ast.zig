@@ -1,4 +1,4 @@
-pub const TopLevelSymbolToParts = std.ArrayHashMapUnmanaged(Ref, BabyList(u32), Ref.ArrayHashCtx, false);
+pub const TopLevelSymbolToParts = std.array_hash_map.Custom(Ref, BabyList(u32), Ref.ArrayHashCtx, false);
 
 approximate_newline_count: usize = 0,
 has_lazy_export: bool = false,
@@ -48,21 +48,21 @@ require_ref: Ref = Ref.None,
 // These are used when bundling. They are filled in during the parser pass
 // since we already have to traverse the AST then anyway and the parser pass
 // is conveniently fully parallelized.
-named_imports: NamedImports = .{},
-named_exports: NamedExports = .{},
+named_imports: NamedImports = .empty,
+named_exports: NamedExports = .empty,
 export_star_import_records: []u32 = &([_]u32{}),
 
 // allocator: std.mem.Allocator,
-top_level_symbols_to_parts: TopLevelSymbolToParts = .{},
+top_level_symbols_to_parts: TopLevelSymbolToParts = .empty,
 
-commonjs_named_exports: CommonJSNamedExports = .{},
+commonjs_named_exports: CommonJSNamedExports = .empty,
 
 redirect_import_record_index: ?u32 = null,
 
 /// Only populated when bundling
 target: bun.options.Target = .browser,
-// const_values: ConstValuesMap = .{},
-ts_enums: TsEnumsMap = .{},
+// const_values: ConstValuesMap = .empty,
+ts_enums: TsEnumsMap = .empty,
 
 /// Not to be confused with `commonjs_named_exports`
 /// This is a list of named exports that may exist in a CommonJS module
@@ -75,12 +75,12 @@ pub const CommonJSNamedExport = struct {
     loc_ref: LocRef,
     needs_decl: bool = true,
 };
-pub const CommonJSNamedExports = bun.StringArrayHashMapUnmanaged(CommonJSNamedExport);
+pub const CommonJSNamedExports = bun.StringArrayHashMap(CommonJSNamedExport);
 
-pub const NamedImports = std.ArrayHashMapUnmanaged(Ref, NamedImport, RefHashCtx, true);
-pub const NamedExports = bun.StringArrayHashMapUnmanaged(NamedExport);
-pub const ConstValuesMap = std.ArrayHashMapUnmanaged(Ref, Expr, RefHashCtx, false);
-pub const TsEnumsMap = std.ArrayHashMapUnmanaged(Ref, bun.StringHashMapUnmanaged(InlinedEnumValue), RefHashCtx, false);
+pub const NamedImports = std.array_hash_map.Custom(Ref, NamedImport, RefHashCtx, true);
+pub const NamedExports = bun.StringArrayHashMap(NamedExport);
+pub const ConstValuesMap = std.array_hash_map.Custom(Ref, Expr, RefHashCtx, false);
+pub const TsEnumsMap = std.array_hash_map.Custom(Ref, bun.StringHashMapUnmanaged(InlinedEnumValue), RefHashCtx, false);
 
 pub fn fromParts(parts: []Part) Ast {
     return Ast{

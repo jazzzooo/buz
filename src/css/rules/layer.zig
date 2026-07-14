@@ -10,7 +10,7 @@ pub const LayerName = struct {
     v: css.SmallList([]const u8, 1) = .{},
 
     pub fn HashMap(comptime V: type) type {
-        return std.ArrayHashMapUnmanaged(LayerName, V, struct {
+        return std.array_hash_map.Custom(LayerName, V, struct {
             pub fn hash(_: @This(), key: LayerName) u32 {
                 var hasher = std.hash.Wyhash.init(0);
                 for (key.v.items) |part| {

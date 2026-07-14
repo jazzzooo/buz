@@ -251,7 +251,7 @@ pub fn Builder(comptime method: BuilderMethod) type {
         // builder.resolutions[peer.dep_id] to the resolved pkg_id. A dependency ID set is used because there
         // can be multiple instances of the same package in the tree, so the same unresolved dependency ID
         // could be visited multiple times before it's resolved.
-        pending_optional_peers: std.AutoArrayHashMap(PackageNameHash, std.AutoArrayHashMap(DependencyID, void)),
+        pending_optional_peers: std.array_hash_map.Auto(PackageNameHash, std.array_hash_map.Auto(DependencyID, void)),
         manager: if (method == .filter) *const PackageManager else void,
         sort_buf: std.ArrayListUnmanaged(DependencyID) = .empty,
         workspace_filters: if (method == .filter) []const WorkspaceFilter else void = if (method == .filter) &.{},
@@ -320,7 +320,10 @@ pub fn Builder(comptime method: BuilderMethod) type {
 
             this.queue.deinit();
             this.sort_buf.deinit(this.allocator);
-            this.pending_optional_peers.deinit();
+            for (this.pending_optional_peers.values()) |*peers| {
+                peers.deinit(this.allocator);
+            }
+            this.pending_optional_peers.deinit(this.allocator);
 
             // take over the `builder.list` pointer for only trees
             if (@intFromPtr(trees.ptr) != @intFromPtr(list_ptr)) {
@@ -592,7 +595,7 @@ pub fn processSubtree(
 
                 if (builder.pending_optional_peers.fetchSwapRemove(dependency.name_hash)) |entry| {
                     var peers = entry.value;
-                    defer peers.deinit();
+                    defer peers.deinit(builder.allocator);
                     for (peers.keys()) |unresolved_dep_id| {
                         // the dependency should be either unresolved or the same dependency as above
                         bun.debugAssert(unresolved_dep_id == dep_id or builder.resolutions[unresolved_dep_id] == invalid_package_id);
@@ -605,7 +608,7 @@ pub fn processSubtree(
                 builder.resolutions[replace.dep_id] = pkg_id;
                 if (builder.pending_optional_peers.fetchSwapRemove(dependency.name_hash)) |entry| {
                     var peers = entry.value;
-                    defer peers.deinit();
+                    defer peers.deinit(builder.allocator);
                     for (peers.keys()) |unresolved_dep_id| {
                         // the dependency should be either unresolved or the same dependency as above
                         bun.debugAssert(unresolved_dep_id == replace.dep_id or builder.resolutions[unresolved_dep_id] == invalid_package_id);
@@ -629,12 +632,12 @@ pub fn processSubtree(
                 // `dep_id` is an unresolved optional peer. while hoisting it deduplicated
                 // with another unresolved optional peer. save it so we remember resolve it
                 // later if it's possible to resolve it.
-                const entry = try builder.pending_optional_peers.getOrPut(dependency.name_hash);
+                const entry = try builder.pending_optional_peers.getOrPut(builder.allocator, dependency.name_hash);
                 if (!entry.found_existing) {
-                    entry.value_ptr.* = .init(builder.allocator);
+                    entry.value_ptr.* = .empty;
                 }
 
-                try entry.value_ptr.put(dep_id, {});
+                try entry.value_ptr.put(builder.allocator, dep_id, {});
             },
             .placement => |dest| {
                 bun.handleOom(dependency_lists[dest.id].append(builder.allocator, dep_id));

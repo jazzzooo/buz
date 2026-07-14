@@ -2926,7 +2926,7 @@ pub const MinifyOptions = struct {
     targets: targets.Targets,
     /// A list of known unused symbols, including CSS class names,
     /// ids, and `@keyframe` names. The declarations of these will be removed.
-    unused_symbols: std.StringArrayHashMapUnmanaged(void),
+    unused_symbols: std.array_hash_map.String(void),
 
     pub fn default() MinifyOptions {
         return MinifyOptions{
@@ -2958,7 +2958,7 @@ pub const StylesheetExtra = struct {
 
 pub const ParserExtra = struct {
     symbols: SymbolList = .{},
-    local_scope: LocalScope = .{},
+    local_scope: LocalScope = .empty,
     source_index: SrcIndex,
 };
 
@@ -3015,14 +3015,14 @@ const LocalEntry = struct {
 ///
 /// We use this ref as a layer of indirection during the bundling stage because we don't
 /// know the final generated class names for local scope until print time.
-pub const LocalScope = bun.StringArrayHashMapUnmanaged(LocalEntry);
+pub const LocalScope = bun.StringArrayHashMap(LocalEntry);
 /// Local symbol renaming results go here
 pub const LocalsResultsMap = bun.bundle_v2.MangledProps;
 /// Using `compose` and having conflicting properties is undefined behavior according
 /// to the css modules spec. We should warn the user about this.
-pub const LocalPropertyUsage = std.AutoArrayHashMapUnmanaged(bun.bundle_v2.Ref, PropertyUsage);
+pub const LocalPropertyUsage = std.array_hash_map.Auto(bun.bundle_v2.Ref, PropertyUsage);
 pub const Composes = css_properties.css_modules.Composes;
-pub const ComposesMap = std.AutoArrayHashMapUnmanaged(bun.bundle_v2.Ref, ComposesEntry);
+pub const ComposesMap = std.array_hash_map.Auto(bun.bundle_v2.Ref, ComposesEntry);
 
 pub const ComposesEntry = struct {
     composes: bun.BabyList(Composes) = .{},
@@ -3087,14 +3087,14 @@ pub fn StyleSheet(comptime AtRule: type) type {
         ///    1. `local_scope.values()[i].source_index == <source_index_of_stylesheet>`
         ///    2. `local_scope.values()[i].tag == .symbol`
         ///    3. `local_scopes.values().last().inner_index == symbols.count() - 1`
-        local_scope: LocalScope = .{},
+        local_scope: LocalScope = .empty,
         /// Used when css modules is enabled.
         ///
         /// Track which properties are used in local scope.
         ///
         /// Used later to warn when using `composes` property on
         /// two style rules which have conflicting properties.
-        local_properties: LocalPropertyUsage = .{},
+        local_properties: LocalPropertyUsage = .empty,
         /// Used whenn css modules is enabled.
         ///
         /// `bun.bundle_v2.Ref` => `bun.BabyList(ComposesExtended)`
@@ -3121,8 +3121,8 @@ pub fn StyleSheet(comptime AtRule: type) type {
 
             // @custom-media rules may be defined after they are referenced, but may only be defined at the top level
             // of a stylesheet. Do a pre-scan here and create a lookup table by name.
-            var custom_media: ?std.StringArrayHashMapUnmanaged(css_rules.custom_media.CustomMediaRule) = if (this.options.flags.custom_media and options.targets.shouldCompileSame(.custom_media_queries)) brk: {
-                var custom_media = std.StringArrayHashMapUnmanaged(css_rules.custom_media.CustomMediaRule){};
+            var custom_media: ?std.array_hash_map.String(css_rules.custom_media.CustomMediaRule) = if (this.options.flags.custom_media and options.targets.shouldCompileSame(.custom_media_queries)) brk: {
+                var custom_media = std.array_hash_map.String(css_rules.custom_media.CustomMediaRule).empty;
 
                 for (this.rules.v.items) |*rule| {
                     if (rule.* == .custom_media) {
@@ -3194,7 +3194,7 @@ pub fn StyleSheet(comptime AtRule: type) type {
             }
 
             if (this.options.css_modules) |*config| {
-                var references = CssModuleReferences{};
+                var references: CssModuleReferences = .empty;
                 printer.css_module = CssModule.new(allocator, config, &this.sources, project_root, &references);
 
                 try this.rules.toCss(printer);
@@ -3281,13 +3281,13 @@ pub fn StyleSheet(comptime AtRule: type) type {
             import_records: ?*bun.BabyList(ImportRecord),
             source_index: SrcIndex,
         ) Maybe(struct { This, StylesheetExtra }, Err(ParserError)) {
-            var composes = ComposesMap{};
+            var composes: ComposesMap = .empty;
             var parser_extra = ParserExtra{
                 .local_scope = .{},
                 .symbols = .{},
                 .source_index = source_index,
             };
-            var local_properties = LocalPropertyUsage{};
+            var local_properties: LocalPropertyUsage = .empty;
 
             var input = ParserInput.new(allocator, code);
             var parser = Parser.new(

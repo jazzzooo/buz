@@ -133,8 +133,8 @@ pub fn migratePnpmLockfile(
         return error.PnpmLockfileTooOld;
     }
 
-    var found_patches: bun.StringArrayHashMap([]const u8) = .init(allocator);
-    defer found_patches.deinit();
+    var found_patches: bun.StringArrayHashMap([]const u8) = .empty;
+    defer found_patches.deinit(allocator);
 
     const pkg_map, const importer_dep_res_versions, const workspace_pkgs_off, const workspace_pkgs_end = build: {
         var string_buf = lockfile.stringBuf();
@@ -188,8 +188,8 @@ pub fn migratePnpmLockfile(
             path: String,
             dep_name: []const u8,
         };
-        var patches: bun.StringArrayHashMap(Patch) = .init(allocator);
-        defer patches.deinit();
+        var patches: bun.StringArrayHashMap(Patch) = .empty;
+        defer patches.deinit(allocator);
         var patch_join_buf: std.array_list.Managed(u8) = .init(allocator);
         defer patch_join_buf.deinit();
 
@@ -210,7 +210,7 @@ pub fn migratePnpmLockfile(
                     return invalidPnpmLockfile();
                 };
 
-                const entry = try patches.getOrPut(hash_str);
+                const entry = try patches.getOrPut(allocator, hash_str);
                 if (entry.found_existing) {
                     return invalidPnpmLockfile();
                 }
@@ -282,7 +282,7 @@ pub fn migratePnpmLockfile(
             return error.PnpmLockfileMissingRootPackage;
         };
 
-        var importer_dep_res_versions: bun.StringArrayHashMap(bun.StringArrayHashMap([]const u8)) = .init(allocator);
+        var importer_dep_res_versions: bun.StringArrayHashMap(bun.StringArrayHashMap([]const u8)) = .empty;
 
         {
             var pkg_json_path: bun.AutoAbsPath = .initTopLevelDir();
@@ -303,8 +303,8 @@ pub fn migratePnpmLockfile(
                 root_pkg.name_hash = name_hash;
             }
 
-            const importer_versions = try importer_dep_res_versions.getOrPut(".");
-            importer_versions.value_ptr.* = .init(allocator);
+            const importer_versions = try importer_dep_res_versions.getOrPut(allocator, ".");
+            importer_versions.value_ptr.* = .empty;
 
             const off, const len = try parseAppendImporterDependencies(
                 lockfile,
@@ -327,9 +327,9 @@ pub fn migratePnpmLockfile(
             try lockfile.getOrPutID(0, root_pkg.name_hash);
         }
 
-        var pkg_map: bun.StringArrayHashMap(PackageID) = .init(allocator);
+        var pkg_map: bun.StringArrayHashMap(PackageID) = .empty;
 
-        try pkg_map.putNoClobber(bun.fs.FileSystem.instance.top_level_dir, 0);
+        try pkg_map.putNoClobber(allocator, bun.fs.FileSystem.instance.top_level_dir, 0);
 
         const workspace_pkgs_off = lockfile.packages.len;
 
@@ -369,11 +369,11 @@ pub fn migratePnpmLockfile(
                 pkg.name = try string_buf.appendWithHash(name, name_hash);
                 pkg.name_hash = name_hash;
 
-                const importer_versions = try importer_dep_res_versions.getOrPut(path);
+                const importer_versions = try importer_dep_res_versions.getOrPut(allocator, path);
                 if (importer_versions.found_existing) {
                     return invalidPnpmLockfile();
                 }
-                importer_versions.value_ptr.* = .init(allocator);
+                importer_versions.value_ptr.* = .empty;
 
                 const off, const len = try parseAppendImporterDependencies(
                     lockfile,
@@ -400,7 +400,7 @@ pub fn migratePnpmLockfile(
 
                 const pkg_id = try lockfile.appendPackageDedupe(&pkg, string_buf.bytes.items);
 
-                const entry = try pkg_map.getOrPut(abs_path);
+                const entry = try pkg_map.getOrPut(allocator, abs_path);
                 if (entry.found_existing) {
                     return invalidPnpmLockfile();
                 }
@@ -476,7 +476,7 @@ pub fn migratePnpmLockfile(
 
                             abs_link_path.join(&.{ workspace_path, link_path });
 
-                            const pkg_entry = try pkg_map.getOrPut(abs_link_path.slice());
+                            const pkg_entry = try pkg_map.getOrPut(allocator, abs_link_path.slice());
                             if (pkg_entry.found_existing) {
                                 // they point to the same package
                                 continue;
@@ -502,8 +502,8 @@ pub fn migratePnpmLockfile(
         const SnapshotEntry = struct {
             obj: Expr,
         };
-        var snapshots: bun.StringArrayHashMap(SnapshotEntry) = .init(allocator);
-        defer snapshots.deinit();
+        var snapshots: bun.StringArrayHashMap(SnapshotEntry) = .empty;
+        defer snapshots.deinit(allocator);
 
         if (root.getObject("packages")) |packages_obj| {
             const snapshots_obj = root.getObject("snapshots") orelse {
@@ -540,7 +540,7 @@ pub fn migratePnpmLockfile(
                         return invalidPnpmLockfile();
                     };
 
-                    try found_patches.put(patch.value.dep_name, res_str);
+                    try found_patches.put(allocator, patch.value.dep_name, res_str);
 
                     patch_join_buf.clearRetainingCapacity();
                     try patch_join_buf.writer().print("{s}@{s}", .{
@@ -552,7 +552,7 @@ pub fn migratePnpmLockfile(
                     try lockfile.patched_dependencies.put(allocator, patch_hash, .{ .path = patch.value.path });
                 }
 
-                const entry = try snapshots.getOrPut(key_str_without_suffix);
+                const entry = try snapshots.getOrPut(allocator, key_str_without_suffix);
                 if (entry.found_existing) {
                     continue;
                 }
@@ -642,7 +642,7 @@ pub fn migratePnpmLockfile(
 
                 const pkg_id = try lockfile.appendPackageDedupe(&pkg, string_buf.bytes.items);
 
-                const entry = try pkg_map.getOrPut(key_str);
+                const entry = try pkg_map.getOrPut(allocator, key_str);
                 if (entry.found_existing) {
                     return invalidPnpmLockfile();
                 }
@@ -1111,7 +1111,7 @@ fn parseAppendImporterDependencies(
                     return invalidPnpmLockfile();
                 };
 
-                const entry = try importer_versions.getOrPut(name_str);
+                const entry = try importer_versions.getOrPut(allocator, name_str);
                 if (entry.found_existing) {
                     continue;
                 }

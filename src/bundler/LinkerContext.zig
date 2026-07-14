@@ -222,7 +222,7 @@ pub const LinkerContext = struct {
         const sources: []const Logger.Source = this.parse_graph.input_files.items(.source);
 
         try this.graph.load(entry_points, sources, server_component_boundaries, bundle.dynamic_import_entry_points.keys(), &this.parse_graph.entry_point_original_names);
-        bundle.dynamic_import_entry_points.deinit();
+        bundle.dynamic_import_entry_points.deinit(bundle.allocator());
 
         var runtime_named_exports = &this.graph.ast.items(.named_exports)[Index.runtime.get()];
 
@@ -632,9 +632,9 @@ pub const LinkerContext = struct {
     pub const ChunkMeta = struct {
         imports: Map,
         exports: Map,
-        dynamic_imports: std.AutoArrayHashMap(Index.Int, void),
+        dynamic_imports: std.array_hash_map.Auto(Index.Int, void),
 
-        pub const Map = std.AutoArrayHashMap(Ref, void);
+        pub const Map = std.array_hash_map.Auto(Ref, void);
     };
 
     pub const computeCrossChunkDependencies = @import("./linker_context/computeCrossChunkDependencies.zig").computeCrossChunkDependencies;
@@ -712,8 +712,8 @@ pub const LinkerContext = struct {
         //   -->
         //    Which source index in the generated sourcemap, referred to
         //    as the "mapping source index" within this function to be distinct.
-        var source_id_map = std.AutoArrayHashMap(u32, i32).init(worker.allocator);
-        defer source_id_map.deinit();
+        var source_id_map = std.array_hash_map.Auto(u32, i32).empty;
+        defer source_id_map.deinit(worker.allocator);
 
         const source_indices = results.items(.source_index);
 
@@ -726,7 +726,7 @@ pub const LinkerContext = struct {
             {
                 const index = source_indices[0];
                 var path = sources[index].path;
-                try source_id_map.putNoClobber(index, 0);
+                try source_id_map.putNoClobber(worker.allocator, index, 0);
 
                 if (path.isFile()) {
                     const rel_path = try bun.path.relativeAlloc(worker.allocator, chunk_abs_dir, path.text);
@@ -740,7 +740,7 @@ pub const LinkerContext = struct {
 
             var next_mapping_source_index: i32 = 1;
             for (source_indices[1..]) |index| {
-                const gop = try source_id_map.getOrPut(index);
+                const gop = try source_id_map.getOrPut(worker.allocator, index);
                 if (gop.found_existing) continue;
 
                 gop.value_ptr.* = next_mapping_source_index;

@@ -344,7 +344,8 @@ pub const CreateCommand = struct {
                 var archive_context = Archiver.Context{
                     .pluckers = pluckers[0..@as(usize, @intCast(@intFromBool(!create_options.skip_package_json)))],
                     .all_files = undefined,
-                    .overwrite_list = bun.StringArrayHashMap(void).init(ctx.allocator),
+                    .overwrite_list = bun.StringArrayHashMap(void).empty,
+                    .allocator = ctx.allocator,
                 };
 
                 if (!create_options.overwrite) {

@@ -1091,7 +1091,7 @@ fn validateComposesFromProperties(
         range: bun.logger.Range,
     };
     const Visitor = struct {
-        visited: std.AutoArrayHashMap(Ref, void),
+        visited: std.array_hash_map.Auto(Ref, void),
         properties: bun.StringArrayHashMap(PropertyInFile),
         all_import_records: []const ImportRecord.List,
         all_css_asts: []const ?*bun.css.BundlerStyleSheet,
@@ -1102,12 +1102,12 @@ fn validateComposesFromProperties(
         log: *Logger.Log,
 
         pub fn deinit(v: *@This()) void {
-            v.visited.deinit();
-            v.properties.deinit();
+            v.visited.deinit(v.temp_allocator);
+            v.properties.deinit(v.temp_allocator);
         }
 
         fn addPropertyOrWarn(v: *@This(), local: Ref, property_name: []const u8, source_index: Index.Int, range: bun.logger.Range) void {
-            const entry = bun.handleOom(v.properties.getOrPut(property_name));
+            const entry = bun.handleOom(v.properties.getOrPut(v.temp_allocator, property_name));
 
             if (!entry.found_existing) {
                 entry.value_ptr.* = .{
@@ -1164,7 +1164,7 @@ fn validateComposesFromProperties(
 
         fn visit(v: *@This(), idx: Index.Int, ast: *bun.css.BundlerStyleSheet, ref: Ref) void {
             if (v.visited.contains(ref)) return;
-            v.visited.put(ref, {}) catch unreachable;
+            v.visited.put(v.temp_allocator, ref, {}) catch unreachable;
 
             // This local name was in a style rule that
             if (ast.composes.getPtr(ref)) |composes| {
@@ -1216,8 +1216,8 @@ fn validateComposesFromProperties(
     var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, this.graph.allocator);
     const temp_allocator = sfb.allocator();
     var visitor = Visitor{
-        .visited = std.AutoArrayHashMap(Ref, void).init(temp_allocator),
-        .properties = bun.StringArrayHashMap(PropertyInFile).init(temp_allocator),
+        .visited = std.array_hash_map.Auto(Ref, void).empty,
+        .properties = bun.StringArrayHashMap(PropertyInFile).empty,
         .all_import_records = import_records_list,
         .all_css_asts = all_css_asts,
         .all_symbols = &this.graph.symbols,

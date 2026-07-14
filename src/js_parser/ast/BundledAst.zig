@@ -33,12 +33,12 @@ tla_check: TlaCheck = .{},
 // since we already have to traverse the AST then anyway and the parser pass
 // is conveniently fully parallelized.
 named_imports: NamedImports = .{},
-named_exports: NamedExports = .{},
+named_exports: NamedExports = .empty,
 export_star_import_records: []u32 = &.{},
 
 top_level_symbols_to_parts: TopLevelSymbolToParts = .{},
 
-commonjs_named_exports: CommonJSNamedExports = .{},
+commonjs_named_exports: CommonJSNamedExports = .empty,
 
 redirect_import_record_index: u32 = std.math.maxInt(u32),
 

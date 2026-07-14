@@ -492,12 +492,12 @@ pub fn setEngine(global: *JSGlobalObject, _: *jsc.CallFrame) JSError!JSValue {
 fn forEachHash(_: *const BoringSSL.EVP_MD, maybe_from: ?[*:0]const u8, _: ?[*:0]const u8, ctx: *anyopaque) callconv(.c) void {
     const from = maybe_from orelse return;
     const hashes: *bun.CaseInsensitiveASCIIStringArrayHashMap(void) = @ptrCast(@alignCast(ctx));
-    bun.handleOom(hashes.put(bun.span(from), {}));
+    bun.handleOom(hashes.put(bun.default_allocator, bun.span(from), {}));
 }
 
 fn getHashes(global: *JSGlobalObject, _: *jsc.CallFrame) JSError!JSValue {
-    var hashes: bun.CaseInsensitiveASCIIStringArrayHashMap(void) = .init(bun.default_allocator);
-    defer hashes.deinit();
+    var hashes: bun.CaseInsensitiveASCIIStringArrayHashMap(void) = .empty;
+    defer hashes.deinit(bun.default_allocator);
 
     // TODO(dylan-conway): cache the names
     BoringSSL.EVP_MD_do_all_sorted(&forEachHash, @ptrCast(@alignCast(&hashes)));

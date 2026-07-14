@@ -1191,7 +1191,7 @@ pub fn parseIntoBinaryLockfile(
     var string_buf = lockfile.stringBuf();
 
     if (root.get("trustedDependencies")) |trusted_dependencies_expr| {
-        var trusted_dependencies: BinaryLockfile.TrustedDependenciesSet = .{};
+        var trusted_dependencies: BinaryLockfile.TrustedDependenciesSet = .empty;
         if (!trusted_dependencies_expr.isArray()) {
             try log.addError(source, trusted_dependencies_expr.loc, "Expected an array");
             return error.InvalidTrustedDependenciesSet;
@@ -1949,7 +1949,7 @@ pub fn parseIntoBinaryLockfile(
 
         // a package can list the same dependency in each dependnecy group, but only the first
         // is chosen (dev -> optional -> prod -> peer)
-        var seen_deps: bun.StringArrayHashMapUnmanaged(void) = .empty;
+        var seen_deps: bun.StringArrayHashMap(void) = .empty;
         defer seen_deps.deinit(allocator);
 
         const pkgs = lockfile.packages.slice();

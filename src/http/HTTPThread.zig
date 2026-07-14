@@ -11,7 +11,7 @@ const SslContextCacheEntry = struct {
 };
 const ssl_context_cache_max_size = 60;
 const ssl_context_cache_ttl_ns = 30 * std.time.ns_per_min;
-var custom_ssl_context_map = std.AutoArrayHashMap(*SSLConfig, SslContextCacheEntry).init(bun.default_allocator);
+var custom_ssl_context_map = std.array_hash_map.Auto(*SSLConfig, SslContextCacheEntry).empty;
 
 loop: *jsc.MiniEventLoop,
 http_context: NewHTTPContext(false),
@@ -299,7 +299,7 @@ pub fn connect(this: *@This(), client: *HTTPClient, comptime is_ssl: bool) !?New
             };
 
             const now = this.timer.read();
-            bun.handleOom(custom_ssl_context_map.put(requested_config, .{
+            bun.handleOom(custom_ssl_context_map.put(bun.default_allocator, requested_config, .{
                 .ctx = custom_context,
                 .last_used_ns = now,
                 // Clone a strong ref for the cache entry; client.tls_props keeps its own.

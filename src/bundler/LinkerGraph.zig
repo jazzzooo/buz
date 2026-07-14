@@ -400,7 +400,7 @@ pub fn load(
     const src_named_exports: []js_ast.Ast.NamedExports = this.ast.items(.named_exports);
     const dest_resolved_exports: []ResolvedExports = this.meta.items(.resolved_exports);
     for (src_named_exports, dest_resolved_exports, 0..) |src, *dest, source_index| {
-        var resolved = ResolvedExports{};
+        var resolved: ResolvedExports = .empty;
         resolved.ensureTotalCapacity(this.allocator, src.count()) catch unreachable;
         for (src.keys(), src.values()) |key, value| {
             resolved.putAssumeCapacityNoClobber(key, .{ .data = .{

@@ -77,7 +77,7 @@ pub const KeyframesName = union(enum) {
     const This = @This();
 
     pub fn HashMap(comptime V: type) type {
-        return std.ArrayHashMapUnmanaged(KeyframesName, V, struct {
+        return std.array_hash_map.Custom(KeyframesName, V, struct {
             pub fn hash(_: @This(), key: KeyframesName) u32 {
                 return switch (key) {
                     .ident => std.array_hash_map.hashString(key.ident.v),

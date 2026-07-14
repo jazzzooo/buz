@@ -44,7 +44,7 @@
 
 pub const logPartDependencyTree = Output.scoped(.part_dep_tree, .visible);
 
-pub const MangledProps = std.AutoArrayHashMapUnmanaged(Ref, []const u8);
+pub const MangledProps = std.array_hash_map.Auto(Ref, []const u8);
 pub const PathToSourceIndexMap = @import("./PathToSourceIndexMap.zig");
 
 pub const Watcher = bun.jsc.hot_reloader.NewHotReloader(BundleV2, EventLoop, true);
@@ -124,14 +124,14 @@ pub const BundleV2 = struct {
     source_code_length: usize,
 
     /// There is a race condition where an onResolve plugin may schedule a task on the bundle thread before it's parsing task completes
-    resolve_tasks_waiting_for_import_source_index: std.AutoArrayHashMapUnmanaged(Index.Int, BabyList(struct { to_source_index: Index, import_record_index: u32 })) = .{},
+    resolve_tasks_waiting_for_import_source_index: std.array_hash_map.Auto(Index.Int, BabyList(struct { to_source_index: Index, import_record_index: u32 })) = .empty,
 
     /// Allocations not tracked by a threadlocal heap
     free_list: std.array_list.Managed([]const u8) = std.array_list.Managed([]const u8).init(bun.default_allocator),
 
     /// See the comment in `Chunk.OutputPiece`
     unique_key: u64 = 0,
-    dynamic_import_entry_points: std.AutoArrayHashMap(Index.Int, void) = undefined,
+    dynamic_import_entry_points: std.array_hash_map.Auto(Index.Int, void) = undefined,
     has_on_parse_plugins: bool = false,
 
     finalizers: std.ArrayListUnmanaged(CacheEntry.ExternalFreeFunction) = .empty,
@@ -155,7 +155,7 @@ pub const BundleV2 = struct {
     /// track requested export names for deduplication and cycle detection.
     /// Persists across calls to scheduleBarrelDeferredImports so cross-file
     /// deduplication is free.
-    requested_exports: std.AutoArrayHashMapUnmanaged(u32, barrel_imports.RequestedExports) = .{},
+    requested_exports: std.array_hash_map.Auto(u32, barrel_imports.RequestedExports) = .empty,
 
     const barrel_imports = @import("./barrel_imports.zig");
 
@@ -284,7 +284,8 @@ pub const BundleV2 = struct {
         all_urls_for_css: []const []const u8,
         redirects: []u32,
         redirect_map: PathToSourceIndexMap,
-        dynamic_import_entry_points: *std.AutoArrayHashMap(Index.Int, void),
+        dynamic_import_entry_points: *std.array_hash_map.Auto(Index.Int, void),
+        allocator: std.mem.Allocator,
         /// Files which are Server Component Boundaries
         scb_bitset: ?bun.bit_set.DynamicBitSetUnmanaged,
         scb_list: ServerComponentBoundary.List.Slice,
@@ -306,7 +307,7 @@ pub const BundleV2 = struct {
             if (v.visited.isSet(source_index.get())) {
                 if (comptime check_dynamic_imports) {
                     if (was_dynamic_import) {
-                        v.dynamic_import_entry_points.put(source_index.get(), {}) catch unreachable;
+                        v.dynamic_import_entry_points.put(v.allocator, source_index.get(), {}) catch unreachable;
                     }
                 }
                 return;
@@ -375,7 +376,7 @@ pub const BundleV2 = struct {
             v.reachable.append(source_index) catch unreachable;
             if (comptime check_dynamic_imports) {
                 if (was_dynamic_import) {
-                    v.dynamic_import_entry_points.put(source_index.get(), {}) catch unreachable;
+                    v.dynamic_import_entry_points.put(v.allocator, source_index.get(), {}) catch unreachable;
                 }
             }
         }
@@ -403,7 +404,7 @@ pub const BundleV2 = struct {
             additional_files_imported_by_css_and_inlined.deinit(stack_alloc);
         }
 
-        this.dynamic_import_entry_points = std.AutoArrayHashMap(Index.Int, void).init(this.allocator());
+        this.dynamic_import_entry_points = std.array_hash_map.Auto(Index.Int, void).empty;
 
         const all_urls_for_css = this.graph.ast.items(.url_for_css);
 
@@ -416,6 +417,7 @@ pub const BundleV2 = struct {
             .all_urls_for_css = all_urls_for_css,
             .redirect_map = this.pathToSourceIndexMap(this.transpiler.options.target).*,
             .dynamic_import_entry_points = &this.dynamic_import_entry_points,
+            .allocator = this.allocator(),
             .scb_bitset = scb_bitset,
             .scb_list = if (scb_bitset != null)
                 this.graph.server_component_boundaries.slice()
@@ -1037,7 +1039,7 @@ pub const BundleV2 = struct {
             .normal => []const []const u8,
             .dev_server => struct {
                 files: bake.DevServer.EntryPointList,
-                css_data: *std.AutoArrayHashMapUnmanaged(Index, CssEntryPointMeta),
+                css_data: *std.array_hash_map.Auto(Index, CssEntryPointMeta),
             },
             .bake_production => bake.production.EntryPointMap,
         },
@@ -2241,7 +2243,7 @@ pub const BundleV2 = struct {
                 for (this.graph.pool.workers_assignments.values()) |worker| {
                     worker.deinitSoon();
                 }
-                this.graph.pool.workers_assignments.deinit();
+                this.graph.pool.workers_assignments.deinit(bun.default_allocator);
             }
 
             this.graph.pool.worker_pool.wakeForIdleEvents();
@@ -2448,8 +2450,8 @@ pub const BundleV2 = struct {
 
         this.graph.heap.helpCatchMemoryIssues();
 
-        this.dynamic_import_entry_points = .init(this.allocator());
-        var html_files: std.AutoArrayHashMapUnmanaged(Index, void) = .{};
+        this.dynamic_import_entry_points = .empty;
+        var html_files: std.array_hash_map.Auto(Index, void) = .empty;
 
         // Separate non-failing files into two lists: JS and CSS
         const js_reachable_files = reachable_files: {
@@ -3821,9 +3823,9 @@ pub const UseDirective = js_ast.UseDirective;
 pub const ServerComponentBoundary = js_ast.ServerComponentBoundary;
 pub const ServerComponentParseTask = @import("./ServerComponentParseTask.zig").ServerComponentParseTask;
 
-const RefVoidMap = std.ArrayHashMapUnmanaged(Ref, void, Ref.ArrayHashCtx, false);
-pub const RefImportData = std.ArrayHashMapUnmanaged(Ref, ImportData, Ref.ArrayHashCtx, false);
-pub const ResolvedExports = bun.StringArrayHashMapUnmanaged(ExportData);
+const RefVoidMap = std.array_hash_map.Custom(Ref, void, Ref.ArrayHashCtx, false);
+pub const RefImportData = std.array_hash_map.Custom(Ref, ImportData, Ref.ArrayHashCtx, false);
+pub const ResolvedExports = bun.StringArrayHashMap(ExportData);
 pub const TopLevelSymbolToParts = js_ast.Ast.TopLevelSymbolToParts;
 
 pub const WrapKind = enum(u2) {
@@ -3891,7 +3893,7 @@ pub const JSMeta = struct {
     /// type checking. That causes the TypeScript type checker to emit the error
     /// "Re-exporting a type when the '--isolatedModules' flag is provided requires
     /// using 'export type'." But we try to be robust to such code anyway.
-    probably_typescript_type: RefVoidMap = .{},
+    probably_typescript_type: RefVoidMap = .empty,
 
     /// Imports are matched with exports in a separate pass from when the matched
     /// exports are actually bound to the imports. Here "binding" means adding non-
@@ -3908,7 +3910,7 @@ pub const JSMeta = struct {
     ///
     /// This array holds the deferred imports to bind so the pass can be split
     /// into two separate passes.
-    imports_to_bind: RefImportData = .{},
+    imports_to_bind: RefImportData = .empty,
 
     /// This includes both named exports and re-exports.
     ///
@@ -3917,7 +3919,7 @@ pub const JSMeta = struct {
     ///
     /// Re-exports come from other files and are the result of resolving export
     /// star statements (i.e. "export * from 'foo'").
-    resolved_exports: ResolvedExports = .{},
+    resolved_exports: ResolvedExports = .empty,
     resolved_export_star: ExportData = ExportData{},
 
     /// Never iterate over "resolvedExports" directly. Instead, iterate over this
@@ -4344,14 +4346,14 @@ pub const CssEntryPointMeta = struct {
 
 /// The lifetime of this structure is tied to the bundler's arena
 pub const DevServerInput = struct {
-    css_entry_points: std.AutoArrayHashMapUnmanaged(Index, CssEntryPointMeta),
+    css_entry_points: std.array_hash_map.Auto(Index, CssEntryPointMeta),
 };
 
 /// The lifetime of this structure is tied to the bundler's arena
 pub const DevServerOutput = struct {
     chunks: []Chunk,
-    css_file_list: std.AutoArrayHashMapUnmanaged(Index, CssEntryPointMeta),
-    html_files: std.AutoArrayHashMapUnmanaged(Index, void),
+    css_file_list: std.array_hash_map.Auto(Index, CssEntryPointMeta),
+    html_files: std.array_hash_map.Auto(Index, void),
 
     pub fn jsPseudoChunk(out: *const DevServerOutput) *Chunk {
         return &out.chunks[0];

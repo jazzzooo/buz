@@ -94,7 +94,7 @@ pub fn runWithBody(ctx: *ErrorReportRequest, body: []const u8, r: AnyResponse) !
     // Where the u64 is a unique identifier pointing into sourcemaps.
     //
     // HMR chunks use this too, but currently do not host their JS code.
-    var parsed_source_maps: AutoArrayHashMapUnmanaged(SourceMapStore.Key, ?SourceMapStore.GetResult) = .empty;
+    var parsed_source_maps: AutoArrayHashMap(SourceMapStore.Key, ?SourceMapStore.GetResult) = .empty;
     try parsed_source_maps.ensureTotalCapacity(temp_alloc, 4);
     defer for (parsed_source_maps.values()) |*value| {
         if (value.*) |*v| v.deinit(temp_alloc);
@@ -402,5 +402,5 @@ const Request = uws.Request;
 
 const std = @import("std");
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
-const AutoArrayHashMapUnmanaged = std.AutoArrayHashMapUnmanaged;
+const AutoArrayHashMap = std.array_hash_map.Auto;
 const Allocator = std.mem.Allocator;

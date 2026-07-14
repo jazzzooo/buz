@@ -57,7 +57,7 @@ pub fn installIsolatedPackages(
         // The universe of distinct peer-dependency names is small even in large
         // lockfiles, so each per-package set is a bitset over that universe and the
         // fixpoint is bitwise OR/ANDNOT on a contiguous buffer.
-        var peer_name_idx: std.AutoArrayHashMapUnmanaged(PackageNameHash, void) = .empty;
+        var peer_name_idx: std.array_hash_map.Auto(PackageNameHash, void) = .empty;
         defer peer_name_idx.deinit(lockfile.allocator);
         for (dependencies) |dep| {
             if (dep.behavior.isPeer()) {
@@ -649,11 +649,11 @@ pub fn installIsolatedPackages(
             .entry_parent_id = .invalid,
         });
 
-        var public_hoisted: bun.StringArrayHashMap(void) = .init(manager.allocator);
-        defer public_hoisted.deinit();
+        var public_hoisted: bun.StringArrayHashMap(void) = .empty;
+        defer public_hoisted.deinit(manager.allocator);
 
-        var hidden_hoisted: bun.StringArrayHashMap(void) = .init(manager.allocator);
-        defer hidden_hoisted.deinit();
+        var hidden_hoisted: bun.StringArrayHashMap(void) = .empty;
+        defer hidden_hoisted.deinit(manager.allocator);
 
         // Second pass: Deduplicate nodes when the pkg_id and peer set match an existing entry.
         next_entry: while (entry_queue.readItem()) |entry| {
@@ -756,12 +756,12 @@ pub fn installIsolatedPackages(
                 const dep_name = dependencies[new_entry_dep_id].name.slice(string_buf);
 
                 const hoist_pattern = manager.options.hoist_pattern orelse {
-                    const hoist_entry = try hidden_hoisted.getOrPut(dep_name);
+                    const hoist_entry = try hidden_hoisted.getOrPut(manager.allocator, dep_name);
                     break :hoisted !hoist_entry.found_existing;
                 };
 
                 if (hoist_pattern.isMatch(dep_name)) {
-                    const hoist_entry = try hidden_hoisted.getOrPut(dep_name);
+                    const hoist_entry = try hidden_hoisted.getOrPut(manager.allocator, dep_name);
                     break :hoisted !hoist_entry.found_existing;
                 }
 
@@ -801,13 +801,13 @@ pub fn installIsolatedPackages(
                     if (entry.entry_parent_id == .root) {
                         // make sure direct dependencies are not replaced
                         const dep_name = dependencies[new_entry_dep_id].name.slice(string_buf);
-                        try public_hoisted.put(dep_name, {});
+                        try public_hoisted.put(manager.allocator, dep_name, {});
                     } else {
                         // transitive dependencies (also direct dependencies of workspaces!)
                         const dep_name = dependencies[new_entry_dep_id].name.slice(string_buf);
                         if (manager.options.public_hoist_pattern) |public_hoist_pattern| {
                             if (public_hoist_pattern.isMatch(dep_name)) {
-                                const hoist_entry = try public_hoisted.getOrPut(dep_name);
+                                const hoist_entry = try public_hoisted.getOrPut(manager.allocator, dep_name);
                                 if (!hoist_entry.found_existing) {
                                     try entry_dependencies[0].insert(
                                         lockfile.allocator,
@@ -1097,7 +1097,7 @@ pub fn installIsolatedPackages(
             defer scc_stack.deinit(manager.allocator);
             var work: std.ArrayListUnmanaged(struct { v: u32, child: u32 }) = .empty;
             defer work.deinit(manager.allocator);
-            var scc_ext: std.AutoArrayHashMapUnmanaged(u64, void) = .empty;
+            var scc_ext: std.array_hash_map.Auto(u64, void) = .empty;
             defer scc_ext.deinit(manager.allocator);
 
             var index_counter: u32 = 0;

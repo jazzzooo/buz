@@ -102,7 +102,7 @@ pub const DebugOptions = struct {
     // technical debt
     macros: MacroOptions = MacroOptions.unspecified,
     editor: string = "",
-    package_bundle_map: bun.StringArrayHashMapUnmanaged(BundleEnums.BundlePackage) = bun.StringArrayHashMapUnmanaged(BundleEnums.BundlePackage){},
+    package_bundle_map: bun.StringArrayHashMap(BundleEnums.BundlePackage) = bun.StringArrayHashMap(BundleEnums.BundlePackage).empty,
 
     test_directory: []const u8 = "",
     output_file: []const u8 = "",
@@ -113,7 +113,7 @@ pub const MacroOptions = union(enum) { unspecified: void, disable: void, map: Ma
 /// Re-declared from `resolver/package_json.zig` (plain hashmap aliases) so this
 /// file does not depend on `resolver/`.
 pub const MacroImportReplacementMap = bun.StringArrayHashMap(string);
-pub const MacroMap = bun.StringArrayHashMapUnmanaged(MacroImportReplacementMap);
+pub const MacroMap = bun.StringArrayHashMap(MacroImportReplacementMap);
 
 pub const HotReload = enum {
     none,

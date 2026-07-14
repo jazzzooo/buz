@@ -1413,7 +1413,7 @@ pub const TestCommand = struct {
         var snapshot_file_buf = std.array_list.Managed(u8).init(ctx.allocator);
         var snapshot_values = Snapshots.ValuesHashMap.init(ctx.allocator);
         var snapshot_counts = bun.StringHashMap(usize).init(ctx.allocator);
-        var inline_snapshots_to_write = std.AutoArrayHashMap(TestRunner.File.ID, std.array_list.Managed(Snapshots.InlineSnapshotToWrite)).init(ctx.allocator);
+        var inline_snapshots_to_write = std.array_hash_map.Auto(TestRunner.File.ID, std.array_list.Managed(Snapshots.InlineSnapshotToWrite)).empty;
         jsc.VirtualMachine.isBunTest = true;
 
         var reporter = try ctx.allocator.create(CommandLineReporter);

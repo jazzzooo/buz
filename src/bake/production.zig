@@ -113,7 +113,7 @@ pub fn writeSourcemapToDisk(
     allocator: std.mem.Allocator,
     file: *const OutputFile,
     bundled_outputs: []const OutputFile,
-    source_maps: *bun.StringArrayHashMapUnmanaged(OutputFile.Index),
+    source_maps: *bun.StringArrayHashMap(OutputFile.Index),
 ) !void {
     // don't call this if the file does not have sourcemaps!
     bun.assert(file.source_map_index != std.math.maxInt(u32));
@@ -345,8 +345,8 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
     // Populate indexes in `entry_points` to be looked up during prerendering
     const module_keys = try vm.allocator.alloc(bun.String, entry_points.files.count());
     const output_indexes = entry_points.files.values();
-    var output_module_map: bun.StringArrayHashMapUnmanaged(OutputFile.Index) = .{};
-    var source_maps: bun.StringArrayHashMapUnmanaged(OutputFile.Index) = .{};
+    var output_module_map: bun.StringArrayHashMap(OutputFile.Index) = .empty;
+    var source_maps: bun.StringArrayHashMap(OutputFile.Index) = .empty;
     @memset(module_keys, bun.String.dead);
     for (bundled_outputs, 0..) |file, i| {
         log("src_index={?f} side={s} src={s} dest={s} - {?d}\n", .{
@@ -851,7 +851,7 @@ pub const EntryPointMap = struct {
     /// Values are left uninitialized until after the bundle is done and indexed.
     files: HashMap,
 
-    const HashMap = std.ArrayHashMapUnmanaged(InputFile, OutputFile.Index, InputFile.ArrayHashContext, true);
+    const HashMap = std.array_hash_map.Custom(InputFile, OutputFile.Index, InputFile.ArrayHashContext, true);
 
     /// This approach is used instead of what DevServer does so that each
     /// distinct file gets its own index.
@@ -923,8 +923,8 @@ pub const PerThread = struct {
     /// Indexed by entry point index (OpaqueFileId)
     module_keys: []const bun.String,
     /// Unordered
-    module_map: bun.StringArrayHashMapUnmanaged(OutputFile.Index),
-    source_maps: bun.StringArrayHashMapUnmanaged(OutputFile.Index),
+    module_map: bun.StringArrayHashMap(OutputFile.Index),
+    source_maps: bun.StringArrayHashMap(OutputFile.Index),
 
     // Thread-local
     vm: *jsc.VirtualMachine,
@@ -942,8 +942,8 @@ pub const PerThread = struct {
         /// Indexed by entry point index (OpaqueFileId)
         module_keys: []const bun.String,
         /// Unordered
-        module_map: bun.StringArrayHashMapUnmanaged(OutputFile.Index),
-        source_maps: bun.StringArrayHashMapUnmanaged(OutputFile.Index),
+        module_map: bun.StringArrayHashMap(OutputFile.Index),
+        source_maps: bun.StringArrayHashMap(OutputFile.Index),
     };
 
     extern fn BakeGlobalObject__attachPerThreadData(global: *jsc.JSGlobalObject, pt: ?*PerThread) void;

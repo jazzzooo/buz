@@ -663,7 +663,7 @@ pub const ShellSubprocess = struct {
             }
 
             pub fn len(this: *const @This()) usize {
-                return this.map.map.unmanaged.entries.len;
+                return this.map.map.entries.len;
             }
 
             pub fn next(this: *@This()) !?@This().Entry {

@@ -36,7 +36,7 @@ write_buffer: bun.io.StreamBuffer = .{},
 /// available, so frame handlers always see complete frames.
 read_buffer: std.ArrayListUnmanaged(u8) = .empty,
 
-streams: std.AutoArrayHashMapUnmanaged(u31, *Stream) = .{},
+streams: std.array_hash_map.Auto(u31, *Stream) = .empty,
 next_stream_id: u31 = 1,
 /// Stream id whose CONTINUATION sequence is in progress; 0 = none.
 expecting_continuation: u31 = 0,

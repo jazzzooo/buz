@@ -49,8 +49,8 @@ pub fn format(this: *const Cp, writer: *std.Io.Writer) !void {
 /// threadpool.
 const EbusyState = struct {
     tasks: std.ArrayListUnmanaged(*ShellCpTask) = .empty,
-    absolute_targets: bun.StringArrayHashMapUnmanaged(void) = .{},
-    absolute_srcs: bun.StringArrayHashMapUnmanaged(void) = .{},
+    absolute_targets: bun.StringArrayHashMap(void) = .empty,
+    absolute_srcs: bun.StringArrayHashMap(void) = .empty,
 
     pub fn deinit(this: *EbusyState) void {
         // The tasks themselves are freed in `ignoreEbusyErrorIfPossible()`

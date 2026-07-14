@@ -180,7 +180,7 @@ pub const Runtime = struct {
         /// Allow runtime usage of require(), converting `require` into `__require`
         auto_polyfill_require: bool = false,
 
-        replace_exports: ReplaceableExport.Map = .{},
+        replace_exports: ReplaceableExport.Map = .empty,
 
         /// Scan for '// @bun' at the top of this file, halting a parse if it is
         /// seen. This is used in `bun run` after a `bun build --target=bun`,
@@ -301,7 +301,7 @@ pub const Runtime = struct {
                 value: JSAst.Expr,
             },
 
-            pub const Map = bun.StringArrayHashMapUnmanaged(ReplaceableExport);
+            pub const Map = bun.StringArrayHashMap(ReplaceableExport);
         };
 
         pub const ServerComponentsMode = enum {

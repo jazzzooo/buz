@@ -26,7 +26,7 @@ is_after_const_local_prefix: bool = false,
 // This will be non-null if this is a TypeScript "namespace" or "enum"
 ts_namespace: ?*TSNamespaceScope = null,
 
-pub const NestedScopeMap = std.AutoArrayHashMap(u32, bun.BabyList(*Scope));
+pub const NestedScopeMap = std.array_hash_map.Auto(u32, bun.BabyList(*Scope));
 
 pub fn getMemberHash(name: []const u8) u64 {
     return bun.StringHashMapContext.hash(.{}, name);

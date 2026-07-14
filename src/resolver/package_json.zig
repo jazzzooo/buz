@@ -2,15 +2,15 @@
 // so use an array-backed hash table instead of bucketed
 pub const BrowserMap = bun.StringMap;
 pub const MacroImportReplacementMap = bun.StringArrayHashMap(string);
-pub const MacroMap = bun.StringArrayHashMapUnmanaged(MacroImportReplacementMap);
+pub const MacroMap = bun.StringArrayHashMap(MacroImportReplacementMap);
 
 const ScriptsMap = bun.StringArrayHashMap(string);
 
 pub const DependencyMap = struct {
-    map: HashMap = .{},
+    map: HashMap = .empty,
     source_buf: []const u8 = "",
 
-    pub const HashMap = std.ArrayHashMapUnmanaged(
+    pub const HashMap = std.array_hash_map.Custom(
         String,
         Dependency,
         String.ArrayHashContext,
@@ -533,7 +533,7 @@ pub const PackageJSON = struct {
         log: *logger.Log,
         json_source: *const logger.Source,
     ) MacroMap {
-        var macro_map = MacroMap{};
+        var macro_map: MacroMap = .empty;
         if (macros.data != .e_object) return macro_map;
 
         const properties = macros.data.e_object.properties.slice();
@@ -566,8 +566,8 @@ pub const PackageJSON = struct {
             const remap_properties = value.data.e_object.properties.slice();
             if (remap_properties.len == 0) continue;
 
-            var map = MacroImportReplacementMap.init(allocator);
-            map.ensureUnusedCapacity(remap_properties.len) catch unreachable;
+            var map: MacroImportReplacementMap = .empty;
+            map.ensureUnusedCapacity(allocator, remap_properties.len) catch unreachable;
             for (remap_properties) |remap| {
                 const import_name = remap.key.?.asString(allocator) orelse continue;
                 const remap_value = remap.value.?;
@@ -1011,7 +1011,7 @@ pub const PackageJSON = struct {
                 }
 
                 if (total_dependency_count > 0) {
-                    package_json.dependencies.map = DependencyMap.HashMap{};
+                    package_json.dependencies.map = .empty;
                     package_json.dependencies.source_buf = json_source.contents;
                     const ctx = String.ArrayHashContext{
                         .arg_buf = json_source.contents,
@@ -1261,7 +1261,7 @@ pub const ExportsMap = struct {
             };
 
             pub const Map = struct {
-                // This is not a std.ArrayHashMap because we also store the key_range which is a little weird
+                // This is not a std.array_hash_map.Custom because we also store the key_range which is a little weird
                 pub const List = std.MultiArrayList(MapEntry);
                 expansion_keys: []MapEntry,
                 list: List,

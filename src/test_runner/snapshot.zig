@@ -15,7 +15,7 @@ pub const Snapshots = struct {
     counts: *bun.StringHashMap(usize),
     _current_file: ?File = null,
     snapshot_dir_path: ?string = null,
-    inline_snapshots_to_write: *std.AutoArrayHashMap(TestRunner.File.ID, std.array_list.Managed(InlineSnapshotToWrite)),
+    inline_snapshots_to_write: *std.array_hash_map.Auto(TestRunner.File.ID, std.array_list.Managed(InlineSnapshotToWrite)),
     last_error_snapshot_name: ?[]const u8 = null,
 
     pub const InlineSnapshotToWrite = struct {
@@ -218,7 +218,7 @@ pub const Snapshots = struct {
     }
 
     pub fn addInlineSnapshotToWrite(self: *Snapshots, file_id: TestRunner.File.ID, value: InlineSnapshotToWrite) !void {
-        const gpres = try self.inline_snapshots_to_write.getOrPut(file_id);
+        const gpres = try self.inline_snapshots_to_write.getOrPut(self.allocator, file_id);
         if (!gpres.found_existing) {
             gpres.value_ptr.* = std.array_list.Managed(InlineSnapshotToWrite).init(self.allocator);
         }

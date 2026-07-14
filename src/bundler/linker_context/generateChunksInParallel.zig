@@ -213,7 +213,7 @@ pub fn generateChunksInParallel(
         const DuplicateEntry = struct {
             sources: std.ArrayListUnmanaged(*Chunk) = .empty,
         };
-        var duplicates_map: bun.StringArrayHashMapUnmanaged(DuplicateEntry) = .{};
+        var duplicates_map: bun.StringArrayHashMap(DuplicateEntry) = .empty;
 
         var chunk_visit_map = try AutoBitSet.initEmpty(c.allocator(), chunks.len);
         defer chunk_visit_map.deinit(c.allocator());

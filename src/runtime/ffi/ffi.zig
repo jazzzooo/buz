@@ -62,7 +62,7 @@ pub const FFI = struct {
     pub const fromJSDirect = js.fromJSDirect;
 
     dylib: ?std.DynLib = null,
-    functions: bun.StringArrayHashMapUnmanaged(Function) = .{},
+    functions: bun.StringArrayHashMap(Function) = .empty,
     closed: bool = false,
     shared_state: ?*TCC.State = null,
 
@@ -542,7 +542,7 @@ pub const FFI = struct {
         }
     };
     const SymbolsMap = struct {
-        map: bun.StringArrayHashMapUnmanaged(Function) = .{},
+        map: bun.StringArrayHashMap(Function) = .empty,
         pub fn deinit(this: *SymbolsMap) void {
             for (this.map.keys()) |key| {
                 bun.default_allocator.free(@constCast(key));
@@ -954,7 +954,7 @@ pub const FFI = struct {
         if (object.isEmptyOrUndefinedOrNull()) return invalidOptionsArg(global);
         const obj = object.getObject() orelse return invalidOptionsArg(global);
 
-        var symbols = bun.StringArrayHashMapUnmanaged(Function){};
+        var symbols = bun.StringArrayHashMap(Function).empty;
         if (generateSymbols(global, bun.default_allocator, &symbols, obj) catch jsc.JSValue.zero) |val| {
             // an error while validating symbols
             for (symbols.keys()) |key| {
@@ -1049,7 +1049,7 @@ pub const FFI = struct {
             return global.toInvalidArguments("Invalid library name", .{});
         }
 
-        var symbols = bun.StringArrayHashMapUnmanaged(Function){};
+        var symbols = bun.StringArrayHashMap(Function).empty;
         if (generateSymbols(global, bun.default_allocator, &symbols, object) catch jsc.JSValue.zero) |val| {
             // an error while validating symbols
             for (symbols.keys()) |key| {
@@ -1195,7 +1195,7 @@ pub const FFI = struct {
         if (object_value.isEmptyOrUndefinedOrNull()) return invalidOptionsArg(global);
         const object = object_value.getObject() orelse return invalidOptionsArg(global);
 
-        var symbols = bun.StringArrayHashMapUnmanaged(Function){};
+        var symbols = bun.StringArrayHashMap(Function).empty;
         if (generateSymbols(global, allocator, &symbols, object) catch jsc.JSValue.zero) |val| {
             // an error while validating symbols
             for (symbols.keys()) |key| {
@@ -1405,7 +1405,7 @@ pub const FFI = struct {
         return null;
     }
 
-    pub fn generateSymbols(global: *JSGlobalObject, allocator: Allocator, symbols: *bun.StringArrayHashMapUnmanaged(Function), object: *jsc.JSObject) bun.JSError!?JSValue {
+    pub fn generateSymbols(global: *JSGlobalObject, allocator: Allocator, symbols: *bun.StringArrayHashMap(Function), object: *jsc.JSObject) bun.JSError!?JSValue {
         jsc.markBinding(@src());
 
         var symbols_iter = try jsc.JSPropertyIterator(.{

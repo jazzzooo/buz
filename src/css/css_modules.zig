@@ -44,7 +44,7 @@ pub const CssModule = struct {
         };
         const exports_by_source_index = exports_by_source_index: {
             var exports_by_source_index = bun.handleOom(ArrayList(CssModuleExports).initCapacity(allocator, sources.items.len));
-            exports_by_source_index.appendNTimesAssumeCapacity(CssModuleExports{}, sources.items.len);
+            exports_by_source_index.appendNTimesAssumeCapacity(.empty, sources.items.len);
             break :exports_by_source_index exports_by_source_index;
         };
         return CssModule{
@@ -339,10 +339,10 @@ pub const Segment = union(enum) {
 };
 
 /// A map of exported names to values.
-pub const CssModuleExports = std.StringArrayHashMapUnmanaged(CssModuleExport);
+pub const CssModuleExports = std.array_hash_map.String(CssModuleExport);
 
 /// A map of placeholders to references.
-pub const CssModuleReferences = std.StringArrayHashMapUnmanaged(CssModuleReference);
+pub const CssModuleReferences = std.array_hash_map.String(CssModuleReference);
 
 /// An exported value from a CSS module.
 pub const CssModuleExport = struct {

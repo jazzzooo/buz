@@ -30,7 +30,7 @@ const DeferredTaskQueue = @This();
 
 pub const DeferredRepeatingTask = *const (fn (*anyopaque) bool);
 
-map: std.AutoArrayHashMapUnmanaged(?*anyopaque, DeferredRepeatingTask) = .{},
+map: std.array_hash_map.Auto(?*anyopaque, DeferredRepeatingTask) = .empty,
 
 pub fn postTask(this: *DeferredTaskQueue, ctx: ?*anyopaque, task: DeferredRepeatingTask) bool {
     const existing = bun.handleOom(this.map.getOrPutValue(bun.default_allocator, ctx, task));

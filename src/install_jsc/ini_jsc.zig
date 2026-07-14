@@ -19,7 +19,7 @@ pub const IniTestingAPIs = struct {
 
         const envjs = callframe.argument(1);
         const env = if (envjs.isEmptyOrUndefinedOrNull()) globalThis.bunVM().transpiler.env else brk: {
-            var envmap = bun.DotEnv.Map.HashTable.init(allocator);
+            var envmap: bun.DotEnv.Map.HashTable = .empty;
             const envobj = envjs.getObject() orelse return globalThis.throwTypeError("env must be an object", .{});
             var object_iter = try jsc.JSPropertyIterator(.{
                 .skip_empty_name = false,
@@ -27,7 +27,7 @@ pub const IniTestingAPIs = struct {
             }).init(globalThis, envobj);
             defer object_iter.deinit();
 
-            try envmap.ensureTotalCapacity(object_iter.len);
+            try envmap.ensureTotalCapacity(allocator, object_iter.len);
 
             while (try object_iter.next()) |key| {
                 const keyslice = try key.toOwnedSlice(allocator);
@@ -37,7 +37,7 @@ pub const IniTestingAPIs = struct {
                 const value_str = try value.getZigString(globalThis);
                 const slice = try value_str.toOwnedSlice(allocator);
 
-                envmap.put(keyslice, .{
+                envmap.put(allocator, keyslice, .{
                     .value = slice,
                     .conditional = false,
                 }) catch return globalThis.throwOutOfMemoryValue();
@@ -46,6 +46,7 @@ pub const IniTestingAPIs = struct {
             const map = try allocator.create(bun.DotEnv.Map);
             map.* = .{
                 .map = envmap,
+                .allocator = allocator,
             };
 
             const env = bun.DotEnv.Loader.init(map, allocator);

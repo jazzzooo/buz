@@ -37,7 +37,7 @@ pub const PackageInstaller = struct {
         optional: bool,
     }) = .{},
 
-    trusted_dependencies_from_update_requests: std.AutoArrayHashMapUnmanaged(TruncatedPackageNameHash, void),
+    trusted_dependencies_from_update_requests: std.array_hash_map.Auto(TruncatedPackageNameHash, void),
 
     // uses same ids as lockfile.trees
     trees: []TreeContext,

@@ -86,7 +86,7 @@ resolved_count: usize = 0,
 had_errors: bool = false,
 
 macros: MacroMap,
-macro_entry_points: std.AutoArrayHashMap(i32, *MacroEntryPoint),
+macro_entry_points: std.array_hash_map.Auto(i32, *MacroEntryPoint),
 macro_mode: bool = false,
 no_macros: bool = false,
 auto_killer: ProcessAutoKiller = .{ .enabled = false },
@@ -213,7 +213,7 @@ channel_ref_should_ignore_one_disconnect_event_listener: bool = false,
 ///
 /// `.keys() == transpiler.resolver.opts.extra_cjs_extensions`, so
 /// mutations in this map must update the resolver.
-commonjs_custom_extensions: bun.StringArrayHashMapUnmanaged(node_module_module.CustomLoader) = .empty,
+commonjs_custom_extensions: bun.StringArrayHashMap(node_module_module.CustomLoader) = .empty,
 /// Incremented when the `require.extensions` for a built-in extension is mutated.
 /// An example is mutating `require.extensions['.js']` to intercept all '.js' files.
 /// The value is decremented when defaults are restored.
@@ -1049,7 +1049,7 @@ pub fn waitForTasks(this: *VirtualMachine) void {
     }
 }
 
-pub const MacroMap = std.AutoArrayHashMap(i32, jsc.C.JSObjectRef);
+pub const MacroMap = std.array_hash_map.Auto(i32, jsc.C.JSObjectRef);
 
 pub fn enableMacroMode(this: *VirtualMachine) void {
     jsc.markBinding(@src());
@@ -1133,8 +1133,8 @@ pub fn initWithModuleGraph(
         .origin = transpiler.options.origin,
         .saved_source_map_table = SavedSourceMap.HashTable.init(bun.default_allocator),
         .source_mappings = undefined,
-        .macros = MacroMap.init(allocator),
-        .macro_entry_points = @TypeOf(vm.macro_entry_points).init(allocator),
+        .macros = .empty,
+        .macro_entry_points = .empty,
         .origin_timer = std.time.Timer.start() catch @panic("Timers are not supported on this system."),
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
@@ -1262,8 +1262,8 @@ pub fn init(opts: Options) !*VirtualMachine {
 
         .saved_source_map_table = SavedSourceMap.HashTable.init(bun.default_allocator),
         .source_mappings = undefined,
-        .macros = MacroMap.init(allocator),
-        .macro_entry_points = @TypeOf(vm.macro_entry_points).init(allocator),
+        .macros = .empty,
+        .macro_entry_points = .empty,
         .origin_timer = std.time.Timer.start() catch @panic("Please don't mess with timers."),
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
@@ -1430,8 +1430,8 @@ pub fn initWorker(
 
         .saved_source_map_table = SavedSourceMap.HashTable.init(bun.default_allocator),
         .source_mappings = undefined,
-        .macros = MacroMap.init(allocator),
-        .macro_entry_points = @TypeOf(vm.macro_entry_points).init(allocator),
+        .macros = .empty,
+        .macro_entry_points = .empty,
         .origin_timer = std.time.Timer.start() catch @panic("Please don't mess with timers."),
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
@@ -1526,8 +1526,8 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
         .origin = transpiler.options.origin,
         .saved_source_map_table = SavedSourceMap.HashTable.init(bun.default_allocator),
         .source_mappings = undefined,
-        .macros = MacroMap.init(allocator),
-        .macro_entry_points = @TypeOf(vm.macro_entry_points).init(allocator),
+        .macros = .empty,
+        .macro_entry_points = .empty,
         .origin_timer = std.time.Timer.start() catch @panic("Please don't mess with timers."),
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
@@ -2604,7 +2604,7 @@ pub fn swapGlobalForTestIsolation(this: *VirtualMachine) void {
 }
 
 pub fn loadMacroEntryPoint(this: *VirtualMachine, entry_path: string, function_name: string, specifier: string, hash: i32) !*JSInternalPromise {
-    const entry_point_entry = try this.macro_entry_points.getOrPut(hash);
+    const entry_point_entry = try this.macro_entry_points.getOrPut(this.allocator, hash);
 
     if (!entry_point_entry.found_existing) {
         var macro_entry_pointer: *MacroEntryPoint = this.allocator.create(MacroEntryPoint) catch unreachable;

@@ -336,9 +336,9 @@ pub fn promptForWarnings() bool {
 
 const PackageCollector = struct {
     manager: *PackageManager,
-    dedupe: std.AutoArrayHashMap(PackageID, void),
+    dedupe: std.array_hash_map.Auto(PackageID, void),
     queue: bun.LinearFifo(QueueItem, .Dynamic),
-    package_paths: std.AutoArrayHashMap(PackageID, PackagePath),
+    package_paths: std.array_hash_map.Auto(PackageID, PackagePath),
 
     const QueueItem = struct {
         pkg_id: PackageID,
@@ -350,14 +350,14 @@ const PackageCollector = struct {
     pub fn init(manager: *PackageManager) PackageCollector {
         return .{
             .manager = manager,
-            .dedupe = std.AutoArrayHashMap(PackageID, void).init(bun.default_allocator),
+            .dedupe = std.array_hash_map.Auto(PackageID, void).empty,
             .queue = bun.LinearFifo(QueueItem, .Dynamic).init(bun.default_allocator),
-            .package_paths = std.AutoArrayHashMap(PackageID, PackagePath).init(manager.allocator),
+            .package_paths = std.array_hash_map.Auto(PackageID, PackagePath).empty,
         };
     }
 
     pub fn deinit(this: *PackageCollector) void {
-        this.dedupe.deinit();
+        this.dedupe.deinit(bun.default_allocator);
         this.queue.deinit();
 
         var iter = this.package_paths.iterator();
@@ -365,7 +365,7 @@ const PackageCollector = struct {
             this.manager.allocator.free(entry.value_ptr.pkg_path);
             this.manager.allocator.free(entry.value_ptr.dep_path);
         }
-        this.package_paths.deinit();
+        this.package_paths.deinit(this.manager.allocator);
     }
 
     pub fn collectAllPackages(this: *PackageCollector) !void {
@@ -386,7 +386,7 @@ const PackageCollector = struct {
             const dep_res = pkg_resolutions[dep_pkg_id];
             if (dep_res.tag != .npm) continue;
 
-            if ((try this.dedupe.getOrPut(dep_pkg_id)).found_existing) continue;
+            if ((try this.dedupe.getOrPut(bun.default_allocator, dep_pkg_id)).found_existing) continue;
 
             var pkg_path_buf: std.ArrayList(PackageID) = .empty;
             try pkg_path_buf.append(this.manager.allocator, root_pkg_id);
@@ -418,7 +418,7 @@ const PackageCollector = struct {
                 const dep_res = pkg_resolutions[dep_pkg_id];
                 if (dep_res.tag != .npm) continue;
 
-                if ((try this.dedupe.getOrPut(dep_pkg_id)).found_existing) continue;
+                if ((try this.dedupe.getOrPut(bun.default_allocator, dep_pkg_id)).found_existing) continue;
 
                 var pkg_path_buf: std.ArrayList(PackageID) = .empty;
                 try pkg_path_buf.append(this.manager.allocator, pkg_id);
@@ -470,7 +470,7 @@ const PackageCollector = struct {
                 }
 
                 if (update_dep_id == invalid_dependency_id) continue;
-                if ((try this.dedupe.getOrPut(update_pkg_id)).found_existing) continue;
+                if ((try this.dedupe.getOrPut(bun.default_allocator, update_pkg_id)).found_existing) continue;
 
                 var initial_pkg_path: std.ArrayList(PackageID) = .empty;
                 if (parent_pkg_id != invalid_package_id) {
@@ -510,7 +510,7 @@ const PackageCollector = struct {
             const dep_path_copy = try this.manager.allocator.alloc(DependencyID, mutable_item.dep_path.items.len);
             @memcpy(dep_path_copy, mutable_item.dep_path.items);
 
-            try this.package_paths.put(pkg_id, .{
+            try this.package_paths.put(this.manager.allocator, pkg_id, .{
                 .pkg_path = pkg_path_copy,
                 .dep_path = dep_path_copy,
             });
@@ -525,7 +525,7 @@ const PackageCollector = struct {
                 const next_pkg_res = pkg_resolutions[next_pkg_id];
                 if (next_pkg_res.tag != .npm) continue;
 
-                if ((try this.dedupe.getOrPut(next_pkg_id)).found_existing) continue;
+                if ((try this.dedupe.getOrPut(bun.default_allocator, next_pkg_id)).found_existing) continue;
 
                 var extended_pkg_path: std.ArrayList(PackageID) = .empty;
                 try extended_pkg_path.appendSlice(this.manager.allocator, mutable_item.pkg_path.items);
@@ -968,7 +968,7 @@ pub const SecurityScanSubprocess = struct {
         }
     }
 
-    pub fn handleResults(this: *SecurityScanSubprocess, package_paths: *std.AutoArrayHashMap(PackageID, PackagePath), start_time: i64, packages_scanned: usize, security_scanner: []const u8, security_scanner_pkg_id: ?PackageID, command_ctx: bun.cli.Command.Context, original_cwd: []const u8, is_retry: bool) !ScanAttemptResult {
+    pub fn handleResults(this: *SecurityScanSubprocess, package_paths: *std.array_hash_map.Auto(PackageID, PackagePath), start_time: i64, packages_scanned: usize, security_scanner: []const u8, security_scanner_pkg_id: ?PackageID, command_ctx: bun.cli.Command.Context, original_cwd: []const u8, is_retry: bool) !ScanAttemptResult {
         _ = command_ctx; // Reserved for future use
         _ = original_cwd; // Reserved for future use
         defer {
@@ -1182,7 +1182,7 @@ pub const SecurityScanSubprocess = struct {
     }
 };
 
-fn parseSecurityAdvisoriesFromExpr(manager: *PackageManager, advisories_expr: bun.js_parser.Expr, package_paths: *std.AutoArrayHashMap(PackageID, PackagePath)) ![]SecurityAdvisory {
+fn parseSecurityAdvisoriesFromExpr(manager: *PackageManager, advisories_expr: bun.js_parser.Expr, package_paths: *std.array_hash_map.Auto(PackageID, PackagePath)) ![]SecurityAdvisory {
     var advisories_list: std.ArrayList(SecurityAdvisory) = .empty;
     defer advisories_list.deinit(manager.allocator);
 

@@ -37,12 +37,12 @@ pub const PropertyHandlerContext = struct {
     rtl: ArrayList(css.Property),
     dark: ArrayList(css.Property),
     context: DeclarationContext,
-    unused_symbols: *const std.StringArrayHashMapUnmanaged(void),
+    unused_symbols: *const std.array_hash_map.String(void),
 
     pub fn new(
         allocator: Allocator,
         targets: css.targets.Targets,
-        unused_symbols: *const std.StringArrayHashMapUnmanaged(void),
+        unused_symbols: *const std.array_hash_map.String(void),
     ) PropertyHandlerContext {
         return PropertyHandlerContext{
             .allocator = allocator,

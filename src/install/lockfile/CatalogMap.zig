@@ -1,9 +1,9 @@
 const CatalogMap = @This();
 
-const Map = std.ArrayHashMapUnmanaged(String, Dependency, String.ArrayHashContext, true);
+const Map = std.array_hash_map.Custom(String, Dependency, String.ArrayHashContext, true);
 
-default: Map = .{},
-groups: std.ArrayHashMapUnmanaged(String, Map, String.ArrayHashContext, true) = .{},
+default: Map = .empty,
+groups: std.array_hash_map.Custom(String, Map, String.ArrayHashContext, true) = .empty,
 
 pub fn hasAny(this: *const CatalogMap) bool {
     return this.default.count() > 0 or this.groups.count() > 0;
@@ -430,7 +430,7 @@ pub fn clone(this: *CatalogMap, pm: *PackageManager, old: *Lockfile, new: *Lockf
         const catalog_name = group.key_ptr;
         const deps = group.value_ptr;
 
-        var new_group: Map = .{};
+        var new_group: Map = .empty;
         try new_group.ensureTotalCapacity(new.allocator, deps.count());
 
         deps_iter = deps.iterator();

@@ -232,7 +232,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
         /// pretty-formatted path value that appear in imports. Absolute paths
         /// are stored so the watcher can quickly query and invalidate them.
         /// Key slices are owned by `dev.allocator()`
-        bundled_files: bun.StringArrayHashMapUnmanaged(File.Packed),
+        bundled_files: bun.StringArrayHashMap(File.Packed),
         /// Track bools for files which are "stale", meaning they should be
         /// re-bundled before being used. Resizing this is usually deferred
         /// until after a bundle, since resizing the bit-set requires an
@@ -713,7 +713,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
             edge_index: EdgeIndex,
             seen: bool,
 
-            const HashTable = AutoArrayHashMapUnmanaged(FileIndex, TempLookup);
+            const HashTable = AutoArrayHashMap(FileIndex, TempLookup);
         };
 
         /// Second pass of IncrementalGraph indexing
@@ -736,7 +736,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
 
             // Build a map from the existing import list. Later, entries that
             // were not marked as `.seen = true` will be freed.
-            var quick_lookup: TempLookup.HashTable = .{};
+            var quick_lookup: TempLookup.HashTable = .empty;
             defer quick_lookup.deinit(temp_alloc);
             {
                 var it: ?EdgeIndex = g.first_import.items[file_index.get()].unwrap();
@@ -1427,7 +1427,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
 
             const dev_alloc = g.allocator();
 
-            const Gop = bun.StringArrayHashMapUnmanaged(File.Packed).GetOrPutResult;
+            const Gop = bun.StringArrayHashMap(File.Packed).GetOrPutResult;
             // found_existing is destructured separately so that it is
             // comptime-known true when mode == .index
             const gop: Gop, const found_existing, const file_index = switch (mode) {
@@ -2073,5 +2073,5 @@ const Shared = bun.ptr.Shared;
 
 const std = @import("std");
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
-const AutoArrayHashMapUnmanaged = std.AutoArrayHashMapUnmanaged;
+const AutoArrayHashMap = std.array_hash_map.Auto;
 const Allocator = std.mem.Allocator;

@@ -305,7 +305,7 @@ pub const GlobalRegistry = struct {
     };
 
     var mutex: bun.Mutex = .{};
-    var configs: std.ArrayHashMapUnmanaged(*SSLConfig, WeakPtr, MapContext, true) = .empty;
+    var configs: std.array_hash_map.Custom(*SSLConfig, WeakPtr, MapContext, true) = .empty;
 
     /// Takes a by-value SSLConfig, wraps it in a `SharedPtr` (strong=1), and
     /// either returns an existing equivalent (upgraded) or the new one. Either

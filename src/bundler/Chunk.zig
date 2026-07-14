@@ -11,7 +11,7 @@ pub const Chunk = struct {
 
     /// Maps source index to bytes contributed to this chunk's output (for metafile).
     /// The value is updated during chunk generation to track bytesInOutput.
-    files_with_parts_in_chunk: std.AutoArrayHashMapUnmanaged(Index.Int, usize) = .{},
+    files_with_parts_in_chunk: std.array_hash_map.Auto(Index.Int, usize) = .empty,
 
     /// We must not keep pointers to this type until all chunks have been allocated.
     entry_bits: AutoBitSet = undefined,
@@ -650,8 +650,8 @@ pub const Chunk = struct {
         parts_in_chunk_in_order: []const PartRange = &.{},
 
         // for code splitting
-        exports_to_other_chunks: std.ArrayHashMapUnmanaged(Ref, string, Ref.ArrayHashCtx, false) = .{},
-        imports_from_other_chunks: ImportsFromOtherChunks = .{},
+        exports_to_other_chunks: std.array_hash_map.Custom(Ref, string, Ref.ArrayHashCtx, false) = .empty,
+        imports_from_other_chunks: ImportsFromOtherChunks = .empty,
         cross_chunk_prefix_stmts: BabyList(Stmt) = .{},
         cross_chunk_suffix_stmts: BabyList(Stmt) = .{},
 
@@ -774,7 +774,7 @@ pub const Chunk = struct {
         };
     };
 
-    pub const ImportsFromOtherChunks = std.AutoArrayHashMapUnmanaged(Index.Int, CrossChunkImport.Item.List);
+    pub const ImportsFromOtherChunks = std.array_hash_map.Auto(Index.Int, CrossChunkImport.Item.List);
 
     pub const Content = union(enum) {
         javascript: JavaScriptChunk,

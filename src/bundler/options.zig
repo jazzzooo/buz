@@ -39,9 +39,10 @@ pub fn validatePath(
 }
 
 pub fn stringHashMapFromArrays(comptime t: type, allocator: std.mem.Allocator, total_capacity: usize, keys: anytype, values: anytype) !t {
-    var hash_map = t.init(allocator);
+    var hash_map: t = .empty;
+    errdefer hash_map.deinit(allocator);
     if (keys.len > 0) {
-        try hash_map.ensureTotalCapacity(@as(u32, @intCast(total_capacity)));
+        try hash_map.ensureTotalCapacity(allocator, total_capacity);
         for (keys, 0..) |key, i| {
             hash_map.putAssumeCapacity(key, values[i]);
         }
@@ -1079,18 +1080,23 @@ pub const ESMConditions = struct {
     import: ConditionsMap,
     require: ConditionsMap,
     style: ConditionsMap,
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, defaults: []const string, allow_addons: bool, conditions: []const string) bun.OOM!ESMConditions {
-        var default_condition_amp = ConditionsMap.init(allocator);
+        var default_condition_amp: ConditionsMap = .empty;
+        errdefer default_condition_amp.deinit(allocator);
 
-        var import_condition_map = ConditionsMap.init(allocator);
-        var require_condition_map = ConditionsMap.init(allocator);
-        var style_condition_map = ConditionsMap.init(allocator);
+        var import_condition_map: ConditionsMap = .empty;
+        errdefer import_condition_map.deinit(allocator);
+        var require_condition_map: ConditionsMap = .empty;
+        errdefer require_condition_map.deinit(allocator);
+        var style_condition_map: ConditionsMap = .empty;
+        errdefer style_condition_map.deinit(allocator);
 
-        try default_condition_amp.ensureTotalCapacity(defaults.len + 2 + if (allow_addons) 1 else 0 + conditions.len);
-        try import_condition_map.ensureTotalCapacity(defaults.len + 2 + if (allow_addons) 1 else 0 + conditions.len);
-        try require_condition_map.ensureTotalCapacity(defaults.len + 2 + if (allow_addons) 1 else 0 + conditions.len);
-        try style_condition_map.ensureTotalCapacity(defaults.len + 2 + conditions.len);
+        try default_condition_amp.ensureTotalCapacity(allocator, defaults.len + 2 + if (allow_addons) 1 else 0 + conditions.len);
+        try import_condition_map.ensureTotalCapacity(allocator, defaults.len + 2 + if (allow_addons) 1 else 0 + conditions.len);
+        try require_condition_map.ensureTotalCapacity(allocator, defaults.len + 2 + if (allow_addons) 1 else 0 + conditions.len);
+        try style_condition_map.ensureTotalCapacity(allocator, defaults.len + 2 + conditions.len);
 
         import_condition_map.putAssumeCapacity("import", {});
         require_condition_map.putAssumeCapacity("require", {});
@@ -1127,32 +1133,34 @@ pub const ESMConditions = struct {
             .import = import_condition_map,
             .require = require_condition_map,
             .style = style_condition_map,
+            .allocator = allocator,
         };
     }
 
     pub fn clone(self: *const ESMConditions) !ESMConditions {
-        var default = try self.default.clone();
-        errdefer default.deinit();
-        var import = try self.import.clone();
-        errdefer import.deinit();
-        var require = try self.require.clone();
-        errdefer require.deinit();
-        var style = try self.style.clone();
-        errdefer style.deinit();
+        var default = try self.default.clone(self.allocator);
+        errdefer default.deinit(self.allocator);
+        var import = try self.import.clone(self.allocator);
+        errdefer import.deinit(self.allocator);
+        var require = try self.require.clone(self.allocator);
+        errdefer require.deinit(self.allocator);
+        var style = try self.style.clone(self.allocator);
+        errdefer style.deinit(self.allocator);
 
         return .{
             .default = default,
             .import = import,
             .require = require,
             .style = style,
+            .allocator = self.allocator,
         };
     }
 
     pub fn appendSlice(self: *ESMConditions, conditions: []const string) bun.OOM!void {
-        try self.default.ensureUnusedCapacity(conditions.len);
-        try self.import.ensureUnusedCapacity(conditions.len);
-        try self.require.ensureUnusedCapacity(conditions.len);
-        try self.style.ensureUnusedCapacity(conditions.len);
+        try self.default.ensureUnusedCapacity(self.allocator, conditions.len);
+        try self.import.ensureUnusedCapacity(self.allocator, conditions.len);
+        try self.require.ensureUnusedCapacity(self.allocator, conditions.len);
+        try self.style.ensureUnusedCapacity(self.allocator, conditions.len);
 
         for (conditions) |condition| {
             self.default.putAssumeCapacity(condition, {});
@@ -1163,10 +1171,10 @@ pub const ESMConditions = struct {
     }
 
     pub fn append(self: *ESMConditions, condition: string) bun.OOM!void {
-        try self.default.put(condition, {});
-        try self.import.put(condition, {});
-        try self.require.put(condition, {});
-        try self.style.put(condition, {});
+        try self.default.put(self.allocator, condition, {});
+        try self.import.put(self.allocator, condition, {});
+        try self.require.put(self.allocator, condition, {});
+        try self.style.put(self.allocator, condition, {});
     }
 };
 
@@ -1391,10 +1399,10 @@ pub fn definesFromTransformOptions(
         input_user_define.keys,
         input_user_define.values,
     );
-    defer user_defines.deinit();
+    defer user_defines.deinit(allocator);
 
-    var environment_defines = defines.UserDefinesArray.init(allocator);
-    defer environment_defines.deinit();
+    var environment_defines: defines.UserDefinesArray = .empty;
+    defer environment_defines.deinit(allocator);
 
     var behavior: api.DotEnvBehavior = .disable;
 
@@ -1448,10 +1456,12 @@ pub fn definesFromTransformOptions(
         };
 
         _ = try user_defines.getOrPutValue(
+            allocator,
             "process.env.NODE_ENV",
             quoted_node_env,
         );
         _ = try user_defines.getOrPutValue(
+            allocator,
             "process.env.BUN_ENV",
             quoted_node_env,
         );
@@ -1459,13 +1469,13 @@ pub fn definesFromTransformOptions(
         // Automatically set `process.browser` to `true` for browsers and false for node+js
         // This enables some extra dead code elimination
         if (target.processBrowserDefineValue()) |value| {
-            _ = try user_defines.getOrPutValue(DefaultUserDefines.ProcessBrowserDefine.Key, value);
+            _ = try user_defines.getOrPutValue(allocator, DefaultUserDefines.ProcessBrowserDefine.Key, value);
         }
     }
 
     if (target.isBun()) {
         if (!user_defines.contains("window")) {
-            _ = try environment_defines.getOrPutValue("window", .init(.{
+            _ = try environment_defines.getOrPutValue(allocator, "window", .init(.{
                 .valueless = true,
                 .original_name = "window",
                 .value = .{ .e_undefined = .{} },
@@ -1578,21 +1588,21 @@ pub fn loadersFromTransformOptions(allocator: std.mem.Allocator, _loaders: ?api.
         input_loaders.extensions,
         loader_values,
     );
-    errdefer loaders.deinit();
+    errdefer loaders.deinit(allocator);
 
     inline for (default_loader_ext) |ext| {
-        _ = try loaders.getOrPutValue(ext, defaultLoaders.get(ext).?);
+        _ = try loaders.getOrPutValue(allocator, ext, defaultLoaders.get(ext).?);
     }
 
     if (target.isBun()) {
         inline for (default_loader_ext_bun) |ext| {
-            _ = try loaders.getOrPutValue(ext, defaultLoaders.get(ext).?);
+            _ = try loaders.getOrPutValue(allocator, ext, defaultLoaders.get(ext).?);
         }
     }
 
     if (target == .browser) {
         inline for (default_loader_ext_browser) |ext| {
-            _ = try loaders.getOrPutValue(ext, defaultLoaders.get(ext).?);
+            _ = try loaders.getOrPutValue(allocator, ext, defaultLoaders.get(ext).?);
         }
     }
 

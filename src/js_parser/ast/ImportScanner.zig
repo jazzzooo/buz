@@ -206,8 +206,7 @@ pub fn scan(
 
                 record.flags.contains_default_alias = record.flags.contains_default_alias or st.default_name != null;
 
-                const existing_items: ImportItemForNamespaceMap = p.import_items_for_namespace.get(namespace_ref) orelse
-                    ImportItemForNamespaceMap.init(allocator);
+                const existing_items: ImportItemForNamespaceMap = p.import_items_for_namespace.get(namespace_ref) orelse .empty;
 
                 if (p.options.bundle) {
                     if (st.star_name_loc != null and existing_items.count() > 0) {

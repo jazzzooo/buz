@@ -127,7 +127,7 @@ const MacroRefData = struct {
     name: ?string = null,
 };
 
-const MacroRefs = std.AutoArrayHashMap(Ref, MacroRefData);
+const MacroRefs = std.array_hash_map.Auto(Ref, MacroRefData);
 
 pub const Substitution = union(enum) {
     success: Expr,
@@ -769,7 +769,7 @@ pub const ScanPassResult = struct {
         return .{
             .import_records = ListManaged(ImportRecord).init(allocator),
             .named_imports = .{},
-            .used_symbols = ParsePassSymbolUsageMap.init(allocator),
+            .used_symbols = .empty,
             .import_records_to_keep = ListManaged(u32).init(allocator),
             .approximate_newline_count = 0,
         };
@@ -901,7 +901,7 @@ pub const Prefill = struct {
 };
 
 const ReactJSX = struct {
-    hoisted_elements: std.ArrayHashMapUnmanaged(Ref, G.Decl, bun.ArrayIdentityContext, false) = .{},
+    hoisted_elements: std.array_hash_map.Custom(Ref, G.Decl, bun.ArrayIdentityContext, false) = .empty,
 };
 
 pub const ImportOrRequireScanResults = struct {
@@ -918,13 +918,13 @@ pub const ImportItemForNamespaceMap = bun.StringArrayHashMap(LocRef);
 pub const MacroState = struct {
     refs: MacroRefs,
     prepend_stmts: *ListManaged(Stmt) = undefined,
-    imports: std.AutoArrayHashMap(i32, Ref),
+    imports: std.array_hash_map.Auto(i32, Ref),
 
-    pub fn init(allocator: Allocator) MacroState {
-        return MacroState{
-            .refs = MacroRefs.init(allocator),
+    pub fn init() MacroState {
+        return .{
+            .refs = .empty,
             .prepend_stmts = undefined,
-            .imports = std.AutoArrayHashMap(i32, Ref).init(allocator),
+            .imports = .empty,
         };
     }
 };
@@ -1139,7 +1139,7 @@ pub const ReactRefresh = struct {
     pub const HookContext = struct {
         hasher: std.hash.Wyhash,
         signature_cb: Ref,
-        user_hooks: std.AutoArrayHashMapUnmanaged(Ref, Expr),
+        user_hooks: std.array_hash_map.Auto(Ref, Expr),
     };
 
     // https://github.com/facebook/react/blob/d1afcb43fd506297109c32ff462f6f659f9110ae/packages/react-refresh/src/ReactFreshBabelPlugin.js#L42

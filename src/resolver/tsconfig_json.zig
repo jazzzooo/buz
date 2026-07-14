@@ -32,6 +32,7 @@ pub const TSConfigJSON = struct {
     // module-style path names and the fallback paths are relative to the
     // "baseUrl" value in the "tsconfig.json" file.
     paths: PathsMap,
+    allocator: std.mem.Allocator,
 
     jsx: options.JSX.Pragma = options.JSX.Pragma{},
     jsx_flags: JSXFieldSet = JSXFieldSet{},
@@ -149,8 +150,8 @@ pub const TSConfigJSON = struct {
 
         bun.analytics.Features.tsconfig += 1;
 
-        var result: TSConfigJSON = TSConfigJSON{ .abs_path = source.path.text, .paths = PathsMap.init(allocator) };
-        errdefer allocator.free(result.paths);
+        var result: TSConfigJSON = .{ .abs_path = source.path.text, .paths = .empty, .allocator = allocator };
+        errdefer result.paths.deinit(allocator);
         if (json.asProperty("extends")) |extends_value| {
             if (!source.path.isNodeModule()) {
                 if (extends_value.expr.asString(allocator) orelse null) |str| {
@@ -282,7 +283,7 @@ pub const TSConfigJSON = struct {
                         }
                         var paths = paths_prop.expr.data.e_object;
                         result.base_url_for_paths = if (result.base_url.len > 0) result.base_url else ".";
-                        result.paths = PathsMap.init(allocator);
+                        result.paths = .empty;
                         for (paths.properties.slice()) |property| {
                             const key_prop = property.key orelse continue;
                             const key = (key_prop.asString(allocator)) orelse continue;
@@ -357,6 +358,7 @@ pub const TSConfigJSON = struct {
                                                 values = allocator.realloc(values, count) catch values;
                                             }
                                             result.paths.put(
+                                                allocator,
                                                 key,
                                                 values[0..count],
                                             ) catch unreachable;
@@ -502,7 +504,7 @@ pub const TSConfigJSON = struct {
     }
 
     pub fn deinit(this: *TSConfigJSON) void {
-        this.paths.deinit();
+        this.paths.deinit(this.allocator);
         bun.destroy(this);
     }
 };

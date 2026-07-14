@@ -60,8 +60,8 @@ pub const Serialized = struct {
     // TODO:
 };
 
-const StaticRouteMap = bun.StringArrayHashMapUnmanaged(Route.Index);
-const DynamicRouteMap = std.ArrayHashMapUnmanaged(EncodedPattern, Route.Index, EncodedPattern.EffectiveURLContext, true);
+const StaticRouteMap = bun.StringArrayHashMap(Route.Index);
+const DynamicRouteMap = std.array_hash_map.Custom(EncodedPattern, Route.Index, EncodedPattern.EffectiveURLContext, true);
 
 /// A logical route, for which layouts are looked up on after resolving a route.
 pub const Route = struct {

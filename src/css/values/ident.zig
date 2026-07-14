@@ -68,7 +68,7 @@ pub const DashedIdent = struct {
     v: []const u8,
 
     pub fn HashMap(comptime V: type) type {
-        return std.ArrayHashMapUnmanaged(
+        return std.array_hash_map.Custom(
             DashedIdent,
             V,
             struct {

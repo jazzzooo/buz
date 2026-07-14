@@ -139,10 +139,10 @@ pub const PmPkgCommand = struct {
             return;
         }
 
-        var results = bun.StringArrayHashMap([]const u8).init(ctx.allocator);
+        var results = bun.StringArrayHashMap([]const u8).empty;
         defer {
             for (results.values()) |val| ctx.allocator.free(val);
-            results.deinit();
+            results.deinit(ctx.allocator);
         }
 
         for (args) |key| {
@@ -150,11 +150,11 @@ pub const PmPkgCommand = struct {
                 if (args.len > 1) {
                     if (strings.lastIndexOfChar(value, '}')) |last_index| {
                         const new_value = try std.fmt.allocPrint(ctx.allocator, "{s}  {s}", .{ value[0..last_index], value[last_index..] });
-                        try results.put(key, new_value);
+                        try results.put(ctx.allocator, key, new_value);
                         continue;
                     }
                 }
-                try results.put(key, value);
+                try results.put(ctx.allocator, key, value);
             } else |err| {
                 if (err == error.InvalidPath) {
                     if (strings.indexOf(key, "[]")) |_| {

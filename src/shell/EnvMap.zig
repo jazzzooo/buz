@@ -1,10 +1,11 @@
 const EnvMap = @This();
 
-map: MapType,
+map: MapType = .empty,
+allocator: Allocator,
 
 pub const Iterator = MapType.Iterator;
 
-const MapType = std.ArrayHashMap(EnvStr, EnvStr, struct {
+const MapType = std.array_hash_map.Custom(EnvStr, EnvStr, struct {
     pub fn hash(self: @This(), s: EnvStr) u32 {
         _ = self;
         if (bun.Environment.isWindows) {
@@ -23,7 +24,7 @@ const MapType = std.ArrayHashMap(EnvStr, EnvStr, struct {
 }, true);
 
 pub fn init(alloc: Allocator) EnvMap {
-    return .{ .map = MapType.init(alloc) };
+    return .{ .allocator = alloc };
 }
 
 pub fn memoryCost(this: *const EnvMap) usize {
@@ -38,20 +39,20 @@ pub fn memoryCost(this: *const EnvMap) usize {
 }
 
 pub fn initWithCapacity(alloc: Allocator, cap: usize) EnvMap {
-    var map = MapType.init(alloc);
-    bun.handleOom(map.ensureTotalCapacity(cap));
-    return .{ .map = map };
+    var map: MapType = .empty;
+    bun.handleOom(map.ensureTotalCapacity(alloc, cap));
+    return .{ .map = map, .allocator = alloc };
 }
 
 pub fn deinit(this: *EnvMap) void {
     this.derefStrings();
-    this.map.deinit();
+    this.map.deinit(this.allocator);
 }
 
 /// NOTE: This will `.ref()` value, so you should `defer value.deref()` it
 /// before handing it to this function!!!
 pub fn insert(this: *EnvMap, key: EnvStr, val: EnvStr) void {
-    const result = bun.handleOom(this.map.getOrPut(key));
+    const result = bun.handleOom(this.map.getOrPut(this.allocator, key));
     if (!result.found_existing) {
         key.ref();
     } else {
@@ -71,7 +72,7 @@ pub fn clearRetainingCapacity(this: *EnvMap) void {
 }
 
 pub fn ensureTotalCapacity(this: *EnvMap, new_capacity: usize) void {
-    bun.handleOom(this.map.ensureTotalCapacity(new_capacity));
+    bun.handleOom(this.map.ensureTotalCapacity(this.allocator, new_capacity));
 }
 
 /// NOTE: Make sure you deref the string when done!
@@ -83,7 +84,8 @@ pub fn get(this: *EnvMap, key: EnvStr) ?EnvStr {
 
 pub fn clone(this: *EnvMap) EnvMap {
     var new: EnvMap = .{
-        .map = bun.handleOom(this.map.clone()),
+        .map = bun.handleOom(this.map.clone(this.allocator)),
+        .allocator = this.allocator,
     };
     new.refStrings();
     return new;
@@ -91,7 +93,8 @@ pub fn clone(this: *EnvMap) EnvMap {
 
 pub fn cloneWithAllocator(this: *EnvMap, allocator: Allocator) EnvMap {
     var new: EnvMap = .{
-        .map = bun.handleOom(this.map.cloneWithAllocator(allocator)),
+        .map = bun.handleOom(this.map.clone(allocator)),
+        .allocator = allocator,
     };
     new.refStrings();
     return new;

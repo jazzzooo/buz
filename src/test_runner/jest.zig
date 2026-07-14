@@ -70,7 +70,7 @@ const CurrentFile = struct {
 pub const TestRunner = struct {
     current_file: CurrentFile = CurrentFile{},
     files: File.List = .{},
-    index: File.Map = File.Map{},
+    index: File.Map = .empty,
     only: bool = false,
     run_todo: bool = false,
     concurrent: bool = false,
@@ -177,7 +177,7 @@ pub const TestRunner = struct {
 
         pub const List = std.MultiArrayList(File);
         pub const ID = u32;
-        pub const Map = std.ArrayHashMapUnmanaged(u32, u32, ArrayIdentityContext, false);
+        pub const Map = std.array_hash_map.Custom(u32, u32, ArrayIdentityContext, false);
     };
 };
 

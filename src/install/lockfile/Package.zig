@@ -534,8 +534,8 @@ pub fn Package(comptime SemverIntType: type) type {
 
                 // bool for if this dependency should be added to lockfile trusted dependencies.
                 // it is false when the new trusted dependency is coming from the default list.
-                added_trusted_dependencies: std.ArrayHashMapUnmanaged(TruncatedPackageNameHash, bool, ArrayIdentityContext, false) = .{},
-                removed_trusted_dependencies: TrustedDependenciesSet = .{},
+                added_trusted_dependencies: std.array_hash_map.Custom(TruncatedPackageNameHash, bool, ArrayIdentityContext, false) = .empty,
+                removed_trusted_dependencies: TrustedDependenciesSet = .empty,
 
                 patched_dependencies_changed: bool = false,
 
@@ -1417,13 +1417,13 @@ pub fn Package(comptime SemverIntType: type) type {
             // `peerDependencies`. Track the original key string so the
             // post-build pass can emit a real `Dependency` for any meta-only
             // names that nothing in the build loop consumed.
-            var optional_peer_dependencies = std.ArrayHashMap(PackageNameHash, []const u8, ArrayIdentityContext.U64, false).init(allocator);
-            defer optional_peer_dependencies.deinit();
+            var optional_peer_dependencies = std.array_hash_map.Custom(PackageNameHash, []const u8, ArrayIdentityContext.U64, false).empty;
+            defer optional_peer_dependencies.deinit(allocator);
 
             if (features.peer_dependencies) if (json.asProperty("peerDependenciesMeta")) |peer_dependencies_meta| {
                 if (peer_dependencies_meta.expr.data == .e_object) {
                     const props = peer_dependencies_meta.expr.data.e_object.properties.slice();
-                    try optional_peer_dependencies.ensureUnusedCapacity(props.len);
+                    try optional_peer_dependencies.ensureUnusedCapacity(allocator, props.len);
                     for (props) |prop| {
                         if (prop.value.?.asProperty("optional")) |optional| {
                             if (optional.expr.data != .e_boolean or !optional.expr.data.e_boolean.value) {
@@ -1782,7 +1782,7 @@ pub fn Package(comptime SemverIntType: type) type {
 
             inline for (dependency_groups) |group| {
                 if (group.behavior.isWorkspace()) {
-                    var seen_workspace_names = TrustedDependenciesSet{};
+                    var seen_workspace_names: TrustedDependenciesSet = .empty;
                     defer seen_workspace_names.deinit(allocator);
                     for (workspace_names.values(), workspace_names.keys()) |entry, path| {
 

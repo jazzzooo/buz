@@ -96,7 +96,7 @@ pub const InternalMsgHolder = struct {
 
     // TODO: move this to an Array or a JS Object or something which doesn't
     // individually create a Strong for every single IPC message...
-    callbacks: std.AutoArrayHashMapUnmanaged(i32, jsc.Strong.Optional) = .{},
+    callbacks: std.array_hash_map.Auto(i32, jsc.Strong.Optional) = .empty,
     worker: jsc.Strong.Optional = .empty,
     cb: jsc.Strong.Optional = .empty,
     messages: std.ArrayListUnmanaged(jsc.Strong.Optional) = .empty,
