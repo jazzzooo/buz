@@ -879,7 +879,7 @@ pub fn Parser(comptime enc: Encoding) type {
             return .init(E.Object, .{ .properties = props.moveList() }, mapping_start.loc());
         }
 
-        fn parseBlockSequence(self: *@This()) ParseError!Expr {
+        fn parseBlockSequence(self: *@This(), explicit_mapping_indent: ?Indent) ParseError!Expr {
             const sequence_start = self.token.start;
             const sequence_indent = self.token.indent;
             const sequence_line = self.token.line;
@@ -909,7 +909,12 @@ pub fn Parser(comptime enc: Encoding) type {
 
                 prev_line = self.token.line;
                 try self.scan(.{ .additional_parent_indent = sequence_indent.add(1) });
-                const item = try self.parseBlockIndented(sequence_indent, entry_line, entry_start.add(2), .sequence_entry);
+                const item = try self.parseBlockIndented(
+                    sequence_indent,
+                    entry_line,
+                    entry_start.add(2),
+                    .{ .sequence_entry = explicit_mapping_indent },
+                );
                 try seq.append(item);
             }
 
@@ -1301,7 +1306,7 @@ pub fn Parser(comptime enc: Encoding) type {
         };
 
         const BlockIndentedKind = union(enum) {
-            sequence_entry,
+            sequence_entry: ?Indent,
             explicit_mapping_key,
             mapping_value: struct {
                 flow_pair_allowed: bool,
@@ -1433,13 +1438,14 @@ pub fn Parser(comptime enc: Encoding) type {
                 try self.scan(.{ .tag = tag });
             }
 
-            const explicit_mapping_key = switch (kind) {
-                .explicit_mapping_key => true,
-                else => false,
+            const explicit_mapping_indent = switch (kind) {
+                .sequence_entry => |indent| indent,
+                .explicit_mapping_key => n,
+                else => null,
             };
             return self.parseNode(.{
-                .current_mapping_indent = n,
-                .explicit_mapping_key = explicit_mapping_key,
+                .current_mapping_indent = explicit_mapping_indent orelse n,
+                .explicit_mapping_key = explicit_mapping_indent != null,
                 .scanned_tag = node_props.has_tag,
                 .scanned_anchor = node_props.has_anchor,
             });
@@ -1709,7 +1715,11 @@ pub fn Parser(comptime enc: Encoding) type {
                         }
                     }
 
-                    break :node try self.parseBlockSequence();
+                    const explicit_mapping_indent = if (opts.explicit_mapping_key)
+                        opts.current_mapping_indent
+                    else
+                        null;
+                    break :node try self.parseBlockSequence(explicit_mapping_indent);
                 },
                 .mapping_start => {
                     const mapping_start = self.token.start;
@@ -1768,7 +1778,13 @@ pub fn Parser(comptime enc: Encoding) type {
                     const key = key: {
                         try self.block_indents.push(mapping_indent);
                         defer self.block_indents.pop();
-                        try self.scan(.{ .block_indented = true });
+                        switch (self.context.get()) {
+                            .block_out, .block_in => try self.scan(.{
+                                .additional_parent_indent = mapping_indent.add(1),
+                                .block_indented = true,
+                            }),
+                            .flow_in, .flow_key => try self.scan(.{}),
+                        }
                         break :key try self.parseBlockIndented(
                             mapping_indent,
                             mapping_line,
