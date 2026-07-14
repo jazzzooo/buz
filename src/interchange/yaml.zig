@@ -1131,6 +1131,12 @@ pub fn Parser(comptime enc: Encoding) type {
 
                 const key = try self.parseNode(.{ .current_mapping_indent = mapping_indent });
 
+                if (explicit_key and self.token.data != .mapping_value) {
+                    const value: Expr = .init(E.Null, .{}, self.token.start.loc());
+                    try props.appendMaybeMerge(key, value, &self.merge_props_budget);
+                    continue;
+                }
+
                 switch (self.token.data) {
                     .eof,
                     => {
@@ -1521,6 +1527,13 @@ pub fn Parser(comptime enc: Encoding) type {
             }
         };
 
+        fn isExplicitMappingValue(self: *const @This(), opts: ParseNodeOptions, node_line: Line) bool {
+            const mapping_indent = opts.current_mapping_indent orelse return false;
+            return opts.explicit_mapping_key and
+                self.token.line != node_line and
+                self.token.indent == mapping_indent;
+        }
+
         fn parseNode(self: *@This(), opts: ParseNodeOptions) ParseError!Expr {
             if (!self.stack_check.isSafeToRecurse()) {
                 try bun.throwStackOverflow();
@@ -1598,6 +1611,8 @@ pub fn Parser(comptime enc: Encoding) type {
                     try self.scan(.{});
 
                     if (self.token.data == .mapping_value) {
+                        if (self.isExplicitMappingValue(opts, alias_line)) break :node copy;
+
                         if (alias_line != self.token.line and !opts.explicit_mapping_key) {
                             return error.MultilineImplicitKey;
                         }
@@ -1634,6 +1649,8 @@ pub fn Parser(comptime enc: Encoding) type {
                     const seq = try self.parseFlowSequence();
 
                     if (self.token.data == .mapping_value) {
+                        if (self.isExplicitMappingValue(opts, sequence_line)) break :node seq;
+
                         if (sequence_line != self.token.line and !opts.explicit_mapping_key) {
                             return error.MultilineImplicitKey;
                         }
@@ -1703,6 +1720,8 @@ pub fn Parser(comptime enc: Encoding) type {
                     const map = try self.parseFlowMapping();
 
                     if (self.token.data == .mapping_value) {
+                        if (self.isExplicitMappingValue(opts, mapping_line)) break :node map;
+
                         if (mapping_line != self.token.line and !opts.explicit_mapping_key) {
                             return error.MultilineImplicitKey;
                         }
@@ -1837,6 +1856,10 @@ pub fn Parser(comptime enc: Encoding) type {
                     try self.scan(.{ .tag = node_props.tag(), .outside_context = true });
 
                     if (self.token.data == .mapping_value) {
+                        if (self.isExplicitMappingValue(opts, scalar_line)) {
+                            break :node scalar.data.toExpr(scalar_start, self.input);
+                        }
+
                         // this might be the start of a new object with an implicit key
                         //
                         // ```
