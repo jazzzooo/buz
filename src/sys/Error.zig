@@ -158,12 +158,12 @@ pub fn name(this: *const Error) []const u8 {
 
             break :brk @as(SystemErrno, @enumFromInt(this.errno));
         };
-        if (bun.tagName(SystemErrno, system_errno)) |errname| {
+        if (std.enums.tagName(SystemErrno, system_errno)) |errname| {
             return errname;
         }
     } else if (this.errno > 0 and this.errno < SystemErrno.max) {
         const system_errno = @as(SystemErrno, @enumFromInt(this.errno));
-        if (bun.tagName(SystemErrno, system_errno)) |errname| {
+        if (std.enums.tagName(SystemErrno, system_errno)) |errname| {
             return errname;
         }
     }
@@ -193,7 +193,7 @@ pub fn getErrorCodeTagName(err: *const Error) ?struct { [:0]const u8, SystemErrn
 
             break :brk @enumFromInt(err.errno);
         };
-        if (bun.tagName(SystemErrno, system_errno)) |errname| {
+        if (std.enums.tagName(SystemErrno, system_errno)) |errname| {
             return .{ errname, system_errno };
         }
     }

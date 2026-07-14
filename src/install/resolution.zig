@@ -430,7 +430,7 @@ pub fn ResolutionType(comptime SemverIntType: type) type {
 
             pub fn format(formatter: DebugFormatter, writer: *std.Io.Writer) !void {
                 try writer.writeAll("Resolution{ .");
-                try writer.writeAll(bun.tagName(Tag, formatter.resolution.tag) orelse "invalid");
+                try writer.writeAll(std.enums.tagName(Tag, formatter.resolution.tag) orelse "invalid");
                 try writer.writeAll(" = ");
                 switch (formatter.resolution.tag) {
                     .npm => try formatter.resolution.value.npm.version.fmt(formatter.buf).format(writer),

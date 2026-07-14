@@ -3394,14 +3394,6 @@ pub const libdeflate = @import("./libdeflate_sys/libdeflate.zig");
 
 pub const bake = @import("./bake/bake.zig");
 
-/// like std.enums.tagName, except it doesn't lose the sentinel value.
-pub fn tagName(comptime Enum: type, value: Enum) ?[:0]const u8 {
-    const enum_info = @typeInfo(Enum).@"enum";
-    return inline for (enum_info.field_names, enum_info.field_values) |name, field_value| {
-        if (@intFromEnum(value) == field_value) break name;
-    } else null;
-}
-
 pub fn getTotalMemorySize() usize {
     return cpp.Bun__ramSize();
 }

@@ -20,7 +20,6 @@ const words: Record<string, { reason: string; regex?: boolean }> = {
   "std.StringArrayHashMap(": { reason: "bun.StringArrayHashMap has a faster `eql`" },
   "std.StringHashMapUnmanaged(": { reason: "bun.StringHashMapUnmanaged has a faster `eql`" },
   "std.StringHashMap(": { reason: "bun.StringHashMap has a faster `eql`" },
-  "std.enums.tagName(": { reason: "Use bun.tagName instead" },
   "std.unicode": { reason: "Use bun.strings instead" },
   "std.Thread.Mutex": {reason: "Use bun.Mutex instead" },
   ".jsBoolean(true)": { reason: "Use .true instead" },

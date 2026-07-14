@@ -344,7 +344,7 @@ fn parseOptionDefinitions(globalThis: *JSGlobalObject, options_obj: JSValue, opt
             @tagName(option.type),
             if (!option.short_name.isEmpty()) option.short_name else String.static("none"),
             @intFromBool(option.multiple),
-            if (option.default_value) |dv| bun.tagName(JSValue, dv) else null,
+            if (option.default_value) |dv| std.enums.tagName(JSValue, dv) else null,
         });
 
         try option_definitions.append(option);
