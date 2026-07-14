@@ -59,7 +59,7 @@ pub const TestingAPIs = struct {
 
         const posix = std.posix;
         const sentry = struct {
-            fn handler(_: c_int) callconv(.c) void {}
+            fn handler(_: std.posix.SIG) callconv(.c) void {}
         };
         var mask = bun.sys.sigemptyset();
         bun.sys.sigaddset(&mask, posix.SIG.USR2);

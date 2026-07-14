@@ -351,7 +351,7 @@ const State = struct {
 const AbortHandler = struct {
     var should_abort = false;
 
-    fn posixSignalHandler(sig: i32, info: *const std.posix.siginfo_t, _: ?*const anyopaque) callconv(.c) void {
+    fn posixSignalHandler(sig: std.posix.SIG, info: *const std.posix.siginfo_t, _: ?*const anyopaque) callconv(.c) void {
         _ = sig;
         _ = info;
         should_abort = true;

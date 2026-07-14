@@ -452,7 +452,7 @@ pub const Coordinator = struct {
         var prev_int: if (Environment.isPosix) bun.sys.Sigaction else void = undefined;
         var prev_term: if (Environment.isPosix) bun.sys.Sigaction else void = undefined;
 
-        fn posixHandler(_: i32, _: *const std.posix.siginfo_t, _: ?*const anyopaque) callconv(.c) void {
+        fn posixHandler(_: std.posix.SIG, _: *const std.posix.siginfo_t, _: ?*const anyopaque) callconv(.c) void {
             should_abort.store(true, .release);
         }
 

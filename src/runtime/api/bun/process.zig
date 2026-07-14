@@ -577,7 +577,7 @@ pub const Process = struct {
         if (comptime Environment.isPosix) {
             switch (this.poller) {
                 .waiter_thread, .fd => {
-                    const err = std.c.kill(this.pid, signal);
+                    const err = std.c.kill(this.pid, @enumFromInt(signal));
                     if (err != 0) {
                         const errno_ = bun.sys.getErrno(err);
 
@@ -646,7 +646,7 @@ pub const Status = union(enum) {
                 }
 
                 if (std.posix.W.IFSIGNALED(result.status)) {
-                    signal = @as(u8, @truncate(std.posix.W.TERMSIG(result.status)));
+                    signal = @intCast(@intFromEnum(std.posix.W.TERMSIG(result.status)));
                 }
 
                 // https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/waitpid.2.html
@@ -655,7 +655,7 @@ pub const Status = union(enum) {
                 // ified the WUNTRACED option or if the child process is being
                 // traced (see ptrace(2)).
                 else if (std.posix.W.IFSTOPPED(result.status)) {
-                    signal = @as(u8, @truncate(std.posix.W.STOPSIG(result.status)));
+                    signal = @intCast(@intFromEnum(std.posix.W.STOPSIG(result.status)));
                 }
             },
         }
@@ -994,7 +994,7 @@ const WaiterThreadPosix = struct {
         thread.detach();
     }
 
-    fn wakeup(_: c_int) callconv(.c) void {
+    fn wakeup(_: std.posix.SIG) callconv(.c) void {
         const one = @as([8]u8, @bitCast(@as(usize, 1)));
         _ = bun.sys.write(instance.eventfd, &one).unwrap() catch 0;
     }
@@ -2461,7 +2461,7 @@ pub const sync = struct {
                 for (&out) |*array_list| {
                     array_list.clearAndFree();
                 }
-                _ = std.c.kill(process.pid, 1);
+                _ = std.c.kill(process.pid, std.posix.SIG.HUP);
             }
 
             for (out_fds) |fd| {

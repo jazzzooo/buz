@@ -777,7 +777,7 @@ fn restoreTerminal(self: *Repl) void {
 /// Global pointer for signal handler to access the VM
 var sigint_vm: ?*jsc.VM = null;
 
-fn sigintHandler(_: c_int) callconv(.c) void {
+fn sigintHandler(_: std.posix.SIG) callconv(.c) void {
     if (sigint_vm) |vm| {
         vm.setExecutionForbidden(true);
     }

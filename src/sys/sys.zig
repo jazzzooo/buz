@@ -2250,8 +2250,8 @@ pub const Sigaction = if (Environment.isAndroid) extern struct {
             @compileError("std.c.Sigaction now matches bionic; remove the bun.sys.Sigaction workaround");
     }
 
-    pub const handler_fn = *align(1) const fn (i32) callconv(.c) void;
-    pub const sigaction_fn = *const fn (i32, *const posix.siginfo_t, ?*anyopaque) callconv(.c) void;
+    pub const handler_fn = *align(1) const fn (posix.SIG) callconv(.c) void;
+    pub const sigaction_fn = *const fn (posix.SIG, *const posix.siginfo_t, ?*anyopaque) callconv(.c) void;
 
     // bionic declares `int sa_flags`, but `SA_RESETHAND` is `0x80000000`
     // which doesn't fit a `c_int` literal in Zig. `c_uint` is ABI-identical
@@ -2270,26 +2270,30 @@ pub inline fn sigemptyset() sigset_t {
     return posix.sigemptyset();
 }
 
-pub inline fn sigaddset(set: *sigset_t, sig: u8) void {
+pub inline fn sigaddset(set: *sigset_t, sig: posix.SIG) void {
     if (comptime Environment.isAndroid) {
-        set.* |= @as(c_ulong, 1) << @as(u6, @intCast(sig - 1));
+        set.* |= @as(c_ulong, 1) << @as(u6, @intCast(@intFromEnum(sig) - 1));
         return;
     }
     posix.sigaddset(set, sig);
 }
 
-pub fn sigaction(sig: u8, noalias act: ?*const Sigaction, noalias oact: ?*Sigaction) void {
+pub fn sigaction(sig: posix.SIG, noalias act: ?*const Sigaction, noalias oact: ?*Sigaction) void {
     // Call libc directly on every platform. `std.posix.sigaction` does
     // `else => unreachable` on error, but `raiseIgnoringPanicHandler` can
     // legitimately pass `SIGKILL`/`SIGSTOP` here (when re-raising a child's
     // terminating signal), for which libc returns `EINVAL`. On Android we
     // also can't reuse `std.c.sigaction` because its parameter type is the
     // glibc-shaped `Sigaction`.
-    const libc_sigaction = if (comptime Environment.isAndroid) @extern(
-        *const fn (c_int, noalias ?*const Sigaction, noalias ?*Sigaction) callconv(.c) c_int,
-        .{ .name = "sigaction" },
-    ) else std.c.sigaction;
-    _ = libc_sigaction(sig, act, oact);
+    if (comptime Environment.isAndroid) {
+        const libc_sigaction = @extern(
+            *const fn (c_int, noalias ?*const Sigaction, noalias ?*Sigaction) callconv(.c) c_int,
+            .{ .name = "sigaction" },
+        );
+        _ = libc_sigaction(@intCast(@intFromEnum(sig)), act, oact);
+    } else {
+        _ = std.c.sigaction(sig, act, oact);
+    }
 }
 
 pub fn ppoll(fds: []std.posix.pollfd, timeout: ?*std.posix.timespec, sigmask: ?*const std.posix.sigset_t) Maybe(usize) {
