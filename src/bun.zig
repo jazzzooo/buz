@@ -1222,7 +1222,7 @@ var needs_proc_self_workaround: bool = false;
 // necessary on linux because other platforms don't have an optional
 // /proc/self/fd
 fn getFdPathViaCWD(fd: std.posix.fd_t, buf: *bun.PathBuffer) ![]u8 {
-    const prev_fd = try std.posix.openatZ(std.fs.cwd().fd, ".", .{ .DIRECTORY = true }, 0);
+    const prev_fd = try std.posix.openatZ(std.Io.Dir.cwd().handle, ".", .{ .DIRECTORY = true }, 0);
     var needs_chdir = false;
     defer {
         if (needs_chdir) std.posix.fchdir(prev_fd) catch unreachable;

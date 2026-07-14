@@ -1071,7 +1071,7 @@ pub fn normalizePathWindows(
     }
 
     const base_fd = if (dir_fd == bun.invalid_fd)
-        std.fs.cwd().fd
+        std.Io.Dir.cwd().handle
     else
         dir_fd.cast();
 
@@ -1140,7 +1140,7 @@ fn openDirAtWindowsNtPath(
         .RootDirectory = if (std.fs.path.isAbsoluteWindowsWTF16(path))
             null
         else if (dirFd == bun.invalid_fd)
-            std.fs.cwd().fd
+            std.Io.Dir.cwd().handle
         else
             dirFd.cast(),
         .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
@@ -1350,7 +1350,7 @@ pub fn openFileAtWindowsNtPath(
         .RootDirectory = if (bun.strings.hasPrefixComptimeType(u16, path, windows.nt_object_prefix))
             null
         else if (dir == bun.invalid_fd)
-            std.fs.cwd().fd
+            std.Io.Dir.cwd().handle
         else
             dir.cast(),
         .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
@@ -3646,14 +3646,14 @@ fn utimensWithFlags(path: bun.OSPathSliceZ, atime: jsc.Node.TimeLike, mtime: jsc
             .{ .sec = @intCast(mtime.sec), .nsec = mtime.nsec },
         };
         const rc = syscall.utimensat(
-            std.fs.cwd().fd,
+            std.Io.Dir.cwd().handle,
             path,
             // this var should be a const, the zig type definition is wrong.
             &times,
             flags,
         );
 
-        log("utimensat({d}, atime=({d}, {d}), mtime=({d}, {d})) = {d}", .{ std.fs.cwd().fd, atime.sec, atime.nsec, mtime.sec, mtime.nsec, rc });
+        log("utimensat({d}, atime=({d}, {d}), mtime=({d}, {d})) = {d}", .{ std.Io.Dir.cwd().handle, atime.sec, atime.nsec, mtime.sec, mtime.nsec, rc });
 
         if (rc == 0) {
             return .success;
@@ -3735,7 +3735,7 @@ pub fn existsAtType(fd: bun.FD, subpath: anytype) Maybe(ExistsAtType) {
             .RootDirectory = if (std.fs.path.isAbsoluteWindowsWTF16(path))
                 null
             else if (fd == bun.invalid_fd)
-                std.fs.cwd().fd
+                std.Io.Dir.cwd().handle
             else
                 fd.cast(),
             .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.

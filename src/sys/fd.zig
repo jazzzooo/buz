@@ -68,7 +68,7 @@ pub const FD = packed struct(backing_int) {
     }
 
     pub fn cwd() FD {
-        return .fromNative(std.fs.cwd().fd);
+        return .fromNative(std.Io.Dir.cwd().handle);
     }
 
     pub fn stdin() FD {

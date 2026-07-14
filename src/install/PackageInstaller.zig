@@ -187,7 +187,7 @@ pub const PackageInstaller = struct {
         pub fn close(this: *LazyPackageDestinationDir) void {
             switch (this.*) {
                 .dir => {
-                    if (this.dir.fd != std.fs.cwd().fd) {
+                    if (this.dir.fd != std.Io.Dir.cwd().handle) {
                         this.dir.close();
                     }
                 },
@@ -1116,7 +1116,7 @@ pub const PackageInstaller = struct {
             };
 
             defer {
-                if (std.fs.cwd().fd != destination_dir.fd) destination_dir.close();
+                if (std.Io.Dir.cwd().handle != destination_dir.fd) destination_dir.close();
             }
 
             var lazy_package_dir: LazyPackageDestinationDir = .{ .dir = destination_dir };

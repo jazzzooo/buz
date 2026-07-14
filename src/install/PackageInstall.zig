@@ -116,7 +116,7 @@ pub const PackageInstall = struct {
 
         var destination_dir = this.node_modules.openDir(root_node_modules_dir) catch return false;
         defer {
-            if (std.fs.cwd().fd != destination_dir.fd) destination_dir.close();
+            if (std.Io.Dir.cwd().handle != destination_dir.fd) destination_dir.close();
         }
 
         if (comptime bun.Environment.isPosix) {
