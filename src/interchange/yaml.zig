@@ -7,8 +7,8 @@ pub const YAML = struct {
         var parser: Parser(.utf8) = .init(allocator, source.contents);
 
         const stream = parser.parse() catch |e| {
-            const err: Parser(.utf8).ParseResult = .fail(e, &parser);
-            try err.err.addToLog(source, log);
+            const err = parser.errorDetails(e);
+            try err.addToLog(source, log);
             return error.SyntaxError;
         };
 
@@ -30,16 +30,6 @@ pub const YAML = struct {
         };
     }
 };
-
-pub fn parse(comptime encoding: Encoding, allocator: std.mem.Allocator, input: []const encoding.unit()) Parser(encoding).ParseResult {
-    var parser: Parser(encoding) = .init(allocator, input);
-
-    const stream = parser.parse() catch |err| {
-        return .fail(err, &parser);
-    };
-
-    return .success(stream, &parser);
-}
 
 pub const Context = enum {
     block_out,
@@ -336,160 +326,133 @@ pub fn Parser(comptime enc: Encoding) type {
             // std.debug.assert(self.future == null);
         }
 
-        pub const ParseResult = union(enum) {
-            result: Result,
-            err: Error,
+        const Error = union(enum) {
+            oom,
+            stack_overflow,
+            unexpected_eof: struct {
+                pos: Pos,
+            },
+            unexpected_token: struct {
+                pos: Pos,
+            },
+            unexpected_character: struct {
+                pos: Pos,
+            },
+            invalid_directive: struct {
+                pos: Pos,
+            },
+            unresolved_tag_handle: struct {
+                pos: Pos,
+            },
+            unresolved_alias: struct {
+                pos: Pos,
+            },
+            // scalar_type_mismatch: struct {
+            //     pos: Pos,
+            // },
+            multiline_implicit_key: struct {
+                pos: Pos,
+            },
+            multiple_anchors: struct {
+                pos: Pos,
+            },
+            multiple_tags: struct {
+                pos: Pos,
+            },
+            unexpected_document_start: struct {
+                pos: Pos,
+            },
+            unexpected_document_end: struct {
+                pos: Pos,
+            },
+            multiple_yaml_directives: struct {
+                pos: Pos,
+            },
+            invalid_indentation: struct {
+                pos: Pos,
+            },
+            excessive_aliasing: struct {
+                pos: Pos,
+            },
 
-            pub const Result = struct {
-                stream: Stream,
-                allocator: std.mem.Allocator,
-
-                pub fn deinit(this: *@This()) void {
-                    for (this.stream.docs.items) |doc| {
-                        doc.deinit();
-                    }
-                }
-            };
-
-            pub const Error = union(enum) {
-                oom,
-                stack_overflow,
-                unexpected_eof: struct {
-                    pos: Pos,
-                },
-                unexpected_token: struct {
-                    pos: Pos,
-                },
-                unexpected_character: struct {
-                    pos: Pos,
-                },
-                invalid_directive: struct {
-                    pos: Pos,
-                },
-                unresolved_tag_handle: struct {
-                    pos: Pos,
-                },
-                unresolved_alias: struct {
-                    pos: Pos,
-                },
-                // scalar_type_mismatch: struct {
-                //     pos: Pos,
-                // },
-                multiline_implicit_key: struct {
-                    pos: Pos,
-                },
-                multiple_anchors: struct {
-                    pos: Pos,
-                },
-                multiple_tags: struct {
-                    pos: Pos,
-                },
-                unexpected_document_start: struct {
-                    pos: Pos,
-                },
-                unexpected_document_end: struct {
-                    pos: Pos,
-                },
-                multiple_yaml_directives: struct {
-                    pos: Pos,
-                },
-                invalid_indentation: struct {
-                    pos: Pos,
-                },
-                excessive_aliasing: struct {
-                    pos: Pos,
-                },
-
-                pub fn addToLog(this: *const Error, source: *const logger.Source, log: *logger.Log) (OOM || error{StackOverflow})!void {
-                    switch (this.*) {
-                        .oom => return error.OutOfMemory,
-                        .stack_overflow => return error.StackOverflow,
-                        .unexpected_eof => |e| {
-                            try log.addError(source, e.pos.loc(), "Unexpected EOF");
-                        },
-                        .unexpected_token => |e| {
-                            try log.addError(source, e.pos.loc(), "Unexpected token");
-                        },
-                        .unexpected_character => |e| {
-                            try log.addError(source, e.pos.loc(), "Unexpected character");
-                        },
-                        .invalid_directive => |e| {
-                            try log.addError(source, e.pos.loc(), "Invalid directive");
-                        },
-                        .unresolved_tag_handle => |e| {
-                            try log.addError(source, e.pos.loc(), "Unresolved tag handle");
-                        },
-                        .unresolved_alias => |e| {
-                            try log.addError(source, e.pos.loc(), "Unresolved alias");
-                        },
-                        .multiline_implicit_key => |e| {
-                            try log.addError(source, e.pos.loc(), "Multiline implicit key");
-                        },
-                        .multiple_anchors => |e| {
-                            try log.addError(source, e.pos.loc(), "Multiple anchors");
-                        },
-                        .multiple_tags => |e| {
-                            try log.addError(source, e.pos.loc(), "Multiple tags");
-                        },
-                        .unexpected_document_start => |e| {
-                            try log.addError(source, e.pos.loc(), "Unexpected document start");
-                        },
-                        .unexpected_document_end => |e| {
-                            try log.addError(source, e.pos.loc(), "Unexpected document end");
-                        },
-                        .multiple_yaml_directives => |e| {
-                            try log.addError(source, e.pos.loc(), "Multiple YAML directives");
-                        },
-                        .invalid_indentation => |e| {
-                            try log.addError(source, e.pos.loc(), "Tab characters cannot be used as indentation");
-                        },
-                        .excessive_aliasing => |e| {
-                            try log.addError(source, e.pos.loc(), "Excessive aliasing");
-                        },
-                    }
-                }
-            };
-
-            pub fn success(stream: Stream, parser: *const Parser(enc)) ParseResult {
-                return .{
-                    .result = .{
-                        .stream = stream,
-                        .allocator = parser.allocator,
+            pub fn addToLog(this: *const Error, source: *const logger.Source, log: *logger.Log) (OOM || error{StackOverflow})!void {
+                switch (this.*) {
+                    .oom => return error.OutOfMemory,
+                    .stack_overflow => return error.StackOverflow,
+                    .unexpected_eof => |e| {
+                        try log.addError(source, e.pos.loc(), "Unexpected EOF");
                     },
-                };
-            }
-
-            pub fn fail(err: ParseError, parser: *const Parser(enc)) ParseResult {
-                return .{
-                    .err = switch (err) {
-                        error.OutOfMemory => .oom,
-                        error.StackOverflow => .stack_overflow,
-                        // error.UnexpectedToken => if (parser.token.data == .eof)
-                        //     .{ .unexpected_eof = .{ .pos = parser.token.start } }
-                        // else
-                        //     .{ .unexpected_token = .{ .pos = parser.token.start } },
-                        error.UnexpectedToken => .{ .unexpected_token = .{ .pos = parser.token.start } },
-                        error.UnexpectedEof => .{ .unexpected_eof = .{ .pos = parser.token.start } },
-                        error.InvalidDirective => .{ .invalid_directive = .{ .pos = parser.token.start } },
-                        error.UnexpectedCharacter => if (!parser.pos.isLessThan(parser.input.len))
-                            .{ .unexpected_eof = .{ .pos = parser.pos } }
-                        else
-                            .{ .unexpected_character = .{ .pos = parser.pos } },
-                        error.UnresolvedTagHandle => .{ .unresolved_tag_handle = .{ .pos = parser.pos } },
-                        error.UnresolvedAlias => .{ .unresolved_alias = .{ .pos = parser.token.start } },
-                        // error.ScalarTypeMismatch => .{ .scalar_type_mismatch = .{ .pos = parser.token.start } },
-                        error.MultilineImplicitKey => .{ .multiline_implicit_key = .{ .pos = parser.token.start } },
-                        error.MultipleAnchors => .{ .multiple_anchors = .{ .pos = parser.token.start } },
-                        error.MultipleTags => .{ .multiple_tags = .{ .pos = parser.token.start } },
-                        error.UnexpectedDocumentStart => .{ .unexpected_document_start = .{ .pos = parser.pos } },
-                        error.UnexpectedDocumentEnd => .{ .unexpected_document_end = .{ .pos = parser.pos } },
-                        error.MultipleYamlDirectives => .{ .multiple_yaml_directives = .{ .pos = parser.token.start } },
-                        error.InvalidIndentation => .{ .invalid_indentation = .{ .pos = parser.pos } },
-                        error.ExcessiveAliasing => .{ .excessive_aliasing = .{ .pos = parser.token.start } },
+                    .unexpected_token => |e| {
+                        try log.addError(source, e.pos.loc(), "Unexpected token");
                     },
-                };
+                    .unexpected_character => |e| {
+                        try log.addError(source, e.pos.loc(), "Unexpected character");
+                    },
+                    .invalid_directive => |e| {
+                        try log.addError(source, e.pos.loc(), "Invalid directive");
+                    },
+                    .unresolved_tag_handle => |e| {
+                        try log.addError(source, e.pos.loc(), "Unresolved tag handle");
+                    },
+                    .unresolved_alias => |e| {
+                        try log.addError(source, e.pos.loc(), "Unresolved alias");
+                    },
+                    .multiline_implicit_key => |e| {
+                        try log.addError(source, e.pos.loc(), "Multiline implicit key");
+                    },
+                    .multiple_anchors => |e| {
+                        try log.addError(source, e.pos.loc(), "Multiple anchors");
+                    },
+                    .multiple_tags => |e| {
+                        try log.addError(source, e.pos.loc(), "Multiple tags");
+                    },
+                    .unexpected_document_start => |e| {
+                        try log.addError(source, e.pos.loc(), "Unexpected document start");
+                    },
+                    .unexpected_document_end => |e| {
+                        try log.addError(source, e.pos.loc(), "Unexpected document end");
+                    },
+                    .multiple_yaml_directives => |e| {
+                        try log.addError(source, e.pos.loc(), "Multiple YAML directives");
+                    },
+                    .invalid_indentation => |e| {
+                        try log.addError(source, e.pos.loc(), "Tab characters cannot be used as indentation");
+                    },
+                    .excessive_aliasing => |e| {
+                        try log.addError(source, e.pos.loc(), "Excessive aliasing");
+                    },
+                }
             }
         };
+
+        fn errorDetails(self: *const @This(), err: ParseError) Error {
+            return switch (err) {
+                error.OutOfMemory => .oom,
+                error.StackOverflow => .stack_overflow,
+                // error.UnexpectedToken => if (self.token.data == .eof)
+                //     .{ .unexpected_eof = .{ .pos = self.token.start } }
+                // else
+                //     .{ .unexpected_token = .{ .pos = self.token.start } },
+                error.UnexpectedToken => .{ .unexpected_token = .{ .pos = self.token.start } },
+                error.UnexpectedEof => .{ .unexpected_eof = .{ .pos = self.token.start } },
+                error.InvalidDirective => .{ .invalid_directive = .{ .pos = self.token.start } },
+                error.UnexpectedCharacter => if (!self.pos.isLessThan(self.input.len))
+                    .{ .unexpected_eof = .{ .pos = self.pos } }
+                else
+                    .{ .unexpected_character = .{ .pos = self.pos } },
+                error.UnresolvedTagHandle => .{ .unresolved_tag_handle = .{ .pos = self.pos } },
+                error.UnresolvedAlias => .{ .unresolved_alias = .{ .pos = self.token.start } },
+                // error.ScalarTypeMismatch => .{ .scalar_type_mismatch = .{ .pos = self.token.start } },
+                error.MultilineImplicitKey => .{ .multiline_implicit_key = .{ .pos = self.token.start } },
+                error.MultipleAnchors => .{ .multiple_anchors = .{ .pos = self.token.start } },
+                error.MultipleTags => .{ .multiple_tags = .{ .pos = self.token.start } },
+                error.UnexpectedDocumentStart => .{ .unexpected_document_start = .{ .pos = self.pos } },
+                error.UnexpectedDocumentEnd => .{ .unexpected_document_end = .{ .pos = self.pos } },
+                error.MultipleYamlDirectives => .{ .multiple_yaml_directives = .{ .pos = self.token.start } },
+                error.InvalidIndentation => .{ .invalid_indentation = .{ .pos = self.pos } },
+                error.ExcessiveAliasing => .{ .excessive_aliasing = .{ .pos = self.token.start } },
+            };
+        }
 
         fn unexpectedToken() error{UnexpectedToken} {
             return error.UnexpectedToken;
