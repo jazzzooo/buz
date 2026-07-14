@@ -1955,8 +1955,8 @@ pub fn TopLevelRuleParser(comptime AtRuleParserT: type) type {
             return NestedRuleParser(AtRuleParserT){
                 .options = this.options,
                 .at_rule_parser = this.at_rule_parser,
-                .declarations = DeclarationList{},
-                .important_declarations = DeclarationList{},
+                .declarations = DeclarationList.empty,
+                .important_declarations = DeclarationList.empty,
                 .rules = this.rules,
                 .is_in_style_rule = false,
                 .allow_declarations = false,
@@ -2650,7 +2650,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                 // about that).
                 if (this.composes_state == .allow) {
                     const len = input.position() - location;
-                    var usage = PropertyBitset.initEmpty();
+                    var usage: PropertyBitset = .empty;
                     var custom_properties = bun.BabyList([]const u8){};
                     fillPropertyBitSet(this.allocator, &usage, &declarations, &custom_properties);
 
@@ -2725,8 +2725,8 @@ pub fn NestedRuleParser(comptime T: type) type {
                 .allocator = input.allocator(),
                 .options = this.options,
                 .at_rule_parser = this.at_rule_parser,
-                .declarations = DeclarationList{},
-                .important_declarations = DeclarationList{},
+                .declarations = DeclarationList.empty,
+                .important_declarations = DeclarationList.empty,
                 .rules = &rules,
                 .is_in_style_rule = this.is_in_style_rule or is_style_rule,
                 .allow_declarations = this.allow_declarations or this.is_in_style_rule or is_style_rule,
@@ -3028,7 +3028,7 @@ pub const ComposesEntry = struct {
     composes: bun.BabyList(Composes) = .{},
 };
 pub const PropertyUsage = struct {
-    bitset: PropertyBitset = PropertyBitset.initEmpty(),
+    bitset: PropertyBitset = .empty,
     custom_properties: []const []const u8 = &.{},
     range: bun.logger.Range,
 

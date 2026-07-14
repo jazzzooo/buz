@@ -1235,7 +1235,7 @@ pub fn toUTF16AllocMaybeBuffered(
         const out_length = bun.simdutf.length.utf16.from.utf8(bytes);
 
         if (out_length == 0) {
-            break :output .{};
+            break :output .empty;
         }
 
         var out = try allocator.alloc(u16, out_length);

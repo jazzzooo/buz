@@ -32,7 +32,7 @@ pub fn fromJS(globalThis: *jsc.JSGlobalObject, input: jsc.JSValue) bun.JSError!j
         return .js_undefined;
     }
 
-    var array = UpdateRequest.Array{};
+    var array = UpdateRequest.Array.empty;
 
     const update_requests = UpdateRequest.parseWithError(allocator, null, &log, all_positionals.items, &array, .add, false) catch {
         return globalThis.throwValue(try log.toJS(globalThis, bun.default_allocator, "Failed to parse dependencies"));

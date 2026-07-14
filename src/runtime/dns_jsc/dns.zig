@@ -1563,7 +1563,7 @@ pub const internal = struct {
         };
         var notify = req.notify;
         defer notify.deinit(bun.default_allocator);
-        req.notify = .{};
+        req.notify = .empty;
         req.refcount -= 1;
 
         // is this correct, or should it go after the loop?

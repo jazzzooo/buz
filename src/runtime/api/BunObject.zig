@@ -1797,8 +1797,7 @@ pub const JSZlib = struct {
                     defer reader.deinit();
                     return globalThis.throwValue(ZigString.init(reader.errorMessage() orelse "Zlib returned an error").toErrorInstance(globalThis));
                 };
-                reader.list = .{ .items = bun.handleOom(reader.list.toOwnedSlice(allocator)) };
-                reader.list.capacity = reader.list.items.len;
+                reader.list = .fromOwnedSlice(bun.handleOom(reader.list.toOwnedSlice(allocator)));
                 reader.list_ptr = &reader.list;
 
                 var array_buffer = jsc.ArrayBuffer.fromBytes(reader.list.items, .Uint8Array);

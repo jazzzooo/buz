@@ -731,7 +731,7 @@ pub const FFI = struct {
 
         if (try object.getOwn(globalThis, "source")) |source_value| {
             if (source_value.isArray()) {
-                compile_c.source = .{ .files = .{} };
+                compile_c.source = .{ .files = .empty };
                 var iter = try source_value.arrayIterator(globalThis);
                 while (try iter.next()) |value| {
                     if (!value.isString()) {

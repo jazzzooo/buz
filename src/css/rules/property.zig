@@ -43,7 +43,7 @@ pub const PropertyRule = struct {
                 if (p2.isExhausted()) {
                     break :brk ParsedComponent{
                         .token_list = css.TokenList{
-                            .v = .{},
+                            .v = .empty,
                         },
                     };
                 }

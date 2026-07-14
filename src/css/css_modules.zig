@@ -67,8 +67,8 @@ pub const CssModule = struct {
             gop.value_ptr.is_referenced = true;
         } else {
             gop.value_ptr.* = CssModuleExport{
-                .name = this.config.pattern.writeToString(allocator, .{}, this.hashes.items[source_index], this.sources.items[source_index], name),
-                .composes = .{},
+                .name = this.config.pattern.writeToString(allocator, .empty, this.hashes.items[source_index], this.sources.items[source_index], name),
+                .composes = .empty,
                 .is_referenced = true,
             };
         }
@@ -112,7 +112,7 @@ pub const CssModule = struct {
                         this.sources.items[source_index],
                         name[2..],
                     ),
-                    .composes = .{},
+                    .composes = .empty,
                     .is_referenced = true,
                 };
             }
@@ -162,7 +162,7 @@ pub const CssModule = struct {
                     this.sources.items[source_index],
                     local[2..],
                 ),
-                .composes = .{},
+                .composes = .empty,
                 .is_referenced = false,
             };
         }
@@ -175,12 +175,12 @@ pub const CssModule = struct {
                 // todo_stuff.depth
                 .name = this.config.pattern.writeToString(
                     allocator,
-                    .{},
+                    .empty,
                     this.hashes.items[source_index],
                     this.sources.items[source_index],
                     local,
                 ),
-                .composes = .{},
+                .composes = .empty,
                 .is_referenced = false,
             };
         }
@@ -255,7 +255,7 @@ pub const Pattern = struct {
         local: []const u8,
     ) []const u8 {
         const Closure = struct { res: ArrayList(u8), allocator: Allocator };
-        var closure = Closure{ .res = .{}, .allocator = allocator };
+        var closure = Closure{ .res = .empty, .allocator = allocator };
         this.write(
             hash_,
             path,

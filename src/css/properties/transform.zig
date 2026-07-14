@@ -17,7 +17,7 @@ pub const TransformList = struct {
 
     pub fn parse(input: *css.Parser) Result(@This()) {
         if (input.tryParse(css.Parser.expectIdentMatching, .{"none"}).isOk()) {
-            return .{ .result = .{ .v = .{} } };
+            return .{ .result = .{ .v = .empty } };
         }
 
         input.skipWhitespace();

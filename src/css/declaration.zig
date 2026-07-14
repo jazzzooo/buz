@@ -63,8 +63,8 @@ pub const DeclarationBlock = struct {
     }
 
     pub fn parse(input: *css.Parser, options: *const css.ParserOptions) Result(DeclarationBlock) {
-        var important_declarations = DeclarationList{};
-        var declarations = DeclarationList{};
+        var important_declarations = DeclarationList.empty;
+        var declarations = DeclarationList.empty;
         var decl_parser = PropertyDeclarationParser{
             .important_declarations = &important_declarations,
             .declarations = &declarations,
@@ -184,16 +184,16 @@ pub const DeclarationBlock = struct {
         important_handler.finalize(context);
         var old_import = this.important_declarations;
         var old_declarations = this.declarations;
-        this.important_declarations = .{};
-        this.declarations = .{};
+        this.important_declarations = .empty;
+        this.declarations = .empty;
         defer {
             old_import.deinit(context.allocator);
             old_declarations.deinit(context.allocator);
         }
         this.important_declarations = important_handler.decls;
         this.declarations = handler.decls;
-        important_handler.decls = .{};
-        handler.decls = .{};
+        important_handler.decls = .empty;
+        handler.decls = .empty;
     }
 
     pub fn hashPropertyIds(this: *const @This(), hasher: *std.hash.Wyhash) void {
@@ -447,7 +447,7 @@ pub const DeclarationHandler = struct {
 
     pub fn default() DeclarationHandler {
         return .{
-            .decls = .{},
+            .decls = .empty,
             .direction = null,
         };
     }

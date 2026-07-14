@@ -1204,8 +1204,8 @@ pub const JSFrameworkRouter = struct {
 
         const jsfr = bun.new(JSFrameworkRouter, .{
             .router = try FrameworkRouter.initEmpty(abs_root, types, bun.default_allocator),
-            .files = .{},
-            .stored_parse_errors = .{},
+            .files = .empty,
+            .stored_parse_errors = .empty,
         });
 
         try jsfr.router.scan(

@@ -62,10 +62,10 @@ pub const PropertyHandlerContext = struct {
             .allocator = this.allocator,
             .targets = this.targets,
             .is_important = false,
-            .supports = .{},
-            .ltr = .{},
-            .rtl = .{},
-            .dark = .{},
+            .supports = .empty,
+            .ltr = .empty,
+            .rtl = .empty,
+            .dark = .empty,
             .context = context,
             .unused_symbols = this.unused_symbols,
         };
@@ -94,7 +94,7 @@ pub const PropertyHandlerContext = struct {
         style_rule: *const css.StyleRule(T),
     ) ArrayList(css.CssRule(T)) {
         if (this.supports.items.len == 0) {
-            return .{};
+            return .empty;
         }
 
         var dest = ArrayList(css.CssRule(T)).initCapacity(
@@ -183,7 +183,7 @@ pub const PropertyHandlerContext = struct {
                                 .vendor_prefix = css.VendorPrefix{ .none = true },
                                 .declarations = css.DeclarationBlock{
                                     .declarations = css.deepClone(css.Property, this.allocator, &this.dark),
-                                    .important_declarations = .{},
+                                    .important_declarations = .empty,
                                 },
                                 .rules = .{},
                                 .loc = style_rule.loc,
@@ -221,7 +221,7 @@ pub const PropertyHandlerContext = struct {
             .vendor_prefix = css.VendorPrefix{ .none = true },
             .declarations = css.DeclarationBlock{
                 .declarations = css.deepClone(css.Property, this.allocator, &@field(this, decls)),
-                .important_declarations = .{},
+                .important_declarations = .empty,
             },
             .rules = .{},
             .loc = sty.loc,
