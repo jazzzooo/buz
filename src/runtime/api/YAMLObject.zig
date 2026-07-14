@@ -251,13 +251,12 @@ const Stringifier = struct {
                         name_entry.value_ptr.* = 0;
                     }
 
-                    var counter = name_entry.value_ptr.*;
-                    while (try this.anchorNameInUse(prop_value.prop_name.byteSlice(), counter)) {
-                        counter += 1;
-                    }
+                    const counter = try this.reservePropertyAnchorName(
+                        prop_value.prop_name.byteSlice(),
+                        name_entry.value_ptr.*,
+                    );
                     name_entry.value_ptr.* = counter;
                     prop_value.counter = counter;
-                    try this.markAnchorNameUsed(prop_value.prop_name.byteSlice(), counter);
                 },
                 .generated_value => unreachable,
             }
@@ -557,39 +556,36 @@ const Stringifier = struct {
         while (true) {
             const current = counter.*;
             counter.* += 1;
-            const name = try std.fmt.allocPrint(this.allocator, "{s}{d}", .{ prefix, current });
-            if (this.used_anchor_names.contains(name)) {
-                this.allocator.free(name);
-                continue;
-            }
-            this.allocated_anchor_names.append(name) catch |err| {
-                this.allocator.free(name);
-                return err;
-            };
-            try this.used_anchor_names.put(name, {});
-            return current;
+            if (try this.tryReserveAnchorName(prefix, current)) return current;
         }
     }
 
-    fn anchorNameInUse(this: *Stringifier, base: []const u8, counter: usize) !bool {
-        if (counter == 0) return this.used_anchor_names.contains(base);
-        const name = try std.fmt.allocPrint(this.allocator, "{s}{d}", .{ base, counter });
-        defer this.allocator.free(name);
-        return this.used_anchor_names.contains(name);
+    fn reservePropertyAnchorName(this: *Stringifier, base: []const u8, start: usize) !usize {
+        var counter = start;
+        while (true) : (counter += 1) {
+            const suffix: ?usize = if (counter == 0) null else counter;
+            if (try this.tryReserveAnchorName(base, suffix)) return counter;
+        }
     }
 
-    fn markAnchorNameUsed(this: *Stringifier, base: []const u8, counter: usize) !void {
-        const name = if (counter == 0)
-            base
-        else name: {
-            const allocated = try std.fmt.allocPrint(this.allocator, "{s}{d}", .{ base, counter });
-            this.allocated_anchor_names.append(allocated) catch |err| {
-                this.allocator.free(allocated);
+    fn tryReserveAnchorName(this: *Stringifier, base: []const u8, suffix: ?usize) !bool {
+        const allocated: ?[]u8 = if (suffix) |counter|
+            try std.fmt.allocPrint(this.allocator, "{s}{d}", .{ base, counter })
+        else
+            null;
+        const name = allocated orelse base;
+        if (this.used_anchor_names.contains(name)) {
+            if (allocated) |owned| this.allocator.free(owned);
+            return false;
+        }
+        if (allocated) |owned| {
+            this.allocated_anchor_names.append(owned) catch |err| {
+                this.allocator.free(owned);
                 return err;
             };
-            break :name allocated;
-        };
+        }
         try this.used_anchor_names.put(name, {});
+        return true;
     }
 
     fn isSafeAnchorName(name: String) bool {
