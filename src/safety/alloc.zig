@@ -89,8 +89,8 @@ pub fn assertEqFmt(
 pub const CheckedAllocator = struct {
     const Self = @This();
 
-    #allocator: if (enabled) NullableAllocator else void = if (enabled) .init(null),
-    #trace: if (traces_enabled) StoredTrace else void = if (traces_enabled) StoredTrace.empty,
+    allocator: if (enabled) NullableAllocator else void = if (enabled) .init(null),
+    trace: if (traces_enabled) StoredTrace else void = if (traces_enabled) StoredTrace.empty,
 
     pub inline fn init(alloc: Allocator) Self {
         var self: Self = .{};
@@ -100,10 +100,10 @@ pub const CheckedAllocator = struct {
 
     pub fn set(self: *Self, alloc: Allocator) void {
         if (comptime !enabled) return;
-        if (self.#allocator.isNull()) {
-            self.#allocator = .init(alloc);
+        if (self.allocator.isNull()) {
+            self.allocator = .init(alloc);
             if (comptime traces_enabled) {
-                self.#trace = StoredTrace.capture(@returnAddress());
+                self.trace = StoredTrace.capture(@returnAddress());
             }
         } else {
             self.assertEq(alloc);
@@ -112,7 +112,7 @@ pub const CheckedAllocator = struct {
 
     pub fn assertEq(self: Self, alloc: Allocator) void {
         if (comptime !enabled) return;
-        const old_alloc = self.#allocator.get() orelse return;
+        const old_alloc = self.allocator.get() orelse return;
         if (!guaranteedMismatch(old_alloc, alloc)) return;
 
         bun.Output.err(
@@ -126,7 +126,7 @@ pub const CheckedAllocator = struct {
                 "collection first used here, with a different allocator:",
                 .{},
             );
-            var trace = self.#trace;
+            var trace = self.trace;
             bun.crash_handler.dumpStackTrace(
                 trace.trace(),
                 .{ .frame_count = 10, .stop_at_jsc_llint = true },
@@ -161,12 +161,12 @@ pub const CheckedAllocator = struct {
         };
 
         defer self.* = .init(new_std);
-        const old_allocator = self.#allocator.get() orelse return;
+        const old_allocator = self.allocator.get() orelse return;
         if (MimallocArena.isInstance(old_allocator)) return;
 
         if (comptime traces_enabled) {
             bun.Output.errGeneric("collection first used here:", .{});
-            var trace = self.#trace;
+            var trace = self.trace;
             bun.crash_handler.dumpStackTrace(
                 trace.trace(),
                 .{ .frame_count = 10, .stop_at_jsc_llint = true },

@@ -19,8 +19,8 @@ pub fn BabyList(comptime Type: type) type {
         ptr: [*]Type = &.{},
         len: u32 = 0,
         cap: u32 = 0,
-        #origin: if (safety_checks) Origin else void = if (safety_checks) .owned,
-        #allocator: bun.safety.CheckedAllocator = .{},
+        origin: if (safety_checks) Origin else void = if (safety_checks) .owned,
+        allocator: bun.safety.CheckedAllocator = .{},
 
         pub const Elem = Type;
 
@@ -28,7 +28,7 @@ pub fn BabyList(comptime Type: type) type {
 
         pub fn initCapacity(allocator: std.mem.Allocator, len: usize) OOM!Self {
             var this = initWithBuffer(try allocator.alloc(Type, len));
-            this.#allocator.set(allocator);
+            this.allocator.set(allocator);
             return this;
         }
 
@@ -39,7 +39,7 @@ pub fn BabyList(comptime Type: type) type {
                 .ptr = @as([*]Type, @ptrCast(items.ptr)),
                 .len = 1,
                 .cap = 1,
-                .#allocator = .init(allocator),
+                .allocator = .init(allocator),
             };
         }
 
@@ -89,7 +89,7 @@ pub fn BabyList(comptime Type: type) type {
             if (comptime @TypeOf(allocator) == void) {
                 list_ptr.* = .empty;
             } else {
-                this.#allocator.set(bun.allocators.asStd(allocator));
+                this.allocator.set(bun.allocators.asStd(allocator));
                 // `moveToUnmanaged` already cleared the old list.
                 if (comptime !std.meta.hasFn(ListType, "moveToUnmanaged")) {
                     list_ptr.* = .init(allocator);
@@ -132,7 +132,7 @@ pub fn BabyList(comptime Type: type) type {
                 .ptr = allocated.ptr,
                 .len = @intCast(allocated.len),
                 .cap = @intCast(allocated.len),
-                .#allocator = .init(allocator),
+                .allocator = .init(allocator),
             };
         }
 
@@ -526,7 +526,7 @@ pub fn BabyList(comptime Type: type) type {
         /// * Methods that could potentially free, remap, or resize `items` cannot be called.
         pub fn fromBorrowedSliceDangerous(items: []const Type) Self {
             var this: Self = .fromOwnedSlice(@constCast(items));
-            if (comptime safety_checks) this.#origin = .{ .borrowed = .{
+            if (comptime safety_checks) this.origin = .{ .borrowed = .{
                 .trace = if (traces_enabled) .capture(@returnAddress()),
             } };
             return this;
@@ -537,7 +537,7 @@ pub fn BabyList(comptime Type: type) type {
         /// This method is valid only if both the old allocator and new allocator are
         /// `MimallocArena`s. See `bun.safety.CheckedAllocator.transferOwnership`.
         pub fn transferOwnership(this: *Self, new_allocator: anytype) void {
-            this.#allocator.transferOwnership(new_allocator);
+            this.allocator.transferOwnership(new_allocator);
         }
 
         pub fn format(
@@ -551,11 +551,11 @@ pub fn BabyList(comptime Type: type) type {
         }
 
         fn assertOwned(this: *Self) void {
-            if ((comptime !safety_checks) or this.#origin == .owned) return;
+            if ((comptime !safety_checks) or this.origin == .owned) return;
             if (comptime traces_enabled) {
                 bun.Output.note("borrowed BabyList created here:", .{});
                 bun.crash_handler.dumpStackTrace(
-                    this.#origin.borrowed.trace.trace(),
+                    this.origin.borrowed.trace.trace(),
                     .{ .frame_count = 10, .stop_at_jsc_llint = true },
                 );
             }
@@ -573,7 +573,7 @@ pub fn BabyList(comptime Type: type) type {
         }
 
         fn listManaged(this: *Self, allocator: std.mem.Allocator) std.array_list.Managed(Type) {
-            this.#allocator.set(allocator);
+            this.allocator.set(allocator);
             var list_ = this.list();
             return list_.toManaged(allocator);
         }

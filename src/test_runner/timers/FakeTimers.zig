@@ -1,4 +1,4 @@
-#active: bool = false,
+active: bool = false,
 /// The sorted fake timers. TimerHeap is not optimal here because we need these operations:
 /// - peek/takeFirst (provided by TimerHeap)
 /// - peekLast (cannot be implemented efficiently with TimerHeap)
@@ -61,13 +61,13 @@ pub fn isActive(this: *FakeTimers) bool {
     this.assertValid(.locked);
     defer this.assertValid(.locked);
 
-    return this.#active;
+    return this.active;
 }
 fn activate(this: *FakeTimers, js_now: f64, globalObject: *jsc.JSGlobalObject) void {
     this.assertValid(.locked);
     defer this.assertValid(.locked);
 
-    this.#active = true;
+    this.active = true;
     current_time.set(globalObject, .{ .offset = &.epoch, .js = js_now });
 }
 fn deactivate(this: *FakeTimers, globalObject: *jsc.JSGlobalObject) void {
@@ -76,7 +76,7 @@ fn deactivate(this: *FakeTimers, globalObject: *jsc.JSGlobalObject) void {
 
     this.clear();
     current_time.clear(globalObject);
-    this.#active = false;
+    this.active = false;
 }
 fn clear(this: *FakeTimers) void {
     this.assertValid(.locked);

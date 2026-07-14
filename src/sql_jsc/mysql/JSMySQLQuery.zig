@@ -1,12 +1,12 @@
 const JSMySQLQuery = @This();
 const RefCount = bun.ptr.RefCount(@This(), "__ref_count", deinit, .{});
 
-#thisValue: JSRef = JSRef.empty(),
+thisValue: JSRef = JSRef.empty(),
 // unfortunally we cannot use #ref_count here
 __ref_count: RefCount = RefCount.init(),
-#vm: *jsc.VirtualMachine,
-#globalObject: *jsc.JSGlobalObject,
-#query: MySQLQuery,
+vm: *jsc.VirtualMachine,
+globalObject: *jsc.JSGlobalObject,
+query: MySQLQuery,
 
 pub const ref = RefCount.ref;
 pub const deref = RefCount.deref;
@@ -22,14 +22,14 @@ pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
 }
 
 fn deinit(this: *@This()) void {
-    this.#query.cleanup();
+    this.query.cleanup();
     bun.destroy(this);
 }
 
 pub fn finalize(this: *@This()) void {
     debug("MySQLQuery finalize", .{});
 
-    this.#thisValue.finalize();
+    this.thisValue.finalize();
     this.deref();
 }
 
@@ -72,18 +72,18 @@ pub fn createInstance(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame
     }
 
     var this = bun.new(@This(), .{
-        .#query = MySQLQuery.init(
+        .query = MySQLQuery.init(
             try query.toBunString(globalThis),
             bigint,
             simple,
         ),
-        .#globalObject = globalThis,
-        .#vm = globalThis.bunVM(),
+        .globalObject = globalThis,
+        .vm = globalThis.bunVM(),
     });
 
     const this_value = this.toJS(globalThis);
     this_value.ensureStillAlive();
-    this.#thisValue.setWeak(this_value);
+    this.thisValue.setWeak(this_value);
 
     this.setBinding(values);
     this.setPendingValue(pending_value);
@@ -141,7 +141,7 @@ pub fn setModeFromJS(this: *@This(), globalObject: *jsc.JSGlobalObject, callfram
     const mode = std.meta.intToEnum(SQLQueryResultMode, mode_value) catch {
         return globalObject.throwInvalidArgumentTypeValue("mode", "Number", js_mode);
     };
-    this.#query.setResultMode(mode);
+    this.query.setResultMode(mode);
     return .js_undefined;
 }
 
@@ -159,36 +159,36 @@ pub fn resolve(
     this.ref();
     const is_last_result = result.is_last_result;
     defer {
-        if (this.#thisValue.isNotEmpty() and is_last_result) {
-            this.#thisValue.downgrade();
+        if (this.thisValue.isNotEmpty() and is_last_result) {
+            this.thisValue.downgrade();
         }
         this.deref();
     }
 
-    if (!this.#query.result(is_last_result)) {
+    if (!this.query.result(is_last_result)) {
         return;
     }
-    if (this.#vm.isShuttingDown()) {
+    if (this.vm.isShuttingDown()) {
         return;
     }
 
     const targetValue = this.getTarget() orelse return;
-    const thisValue = this.#thisValue.tryGet() orelse return;
+    const thisValue = this.thisValue.tryGet() orelse return;
     thisValue.ensureStillAlive();
     const tag: CommandTag = .{ .SELECT = result.result_count };
-    const js_tag = tag.toJSTag(this.#globalObject) catch return bun.assertf(false, "in MySQLQuery Tag should always be a number", .{});
+    const js_tag = tag.toJSTag(this.globalObject) catch return bun.assertf(false, "in MySQLQuery Tag should always be a number", .{});
     js_tag.ensureStillAlive();
 
-    const function = this.#vm.rareData().mysql_context.onQueryResolveFn.get() orelse return;
+    const function = this.vm.rareData().mysql_context.onQueryResolveFn.get() orelse return;
     bun.assertf(function.isCallable(), "onQueryResolveFn is not callable", .{});
 
-    const event_loop = this.#vm.eventLoop();
+    const event_loop = this.vm.eventLoop();
 
     const pending_value = this.getPendingValue() orelse .js_undefined;
     pending_value.ensureStillAlive();
     this.setPendingValue(.js_undefined);
 
-    event_loop.runCallback(function, this.#globalObject, thisValue, &.{
+    event_loop.runCallback(function, this.globalObject, thisValue, &.{
         targetValue,
         pending_value,
         js_tag,
@@ -205,21 +205,21 @@ pub fn markAsFailed(this: *@This()) void {
     // If you need to touch JS, you wanna to use reject or rejectWithJSValue instead
     this.ref();
     defer this.deref();
-    if (this.#thisValue.isNotEmpty()) {
-        this.#thisValue.downgrade();
+    if (this.thisValue.isNotEmpty()) {
+        this.thisValue.downgrade();
     }
-    _ = this.#query.fail();
+    _ = this.query.fail();
 }
 
 pub fn reject(this: *@This(), queries_array: JSValue, err: AnyMySQLError.Error) void {
-    if (this.#vm.isShuttingDown()) {
+    if (this.vm.isShuttingDown()) {
         this.markAsFailed();
         return;
     }
-    if (this.#globalObject.tryTakeException()) |err_| {
+    if (this.globalObject.tryTakeException()) |err_| {
         this.rejectWithJSValue(queries_array, err_);
     } else {
-        const instance = AnyMySQLError.mysqlErrorToJS(this.#globalObject, "Failed to bind query", err);
+        const instance = AnyMySQLError.mysqlErrorToJS(this.globalObject, "Failed to bind query", err);
         instance.ensureStillAlive();
         this.rejectWithJSValue(queries_array, instance);
     }
@@ -229,32 +229,32 @@ pub fn rejectWithJSValue(this: *@This(), queries_array: JSValue, err: JSValue) v
     this.ref();
 
     defer {
-        if (this.#thisValue.isNotEmpty()) {
-            this.#thisValue.downgrade();
+        if (this.thisValue.isNotEmpty()) {
+            this.thisValue.downgrade();
         }
         this.deref();
     }
-    if (!this.#query.fail()) {
+    if (!this.query.fail()) {
         return;
     }
 
-    if (this.#vm.isShuttingDown()) {
+    if (this.vm.isShuttingDown()) {
         return;
     }
     const targetValue = this.getTarget() orelse return;
 
     var js_error = err.toError() orelse err;
     if (js_error == .zero) {
-        js_error = AnyMySQLError.mysqlErrorToJS(this.#globalObject, "Query failed", error.UnknownError);
+        js_error = AnyMySQLError.mysqlErrorToJS(this.globalObject, "Query failed", error.UnknownError);
     }
     bun.assertf(js_error != .zero, "js_error is zero", .{});
     js_error.ensureStillAlive();
-    const function = this.#vm.rareData().mysql_context.onQueryRejectFn.get() orelse return;
+    const function = this.vm.rareData().mysql_context.onQueryRejectFn.get() orelse return;
     bun.assertf(function.isCallable(), "onQueryRejectFn is not callable", .{});
-    const event_loop = this.#vm.eventLoop();
+    const event_loop = this.vm.eventLoop();
     const js_array = if (queries_array == .zero) .js_undefined else queries_array;
     js_array.ensureStillAlive();
-    event_loop.runCallback(function, this.#globalObject, this.#thisValue.tryGet() orelse return, &.{
+    event_loop.runCallback(function, this.globalObject, this.thisValue.tryGet() orelse return, &.{
         targetValue,
         js_error,
         js_array,
@@ -262,26 +262,26 @@ pub fn rejectWithJSValue(this: *@This(), queries_array: JSValue, err: JSValue) v
 }
 
 pub fn run(this: *@This(), connection: *MySQLConnection) AnyMySQLError.Error!void {
-    if (this.#vm.isShuttingDown()) {
+    if (this.vm.isShuttingDown()) {
         debug("run cannot run a query if the VM is shutting down", .{});
         // cannot run a query if the VM is shutting down
         return;
     }
-    if (!this.#query.isPending() or this.#query.isBeingPrepared()) {
+    if (!this.query.isPending() or this.query.isBeingPrepared()) {
         debug("run already running or being prepared", .{});
         // already running or completed
         return;
     }
-    const globalObject = this.#globalObject;
-    this.#thisValue.upgrade(globalObject);
+    const globalObject = this.globalObject;
+    this.thisValue.upgrade(globalObject);
     errdefer {
-        this.#thisValue.downgrade();
-        _ = this.#query.fail();
+        this.thisValue.downgrade();
+        _ = this.query.fail();
     }
 
     const columns_value = this.getColumns() orelse .js_undefined;
     const binding_value = this.getBinding() orelse .js_undefined;
-    this.#query.runQuery(connection, globalObject, columns_value, binding_value) catch |err| {
+    this.query.runQuery(connection, globalObject, columns_value, binding_value) catch |err| {
         debug("run failed to execute query", .{});
         if (!globalObject.hasException())
             return globalObject.throwValue(AnyMySQLError.mysqlErrorToJS(globalObject, "failed to execute query", err));
@@ -289,89 +289,89 @@ pub fn run(this: *@This(), connection: *MySQLConnection) AnyMySQLError.Error!voi
     };
 }
 pub inline fn isCompleted(this: *@This()) bool {
-    return this.#query.isCompleted();
+    return this.query.isCompleted();
 }
 pub inline fn isRunning(this: *@This()) bool {
-    return this.#query.isRunning();
+    return this.query.isRunning();
 }
 pub inline fn isPending(this: *@This()) bool {
-    return this.#query.isPending();
+    return this.query.isPending();
 }
 pub inline fn isBeingPrepared(this: *@This()) bool {
-    return this.#query.isBeingPrepared();
+    return this.query.isBeingPrepared();
 }
 pub inline fn isPipelined(this: *@This()) bool {
-    return this.#query.isPipelined();
+    return this.query.isPipelined();
 }
 pub inline fn isSimple(this: *@This()) bool {
-    return this.#query.isSimple();
+    return this.query.isSimple();
 }
 pub inline fn isBigintSupported(this: *@This()) bool {
-    return this.#query.isBigintSupported();
+    return this.query.isBigintSupported();
 }
 pub inline fn getResultMode(this: *@This()) SQLQueryResultMode {
-    return this.#query.getResultMode();
+    return this.query.getResultMode();
 }
 // TODO: isolate statement modification away from the connection
 pub fn getStatement(this: *@This()) ?*MySQLStatement {
-    return this.#query.getStatement();
+    return this.query.getStatement();
 }
 
 pub fn markAsPrepared(this: *@This()) void {
-    this.#query.markAsPrepared();
+    this.query.markAsPrepared();
 }
 
 pub inline fn setPendingValue(this: *@This(), result: JSValue) void {
-    if (this.#vm.isShuttingDown()) return;
-    if (this.#thisValue.tryGet()) |value| {
-        js.pendingValueSetCached(value, this.#globalObject, result);
+    if (this.vm.isShuttingDown()) return;
+    if (this.thisValue.tryGet()) |value| {
+        js.pendingValueSetCached(value, this.globalObject, result);
     }
 }
 pub inline fn getPendingValue(this: *@This()) ?JSValue {
-    if (this.#vm.isShuttingDown()) return null;
-    if (this.#thisValue.tryGet()) |value| {
+    if (this.vm.isShuttingDown()) return null;
+    if (this.thisValue.tryGet()) |value| {
         return js.pendingValueGetCached(value);
     }
     return null;
 }
 
 inline fn setTarget(this: *@This(), result: JSValue) void {
-    if (this.#vm.isShuttingDown()) return;
-    if (this.#thisValue.tryGet()) |value| {
-        js.targetSetCached(value, this.#globalObject, result);
+    if (this.vm.isShuttingDown()) return;
+    if (this.thisValue.tryGet()) |value| {
+        js.targetSetCached(value, this.globalObject, result);
     }
 }
 inline fn getTarget(this: *@This()) ?JSValue {
-    if (this.#vm.isShuttingDown()) return null;
-    if (this.#thisValue.tryGet()) |value| {
+    if (this.vm.isShuttingDown()) return null;
+    if (this.thisValue.tryGet()) |value| {
         return js.targetGetCached(value);
     }
     return null;
 }
 
 inline fn setColumns(this: *@This(), result: JSValue) void {
-    if (this.#vm.isShuttingDown()) return;
-    if (this.#thisValue.tryGet()) |value| {
-        js.columnsSetCached(value, this.#globalObject, result);
+    if (this.vm.isShuttingDown()) return;
+    if (this.thisValue.tryGet()) |value| {
+        js.columnsSetCached(value, this.globalObject, result);
     }
 }
 inline fn getColumns(this: *@This()) ?JSValue {
-    if (this.#vm.isShuttingDown()) return null;
+    if (this.vm.isShuttingDown()) return null;
 
-    if (this.#thisValue.tryGet()) |value| {
+    if (this.thisValue.tryGet()) |value| {
         return js.columnsGetCached(value);
     }
     return null;
 }
 inline fn setBinding(this: *@This(), result: JSValue) void {
-    if (this.#vm.isShuttingDown()) return;
-    if (this.#thisValue.tryGet()) |value| {
-        js.bindingSetCached(value, this.#globalObject, result);
+    if (this.vm.isShuttingDown()) return;
+    if (this.thisValue.tryGet()) |value| {
+        js.bindingSetCached(value, this.globalObject, result);
     }
 }
 inline fn getBinding(this: *@This()) ?JSValue {
-    if (this.#vm.isShuttingDown()) return null;
-    if (this.#thisValue.tryGet()) |value| {
+    if (this.vm.isShuttingDown()) return null;
+    if (this.thisValue.tryGet()) |value| {
         return js.bindingGetCached(value);
     }
     return null;

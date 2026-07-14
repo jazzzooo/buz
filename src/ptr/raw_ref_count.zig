@@ -17,7 +17,7 @@ pub fn RawRefCount(comptime Int: type, comptime thread_safety: ThreadSafety) typ
         const Self = @This();
 
         raw_value: if (thread_safety == .thread_safe) std.atomic.Value(Int) else Int,
-        #thread_lock: if (thread_safety == .single_threaded) bun.safety.ThreadLock else void,
+        thread_lock: if (thread_safety == .single_threaded) bun.safety.ThreadLock else void,
 
         /// Usually the initial count should be 1.
         pub fn init(initial_count: Int) Self {
@@ -26,7 +26,7 @@ pub fn RawRefCount(comptime Int: type, comptime thread_safety: ThreadSafety) typ
                     .single_threaded => initial_count,
                     .thread_safe => .init(initial_count),
                 },
-                .#thread_lock = switch (comptime thread_safety) {
+                .thread_lock = switch (comptime thread_safety) {
                     .single_threaded => .initLockedIfNonComptime(),
                     .thread_safe => {},
                 },
@@ -36,7 +36,7 @@ pub fn RawRefCount(comptime Int: type, comptime thread_safety: ThreadSafety) typ
         pub fn increment(self: *Self) void {
             switch (comptime thread_safety) {
                 .single_threaded => {
-                    self.#thread_lock.lockOrAssert();
+                    self.thread_lock.lockOrAssert();
                     self.raw_value += 1;
                 },
                 .thread_safe => {
@@ -53,7 +53,7 @@ pub fn RawRefCount(comptime Int: type, comptime thread_safety: ThreadSafety) typ
         pub fn decrement(self: *Self) DecrementResult {
             const new_count = blk: switch (comptime thread_safety) {
                 .single_threaded => {
-                    self.#thread_lock.lockOrAssert();
+                    self.thread_lock.lockOrAssert();
                     self.raw_value -= 1;
                     break :blk self.raw_value;
                 },

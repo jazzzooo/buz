@@ -1839,7 +1839,7 @@ pub const DuplexUpgradeContext = struct {
     /// on success, freed in `deinit` if Close races ahead of StartTLS.
     owned_ctx: ?*BoringSSL.SSL_CTX = null,
     is_open: bool = false,
-    #mode: SocketMode = .client,
+    mode: SocketMode = .client,
 
     pub const EventState = enum(u8) {
         StartTLS,
@@ -1951,8 +1951,8 @@ pub const DuplexUpgradeContext = struct {
                     this.deinit();
                     return;
                 }
-                log("DuplexUpgradeContext.startTLS mode={s}", .{@tagName(this.#mode)});
-                const is_client = this.#mode == .client;
+                log("DuplexUpgradeContext.startTLS mode={s}", .{@tagName(this.mode)});
+                const is_client = this.mode == .client;
                 const started: anyerror!void = if (this.owned_ctx) |ctx| blk: {
                     // Transfer the ref into SSLWrapper; null first so the
                     // failure path / deinit don't double-free it.
@@ -2135,7 +2135,7 @@ pub fn jsUpgradeDuplexToTLS(globalObject: *jsc.JSGlobalObject, callframe: *jsc.C
         // legacy build path.
         .ssl_config = if (owned_ctx == null) if (socket_config) |c| c.* else null else null,
         .owned_ctx = owned_ctx,
-        .#mode = if (is_server) .duplex_server else .client,
+        .mode = if (is_server) .duplex_server else .client,
     });
     // Ownership of the SSL_CTX ref transferred to DuplexUpgradeContext.
     owned_ctx = null;

@@ -12,7 +12,7 @@ pub fn GuardedBy(comptime Value: type, comptime Mutex: type) type {
 
         /// The raw value. Don't use this if there might be concurrent accesses.
         unsynchronized_value: Value,
-        #mutex: Mutex,
+        mutex: Mutex,
 
         /// Creates a guarded value with a default-initialized mutex.
         pub fn init(value: Value) Self {
@@ -23,19 +23,19 @@ pub fn GuardedBy(comptime Value: type, comptime Mutex: type) type {
         pub fn initWithMutex(value: Value, mutex: Mutex) Self {
             return .{
                 .unsynchronized_value = value,
-                .#mutex = mutex,
+                .mutex = mutex,
             };
         }
 
         /// Locks the mutex and returns a pointer to the value. Remember to call `unlock`!
         pub fn lock(self: *Self) *Value {
-            self.#mutex.lock();
+            self.mutex.lock();
             return &self.unsynchronized_value;
         }
 
         /// Unlocks the mutex. Don't use any pointers returned by `lock` after calling this method!
         pub fn unlock(self: *Self) void {
-            self.#mutex.unlock();
+            self.mutex.unlock();
         }
 
         /// Returns the inner unprotected value.
@@ -45,7 +45,7 @@ pub fn GuardedBy(comptime Value: type, comptime Mutex: type) type {
         /// this method.
         pub fn intoUnprotected(self: *Self) Value {
             defer self.* = undefined;
-            bun.memory.deinit(&self.#mutex);
+            bun.memory.deinit(&self.mutex);
             return self.unsynchronized_value;
         }
 
@@ -58,7 +58,7 @@ pub fn GuardedBy(comptime Value: type, comptime Mutex: type) type {
         /// method.
         pub fn deinit(self: *Self) void {
             bun.memory.deinit(&self.unsynchronized_value);
-            bun.memory.deinit(&self.#mutex);
+            bun.memory.deinit(&self.mutex);
             self.* = undefined;
         }
     };

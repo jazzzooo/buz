@@ -51,15 +51,15 @@ pub fn ArrayListAlignedIn(
     return struct {
         const Self = @This();
 
-        #unmanaged: Unmanaged = .empty,
-        #allocator: Allocator,
+        unmanaged: Unmanaged = .empty,
+        backing_allocator: Allocator,
 
         pub fn items(self: *const Self) Slice {
-            return self.#unmanaged.items;
+            return self.unmanaged.items;
         }
 
         pub fn capacity(self: *const Self) usize {
-            return self.#unmanaged.capacity;
+            return self.unmanaged.capacity;
         }
 
         pub const SentinelSlice = Unmanaged.SentinelSlice;
@@ -72,8 +72,8 @@ pub fn ArrayListAlignedIn(
 
         pub fn initIn(allocator_: Allocator) Self {
             return .{
-                .#unmanaged = .empty,
-                .#allocator = allocator_,
+                .unmanaged = .empty,
+                .backing_allocator = allocator_,
             };
         }
 
@@ -83,8 +83,8 @@ pub fn ArrayListAlignedIn(
 
         pub fn initCapacityIn(num: usize, allocator_: Allocator) AllocError!Self {
             return .{
-                .#unmanaged = try .initCapacity(bun.allocators.asStd(allocator_), num),
-                .#allocator = allocator_,
+                .unmanaged = try .initCapacity(bun.allocators.asStd(allocator_), num),
+                .backing_allocator = allocator_,
             };
         }
 
@@ -97,14 +97,14 @@ pub fn ArrayListAlignedIn(
 
         pub fn deinitShallow(self: *Self) void {
             defer self.* = undefined;
-            self.#unmanaged.deinit(self.getStdAllocator());
-            bun.memory.deinit(&self.#allocator);
+            self.unmanaged.deinit(self.getStdAllocator());
+            bun.memory.deinit(&self.backing_allocator);
         }
 
         pub fn fromOwnedSlice(allocator_: Allocator, slice: Slice) Self {
             return .{
-                .#unmanaged = .fromOwnedSlice(slice),
-                .#allocator = allocator_,
+                .unmanaged = .fromOwnedSlice(slice),
+                .backing_allocator = allocator_,
             };
         }
 
@@ -114,43 +114,43 @@ pub fn ArrayListAlignedIn(
             slice: [:sentinel]T,
         ) Self {
             return .{
-                .#unmanaged = .fromOwnedSliceSentinel(sentinel, slice),
-                .#allocator = allocator_,
+                .unmanaged = .fromOwnedSliceSentinel(sentinel, slice),
+                .backing_allocator = allocator_,
             };
         }
 
         pub fn writer(self: *Self) Unmanaged.Writer {
-            return self.#unmanaged.writer(self.getStdAllocator());
+            return self.unmanaged.writer(self.getStdAllocator());
         }
 
         /// Returns a borrowed version of the allocator.
         pub fn allocator(self: *const Self) bun.allocators.Borrowed(Allocator) {
-            return bun.allocators.borrow(self.#allocator);
+            return bun.allocators.borrow(self.backing_allocator);
         }
 
         /// This method empties `self`.
         pub fn moveToUnmanaged(self: *Self) Unmanaged {
-            defer self.#unmanaged = .empty;
-            return self.#unmanaged;
+            defer self.unmanaged = .empty;
+            return self.unmanaged;
         }
 
         /// Unlike `moveToUnmanaged`, this method *invalidates* `self`.
         pub fn intoUnmanagedWithAllocator(self: *Self) struct { Unmanaged, Allocator } {
             defer self.* = undefined;
-            return .{ self.#unmanaged, self.#allocator };
+            return .{ self.unmanaged, self.backing_allocator };
         }
 
         /// The contents of `unmanaged` must have been allocated by `allocator`.
         /// This function invalidates `unmanaged`; don't call `deinit` on it.
         pub fn fromUnmanaged(allocator_: Allocator, unmanaged: Unmanaged) Self {
             return .{
-                .#unmanaged = unmanaged,
-                .#allocator = allocator_,
+                .unmanaged = unmanaged,
+                .backing_allocator = allocator_,
             };
         }
 
         pub fn toOwnedSlice(self: *Self) AllocError!Slice {
-            return self.#unmanaged.toOwnedSlice(self.getStdAllocator());
+            return self.unmanaged.toOwnedSlice(self.getStdAllocator());
         }
 
         /// Creates a copy of this `ArrayList` with *shallow* copies of its items.
@@ -172,36 +172,36 @@ pub fn ArrayListAlignedIn(
             allocator_: anytype,
         ) AllocError!ArrayListAlignedIn(T, @TypeOf(allocator_), alignment) {
             return .{
-                .#unmanaged = try self.#unmanaged.clone(bun.allocators.asStd(allocator_)),
-                .#allocator = allocator_,
+                .unmanaged = try self.unmanaged.clone(bun.allocators.asStd(allocator_)),
+                .backing_allocator = allocator_,
             };
         }
 
         pub fn insert(self: *Self, i: usize, item: T) AllocError!void {
-            return self.#unmanaged.insert(self.getStdAllocator(), i, item);
+            return self.unmanaged.insert(self.getStdAllocator(), i, item);
         }
 
         pub fn insertAssumeCapacity(self: *Self, i: usize, item: T) void {
-            self.#unmanaged.insertAssumeCapacity(i, item);
+            self.unmanaged.insertAssumeCapacity(i, item);
         }
 
         /// Note that this creates *shallow* copies of `value`.
         pub fn addManyAt(self: *Self, index: usize, value: T, count: usize) AllocError![]T {
-            const result = try self.#unmanaged.addManyAt(self.getStdAllocator(), index, count);
+            const result = try self.unmanaged.addManyAt(self.getStdAllocator(), index, count);
             @memset(result, value);
             return result;
         }
 
         /// Note that this creates *shallow* copies of `value`.
         pub fn addManyAtAssumeCapacity(self: *Self, index: usize, value: T, count: usize) []T {
-            const result = self.#unmanaged.addManyAt(index, count);
+            const result = self.unmanaged.addManyAt(index, count);
             @memset(result, value);
             return result;
         }
 
         /// This method takes ownership of all elements in `new_items`.
         pub fn insertSlice(self: *Self, index: usize, new_items: []const T) AllocError!void {
-            return self.#unmanaged.insertSlice(self.getStdAllocator(), index, new_items);
+            return self.unmanaged.insertSlice(self.getStdAllocator(), index, new_items);
         }
 
         /// This method `deinit`s the removed items.
@@ -224,7 +224,7 @@ pub fn ArrayListAlignedIn(
             len: usize,
             new_items: []const T,
         ) AllocError!void {
-            return self.#unmanaged.replaceRange(self.getStdAllocator(), start, len, new_items);
+            return self.unmanaged.replaceRange(self.getStdAllocator(), start, len, new_items);
         }
 
         /// This method `deinit`s the removed items.
@@ -249,53 +249,53 @@ pub fn ArrayListAlignedIn(
             len: usize,
             new_items: []const T,
         ) void {
-            self.#unmanaged.replaceRangeAssumeCapacity(start, len, new_items);
+            self.unmanaged.replaceRangeAssumeCapacity(start, len, new_items);
         }
 
         pub fn append(self: *Self, item: T) AllocError!void {
-            return self.#unmanaged.append(self.getStdAllocator(), item);
+            return self.unmanaged.append(self.getStdAllocator(), item);
         }
 
         pub fn appendAssumeCapacity(self: *Self, item: T) void {
-            self.#unmanaged.appendAssumeCapacity(item);
+            self.unmanaged.appendAssumeCapacity(item);
         }
 
         pub fn orderedRemove(self: *Self, i: usize) T {
-            return self.#unmanaged.orderedRemove(i);
+            return self.unmanaged.orderedRemove(i);
         }
 
         pub fn swapRemove(self: *Self, i: usize) T {
-            return self.#unmanaged.swapRemove(i);
+            return self.unmanaged.swapRemove(i);
         }
 
         /// This method takes ownership of all elements in `new_items`.
         pub fn appendSlice(self: *Self, new_items: []const T) AllocError!void {
-            return self.#unmanaged.appendSlice(self.getStdAllocator(), new_items);
+            return self.unmanaged.appendSlice(self.getStdAllocator(), new_items);
         }
 
         /// This method takes ownership of all elements in `new_items`.
         pub fn appendSliceAssumeCapacity(self: *Self, new_items: []const T) void {
-            self.#unmanaged.appendSliceAssumeCapacity(new_items);
+            self.unmanaged.appendSliceAssumeCapacity(new_items);
         }
 
         /// This method takes ownership of all elements in `new_items`.
         pub fn appendUnalignedSlice(self: *Self, new_items: []align(1) const T) AllocError!void {
-            return self.#unmanaged.appendUnalignedSlice(self.getStdAllocator(), new_items);
+            return self.unmanaged.appendUnalignedSlice(self.getStdAllocator(), new_items);
         }
 
         /// This method takes ownership of all elements in `new_items`.
         pub fn appendUnalignedSliceAssumeCapacity(self: *Self, new_items: []align(1) const T) void {
-            self.#unmanaged.appendUnalignedSliceAssumeCapacity(new_items);
+            self.unmanaged.appendUnalignedSliceAssumeCapacity(new_items);
         }
 
         /// Note that this creates *shallow* copies of `value`.
         pub inline fn appendNTimes(self: *Self, value: T, n: usize) AllocError!void {
-            return self.#unmanaged.appendNTimes(self.getStdAllocator(), value, n);
+            return self.unmanaged.appendNTimes(self.getStdAllocator(), value, n);
         }
 
         /// Note that this creates *shallow* copies of `value`.
         pub inline fn appendNTimesAssumeCapacity(self: *Self, value: T, n: usize) void {
-            self.#unmanaged.appendNTimesAssumeCapacity(value, n);
+            self.unmanaged.appendNTimesAssumeCapacity(value, n);
         }
 
         /// If `new_len` is less than the current length, this method will call `deinit` on the
@@ -318,7 +318,7 @@ pub fn ArrayListAlignedIn(
         /// of `init_value`.
         pub fn resizeWithoutDeinit(self: *Self, init_value: T, new_len: usize) AllocError!void {
             const len = self.items().len;
-            try self.#unmanaged.resize(self.getStdAllocator(), new_len);
+            try self.unmanaged.resize(self.getStdAllocator(), new_len);
             if (new_len > len) {
                 @memset(self.items()[len..], init_value);
             }
@@ -332,7 +332,7 @@ pub fn ArrayListAlignedIn(
 
         /// This method does *not* `deinit` the removed items.
         pub fn shrinkAndFreeShallow(self: *Self, new_len: usize) void {
-            self.#unmanaged.shrinkAndFree(self.getStdAllocator(), new_len);
+            self.unmanaged.shrinkAndFree(self.getStdAllocator(), new_len);
         }
 
         /// This method `deinit`s the removed items.
@@ -343,7 +343,7 @@ pub fn ArrayListAlignedIn(
 
         /// This method does *not* `deinit` the removed items.
         pub fn shrinkRetainingCapacityShallow(self: *Self, new_len: usize) void {
-            self.#unmanaged.shrinkRetainingCapacity(new_len);
+            self.unmanaged.shrinkRetainingCapacity(new_len);
         }
 
         /// This method `deinit`s all items.
@@ -354,7 +354,7 @@ pub fn ArrayListAlignedIn(
 
         /// This method does *not* `deinit` any items.
         pub fn clearRetainingCapacityShallow(self: *Self) void {
-            self.#unmanaged.clearRetainingCapacity();
+            self.unmanaged.clearRetainingCapacity();
         }
 
         /// This method `deinit`s all items.
@@ -365,30 +365,30 @@ pub fn ArrayListAlignedIn(
 
         /// This method does *not* `deinit` any items.
         pub fn clearAndFreeShallow(self: *Self) void {
-            self.#unmanaged.clearAndFree(self.getStdAllocator());
+            self.unmanaged.clearAndFree(self.getStdAllocator());
         }
 
         pub fn ensureTotalCapacity(self: *Self, new_capacity: usize) AllocError!void {
-            return self.#unmanaged.ensureTotalCapacity(self.getStdAllocator(), new_capacity);
+            return self.unmanaged.ensureTotalCapacity(self.getStdAllocator(), new_capacity);
         }
 
         pub fn ensureTotalCapacityPrecise(self: *Self, new_capacity: usize) AllocError!void {
-            return self.#unmanaged.ensureTotalCapacityPrecise(self.getStdAllocator(), new_capacity);
+            return self.unmanaged.ensureTotalCapacityPrecise(self.getStdAllocator(), new_capacity);
         }
 
         pub fn ensureUnusedCapacity(self: *Self, additional_count: usize) AllocError!void {
-            return self.#unmanaged.ensureUnusedCapacity(self.getStdAllocator(), additional_count);
+            return self.unmanaged.ensureUnusedCapacity(self.getStdAllocator(), additional_count);
         }
 
         /// Note that this creates *shallow* copies of `init_value`.
         pub fn expandToCapacity(self: *Self, init_value: T) void {
             const len = self.items().len;
-            self.#unmanaged.expandToCapacity();
+            self.unmanaged.expandToCapacity();
             @memset(self.items()[len..], init_value);
         }
 
         pub fn pop(self: *Self) ?T {
-            return self.#unmanaged.pop();
+            return self.unmanaged.pop();
         }
 
         pub fn getLast(self: *const Self) *T {
@@ -415,7 +415,7 @@ pub fn ArrayListAlignedIn(
         }
 
         fn getStdAllocator(self: *const Self) std.mem.Allocator {
-            return bun.allocators.asStd(self.#allocator);
+            return bun.allocators.asStd(self.backing_allocator);
         }
     };
 }

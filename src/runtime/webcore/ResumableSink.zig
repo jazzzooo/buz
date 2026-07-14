@@ -28,7 +28,7 @@ pub fn ResumableSink(
         const setStream = js.streamSetCached;
         const getStream = js.streamGetCached;
         ref_count: RefCount,
-        #js_this: jsc.JSRef = .empty(),
+        js_this: jsc.JSRef = .empty(),
         // We can have a detached self, and still have a strong reference to the stream
         stream: jsc.WebCore.ReadableStream.Strong = .{},
         globalThis: *jsc.JSGlobalObject,
@@ -125,7 +125,7 @@ pub fn ResumableSink(
             self.ensureStillAlive();
             const js_stream = stream.toJS();
             js_stream.ensureStillAlive();
-            this.#js_this.setStrong(self, globalThis);
+            this.js_this.setStrong(self, globalThis);
             setStream(self, globalThis, js_stream);
 
             _ = Bun__assignStreamIntoResumableSink(globalThis, js_stream, self);
@@ -215,7 +215,7 @@ pub fn ResumableSink(
             if (this.status != .paused) {
                 return;
             }
-            if (this.#js_this.tryGet()) |js_this| {
+            if (this.js_this.tryGet()) |js_this| {
                 const globalObject = this.globalThis;
 
                 if (getDrain(js_this)) |ondrain| {
@@ -226,7 +226,7 @@ pub fn ResumableSink(
         }
 
         pub fn cancel(this: *ThisSink, reason: jsc.JSValue) void {
-            // onEnd must fire at most once. After the first cancel(), #js_this is downgraded
+            // onEnd must fire at most once. After the first cancel(), js_this is downgraded
             // to .weak (which still resolves via tryGet), so this guard is the only thing
             // preventing a second cancel() from re-invoking onEnd.
             if (this.status == .done) return;
@@ -235,7 +235,7 @@ pub fn ResumableSink(
                 this.endPipe(reason);
                 return;
             }
-            if (this.#js_this.tryGet()) |js_this| {
+            if (this.js_this.tryGet()) |js_this| {
                 this.status = .done;
                 js_this.ensureStillAlive();
 
@@ -257,15 +257,15 @@ pub fn ResumableSink(
         }
 
         pub fn isDetached(this: *const ThisSink) bool {
-            return this.#js_this != .strong or this.status == .done;
+            return this.js_this != .strong or this.status == .done;
         }
 
         fn detachJS(this: *ThisSink) void {
-            if (this.#js_this.tryGet()) |js_this| {
+            if (this.js_this.tryGet()) |js_this| {
                 setDrain(js_this, this.globalThis, .zero);
                 setCancel(js_this, this.globalThis, .zero);
                 setStream(js_this, this.globalThis, .zero);
-                this.#js_this.downgrade();
+                this.js_this.downgrade();
             }
         }
         pub fn deinit(this: *ThisSink) void {
@@ -275,7 +275,7 @@ pub fn ResumableSink(
         }
 
         pub fn finalize(this: *ThisSink) void {
-            this.#js_this.finalize();
+            this.js_this.finalize();
             this.deref();
         }
 
@@ -340,7 +340,7 @@ pub fn ResumableSink(
 
             onEnd(this.context, err);
 
-            if (this.#js_this == .strong) {
+            if (this.js_this == .strong) {
                 // JS owns the stream, so we need to detach the JS and let finalize handle the deref
                 // this should not happen but lets handle it anyways
                 this.detachJS();

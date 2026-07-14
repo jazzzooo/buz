@@ -84,7 +84,7 @@ pub fn WithOptions(comptime Pointer: type, comptime options: Options) type {
         const NonOptionalPointer = info.NonOptionalPointer;
         const Data = FullData(Child, options);
 
-        #pointer: Pointer,
+        pointer: Pointer,
 
         /// A weak pointer.
         ///
@@ -121,7 +121,7 @@ pub fn WithOptions(comptime Pointer: type, comptime options: Options) type {
         /// This pointer should usually not be stored directly in a struct, as it could become
         /// invalid once all the shared pointers are deinitialized.
         pub fn get(self: Self) Pointer {
-            return self.#pointer;
+            return self.pointer;
         }
 
         /// Clones this shared pointer. This clones the pointer, not the data; the new pointer
@@ -132,7 +132,7 @@ pub fn WithOptions(comptime Pointer: type, comptime options: Options) type {
             else
                 self.getData();
             data.incrementStrong();
-            return .{ .#pointer = &data.value };
+            return .{ .pointer = &data.value };
         }
 
         /// Creates a weak clone of this shared pointer.
@@ -143,7 +143,7 @@ pub fn WithOptions(comptime Pointer: type, comptime options: Options) type {
                 else
                     self.getData();
                 data.incrementWeak();
-                return .{ .#pointer = &data.value };
+                return .{ .pointer = &data.value };
             }
         }.cloneWeak;
 
@@ -170,7 +170,7 @@ pub fn WithOptions(comptime Pointer: type, comptime options: Options) type {
         /// It is permitted, but not required, to call `deinit` on the returned value.
         pub const initNull = if (info.isOptional()) struct {
             pub fn initNull() Self {
-                return .{ .#pointer = null };
+                return .{ .pointer = null };
             }
         }.initNull;
 
@@ -183,7 +183,7 @@ pub fn WithOptions(comptime Pointer: type, comptime options: Options) type {
         pub const take = if (info.isOptional()) struct {
             pub fn take(self: *Self) ?SharedNonOptional {
                 defer self.* = .initNull();
-                return .{ .#pointer = self.#pointer orelse return null };
+                return .{ .pointer = self.pointer orelse return null };
             }
         }.take;
 
@@ -195,7 +195,7 @@ pub fn WithOptions(comptime Pointer: type, comptime options: Options) type {
         pub const toOptional = if (!info.isOptional()) struct {
             pub fn toOptional(self: *Self) Optional {
                 defer self.* = undefined;
-                return .{ .#pointer = self.#pointer };
+                return .{ .pointer = self.pointer };
             }
         }.toOptional;
 
@@ -231,11 +231,11 @@ pub fn WithOptions(comptime Pointer: type, comptime options: Options) type {
 
         fn allocImpl(allocator: Allocator, value: Child) !Self {
             const data = try Data.alloc(allocator, value);
-            return .{ .#pointer = &data.value };
+            return .{ .pointer = &data.value };
         }
 
         fn getData(self: Self) if (info.isOptional()) ?*Data else *Data {
-            return .fromValuePtr(self.#pointer);
+            return .fromValuePtr(self.pointer);
         }
 
         /// Turns a shared pointer into a raw pointer without decrementing the reference count.
@@ -244,7 +244,7 @@ pub fn WithOptions(comptime Pointer: type, comptime options: Options) type {
         /// into a shared pointer with `adoptRawUnsafe`.
         pub fn leak(self: *Self) Pointer {
             defer self.* = undefined;
-            return self.#pointer;
+            return self.pointer;
         }
 
         /// Creates a shared pointer from a raw pointer returned by `leak`.
@@ -252,7 +252,7 @@ pub fn WithOptions(comptime Pointer: type, comptime options: Options) type {
         /// `pointer` must have been previously returned by `leak`. `adoptRawUnsafe` should not be
         /// called again on this pointer.
         pub fn adoptRawUnsafe(pointer: Pointer) Self {
-            return .{ .#pointer = pointer };
+            return .{ .pointer = pointer };
         }
 
         /// Clones a shared pointer, given a raw pointer that originally came from a shared pointer.
@@ -261,7 +261,7 @@ pub fn WithOptions(comptime Pointer: type, comptime options: Options) type {
         /// came must remain valid (i.e., not be deinitialized) at least until this function
         /// returns.
         pub fn cloneFromRawUnsafe(pointer: Pointer) Self {
-            const temp: Self = .{ .#pointer = pointer };
+            const temp: Self = .{ .pointer = pointer };
             return temp.clone();
         }
     };
@@ -281,7 +281,7 @@ fn Weak(comptime Pointer: type, comptime options: Options) type {
         const NonOptionalPointer = info.NonOptionalPointer;
         const Data = FullData(Child, options);
 
-        #pointer: Pointer,
+        pointer: Pointer,
 
         const SharedNonOptional = WithOptions(NonOptionalPointer, options);
 
@@ -292,7 +292,7 @@ fn Weak(comptime Pointer: type, comptime options: Options) type {
             else
                 self.getData();
             if (!data.tryIncrementStrong()) return null;
-            return .{ .#pointer = &data.value };
+            return .{ .pointer = &data.value };
         }
 
         /// Clones this weak pointer.
@@ -302,7 +302,7 @@ fn Weak(comptime Pointer: type, comptime options: Options) type {
             else
                 self.getData();
             data.incrementWeak();
-            return .{ .#pointer = &data.value };
+            return .{ .pointer = &data.value };
         }
 
         /// Deinitializes this weak pointer.
@@ -323,7 +323,7 @@ fn Weak(comptime Pointer: type, comptime options: Options) type {
         /// It is permitted, but not required, to call `deinit` on the returned value.
         pub const initNull = if (info.isOptional()) struct {
             pub fn initNull() Self {
-                return .{ .#pointer = null };
+                return .{ .pointer = null };
             }
         }.initNull;
 
@@ -332,7 +332,7 @@ fn Weak(comptime Pointer: type, comptime options: Options) type {
         /// This method is provided only if `Pointer` is an optional type.
         pub const isNull = if (options.isOptional()) struct {
             pub fn isNull(self: Self) bool {
-                return self.#pointer == null;
+                return self.pointer == null;
             }
         }.isNull;
 
@@ -371,7 +371,7 @@ fn Weak(comptime Pointer: type, comptime options: Options) type {
         }
 
         fn getData(self: Self) if (info.isOptional()) ?*Data else *Data {
-            return .fromValuePtr(self.#pointer);
+            return .fromValuePtr(self.pointer);
         }
     };
 }

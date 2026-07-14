@@ -81,7 +81,7 @@ tls_default_ciphers: ?[:0]const u8 = null,
 // proxy_env_storage moved to VirtualMachine — see comment there on why
 // lazy RareData creation raced with worker spawn.
 
-#spawn_sync_event_loop: bun.ptr.Owned(?*SpawnSyncEventLoop) = .initNull(),
+spawn_sync_event_loop: bun.ptr.Owned(?*SpawnSyncEventLoop) = .initNull(),
 
 path_buf: PathBuf = .{},
 
@@ -835,7 +835,7 @@ pub fn deinit(this: *RareData) void {
         bun.default_allocator.destroy(pipe);
     }
 
-    this.#spawn_sync_event_loop.deinit();
+    this.spawn_sync_event_loop.deinit();
     this.aws_signature_cache.deinit();
 
     this.s3_default_client.deinit();
@@ -925,9 +925,9 @@ pub fn websocketDeflate(this: *RareData) *WebSocketDeflate.RareData {
 pub const SpawnSyncEventLoop = @import("../event_loop/SpawnSyncEventLoop.zig");
 
 pub fn spawnSyncEventLoop(this: *RareData, vm: *jsc.VirtualMachine) *SpawnSyncEventLoop {
-    return this.#spawn_sync_event_loop.get() orelse brk: {
-        this.#spawn_sync_event_loop = .new(undefined);
-        const ptr: *SpawnSyncEventLoop = this.#spawn_sync_event_loop.get().?;
+    return this.spawn_sync_event_loop.get() orelse brk: {
+        this.spawn_sync_event_loop = .new(undefined);
+        const ptr: *SpawnSyncEventLoop = this.spawn_sync_event_loop.get().?;
         ptr.init(vm);
         break :brk ptr;
     };

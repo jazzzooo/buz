@@ -283,18 +283,18 @@ pub fn AllocationScopeIn(comptime Allocator: type) type {
     const BorrowedScope = struct {
         const Self = @This();
 
-        #parent: BorrowedAllocator,
-        #state: if (enabled) *State else void,
+        parent_allocator: BorrowedAllocator,
+        state: if (enabled) *State else void,
 
         pub fn allocator(self: Self) std.mem.Allocator {
             return if (comptime enabled)
-                .{ .ptr = self.#state, .vtable = &vtable }
+                .{ .ptr = self.state, .vtable = &vtable }
             else
-                bun.allocators.asStd(self.#parent);
+                bun.allocators.asStd(self.parent_allocator);
         }
 
         pub fn parent(self: Self) BorrowedAllocator {
-            return self.#parent;
+            return self.parent_allocator;
         }
 
         /// Deinitializes a borrowed allocation scope. This does not deinitialize the
@@ -303,14 +303,14 @@ pub fn AllocationScopeIn(comptime Allocator: type) type {
         /// This method doesn't need to be called unless `bun.allocators.Borrowed(Allocator)` has
         /// a `deinit` method.
         pub fn deinit(self: *Self) void {
-            bun.memory.deinit(&self.#parent);
+            bun.memory.deinit(&self.parent_allocator);
             self.* = undefined;
         }
 
         pub fn stats(self: Self) Stats {
             if (comptime !enabled) @compileError("AllocationScope must be enabled");
-            const state = self.#state.lock();
-            defer self.#state.unlock();
+            const state = self.state.lock();
+            defer self.state.unlock();
             return .{
                 .total_memory_allocated = state.history.total_memory_allocated,
                 .num_allocations = state.history.allocations.count(),
@@ -319,15 +319,15 @@ pub fn AllocationScopeIn(comptime Allocator: type) type {
 
         pub fn assertOwned(self: Self, ptr: anytype) void {
             if (comptime !enabled) return;
-            const state = self.#state.lock();
-            defer self.#state.unlock();
+            const state = self.state.lock();
+            defer self.state.unlock();
             state.assertOwned(ptr);
         }
 
         pub fn assertUnowned(self: Self, ptr: anytype) void {
             if (comptime !enabled) return;
-            const state = self.#state.lock();
-            defer self.#state.unlock();
+            const state = self.state.lock();
+            defer self.state.unlock();
             state.assertUnowned(ptr);
         }
 
@@ -337,15 +337,15 @@ pub fn AllocationScopeIn(comptime Allocator: type) type {
             ret_addr: ?usize,
             extra: Extra,
         ) void {
-            if (comptime enabled) self.#state.trackExternalAllocation(ptr, ret_addr, extra);
+            if (comptime enabled) self.state.trackExternalAllocation(ptr, ret_addr, extra);
         }
 
         pub fn trackExternalFree(self: Self, slice: anytype, ret_addr: ?usize) FreeError!void {
-            return if (comptime enabled) self.#state.trackExternalFree(slice, ret_addr);
+            return if (comptime enabled) self.state.trackExternalFree(slice, ret_addr);
         }
 
         pub fn setPointerExtra(self: Self, ptr: *anyopaque, extra: Extra) void {
-            if (comptime enabled) self.#state.setPointerExtra(ptr, extra);
+            if (comptime enabled) self.state.setPointerExtra(ptr, extra);
         }
 
         fn downcastImpl(
@@ -382,7 +382,7 @@ pub fn AllocationScopeIn(comptime Allocator: type) type {
                 "tried to downcast allocation scope with wrong parent allocator",
                 .{},
             );
-            return .{ .#parent = new_parent, .#state = state };
+            return .{ .parent_allocator = new_parent, .state = state };
         }
 
         /// Converts an `std.mem.Allocator` into a borrowed allocation scope, with a given parent
@@ -426,8 +426,8 @@ pub fn AllocationScopeIn(comptime Allocator: type) type {
     return struct {
         const Self = @This();
 
-        #parent: Allocator,
-        #state: if (Self.enabled) Owned(*State) else void,
+        parent_allocator: Allocator,
+        state: if (Self.enabled) Owned(*State) else void,
 
         pub const enabled = allocation_scope.enabled;
 
@@ -440,8 +440,8 @@ pub fn AllocationScopeIn(comptime Allocator: type) type {
 
         pub fn init(parent_alloc: Allocator) Self {
             return .{
-                .#parent = parent_alloc,
-                .#state = if (comptime Self.enabled) .new(.init(
+                .parent_allocator = parent_alloc,
+                .state = if (comptime Self.enabled) .new(.init(
                     bun.allocators.asStd(parent_alloc),
                 )),
             };
@@ -456,8 +456,8 @@ pub fn AllocationScopeIn(comptime Allocator: type) type {
         /// twice.
         pub fn borrow(self: Self) Borrowed {
             return .{
-                .#parent = self.parent(),
-                .#state = if (comptime Self.enabled) self.#state.get(),
+                .parent_allocator = self.parent(),
+                .state = if (comptime Self.enabled) self.state.get(),
             };
         }
 
@@ -466,13 +466,13 @@ pub fn AllocationScopeIn(comptime Allocator: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            bun.memory.deinit(&self.#parent);
-            if (comptime Self.enabled) self.#state.deinit();
+            bun.memory.deinit(&self.parent_allocator);
+            if (comptime Self.enabled) self.state.deinit();
             self.* = undefined;
         }
 
         pub fn parent(self: Self) BorrowedAllocator {
-            return bun.allocators.borrow(self.#parent);
+            return bun.allocators.borrow(self.parent_allocator);
         }
 
         pub fn stats(self: Self) Stats {

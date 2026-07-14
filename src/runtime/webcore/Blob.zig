@@ -15,7 +15,7 @@ pub const copy_file = @import("./blob/copy_file.zig");
 
 pub fn new(blob: Blob) *Blob {
     const result = bun.new(Blob, blob);
-    result.#ref_count = .init(1);
+    result.ref_count = .init(1);
     return result;
 }
 
@@ -41,7 +41,7 @@ is_jsdom_file: bool = false,
 
 /// Reference count, for use with `bun.ptr.ExternalShared`. If the reference count is 0, that means
 /// this blob is *not* heap-allocated, and will not be freed in `deinit`.
-#ref_count: bun.ptr.RawRefCount(u32, .single_threaded) = .init(0),
+ref_count: bun.ptr.RawRefCount(u32, .single_threaded) = .init(0),
 
 globalThis: *JSGlobalObject = undefined,
 
@@ -5090,11 +5090,11 @@ pub fn takeOwnership(self: *Blob) Blob {
 }
 
 pub fn isHeapAllocated(self: *const Blob) bool {
-    return self.#ref_count.raw_value != 0;
+    return self.ref_count.raw_value != 0;
 }
 
 fn setNotHeapAllocated(self: *Blob) void {
-    self.#ref_count = .init(0);
+    self.ref_count = .init(0);
 }
 
 pub const external_shared_descriptor = struct {
@@ -5104,13 +5104,13 @@ pub const external_shared_descriptor = struct {
 
 export fn Blob__ref(self: *Blob) void {
     bun.assertf(self.isHeapAllocated(), "cannot ref: this Blob is not heap-allocated", .{});
-    self.#ref_count.increment();
+    self.ref_count.increment();
 }
 
 export fn Blob__deref(self: *Blob) void {
     bun.assertf(self.isHeapAllocated(), "cannot deref: this Blob is not heap-allocated", .{});
-    if (self.#ref_count.decrement() == .should_destroy) {
-        self.#ref_count.increment(); // deinit has its own isHeapAllocated() guard around bun.destroy(this), so this is needed to ensure that returns true.
+    if (self.ref_count.decrement() == .should_destroy) {
+        self.ref_count.increment(); // deinit has its own isHeapAllocated() guard around bun.destroy(this), so this is needed to ensure that returns true.
         self.deinit();
     }
 }

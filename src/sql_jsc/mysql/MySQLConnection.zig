@@ -1,38 +1,38 @@
 const MySQLConnection = @This();
 
-#socket: Socket = .{ .SocketTCP = .{ .socket = .{ .detached = {} } } },
+socket: Socket = .{ .SocketTCP = .{ .socket = .{ .detached = {} } } },
 status: ConnectionState = .disconnected,
 
-#write_buffer: bun.OffsetByteList = .{},
-#read_buffer: bun.OffsetByteList = .{},
-#last_message_start: u32 = 0,
-#sequence_id: u8 = 0,
+write_buffer: bun.OffsetByteList = .{},
+read_buffer: bun.OffsetByteList = .{},
+last_message_start: u32 = 0,
+sequence_id: u8 = 0,
 
 // TODO: move it to JSMySQLConnection
 queue: MySQLRequestQueue = MySQLRequestQueue.init(),
 // TODO: move it to JSMySQLConnection
 statements: PreparedStatementsMap = .{},
 
-#server_version: bun.ByteList = .{},
-#connection_id: u32 = 0,
-#capabilities: Capabilities = .{},
-#character_set: CharacterSet = CharacterSet.default,
-#status_flags: StatusFlags = .{},
+server_version: bun.ByteList = .{},
+connection_id: u32 = 0,
+capabilities: Capabilities = .{},
+character_set: CharacterSet = CharacterSet.default,
+status_flags: StatusFlags = .{},
 
-#auth_plugin: ?AuthMethod = null,
-#auth_state: AuthState = .{ .pending = {} },
+auth_plugin: ?AuthMethod = null,
+auth_state: AuthState = .{ .pending = {} },
 
-#auth_data: std.array_list.Managed(u8) = std.array_list.Managed(u8).init(bun.default_allocator),
-#database: []const u8 = "",
-#user: []const u8 = "",
-#password: []const u8 = "",
-#options: []const u8 = "",
-#options_buf: []const u8 = "",
-#secure: ?*uws.SslCtx = null,
-#tls_config: jsc.API.ServerConfig.SSLConfig = .{},
-#tls_status: TLSStatus = .none,
-#ssl_mode: SSLMode = .disable,
-#flags: ConnectionFlags = .{},
+auth_data: std.array_list.Managed(u8) = std.array_list.Managed(u8).init(bun.default_allocator),
+database: []const u8 = "",
+user: []const u8 = "",
+password: []const u8 = "",
+options: []const u8 = "",
+options_buf: []const u8 = "",
+secure: ?*uws.SslCtx = null,
+tls_config: jsc.API.ServerConfig.SSLConfig = .{},
+tls_status: TLSStatus = .none,
+ssl_mode: SSLMode = .disable,
+flags: ConnectionFlags = .{},
 
 pub fn init(
     database: []const u8,
@@ -45,19 +45,19 @@ pub fn init(
     ssl_mode: SSLMode,
 ) @This() {
     return .{
-        .#database = database,
-        .#user = username,
-        .#password = password,
-        .#options = options,
-        .#options_buf = options_buf,
-        .#socket = .{ .SocketTCP = .{ .socket = .{ .detached = {} } } },
+        .database = database,
+        .user = username,
+        .password = password,
+        .options = options,
+        .options_buf = options_buf,
+        .socket = .{ .SocketTCP = .{ .socket = .{ .detached = {} } } },
         .queue = MySQLRequestQueue.init(),
         .statements = PreparedStatementsMap{},
-        .#tls_config = tls_config,
-        .#secure = secure,
-        .#ssl_mode = ssl_mode,
-        .#tls_status = if (ssl_mode != .disable) .pending else .none,
-        .#character_set = CharacterSet.default,
+        .tls_config = tls_config,
+        .secure = secure,
+        .ssl_mode = ssl_mode,
+        .tls_status = if (ssl_mode != .disable) .pending else .none,
+        .character_set = CharacterSet.default,
     };
 }
 
@@ -73,18 +73,18 @@ pub fn canExecuteQuery(this: *@This()) bool {
 
 pub inline fn isAbleToWrite(this: *const @This()) bool {
     return this.status == .connected and
-        !this.#flags.has_backpressure and
-        this.#write_buffer.len() < MAX_PIPELINE_SIZE;
+        !this.flags.has_backpressure and
+        this.write_buffer.len() < MAX_PIPELINE_SIZE;
 }
 
 pub inline fn isProcessingData(this: *@This()) bool {
-    return this.#flags.is_processing_data;
+    return this.flags.is_processing_data;
 }
 pub inline fn hasBackpressure(this: *const @This()) bool {
-    return this.#flags.has_backpressure;
+    return this.flags.has_backpressure;
 }
 pub inline fn resetBackpressure(this: *@This()) void {
-    this.#flags.has_backpressure = false;
+    this.flags.has_backpressure = false;
 }
 pub const AuthState = union(enum) {
     pending: void,
@@ -100,15 +100,15 @@ pub const AuthState = union(enum) {
 };
 
 pub inline fn canFlush(this: *const @This()) bool {
-    return !this.#flags.has_backpressure and // if has backpressure we need to wait for onWritable event
+    return !this.flags.has_backpressure and // if has backpressure we need to wait for onWritable event
         this.status == .connected and //and we need to be connected
         // we need data to send
-        (this.#write_buffer.len() > 0 or
+        (this.write_buffer.len() > 0 or
             if (this.queue.current()) |request| request.isPending() and !request.isBeingPrepared() else false);
 }
 
 pub inline fn isIdle(this: *const @This()) bool {
-    return this.queue.current() == null and this.#write_buffer.len() == 0;
+    return this.queue.current() == null and this.write_buffer.len() == 0;
 }
 
 pub inline fn enqueueRequest(this: *@This(), request: *JSMySQLQuery) void {
@@ -117,8 +117,8 @@ pub inline fn enqueueRequest(this: *@This(), request: *JSMySQLQuery) void {
 
 pub fn flushQueue(this: *@This()) error{AuthenticationFailed}!void {
     this.flushData();
-    if (!this.#flags.has_backpressure) {
-        if (this.#tls_status == .message_sent) {
+    if (!this.flags.has_backpressure) {
+        if (this.tls_status == .message_sent) {
             try this.upgradeToTLS();
         } else {
             // no backpressure yet so pipeline more if possible and flush again
@@ -130,27 +130,27 @@ pub fn flushQueue(this: *@This()) error{AuthenticationFailed}!void {
 
 fn flushData(this: *@This()) void {
     // we know we still have backpressure so just return we will flush later
-    if (this.#flags.has_backpressure) {
+    if (this.flags.has_backpressure) {
         debug("flushData: has backpressure", .{});
         return;
     }
 
-    const chunk = this.#write_buffer.remaining();
+    const chunk = this.write_buffer.remaining();
     if (chunk.len == 0) {
         return;
     }
 
-    const wrote = this.#socket.write(chunk);
-    this.#flags.has_backpressure = wrote < chunk.len;
+    const wrote = this.socket.write(chunk);
+    this.flags.has_backpressure = wrote < chunk.len;
     debug("flushData: wrote {d}/{d} bytes", .{ wrote, chunk.len });
     if (wrote > 0) {
         SocketMonitor.write(chunk[0..@intCast(wrote)]);
-        this.#write_buffer.consume(@intCast(wrote));
+        this.write_buffer.consume(@intCast(wrote));
     }
 }
 pub fn close(this: *@This()) void {
-    this.#socket.close();
-    this.#write_buffer.clearAndFree(bun.default_allocator);
+    this.socket.close();
+    this.write_buffer.clearAndFree(bun.default_allocator);
 }
 pub fn cleanQueueAndClose(this: *@This(), js_reason: ?jsc.JSValue, js_queries_array: JSValue) void {
     // cleanup requests
@@ -166,16 +166,16 @@ pub fn cleanup(this: *MySQLConnection) void {
     var queue = this.queue;
     defer queue.deinit();
     this.queue = MySQLRequestQueue.init();
-    var write_buffer = this.#write_buffer;
-    var read_buffer = this.#read_buffer;
+    var write_buffer = this.write_buffer;
+    var read_buffer = this.read_buffer;
     var statements = this.statements;
-    var tls_config = this.#tls_config;
-    const options_buf = this.#options_buf;
-    this.#write_buffer = .{};
-    this.#read_buffer = .{};
+    var tls_config = this.tls_config;
+    const options_buf = this.options_buf;
+    this.write_buffer = .{};
+    this.read_buffer = .{};
     this.statements = PreparedStatementsMap{};
-    this.#tls_config = .{};
-    this.#options_buf = "";
+    this.tls_config = .{};
+    this.options_buf = "";
     write_buffer.deinit(bun.default_allocator);
 
     read_buffer.deinit(bun.default_allocator);
@@ -188,10 +188,10 @@ pub fn cleanup(this: *MySQLConnection) void {
     statements.deinit(bun.default_allocator);
 
     tls_config.deinit();
-    this.#auth_data.deinit();
-    if (this.#secure) |s| {
+    this.auth_data.deinit();
+    if (this.secure) |s| {
         bun.BoringSSL.c.SSL_CTX_free(s);
-        this.#secure = null;
+        this.secure = null;
     }
 
     if (options_buf.len > 0) {
@@ -200,26 +200,26 @@ pub fn cleanup(this: *MySQLConnection) void {
 }
 
 pub fn upgradeToTLS(this: *MySQLConnection) !void {
-    if (this.#socket == .SocketTCP) {
+    if (this.socket == .SocketTCP) {
         const vm = jsc.VirtualMachine.get();
         const tls_group = vm.rareData().mysqlGroup(vm, true);
-        const new_socket = this.#socket.SocketTCP.socket.connected.adoptTLS(
+        const new_socket = this.socket.SocketTCP.socket.connected.adoptTLS(
             tls_group,
             .mysql_tls,
-            this.#secure.?,
-            this.#tls_config.server_name,
+            this.secure.?,
+            this.tls_config.server_name,
             @sizeOf(?*JSMySQLConnection),
             @sizeOf(?*JSMySQLConnection),
         ) orelse return error.AuthenticationFailed;
         new_socket.ext(?*JSMySQLConnection).* = this.getJSConnection();
-        this.#socket = .{ .SocketTLS = .{ .socket = .{ .connected = new_socket } } };
+        this.socket = .{ .SocketTLS = .{ .socket = .{ .connected = new_socket } } };
         // ext is now repointed; safe to kick the handshake (any dispatch lands here).
         new_socket.startTLSHandshake();
     }
 }
 
 pub fn setSocket(this: *MySQLConnection, socket: uws.AnySocket) void {
-    this.#socket = socket;
+    this.socket = socket;
 }
 pub fn isActive(this: *MySQLConnection) bool {
     if (this.status == .disconnected or this.status == .failed) {
@@ -233,27 +233,27 @@ pub inline fn isConnected(this: *MySQLConnection) bool {
     return this.status == .connected;
 }
 pub fn doHandshake(this: *MySQLConnection, success: i32, ssl_error: uws.us_bun_verify_error_t) !bool {
-    debug("onHandshake: {d} {d} {s}", .{ success, ssl_error.error_no, @tagName(this.#ssl_mode) });
+    debug("onHandshake: {d} {d} {s}", .{ success, ssl_error.error_no, @tagName(this.ssl_mode) });
     const handshake_success = if (success == 1) true else false;
-    this.#sequence_id = this.#sequence_id +% 1;
+    this.sequence_id = this.sequence_id +% 1;
     if (handshake_success) {
-        this.#tls_status = .ssl_ok;
-        if (this.#tls_config.reject_unauthorized != 0) {
+        this.tls_status = .ssl_ok;
+        if (this.tls_config.reject_unauthorized != 0) {
             // follow the same rules as postgres
             // https://github.com/porsager/postgres/blob/6ec85a432b17661ccacbdf7f765c651e88969d36/src/connection.js#L272-L279
             // only reject the connection if reject_unauthorized == true
-            switch (this.#ssl_mode) {
+            switch (this.ssl_mode) {
                 .verify_ca, .verify_full => {
                     if (ssl_error.error_no != 0) {
-                        this.#tls_status = .ssl_failed;
+                        this.tls_status = .ssl_failed;
                         return false;
                     }
 
-                    const ssl_ptr: *BoringSSL.c.SSL = @ptrCast(this.#socket.getNativeHandle());
+                    const ssl_ptr: *BoringSSL.c.SSL = @ptrCast(this.socket.getNativeHandle());
                     if (BoringSSL.c.SSL_get_servername(ssl_ptr, 0)) |servername| {
                         const hostname = servername[0..bun.len(servername)];
                         if (!BoringSSL.checkServerIdentity(ssl_ptr, hostname)) {
-                            this.#tls_status = .ssl_failed;
+                            this.tls_status = .ssl_failed;
                             return false;
                         }
                     }
@@ -265,21 +265,21 @@ pub fn doHandshake(this: *MySQLConnection, success: i32, ssl_error: uws.us_bun_v
         try this.sendHandshakeResponse();
         return true;
     }
-    this.#tls_status = .ssl_failed;
+    this.tls_status = .ssl_failed;
     // if we are here is because server rejected us, and the error_no is the cause of this
     // no matter if reject_unauthorized is false because we are disconnected by the server
     return false;
 }
 
 pub fn readAndProcessData(this: *MySQLConnection, data: []const u8) !void {
-    this.#flags.is_processing_data = true;
-    defer this.#flags.is_processing_data = false;
+    this.flags.is_processing_data = true;
+    defer this.flags.is_processing_data = false;
     // Clear the timeout.
-    this.#socket.setTimeout(0);
+    this.socket.setTimeout(0);
 
     SocketMonitor.read(data);
 
-    if (this.#read_buffer.remaining().len == 0) {
+    if (this.read_buffer.remaining().len == 0) {
         var consumed: usize = 0;
         var offset: usize = 0;
         const reader = StackReader.init(data, &consumed, &offset);
@@ -294,10 +294,10 @@ pub fn readAndProcessData(this: *MySQLConnection, data: []const u8) !void {
                     });
                 }
 
-                this.#read_buffer.head = 0;
-                this.#last_message_start = 0;
-                this.#read_buffer.byte_list.len = 0;
-                this.#read_buffer.write(bun.default_allocator, data[offset..]) catch @panic("failed to write to read buffer");
+                this.read_buffer.head = 0;
+                this.last_message_start = 0;
+                this.read_buffer.byte_list.len = 0;
+                this.read_buffer.write(bun.default_allocator, data[offset..]) catch @panic("failed to write to read buffer");
             } else {
                 if (comptime bun.Environment.allow_assert) {
                     bun.handleErrorReturnTrace(err, @errorReturnTrace());
@@ -309,9 +309,9 @@ pub fn readAndProcessData(this: *MySQLConnection, data: []const u8) !void {
     }
 
     {
-        this.#read_buffer.head = this.#last_message_start;
+        this.read_buffer.head = this.last_message_start;
 
-        this.#read_buffer.write(bun.default_allocator, data) catch @panic("failed to write to read buffer");
+        this.read_buffer.write(bun.default_allocator, data) catch @panic("failed to write to read buffer");
         this.processPackets(Reader, this.bufferedReader()) catch |err| {
             debug("processPackets with buffer: {s}", .{@errorName(err)});
             if (err != error.ShortRead) {
@@ -325,17 +325,17 @@ pub fn readAndProcessData(this: *MySQLConnection, data: []const u8) !void {
 
             if (comptime bun.Environment.allow_assert) {
                 debug("Received short read: last_message_start: {d}, head: {d}, len: {d}", .{
-                    this.#last_message_start,
-                    this.#read_buffer.head,
-                    this.#read_buffer.byte_list.len,
+                    this.last_message_start,
+                    this.read_buffer.head,
+                    this.read_buffer.byte_list.len,
                 });
             }
 
             return;
         };
 
-        this.#last_message_start = 0;
-        this.#read_buffer.head = 0;
+        this.last_message_start = 0;
+        this.read_buffer.head = 0;
     }
 }
 
@@ -347,7 +347,7 @@ pub fn processPackets(this: *MySQLConnection, comptime Context: type, reader: Ne
         const header = PacketHeader.decode(reader.peek()) orelse return AnyMySQLError.Error.ShortRead;
         const header_length = header.length;
         const packet_length: usize = header_length + PacketHeader.size;
-        debug("sequence_id: {d} header: {d}", .{ this.#sequence_id, header_length });
+        debug("sequence_id: {d} header: {d}", .{ this.sequence_id, header_length });
         // Ensure we have the full packet
         reader.ensureCapacity(packet_length) catch return AnyMySQLError.Error.ShortRead;
         // always skip the full packet, we dont care about padding or unreaded bytes
@@ -355,7 +355,7 @@ pub fn processPackets(this: *MySQLConnection, comptime Context: type, reader: Ne
         reader.skip(PacketHeader.size);
 
         // Update sequence id
-        this.#sequence_id = header.sequence_id +% 1;
+        this.sequence_id = header.sequence_id +% 1;
 
         // Process packet based on connection state
         switch (this.status) {
@@ -376,19 +376,19 @@ pub fn handleHandshake(this: *MySQLConnection, comptime Context: type, reader: N
     defer handshake.deinit();
 
     // Store server info
-    this.#server_version = try handshake.server_version.toOwned();
-    this.#connection_id = handshake.connection_id;
+    this.server_version = try handshake.server_version.toOwned();
+    this.connection_id = handshake.connection_id;
     // Negotiate capabilities: only request capabilities that the server also supports.
     // Per MySQL protocol, the client MUST intersect its desired capabilities with the
     // server's advertised capabilities. This ensures features like CLIENT_DEPRECATE_EOF
     // are only used when the server actually supports them (critical for MySQL-compatible
     // databases like StarRocks, TiDB, SingleStore, etc.).
-    this.#capabilities = Capabilities.getDefaultCapabilities(this.#ssl_mode != .disable, this.#database.len > 0)
+    this.capabilities = Capabilities.getDefaultCapabilities(this.ssl_mode != .disable, this.database.len > 0)
         .intersect(handshake.capability_flags);
 
     // Override with utf8mb4 instead of using server's default
-    this.#character_set = CharacterSet.default;
-    this.#status_flags = handshake.status_flags;
+    this.character_set = CharacterSet.default;
+    this.status_flags = handshake.status_flags;
 
     debug(
         \\Handshake
@@ -400,27 +400,27 @@ pub fn handleHandshake(this: *MySQLConnection, comptime Context: type, reader: N
         \\   Status Flags:   [ {f} ]
         \\
     , .{
-        this.#server_version.slice(),
-        this.#connection_id,
-        this.#character_set,
-        this.#character_set.label(),
+        this.server_version.slice(),
+        this.connection_id,
+        this.character_set,
+        this.character_set.label(),
         handshake.capability_flags,
         handshake.capability_flags.toInt(),
-        this.#capabilities,
-        this.#capabilities.toInt(),
-        this.#status_flags,
+        this.capabilities,
+        this.capabilities.toInt(),
+        this.status_flags,
     });
 
-    this.#auth_data.clearAndFree();
+    this.auth_data.clearAndFree();
 
     // Store auth data
-    try this.#auth_data.ensureTotalCapacity(handshake.auth_plugin_data_part_1.len + handshake.auth_plugin_data_part_2.len);
-    try this.#auth_data.appendSlice(handshake.auth_plugin_data_part_1[0..]);
-    try this.#auth_data.appendSlice(handshake.auth_plugin_data_part_2[0..]);
+    try this.auth_data.ensureTotalCapacity(handshake.auth_plugin_data_part_1.len + handshake.auth_plugin_data_part_2.len);
+    try this.auth_data.appendSlice(handshake.auth_plugin_data_part_1[0..]);
+    try this.auth_data.appendSlice(handshake.auth_plugin_data_part_2[0..]);
 
     // Get auth plugin
     if (handshake.auth_plugin_name.slice().len > 0) {
-        this.#auth_plugin = AuthMethod.fromString(handshake.auth_plugin_name.slice()) orelse {
+        this.auth_plugin = AuthMethod.fromString(handshake.auth_plugin_name.slice()) orelse {
             return error.UnsupportedAuthPlugin;
         };
     }
@@ -429,9 +429,9 @@ pub fn handleHandshake(this: *MySQLConnection, comptime Context: type, reader: N
     this.setStatus(.authenticating);
 
     // https://dev.mysql.com/doc/dev/mysql-server/8.4.6/page_protocol_connection_phase_packets_protocol_ssl_request.html
-    if (this.#capabilities.CLIENT_SSL) {
+    if (this.capabilities.CLIENT_SSL) {
         var response = SSLRequest{
-            .capability_flags = this.#capabilities,
+            .capability_flags = this.capabilities,
             .max_packet_size = 0, //16777216,
             .character_set = CharacterSet.default,
             // bun always send connection attributes
@@ -439,18 +439,18 @@ pub fn handleHandshake(this: *MySQLConnection, comptime Context: type, reader: N
         };
         defer response.deinit();
         try response.write(this.writer());
-        this.#capabilities = response.capability_flags;
-        this.#tls_status = .message_sent;
+        this.capabilities = response.capability_flags;
+        this.tls_status = .message_sent;
         this.flushData();
-        if (!this.#flags.has_backpressure) {
+        if (!this.flags.has_backpressure) {
             try this.upgradeToTLS();
         }
         return;
     }
-    if (this.#tls_status != .none) {
-        this.#tls_status = .ssl_not_available;
+    if (this.tls_status != .none) {
+        this.tls_status = .ssl_not_available;
 
-        switch (this.#ssl_mode) {
+        switch (this.ssl_mode) {
             .verify_ca, .verify_full => {
                 return error.AuthenticationFailed;
             },
@@ -472,10 +472,10 @@ fn handleHandshakeDecodePublicKey(this: *MySQLConnection, comptime Context: type
     this.setStatus(.authenticating);
 
     var encrypted_password = Auth.caching_sha2_password.EncryptedPassword{
-        .password = this.#password,
+        .password = this.password,
         .public_key = response.data.slice(),
-        .nonce = this.#auth_data.items,
-        .sequence_id = this.#sequence_id,
+        .nonce = this.auth_data.items,
+        .sequence_id = this.sequence_id,
     };
     try encrypted_password.write(this.writer());
     this.flushData();
@@ -510,8 +510,8 @@ pub fn handleAuth(this: *MySQLConnection, comptime Context: type, reader: NewRea
 
             this.setStatus(.connected);
 
-            this.#status_flags = ok.status_flags;
-            this.#flags.is_ready_for_query = true;
+            this.status_flags = ok.status_flags;
+            this.flags.is_ready_for_query = true;
             const connection = this.getJSConnection();
             this.queue.markAsReadyForQuery();
             this.queue.advance(connection);
@@ -529,7 +529,7 @@ pub fn handleAuth(this: *MySQLConnection, comptime Context: type, reader: NewRea
 
         @intFromEnum(PacketType.MORE_DATA) => {
             // Handle various MORE_DATA cases
-            if (this.#auth_plugin) |plugin| {
+            if (this.auth_plugin) |plugin| {
                 switch (plugin) {
                     .sha256_password, .caching_sha2_password => {
                         reader.skip(1);
@@ -547,18 +547,18 @@ pub fn handleAuth(this: *MySQLConnection, comptime Context: type, reader: NewRea
                                 debug("success auth", .{});
                                 this.setStatus(.connected);
 
-                                this.#flags.is_ready_for_query = true;
+                                this.flags.is_ready_for_query = true;
                                 this.queue.markAsReadyForQuery();
                                 this.queue.advance(this.getJSConnection());
                             },
                             .continue_auth => {
                                 debug("continue auth", .{});
 
-                                if (this.#ssl_mode == .disable) {
+                                if (this.ssl_mode == .disable) {
                                     // we are in plain TCP so we need to request the public key
                                     this.setStatus(.authentication_awaiting_pk);
                                     debug("awaiting public key", .{});
-                                    var packet = try this.writer().start(this.#sequence_id);
+                                    var packet = try this.writer().start(this.sequence_id);
 
                                     var request = Auth.caching_sha2_password.PublicKeyRequest{};
                                     try request.write(this.writer());
@@ -567,8 +567,8 @@ pub fn handleAuth(this: *MySQLConnection, comptime Context: type, reader: NewRea
                                 } else {
                                     debug("sending password TLS enabled", .{});
                                     // SSL mode is enabled, send password as is
-                                    var packet = try this.writer().start(this.#sequence_id);
-                                    try this.writer().writeZ(this.#password);
+                                    var packet = try this.writer().start(this.sequence_id);
+                                    try this.writer().writeZ(this.password);
                                     try packet.end();
                                     this.flushData();
                                 }
@@ -611,9 +611,9 @@ pub fn handleAuth(this: *MySQLConnection, comptime Context: type, reader: NewRea
                 return error.UnsupportedAuthPlugin;
             };
             const auth_data = auth_switch.plugin_data.slice();
-            this.#auth_plugin = auth_method;
-            this.#auth_data.clearRetainingCapacity();
-            try this.#auth_data.appendSlice(auth_data);
+            this.auth_plugin = auth_method;
+            this.auth_data.clearRetainingCapacity();
+            try this.auth_data.appendSlice(auth_data);
 
             // Send new auth response
             try this.sendAuthSwitchResponse(auth_method, auth_data);
@@ -662,7 +662,7 @@ pub fn handleCommand(this: *MySQLConnection, comptime Context: type, reader: New
                 defer {
                     this.flushQueue() catch {};
                 }
-                this.#flags.is_ready_for_query = true;
+                this.flags.is_ready_for_query = true;
                 this.queue.markAsReadyForQuery();
                 this.queue.markCurrentRequestAsFinished(request);
                 connection.onErrorPacket(request, statement.error_response);
@@ -674,26 +674,26 @@ pub fn handleCommand(this: *MySQLConnection, comptime Context: type, reader: New
 pub fn sendHandshakeResponse(this: *MySQLConnection) AnyMySQLError.Error!void {
     debug("sendHandshakeResponse", .{});
     // Only require password for caching_sha2_password when connecting for the first time
-    if (this.#auth_plugin) |plugin| {
+    if (this.auth_plugin) |plugin| {
         const requires_password = switch (plugin) {
             .caching_sha2_password => false, // Allow empty password, server will handle auth flow
             .sha256_password => true, // Always requires password
             .mysql_native_password => false, // Allows empty password
         };
 
-        if (requires_password and this.#password.len == 0) {
+        if (requires_password and this.password.len == 0) {
             return error.PasswordRequired;
         }
     }
 
     var response = HandshakeResponse41{
-        .capability_flags = this.#capabilities,
+        .capability_flags = this.capabilities,
         .max_packet_size = 0, //16777216,
         .character_set = CharacterSet.default,
-        .username = .{ .temporary = this.#user },
-        .database = .{ .temporary = this.#database },
+        .username = .{ .temporary = this.user },
+        .database = .{ .temporary = this.database },
         .auth_plugin_name = .{
-            .temporary = if (this.#auth_plugin) |plugin|
+            .temporary = if (this.auth_plugin) |plugin|
                 switch (plugin) {
                     .mysql_native_password => "mysql_native_password",
                     .caching_sha2_password => "caching_sha2_password",
@@ -703,7 +703,7 @@ pub fn sendHandshakeResponse(this: *MySQLConnection) AnyMySQLError.Error!void {
                 "",
         },
         .auth_response = .{ .empty = {} },
-        .sequence_id = this.#sequence_id,
+        .sequence_id = this.sequence_id,
     };
     defer response.deinit();
 
@@ -713,16 +713,16 @@ pub fn sendHandshakeResponse(this: *MySQLConnection) AnyMySQLError.Error!void {
 
     // Generate auth response based on plugin
     var scrambled_buf: [32]u8 = undefined;
-    if (this.#auth_plugin) |plugin| {
-        if (this.#auth_data.items.len == 0) {
+    if (this.auth_plugin) |plugin| {
+        if (this.auth_data.items.len == 0) {
             return error.MissingAuthData;
         }
 
-        response.auth_response = .{ .temporary = try plugin.scramble(this.#password, this.#auth_data.items, &scrambled_buf) };
+        response.auth_response = .{ .temporary = try plugin.scramble(this.password, this.auth_data.items, &scrambled_buf) };
     }
     response.capability_flags.reject();
     try response.write(this.writer());
-    this.#capabilities = response.capability_flags;
+    this.capabilities = response.capability_flags;
     this.flushData();
 }
 
@@ -733,11 +733,11 @@ pub fn sendAuthSwitchResponse(this: *MySQLConnection, auth_method: AuthMethod, p
     var scrambled_buf: [32]u8 = undefined;
 
     response.auth_response = .{
-        .temporary = try auth_method.scramble(this.#password, plugin_data, &scrambled_buf),
+        .temporary = try auth_method.scramble(this.password, plugin_data, &scrambled_buf),
     };
 
     var response_writer = this.writer();
-    var packet = try response_writer.start(this.#sequence_id);
+    var packet = try response_writer.start(this.sequence_id);
     try response.write(response_writer);
     try packet.end();
     this.flushData();
@@ -747,16 +747,16 @@ pub const Writer = struct {
     connection: *MySQLConnection,
 
     pub fn write(this: Writer, data: []const u8) AnyMySQLError.Error!void {
-        var buffer = &this.connection.#write_buffer;
+        var buffer = &this.connection.write_buffer;
         try buffer.write(bun.default_allocator, data);
     }
 
     pub fn pwrite(this: Writer, data: []const u8, index: usize) AnyMySQLError.Error!void {
-        @memcpy(this.connection.#write_buffer.byte_list.slice()[index..][0..data.len], data);
+        @memcpy(this.connection.write_buffer.byte_list.slice()[index..][0..data.len], data);
     }
 
     pub fn offset(this: Writer) usize {
-        return this.connection.#write_buffer.len();
+        return this.connection.write_buffer.len();
     }
 };
 
@@ -772,41 +772,41 @@ pub const Reader = struct {
     connection: *MySQLConnection,
 
     pub fn markMessageStart(this: Reader) void {
-        this.connection.#last_message_start = this.connection.#read_buffer.head;
+        this.connection.last_message_start = this.connection.read_buffer.head;
     }
 
     pub fn setOffsetFromStart(this: Reader, offset: usize) void {
-        this.connection.#read_buffer.head = this.connection.#last_message_start + @as(u32, @truncate(offset));
+        this.connection.read_buffer.head = this.connection.last_message_start + @as(u32, @truncate(offset));
     }
 
     pub const ensureLength = ensureCapacity;
 
     pub fn peek(this: Reader) []const u8 {
-        return this.connection.#read_buffer.remaining();
+        return this.connection.read_buffer.remaining();
     }
 
     pub fn skip(this: Reader, count: isize) void {
         if (count < 0) {
             const abs_count = @abs(count);
-            if (abs_count > this.connection.#read_buffer.head) {
-                this.connection.#read_buffer.head = 0;
+            if (abs_count > this.connection.read_buffer.head) {
+                this.connection.read_buffer.head = 0;
                 return;
             }
-            this.connection.#read_buffer.head -= @intCast(abs_count);
+            this.connection.read_buffer.head -= @intCast(abs_count);
             return;
         }
 
         const ucount: usize = @intCast(count);
-        if (this.connection.#read_buffer.head + ucount > this.connection.#read_buffer.byte_list.len) {
-            this.connection.#read_buffer.head = this.connection.#read_buffer.byte_list.len;
+        if (this.connection.read_buffer.head + ucount > this.connection.read_buffer.byte_list.len) {
+            this.connection.read_buffer.head = this.connection.read_buffer.byte_list.len;
             return;
         }
 
-        this.connection.#read_buffer.head += @intCast(ucount);
+        this.connection.read_buffer.head += @intCast(ucount);
     }
 
     pub fn ensureCapacity(this: Reader, count: usize) bool {
-        return this.connection.#read_buffer.remaining().len >= count;
+        return this.connection.read_buffer.remaining().len >= count;
     }
 
     pub fn read(this: Reader, count: usize) AnyMySQLError.Error!Data {
@@ -846,8 +846,8 @@ fn checkIfPreparedStatementIsDone(this: *MySQLConnection, statement: *MySQLState
     debug("checkIfPreparedStatementIsDone: {d} {d} {d} {d}", .{ statement.columns_received, statement.params_received, statement.columns.len, statement.params.len });
     if (statement.columns_received == statement.columns.len and statement.params_received == statement.params.len) {
         statement.status = .prepared;
-        this.#flags.waiting_to_prepare = false;
-        this.#flags.is_ready_for_query = true;
+        this.flags.waiting_to_prepare = false;
+        this.flags.is_ready_for_query = true;
         this.queue.markAsReadyForQuery();
         this.queue.markAsPrepared();
         statement.reset();
@@ -880,7 +880,7 @@ pub fn handlePreparedStatement(this: *MySQLConnection, comptime Context: type, r
         // Disambiguation from a 0xFE length-prefixed row: any 0xFE packet below
         // the 16 MB max-packet marker (0xFFFFFF) is an EOF. See handleResultSet
         // for the full rationale.
-        if (!this.#capabilities.CLIENT_DEPRECATE_EOF and header_length < 0xFFFFFF and @as(PacketType, @enumFromInt(first_byte)) == .EOF) {
+        if (!this.capabilities.CLIENT_DEPRECATE_EOF and header_length < 0xFFFFFF and @as(PacketType, @enumFromInt(first_byte)) == .EOF) {
             var eof = EOFPacket{};
             try eof.decode(reader);
             this.checkIfPreparedStatementIsDone(statement);
@@ -903,7 +903,7 @@ pub fn handlePreparedStatement(this: *MySQLConnection, comptime Context: type, r
         // we check completion after each column/param definition. In legacy mode,
         // completion is deferred to the EOF handler above to avoid marking the
         // statement as prepared before the trailing EOF is consumed.
-        if (this.#capabilities.CLIENT_DEPRECATE_EOF) {
+        if (this.capabilities.CLIENT_DEPRECATE_EOF) {
             this.checkIfPreparedStatementIsDone(statement);
         }
         return;
@@ -945,7 +945,7 @@ pub fn handlePreparedStatement(this: *MySQLConnection, comptime Context: type, r
             defer {
                 this.queue.advance(connection);
             }
-            this.#flags.is_ready_for_query = true;
+            this.flags.is_ready_for_query = true;
             statement.status = .failed;
             // err.error_message is a Data{ .temporary = ... } slice into the socket read
             // buffer which will be overwritten by the next packet. The statement is cached
@@ -968,7 +968,7 @@ pub fn handlePreparedStatement(this: *MySQLConnection, comptime Context: type, r
 }
 
 fn handleResultSetOK(this: *MySQLConnection, request: *JSMySQLQuery, statement: *MySQLStatement, status_flags: StatusFlags, last_insert_id: u64, affected_rows: u64) void {
-    this.#status_flags = status_flags;
+    this.status_flags = status_flags;
     const is_last_result = !status_flags.has(.SERVER_MORE_RESULTS_EXISTS);
     const connection = this.getJSConnection();
     debug("handleResultSetOK: {d} {}", .{ status_flags.toInt(), is_last_result });
@@ -979,7 +979,7 @@ fn handleResultSetOK(this: *MySQLConnection, request: *JSMySQLQuery, statement: 
         // registered if the queue's current item is completed (not pending).
         this.flushQueue() catch {};
     }
-    this.#flags.is_ready_for_query = is_last_result;
+    this.flags.is_ready_for_query = is_last_result;
     if (is_last_result) {
         this.queue.markAsReadyForQuery();
         this.queue.markCurrentRequestAsFinished(request);
@@ -1027,7 +1027,7 @@ fn handleResultSet(this: *MySQLConnection, comptime Context: type, reader: NewRe
                 statement.reset();
             }
 
-            this.#flags.is_ready_for_query = true;
+            this.flags.is_ready_for_query = true;
             this.queue.markAsReadyForQuery();
             this.queue.markCurrentRequestAsFinished(request);
 
@@ -1094,7 +1094,7 @@ fn handleResultSet(this: *MySQLConnection, comptime Context: type, reader: NewRe
                 // `szMeta`) that pushes the payload past 9 bytes, causing the
                 // terminator to be misparsed as a row and the query to hang.
                 if (packet_type == .EOF and header_length < 0xFFFFFF) {
-                    if (!this.#capabilities.CLIENT_DEPRECATE_EOF) {
+                    if (!this.capabilities.CLIENT_DEPRECATE_EOF) {
                         // Legacy protocol: EOF packets delimit sections of the result set.
                         // Handle the intermediate EOF (between column defs and rows) and
                         // the final EOF (after all rows) differently.

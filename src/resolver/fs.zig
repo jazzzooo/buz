@@ -537,7 +537,7 @@ pub const FileSystem = struct {
         file_limit: usize = 32,
         file_quota: usize = 32,
 
-        fn #platformTempDir() []const u8 {
+        fn detectPlatformTempDir() []const u8 {
             // Try TMPDIR, TMP, and TEMP in that order, matching Node.js.
             // https://github.com/nodejs/node/blob/e172be269890702bf2ad06252f2f152e7604d76c/src/node_credentials.cc#L132
             if (bun.env_var.TMPDIR.getNotEmpty() orelse
@@ -583,7 +583,7 @@ pub const FileSystem = struct {
             };
         }
 
-        var get_platform_tempdir = bun.once(#platformTempDir);
+        var get_platform_tempdir = bun.once(detectPlatformTempDir);
         pub fn platformTempDir() []const u8 {
             return get_platform_tempdir.call(.{});
         }

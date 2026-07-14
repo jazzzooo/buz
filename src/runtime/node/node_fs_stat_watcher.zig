@@ -191,7 +191,7 @@ pub const StatWatcher = struct {
 
     poll_ref: bun.Async.KeepAlive = .{},
 
-    #last_stat: bun.threading.Guarded(bun.sys.PosixStat),
+    last_stat: bun.threading.Guarded(bun.sys.PosixStat),
 
     scheduler: bun.ptr.RefPtr(StatWatcherScheduler),
 
@@ -217,15 +217,15 @@ pub const StatWatcher = struct {
     /// This field is sometimes set from aonther thread, so we should copy by
     /// value instead of referencing by pointer.
     pub fn getLastStat(this: *StatWatcher) bun.sys.PosixStat {
-        const value = this.#last_stat.lock();
-        defer this.#last_stat.unlock();
+        const value = this.last_stat.lock();
+        defer this.last_stat.unlock();
         return value.*;
     }
 
     /// Set the last stat.
     pub fn setLastStat(this: *StatWatcher, stat: *const bun.sys.PosixStat) void {
-        const value = this.#last_stat.lock();
-        defer this.#last_stat.unlock();
+        const value = this.last_stat.lock();
+        defer this.last_stat.unlock();
         value.* = stat.*;
     }
 
@@ -536,7 +536,7 @@ pub const StatWatcher = struct {
             // Instant.now will not fail on our target platforms.
             .last_check = std.time.Instant.now() catch unreachable,
             // InitStatTask is responsible for setting this
-            .#last_stat = .init(std.mem.zeroes(bun.sys.PosixStat)),
+            .last_stat = .init(std.mem.zeroes(bun.sys.PosixStat)),
             .scheduler = vm.rareData().nodeFSStatWatcherScheduler(vm),
             .ref_count = .init(),
         };

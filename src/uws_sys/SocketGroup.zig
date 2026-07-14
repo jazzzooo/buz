@@ -14,7 +14,7 @@ pub const SocketGroup = extern struct {
     /// Embedding owner — typed access via `owner(T)`. `?*anyopaque` only
     /// because the C ABI slot is heterogenous (Listener / uWS App / RareData /
     /// null); never read this field directly.
-    #ext: ?*anyopaque = null,
+    ext: ?*anyopaque = null,
     head_sockets: ?*us_socket_t = null,
     head_connecting_sockets: ?*ConnectingSocket = null,
     head_listen_sockets: ?*uws.ListenSocket = null,
@@ -85,7 +85,7 @@ pub const SocketGroup = extern struct {
     /// non-null owner (Listener, uWS App/Context). Per-kind VM groups in
     /// `RareData` pass `null`, so callers must know which they have.
     pub fn owner(self: *const SocketGroup, comptime T: type) *T {
-        return @ptrCast(@alignCast(self.#ext.?));
+        return @ptrCast(@alignCast(self.ext.?));
     }
 
     pub fn isEmpty(self: *const SocketGroup) bool {

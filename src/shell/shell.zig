@@ -1073,11 +1073,11 @@ pub const AST = struct {
 
         pub fn memoryCost(this: *const @This()) usize {
             var cost: usize = @sizeOf(CompoundAtom);
-            cost += this.#atomsMemoryCost();
+            cost += this.atomsMemoryCost();
             return cost;
         }
 
-        fn #atomsMemoryCost(this: *const @This()) usize {
+        fn atomsMemoryCost(this: *const @This()) usize {
             var cost: usize = 0;
             for (this.atoms) |*atom| {
                 cost += atom.memoryCost();

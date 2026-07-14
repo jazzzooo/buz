@@ -804,30 +804,30 @@ pub fn Parser(comptime enc: Encoding) type {
             /// Bounds amplification from a small document merging one large anchor many times.
             pub const max_merged_properties = 1024 * 1024;
 
-            #list: bun.collections.ArrayList(G.Property),
+            list: bun.collections.ArrayList(G.Property),
             key_index: MergeKeyIndex,
             merged_objects: std.AutoHashMap(*const E.Object, void),
             indexed_count: usize = 0,
 
             pub fn init(allocator: std.mem.Allocator) MappingProps {
                 return .{
-                    .#list = .initIn(allocator),
+                    .list = .initIn(allocator),
                     .key_index = .init(allocator),
                     .merged_objects = .init(allocator),
                 };
             }
 
             pub fn deinit(self: *MappingProps) void {
-                self.#list.deinitShallow();
+                self.list.deinitShallow();
                 self.key_index.deinit();
                 self.merged_objects.deinit();
             }
 
             fn merge(self: *MappingProps, merge_props: []const G.Property, budget: *usize) OOM!void {
-                try self.#list.ensureUnusedCapacity(@min(merge_props.len, budget.*));
+                try self.list.ensureUnusedCapacity(@min(merge_props.len, budget.*));
 
-                while (self.indexed_count < self.#list.items().len) : (self.indexed_count += 1) {
-                    const existing_key = self.#list.items()[self.indexed_count].key.?;
+                while (self.indexed_count < self.list.items().len) : (self.indexed_count += 1) {
+                    const existing_key = self.list.items()[self.indexed_count].key.?;
                     _ = try self.key_index.getOrPut(existing_key);
                 }
 
@@ -839,8 +839,8 @@ pub fn Parser(comptime enc: Encoding) type {
 
                     if (budget.* == 0) return error.OutOfMemory;
                     budget.* -= 1;
-                    self.#list.appendAssumeCapacity(merge_prop);
-                    self.indexed_count = self.#list.items().len;
+                    self.list.appendAssumeCapacity(merge_prop);
+                    self.indexed_count = self.list.items().len;
                 }
             }
 
@@ -851,7 +851,7 @@ pub fn Parser(comptime enc: Encoding) type {
             }
 
             pub fn append(self: *MappingProps, prop: G.Property) OOM!void {
-                try self.#list.append(prop);
+                try self.list.append(prop);
             }
 
             pub fn appendMaybeMerge(self: *MappingProps, key: Expr, value: Expr, budget: *usize) OOM!void {
@@ -859,7 +859,7 @@ pub fn Parser(comptime enc: Encoding) type {
                     .e_string => |key_str| !key_str.eqlComptime("<<"),
                     else => true,
                 }) {
-                    return self.#list.append(.{ .key = key, .value = value });
+                    return self.list.append(.{ .key = key, .value = value });
                 }
 
                 return switch (value.data) {
@@ -875,12 +875,12 @@ pub fn Parser(comptime enc: Encoding) type {
                         }
                     },
 
-                    else => self.#list.append(.{ .key = key, .value = value }),
+                    else => self.list.append(.{ .key = key, .value = value }),
                 };
             }
 
             pub fn moveList(self: *MappingProps) G.Property.List {
-                return .moveFromList(&self.#list);
+                return .moveFromList(&self.list);
             }
         };
 

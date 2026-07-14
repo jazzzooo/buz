@@ -41,8 +41,8 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
         const Child = info.Child;
         const ConstPointer = AddConst(Pointer);
 
-        #pointer: Pointer,
-        #allocator: Allocator,
+        pointer: Pointer,
+        backing_allocator: Allocator,
 
         /// An unmanaged version of this owned pointer. This type doesn't store the allocator and
         /// is the same size as a raw pointer.
@@ -76,8 +76,8 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
                         value,
                     );
                     return .{
-                        .#pointer = data,
-                        .#allocator = allocator_,
+                        .pointer = data,
+                        .backing_allocator = allocator_,
                     };
                 }
             },
@@ -87,8 +87,8 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
                     const data = try bun.allocators.asStd(allocator_).alloc(Child, count);
                     @memset(data, elem);
                     return .{
-                        .#pointer = data,
-                        .#allocator = allocator_,
+                        .pointer = data,
+                        .backing_allocator = allocator_,
                     };
                 }
             },
@@ -121,8 +121,8 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
             return switch (comptime info.kind()) {
                 .single => .allocIn(unwrapped.*, allocator_),
                 .slice => .{
-                    .#pointer = try bun.allocators.asStd(allocator_).dupe(Child, unwrapped),
-                    .#allocator = allocator_,
+                    .pointer = try bun.allocators.asStd(allocator_).dupe(Child, unwrapped),
+                    .backing_allocator = allocator_,
                 },
             };
         }
@@ -164,10 +164,10 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
         /// * `allocator.allocator()` returns `bun.default_allocator`
         pub fn fromRawIn(data: Pointer, allocator_: Allocator) Self {
             return .{
-                .#pointer = data,
+                .pointer = data,
                 // Code shouldn't rely on null pointers having a specific allocator, since
                 // `initNull` necessarily sets this field to undefined.
-                .#allocator = if ((comptime info.isOptional()) and data == null)
+                .backing_allocator = if ((comptime info.isOptional()) and data == null)
                     undefined
                 else
                     allocator_,
@@ -194,7 +194,7 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
 
         /// Returns the inner pointer or slice.
         pub fn get(self: Self) Pointer {
-            return self.#pointer;
+            return self.pointer;
         }
 
         /// Converts an owned pointer into a raw pointer. This releases ownership of the pointer.
@@ -209,10 +209,10 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
         /// This method invalidates `self`.
         pub fn intoRaw(self: *Self) Pointer {
             defer self.* = undefined;
-            if ((comptime !info.isOptional()) or self.#pointer != null) {
-                bun.memory.deinit(&self.#allocator);
+            if ((comptime !info.isOptional()) or self.pointer != null) {
+                bun.memory.deinit(&self.backing_allocator);
             }
-            return self.#pointer;
+            return self.pointer;
         }
 
         const PointerAndAllocator = if (info.isOptional())
@@ -231,10 +231,10 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
         pub fn intoRawWithAllocator(self: *Self) PointerAndAllocator {
             defer self.* = undefined;
             const data = if (comptime info.isOptional())
-                self.#pointer orelse return null
+                self.pointer orelse return null
             else
-                self.#pointer;
-            return .{ data, self.#allocator };
+                self.pointer;
+            return .{ data, self.backing_allocator };
         }
 
         /// Returns a null owned pointer. This function is provided only if `Pointer` is an
@@ -244,8 +244,8 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
         pub const initNull = if (info.isOptional()) struct {
             pub fn initNull() Self {
                 return .{
-                    .#pointer = null,
-                    .#allocator = undefined,
+                    .pointer = null,
+                    .backing_allocator = undefined,
                 };
             }
         }.initNull;
@@ -262,8 +262,8 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
             pub fn take(self: *Self) ?OwnedNonOptional {
                 defer self.* = .initNull();
                 return .{
-                    .#pointer = self.#pointer orelse return null,
-                    .#allocator = self.#allocator,
+                    .pointer = self.pointer orelse return null,
+                    .backing_allocator = self.backing_allocator,
                 };
             }
         }.take;
@@ -287,8 +287,8 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
             pub fn toOptional(self: *Self) OwnedOptional {
                 defer self.* = undefined;
                 return .{
-                    .#pointer = self.#pointer,
-                    .#allocator = self.#allocator,
+                    .pointer = self.pointer,
+                    .backing_allocator = self.backing_allocator,
                 };
             }
         }.toOptional;
@@ -302,7 +302,7 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
         pub fn toUnmanaged(self: *Self) Self.Unmanaged {
             defer self.* = undefined;
             return .{
-                .#pointer = self.#pointer,
+                .pointer = self.pointer,
             };
         }
 
@@ -327,10 +327,10 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
 
             defer self.* = undefined;
             const data = if (comptime info.isOptional())
-                self.#pointer orelse return .initNull()
+                self.pointer orelse return .initNull()
             else
-                self.#pointer;
-            defer bun.memory.deinit(&self.#allocator);
+                self.pointer;
+            defer bun.memory.deinit(&self.backing_allocator);
             return .fromRawIn(data, self.getStdAllocator());
         }
 
@@ -345,22 +345,22 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
         /// returned as-is. For example, if `Allocator` is `std.mem.Allocator`, this method also
         /// returns `std.mem.Allocator`.
         pub fn allocator(self: Self) MaybeAllocator {
-            return if ((comptime info.isOptional()) and self.#pointer == null)
+            return if ((comptime info.isOptional()) and self.pointer == null)
                 null
             else
-                bun.allocators.borrow(self.#allocator);
+                bun.allocators.borrow(self.backing_allocator);
         }
 
         fn getStdAllocator(self: Self) std.mem.Allocator {
-            return bun.allocators.asStd(self.#allocator);
+            return bun.allocators.asStd(self.backing_allocator);
         }
 
         fn deinitImpl(self: *Self, comptime mode: enum { deep, shallow }) void {
             defer self.* = undefined;
             const data = if (comptime info.isOptional())
-                self.#pointer orelse return
+                self.pointer orelse return
             else
-                self.#pointer;
+                self.pointer;
             if (comptime mode == .deep) {
                 bun.memory.deinit(data);
             }
@@ -368,7 +368,7 @@ pub fn OwnedIn(comptime Pointer: type, comptime Allocator: type) type {
                 .single => bun.memory.destroy(self.getStdAllocator(), data),
                 .slice => self.getStdAllocator().free(data),
             }
-            bun.memory.deinit(&self.#allocator);
+            bun.memory.deinit(&self.backing_allocator);
         }
     };
 }
@@ -384,7 +384,7 @@ fn Unmanaged(comptime Pointer: type, comptime Allocator: type) type {
         const Self = @This();
         const info = PointerInfo.parse(Pointer, .{});
 
-        #pointer: Pointer,
+        pointer: Pointer,
 
         const Managed = OwnedIn(Pointer, Allocator);
 
@@ -396,9 +396,9 @@ fn Unmanaged(comptime Pointer: type, comptime Allocator: type) type {
         pub fn toManaged(self: *Self, allocator: Allocator) Managed {
             defer self.* = undefined;
             const data = if (comptime info.isOptional())
-                self.#pointer orelse return .initNull()
+                self.pointer orelse return .initNull()
             else
-                self.#pointer;
+                self.pointer;
             return .fromRawIn(data, allocator);
         }
 
@@ -414,7 +414,7 @@ fn Unmanaged(comptime Pointer: type, comptime Allocator: type) type {
 
         /// Returns the inner pointer or slice.
         pub fn get(self: Self) Pointer {
-            return self.#pointer;
+            return self.pointer;
         }
     };
 }
