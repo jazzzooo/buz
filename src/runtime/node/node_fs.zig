@@ -6931,7 +6931,7 @@ comptime {
 
 /// Copied from std.fs.Dir.deleteTree. This function returns `FileNotFound` instead of ignoring it, which
 /// is required to match the behavior of Node.js's `fs.rm` { recursive: true, force: false }.
-pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.fs.File.Kind) !void {
+pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.File.Kind) !void {
     var initial_iterable_dir = (try zigDeleteTreeOpenInitialSubpath(self, sub_path, kind_hint)) orelse return;
 
     const StackItem = struct {
@@ -7123,7 +7123,7 @@ pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.fs.F
     }
 }
 
-fn zigDeleteTreeOpenInitialSubpath(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.fs.File.Kind) !?std.fs.Dir {
+fn zigDeleteTreeOpenInitialSubpath(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.File.Kind) !?std.fs.Dir {
     return iterable_dir: {
         // Treat as a file by default
         var treat_as_dir = kind_hint == .directory;
@@ -7184,7 +7184,7 @@ fn zigDeleteTreeOpenInitialSubpath(self: std.fs.Dir, sub_path: []const u8, kind_
     };
 }
 
-fn zigDeleteTreeMinStackSizeWithKindHint(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.fs.File.Kind) !void {
+fn zigDeleteTreeMinStackSizeWithKindHint(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.File.Kind) !void {
     start_over: while (true) {
         var dir = (try zigDeleteTreeOpenInitialSubpath(self, sub_path, kind_hint)) orelse return;
         var cleanup_dir_parent: ?std.fs.Dir = null;

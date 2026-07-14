@@ -4281,7 +4281,7 @@ pub fn lstat_absolute(path: [:0]const u8) !Stat {
     const atime = st.atime();
     const mtime = st.mtime();
     const ctime = st.ctime();
-    const Kind = std.fs.File.Kind;
+    const Kind = std.Io.File.Kind;
     return Stat{
         .inode = st.ino,
         .size = @as(u64, @bitCast(st.size)),
@@ -4436,15 +4436,15 @@ pub fn copyFileZSlowWithHandle(in_handle: bun.FD, to_dir: bun.FD, destination: [
     }
 }
 
-pub fn kindFromMode(mode: mode_t) std.fs.File.Kind {
+pub fn kindFromMode(mode: mode_t) std.Io.File.Kind {
     return switch (mode & bun.S.IFMT) {
-        bun.S.IFBLK => std.fs.File.Kind.block_device,
-        bun.S.IFCHR => std.fs.File.Kind.character_device,
-        bun.S.IFDIR => std.fs.File.Kind.directory,
-        bun.S.IFIFO => std.fs.File.Kind.named_pipe,
-        bun.S.IFLNK => std.fs.File.Kind.sym_link,
-        bun.S.IFREG => std.fs.File.Kind.file,
-        bun.S.IFSOCK => std.fs.File.Kind.unix_domain_socket,
+        bun.S.IFBLK => std.Io.File.Kind.block_device,
+        bun.S.IFCHR => std.Io.File.Kind.character_device,
+        bun.S.IFDIR => std.Io.File.Kind.directory,
+        bun.S.IFIFO => std.Io.File.Kind.named_pipe,
+        bun.S.IFLNK => std.Io.File.Kind.sym_link,
+        bun.S.IFREG => std.Io.File.Kind.file,
+        bun.S.IFSOCK => std.Io.File.Kind.unix_domain_socket,
         else => .unknown,
     };
 }

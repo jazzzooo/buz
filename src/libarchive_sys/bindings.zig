@@ -957,7 +957,7 @@ pub const Archive = opaque {
 
     pub const Iterator = struct {
         archive: *Archive,
-        filter: std.enums.EnumSet(std.fs.File.Kind),
+        filter: std.enums.EnumSet(std.Io.File.Kind),
 
         fn Result(comptime T: type) type {
             return union(enum) {
@@ -1023,7 +1023,7 @@ pub const Archive = opaque {
 
         const NextEntry = struct {
             entry: *Archive.Entry,
-            kind: std.fs.File.Kind,
+            kind: std.Io.File.Kind,
 
             pub fn readEntryData(this: *const @This(), allocator: std.mem.Allocator, archive: *Archive) OOM!Iterator.Result([]const u8) {
                 const Return = Iterator.Result([]const u8);

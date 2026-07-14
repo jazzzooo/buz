@@ -207,7 +207,7 @@ pub const DirEntryAccessor = struct {
 
         const IterResult = struct {
             name: NameWrapper,
-            kind: std.fs.File.Kind,
+            kind: std.Io.File.Kind,
 
             const NameWrapper = struct {
                 value: []const u8,
@@ -224,8 +224,8 @@ pub const DirEntryAccessor = struct {
                 const name = nextval.key_ptr.*;
                 const kind = nextval.value_ptr.*.kind(&FS.instance.fs, true);
                 const fskind = switch (kind) {
-                    .file => std.fs.File.Kind.file,
-                    .dir => std.fs.File.Kind.directory,
+                    .file => std.Io.File.Kind.file,
+                    .dir => std.Io.File.Kind.directory,
                 };
                 return .{
                     .result = .{

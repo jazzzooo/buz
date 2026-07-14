@@ -1315,7 +1315,7 @@ pub const FileSystem = struct {
             var outpath: bun.PathBuffer = undefined;
 
             const stat = try bun.sys.lstat_absolute(absolute_path);
-            const is_symlink = stat.kind == std.fs.File.Kind.SymLink;
+            const is_symlink = stat.kind == std.Io.File.Kind.sym_link;
             var _kind = stat.kind;
             var cache = Entry.Cache{
                 .kind = Entry.Kind.file,
@@ -1448,7 +1448,7 @@ pub const FileSystem = struct {
             }
 
             const stat = try bun.sys.lstat_absolute(absolute_path_c);
-            const is_symlink = stat.kind == std.fs.File.Kind.sym_link;
+            const is_symlink = stat.kind == std.Io.File.Kind.sym_link;
             var file_kind = stat.kind;
 
             var symlink: []const u8 = "";

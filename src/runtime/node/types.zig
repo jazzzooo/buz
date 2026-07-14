@@ -1169,7 +1169,7 @@ pub const Dirent = struct {
     // not publicly exposed
     kind: Kind,
 
-    pub const Kind = std.fs.File.Kind;
+    pub const Kind = std.Io.File.Kind;
 
     extern fn Bun__JSDirentObjectConstructor(*jsc.JSGlobalObject) jsc.JSValue;
     pub const getConstructor = Bun__JSDirentObjectConstructor;

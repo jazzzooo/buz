@@ -217,7 +217,7 @@ pub fn stat(self: File) Maybe(bun.Stat) {
 /// Be careful about using this on Linux or macOS.
 ///
 /// File calls stat() internally.
-pub fn kind(self: File) Maybe(std.fs.File.Kind) {
+pub fn kind(self: File) Maybe(std.Io.File.Kind) {
     if (Environment.isWindows) {
         const rt = windows.GetFileType(self.handle.cast());
         if (rt == windows.FILE_TYPE_UNKNOWN) {
