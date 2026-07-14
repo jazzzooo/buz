@@ -1444,7 +1444,7 @@ pub fn getQueriesArray(this: *const PostgresSQLConnection) JSValue {
     return js.queriesGetCached(this.js_value) orelse .js_undefined;
 }
 
-pub fn on(this: *PostgresSQLConnection, comptime MessageType: @Type(.enum_literal), comptime Context: type, reader: protocol.NewReader(Context)) AnyPostgresError!void {
+pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), comptime Context: type, reader: protocol.NewReader(Context)) AnyPostgresError!void {
     debug("on({s})", .{@tagName(MessageType)});
 
     switch (comptime MessageType) {

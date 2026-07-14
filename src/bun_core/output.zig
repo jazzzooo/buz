@@ -824,7 +824,7 @@ pub const Visibility = enum {
 pub fn Scoped(comptime tag: anytype, comptime visibility: Visibility) type {
     const tagname = comptime if (!Environment.enable_logs) .{} else brk: {
         const input = switch (@TypeOf(tag)) {
-            @Type(.enum_literal) => @tagName(tag),
+            @EnumLiteral() => @tagName(tag),
             else => tag,
         };
         var ascii_slice: [input.len]u8 = undefined;

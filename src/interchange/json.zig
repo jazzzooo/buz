@@ -603,36 +603,12 @@ pub fn toAST(
         },
         .error_set => return try toAST(allocator, []const u8, bun.asByteSlice(@errorName(value))),
         .@"union" => |Union| {
-            const info = Union;
-            if (info.tag_type) |UnionTagType| {
-                inline for (info.fields) |u_field| {
-                    if (value == @field(UnionTagType, u_field.name)) {
-                        const StructType = @Type(
-                            .{
-                                .Struct = .{
-                                    .layout = .Auto,
-                                    .decls = &.{},
-                                    .is_tuple = false,
-                                    .fields = &.{
-                                        .{
-                                            .name = u_field.name,
-                                            .type = @TypeOf(
-                                                @field(value, u_field.name),
-                                            ),
-                                            .is_comptime = false,
-                                            .default_value_ptr = undefined,
-                                            .alignment = @alignOf(
-                                                @TypeOf(
-                                                    @field(value, u_field.name),
-                                                ),
-                                            ),
-                                        },
-                                    },
-                                },
-                            },
-                        );
+            if (Union.tag_type) |UnionTagType| {
+                inline for (Union.field_names, Union.field_types) |field_name, Field| {
+                    if (value == @field(UnionTagType, field_name)) {
+                        const StructType = @Struct(.auto, null, &.{field_name}, &.{Field}, &.{.{}});
                         var struct_value: StructType = undefined;
-                        @field(struct_value, u_field.name) = value;
+                        @field(struct_value, field_name) = @field(value, field_name);
                         return try toAST(allocator, StructType, struct_value);
                     }
                 }

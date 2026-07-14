@@ -1323,7 +1323,7 @@ pub fn quote(self: string) bun.fmt.QuotedFormatter {
     };
 }
 
-pub fn EnumTagListFormatter(comptime Enum: type, comptime Separator: @Type(.enum_literal)) type {
+pub fn EnumTagListFormatter(comptime Enum: type, comptime Separator: @EnumLiteral()) type {
     return struct {
         pretty: bool = true,
         const output = brk: {
@@ -1354,7 +1354,7 @@ pub fn EnumTagListFormatter(comptime Enum: type, comptime Separator: @Type(.enum
     };
 }
 
-pub fn enumTagList(comptime Enum: type, comptime separator: @Type(.enum_literal)) EnumTagListFormatter(Enum, separator) {
+pub fn enumTagList(comptime Enum: type, comptime separator: @EnumLiteral()) EnumTagListFormatter(Enum, separator) {
     return EnumTagListFormatter(Enum, separator){};
 }
 

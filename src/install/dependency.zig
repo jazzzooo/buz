@@ -1235,13 +1235,13 @@ pub const Behavior = packed struct(u8) {
         return @as(u8, @bitCast(lhs)) & @as(u8, @bitCast(rhs)) != 0;
     }
 
-    pub inline fn add(this: Behavior, kind: @Type(.enum_literal)) Behavior {
+    pub inline fn add(this: Behavior, kind: @EnumLiteral()) Behavior {
         var new = this;
         @field(new, @tagName(kind)) = true;
         return new;
     }
 
-    pub inline fn set(this: Behavior, kind: @Type(.enum_literal), value: bool) Behavior {
+    pub inline fn set(this: Behavior, kind: @EnumLiteral(), value: bool) Behavior {
         var new = this;
         @field(new, @tagName(kind)) = value;
         return new;

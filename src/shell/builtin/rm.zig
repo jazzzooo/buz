@@ -34,14 +34,14 @@ state: union(enum) {
             }
         },
 
-        fn incrementOutputCount(this: *@This(), comptime thevar: @Type(.enum_literal)) void {
+        fn incrementOutputCount(this: *@This(), comptime thevar: @EnumLiteral()) void {
             var atomicvar = &@field(this, @tagName(thevar));
             const result = atomicvar.fetchAdd(1, .seq_cst);
             log("[rm] {s}: {d} + 1", .{ @tagName(thevar), result });
             return;
         }
 
-        fn getOutputCount(this: *@This(), comptime thevar: @Type(.enum_literal)) usize {
+        fn getOutputCount(this: *@This(), comptime thevar: @EnumLiteral()) usize {
             var atomicvar = &@field(this, @tagName(thevar));
             return atomicvar.load(.seq_cst);
         }

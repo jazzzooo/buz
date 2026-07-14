@@ -84,17 +84,15 @@ pub const PointerInfo = struct {
 };
 
 pub fn AddConst(Pointer: type) type {
-    var type_info = @typeInfo(Pointer);
-    switch (type_info) {
-        .pointer => |*ptr| {
-            ptr.is_const = true;
+    return switch (@typeInfo(Pointer)) {
+        .pointer => |ptr| blk: {
+            var attrs = ptr.attrs;
+            attrs.@"const" = true;
+            break :blk @Pointer(ptr.size, attrs, ptr.child, ptr.sentinel());
         },
-        .optional => |*opt| {
-            opt.child = AddConst(opt.child);
-        },
+        .optional => |opt| ?AddConst(opt.child),
         // Technically this function accepts things like `?????[]u8`, but `PointerInfo.parse`
         // verifies that's not the case.
         else => @compileError("`Pointer` must be a (possibly optional) pointer or slice"),
-    }
-    return @Type(type_info);
+    };
 }

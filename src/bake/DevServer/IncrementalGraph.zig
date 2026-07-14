@@ -62,11 +62,7 @@ const Content = union(enum) {
     css_root: CssAssetId,
     css_child: void,
 
-    const Untagged = blk: {
-        var info = @typeInfo(Content);
-        info.@"union".tag_type = null;
-        break :blk @Type(info);
-    };
+    const Untagged = std.meta.BareUnion(Content);
 };
 
 const ClientFile = struct {

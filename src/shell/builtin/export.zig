@@ -11,7 +11,7 @@ const Entry = struct {
     }
 };
 
-pub fn writeOutput(this: *Export, comptime io_kind: @Type(.enum_literal), comptime fmt: []const u8, args: anytype) Yield {
+pub fn writeOutput(this: *Export, comptime io_kind: @EnumLiteral(), comptime fmt: []const u8, args: anytype) Yield {
     if (this.bltn().stdout.needsIO()) |safeguard| {
         var output: *BuiltinIO.Output = &@field(this.bltn(), @tagName(io_kind));
         this.printing = true;

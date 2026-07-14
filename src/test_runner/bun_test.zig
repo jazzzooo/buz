@@ -37,7 +37,7 @@ pub const js_fns = struct {
         return bunTest;
     }
 
-    pub fn genericHook(comptime tag: @Type(.enum_literal)) type {
+    pub fn genericHook(comptime tag: @EnumLiteral()) type {
         return struct {
             pub fn hookFn(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
                 group.begin(@src());

@@ -97,7 +97,7 @@ pub fn onGCTimer(timer: *uws.Timer) callconv(.c) void {
 //
 // When the heap size is increasing, we always switch to fast mode
 // When the heap size has been the same or less for 30 seconds, we switch to slow mode
-pub fn updateGCRepeatTimer(this: *GarbageCollectionController, comptime setting: @Type(.enum_literal)) void {
+pub fn updateGCRepeatTimer(this: *GarbageCollectionController, comptime setting: @EnumLiteral()) void {
     if (setting == .fast and !this.gc_repeating_timer_fast) {
         this.gc_repeating_timer_fast = true;
         this.gc_repeating_timer.set(this, onGCRepeatingTimer, this.gc_timer_interval, this.gc_timer_interval);

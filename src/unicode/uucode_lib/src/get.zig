@@ -10,20 +10,27 @@ fn TableData(comptime Table: anytype) type {
     return @typeInfo(DataSlice).pointer.child;
 }
 
-fn tableInfoFor(comptime field: []const u8) std.builtin.Type.StructField {
-    inline for (@typeInfo(@TypeOf(tables)).@"struct".fields) |tableInfo| {
-        if (@hasField(TableData(tableInfo.type), field)) {
-            return tableInfo;
+const TableInfo = struct {
+    name: []const u8,
+    Type: type,
+};
+
+fn tableInfoFor(comptime field: []const u8) TableInfo {
+    const info = @typeInfo(@TypeOf(tables)).@"struct";
+    inline for (info.field_names, info.field_types) |name, Table| {
+        if (@hasField(TableData(Table), field)) {
+            return .{ .name = name, .Type = Table };
         }
     }
 
     @compileError("Table not found for field: " ++ field);
 }
 
-fn getTableInfo(comptime table_name: []const u8) std.builtin.Type.StructField {
-    inline for (@typeInfo(@TypeOf(tables)).@"struct".fields) |tableInfo| {
-        if (std.mem.eql(u8, tableInfo.name, table_name)) {
-            return tableInfo;
+fn getTableInfo(comptime table_name: []const u8) TableInfo {
+    const info = @typeInfo(@TypeOf(tables)).@"struct";
+    inline for (info.field_names, info.field_types) |name, Table| {
+        if (std.mem.eql(u8, name, table_name)) {
+            return .{ .name = name, .Type = Table };
         }
     }
 
@@ -75,40 +82,33 @@ pub fn getAll(comptime table_name: []const u8, cp: u21) TypeOfAll(table_name) {
 }
 
 pub fn TypeOfAll(comptime table_name: []const u8) type {
-    return TableData(getTableInfo(table_name).type);
+    return TableData(getTableInfo(table_name).Type);
 }
 
 pub const FieldEnum = blk: {
     var fields_len: usize = 0;
-    for (@typeInfo(@TypeOf(tables)).@"struct".fields) |tableInfo| {
-        fields_len += @typeInfo(TableData(tableInfo.type)).@"struct".fields.len;
+    for (@typeInfo(@TypeOf(tables)).@"struct".field_types) |Table| {
+        fields_len += @typeInfo(TableData(Table)).@"struct".field_names.len;
     }
 
-    var fields: [fields_len]std.builtin.Type.EnumField = undefined;
+    const TagInt = std.math.IntFittingRange(0, fields_len -| 1);
+    var field_names: [fields_len][]const u8 = undefined;
+    var field_values: [fields_len]TagInt = undefined;
     var i: usize = 0;
 
-    for (@typeInfo(@TypeOf(tables)).@"struct".fields) |tableInfo| {
-        for (@typeInfo(TableData(tableInfo.type)).@"struct".fields) |f| {
-            fields[i] = .{
-                .name = f.name,
-                .value = i,
-            };
+    for (@typeInfo(@TypeOf(tables)).@"struct".field_types) |Table| {
+        for (@typeInfo(TableData(Table)).@"struct".field_names) |name| {
+            field_names[i] = name;
+            field_values[i] = @intCast(i);
             i += 1;
         }
     }
 
-    break :blk @Type(.{
-        .@"enum" = .{
-            .tag_type = std.math.IntFittingRange(0, fields_len - 1),
-            .fields = &fields,
-            .decls = &[_]std.builtin.Type.Declaration{},
-            .is_exhaustive = true,
-        },
-    });
+    break :blk @Enum(TagInt, .exhaustive, &field_names, &field_values);
 };
 
 fn DataField(comptime field: []const u8) type {
-    return @FieldType(TableData(tableInfoFor(field).type), field);
+    return @FieldType(TableData(tableInfoFor(field).Type), field);
 }
 
 fn FieldValue(comptime field: []const u8) type {

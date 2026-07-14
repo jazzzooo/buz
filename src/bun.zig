@@ -431,23 +431,21 @@ fn Span(comptime T: type) type {
             return ?Span(optional_info.child);
         },
         .pointer => |ptr_info| {
-            var new_ptr_info = ptr_info;
-            switch (ptr_info.size) {
+            const Child = switch (ptr_info.size) {
                 .one => switch (@typeInfo(ptr_info.child)) {
-                    .array => |info| {
-                        new_ptr_info.child = info.child;
-                        new_ptr_info.sentinel_ptr = info.sentinel_ptr;
-                    },
+                    .array => |array| array.child,
                     else => @compileError("invalid type given to std.mem.Span"),
                 },
-                .c => {
-                    new_ptr_info.sentinel_ptr = &@as(ptr_info.child, 0);
-                    new_ptr_info.is_allowzero = false;
-                },
-                .many, .slice => {},
-            }
-            new_ptr_info.size = .slice;
-            return @Type(.{ .pointer = new_ptr_info });
+                .c, .many, .slice => ptr_info.child,
+            };
+            const sentinel: ?Child = switch (ptr_info.size) {
+                .one => @typeInfo(ptr_info.child).array.sentinel(),
+                .c => 0,
+                .many, .slice => ptr_info.sentinel(),
+            };
+            var attrs = ptr_info.attrs;
+            attrs.@"allowzero" = attrs.@"allowzero" and ptr_info.size != .c;
+            return @Pointer(.slice, attrs, Child, sentinel);
         },
         else => @compileError("invalid type given to std.mem.Span: " ++ @typeName(T)),
     }
@@ -464,8 +462,7 @@ pub fn span(pointer: anytype) Span(@TypeOf(pointer)) {
     const Result = Span(@TypeOf(pointer));
     const l = len(pointer);
     const ptr_info = @typeInfo(Result).pointer;
-    if (ptr_info.sentinel_ptr) |s_ptr| {
-        const s = @as(*align(1) const ptr_info.child, @ptrCast(s_ptr)).*;
+    if (ptr_info.sentinel()) |s| {
         return pointer[0..l :s];
     } else {
         return pointer[0..l];
@@ -1365,47 +1362,15 @@ fn SliceTo(comptime T: type, comptime end: std.meta.Elem(T)) type {
             return ?SliceTo(optional_info.child, end);
         },
         .pointer => |ptr_info| {
-            var new_ptr_info = ptr_info;
-            new_ptr_info.size = .slice;
-            switch (ptr_info.size) {
-                .one => switch (@typeInfo(ptr_info.child)) {
-                    .array => |array_info| {
-                        new_ptr_info.child = array_info.child;
-                        // The return type must only be sentinel terminated if we are guaranteed
-                        // to find the value searched for, which is only the case if it matches
-                        // the sentinel of the type passed.
-                        if (array_info.sentinel_ptr) |sentinel_ptr| {
-                            const sentinel = @as(*align(1) const array_info.child, @ptrCast(sentinel_ptr)).*;
-                            if (end == sentinel) {
-                                new_ptr_info.sentinel_ptr = &end;
-                            } else {
-                                new_ptr_info.sentinel_ptr = null;
-                            }
-                        }
-                    },
-                    else => {},
-                },
-                .many, .slice => {
-                    // The return type must only be sentinel terminated if we are guaranteed
-                    // to find the value searched for, which is only the case if it matches
-                    // the sentinel of the type passed.
-                    if (ptr_info.sentinel_ptr) |sentinel_ptr| {
-                        const sentinel = @as(*align(1) const ptr_info.child, @ptrCast(sentinel_ptr)).*;
-                        if (end == sentinel) {
-                            new_ptr_info.sentinel_ptr = &end;
-                        } else {
-                            new_ptr_info.sentinel_ptr = null;
-                        }
-                    }
-                },
-                .c => {
-                    new_ptr_info.sentinel_ptr = &end;
-                    // C pointers are always allowzero, but we don't want the return type to be.
-                    assert(new_ptr_info.is_allowzero);
-                    new_ptr_info.is_allowzero = false;
-                },
-            }
-            return @Type(.{ .pointer = new_ptr_info });
+            const Elem = std.meta.Elem(T);
+            const have_sentinel = switch (ptr_info.size) {
+                .one, .slice => if (std.meta.sentinel(T)) |sentinel| sentinel == end else false,
+                .many => if (std.meta.sentinel(T)) |sentinel| sentinel == end else true,
+                .c => true,
+            };
+            var attrs = ptr_info.attrs;
+            attrs.@"allowzero" = attrs.@"allowzero" and ptr_info.size != .c;
+            return @Pointer(.slice, attrs, Elem, if (have_sentinel) end else null);
         },
         else => {},
     }
@@ -1427,8 +1392,7 @@ pub fn sliceTo(pointer: anytype, comptime end: std.meta.Elem(@TypeOf(pointer))) 
     const Result = SliceTo(@TypeOf(pointer), end);
     const length = lenSliceTo(pointer, end);
     const ptr_info = @typeInfo(Result).pointer;
-    if (ptr_info.sentinel_ptr) |s_ptr| {
-        const s = @as(*align(1) const ptr_info.child, @ptrCast(s_ptr)).*;
+    if (ptr_info.sentinel()) |s| {
         return pointer[0..length :s];
     } else {
         return pointer[0..length];

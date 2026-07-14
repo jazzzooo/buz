@@ -15,7 +15,7 @@ fn throwInvalidParameter(globalThis: *jsc.JSGlobalObject) bun.JSError {
     return globalThis.ERR(.CRYPTO_SCRYPT_INVALID_PARAMETER, "Invalid scrypt parameters", .{}).throw();
 }
 
-fn throwInvalidParams(globalThis: *jsc.JSGlobalObject, comptime error_type: @Type(.enum_literal), comptime message: [:0]const u8, fmt: anytype) bun.JSError {
+fn throwInvalidParams(globalThis: *jsc.JSGlobalObject, comptime error_type: @EnumLiteral(), comptime message: [:0]const u8, fmt: anytype) bun.JSError {
     if (error_type != .RangeError) @compileError("Error type not added!");
     BoringSSL.ERR_clear_error();
     return globalThis.ERR(.CRYPTO_INVALID_SCRYPT_PARAMS, message, fmt).throw();

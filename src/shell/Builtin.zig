@@ -695,7 +695,7 @@ pub fn deinit(this: *Builtin) void {
 }
 
 /// If the stdout/stderr is supposed to be captured then get the bytelist associated with that
-pub fn stdBufferedBytelist(this: *Builtin, comptime io_kind: @Type(.enum_literal)) ?*bun.ByteList {
+pub fn stdBufferedBytelist(this: *Builtin, comptime io_kind: @EnumLiteral()) ?*bun.ByteList {
     if (comptime io_kind != .stdout and io_kind != .stderr) {
         @compileError("Bad IO" ++ @tagName(io_kind));
     }
@@ -717,7 +717,7 @@ pub fn readStdinNoIO(this: *Builtin) []const u8 {
 }
 
 /// **WARNING** You should make sure that stdout/stderr does not need IO (e.g. `.needsIO(.stderr)` is false before caling `.writeNoIO(.stderr, buf)`)
-pub fn writeNoIO(this: *Builtin, comptime io_kind: @Type(.enum_literal), buf: []const u8) Maybe(usize) {
+pub fn writeNoIO(this: *Builtin, comptime io_kind: @EnumLiteral(), buf: []const u8) Maybe(usize) {
     if (comptime io_kind != .stdout and io_kind != .stderr) {
         @compileError("Bad IO" ++ @tagName(io_kind));
     }

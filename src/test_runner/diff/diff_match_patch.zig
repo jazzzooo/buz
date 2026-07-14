@@ -2973,19 +2973,12 @@ pub fn DMP(comptime Unit: type) type {
 
             const ArgsTuple = std.meta.ArgsTuple(TestFn);
 
-            const fn_args_fields = std.meta.fields(ArgsTuple);
-            if (fn_args_fields.len == 0 or fn_args_fields[0].type != std.mem.Allocator) {
+            const arg_types = @typeInfo(ArgsTuple).@"struct".field_types;
+            if (arg_types.len == 0 or arg_types[0] != std.mem.Allocator) {
                 @compileError("The provided function must have an " ++ @typeName(std.mem.Allocator) ++ " as its first argument");
             }
 
-            // remove the first tuple field (`std.mem.Allocator`)
-            var extra_args_tuple_info = @typeInfo(ArgsTuple);
-            var extra_args_fields = extra_args_tuple_info.@"struct".fields[1..].*;
-            for (&extra_args_fields, 0..) |*extra_field, i| {
-                extra_field.name = fn_args_fields[i].name;
-            }
-            extra_args_tuple_info.@"struct".fields = &extra_args_fields;
-            const ExtraArgsTuple = @Type(extra_args_tuple_info);
+            const ExtraArgsTuple = @Tuple(arg_types[1..]);
 
             return .{
                 .ArgsTuple = ArgsTuple,

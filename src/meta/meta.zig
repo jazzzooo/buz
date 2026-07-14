@@ -170,31 +170,6 @@ pub inline fn ConcatArgs4(
     return args;
 }
 
-// Copied from std.meta
-fn CreateUniqueTuple(comptime N: comptime_int, comptime types: [N]type) type {
-    var tuple_fields: [types.len]std.builtin.Type.StructField = undefined;
-    inline for (types, 0..) |T, i| {
-        @setEvalBranchQuota(10_000);
-        var num_buf: [128]u8 = undefined;
-        tuple_fields[i] = .{
-            .name = std.fmt.bufPrintZ(&num_buf, "{d}", .{i}) catch unreachable,
-            .type = T,
-            .default_value_ptr = null,
-            .is_comptime = false,
-            .alignment = if (@sizeOf(T) > 0) @alignOf(T) else 0,
-        };
-    }
-
-    return @Type(.{
-        .@"struct" = .{
-            .is_tuple = true,
-            .layout = .auto,
-            .decls = &.{},
-            .fields = &tuple_fields,
-        },
-    });
-}
-
 pub const TaggedUnion = @import("./tagged_union.zig").TaggedUnion;
 
 pub fn hasStableMemoryLayout(comptime T: type) bool {
@@ -319,11 +294,8 @@ pub fn looksLikeListContainerType(comptime T: type) ?struct { list: ListContaine
 }
 
 pub fn Tagged(comptime U: type, comptime T: type) type {
-    var info: std.builtin.Type.Union = @typeInfo(U).@"union";
-    info.tag_type = T;
-    info.decls = &.{};
-    info.layout = .auto;
-    return @Type(.{ .@"union" = info });
+    const info = @typeInfo(U).@"union";
+    return @Union(.auto, T, info.field_names, info.field_types, info.field_attrs);
 }
 
 pub fn SliceChild(comptime T: type) type {
@@ -338,18 +310,8 @@ pub fn SliceChild(comptime T: type) type {
 pub fn useAllFields(comptime T: type, _: VoidFields(T)) void {}
 
 fn VoidFields(comptime T: type) type {
-    const fields = @typeInfo(T).@"struct".fields;
-    var new_fields = fields[0..fields.len].*;
-    for (&new_fields) |*field| {
-        field.type = void;
-        field.default_value_ptr = null;
-    }
-    return @Type(.{ .@"struct" = .{
-        .layout = .auto,
-        .fields = &new_fields,
-        .decls = &.{},
-        .is_tuple = false,
-    } });
+    const field_names = @typeInfo(T).@"struct".field_names;
+    return @Struct(.auto, null, field_names, &@splat(void), &@splat(.{}));
 }
 
 pub fn voidFieldTypeDiscardHelper(data: anytype) void {

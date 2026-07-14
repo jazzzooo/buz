@@ -180,14 +180,12 @@ pub fn rebaseSlice(slice: []const u8, old_base: [*]const u8, new_base: [*]const 
 /// cast, this function will not cause issues with allocators that need to know the exact size of
 /// the allocation to free it.
 pub fn dropSentinel(ptr: anytype, allocator: std.mem.Allocator) blk: {
-    var info = @typeInfo(@TypeOf(ptr));
-    info.pointer.size = .slice;
-    info.pointer.sentinel_ptr = null;
-    break :blk bun.OOM!@Type(info);
+    const info = @typeInfo(@TypeOf(ptr)).pointer;
+    break :blk bun.OOM!@Pointer(.slice, info.attrs, info.child, null);
 } {
     const info = @typeInfo(@TypeOf(ptr)).pointer;
     const Child = info.child;
-    if (comptime info.sentinel_ptr == null) {
+    if (comptime info.sentinel() == null) {
         @compileError("pointer must have sentinel");
     }
 

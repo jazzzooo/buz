@@ -416,7 +416,7 @@ pub fn tryKill(this: *Subprocess, sig: SignalCode) bun.sys.Maybe(void) {
     return this.process.kill(@intFromEnum(sig));
 }
 
-fn hasCalledGetter(this: *Subprocess, comptime getter: @Type(.enum_literal)) bool {
+fn hasCalledGetter(this: *Subprocess, comptime getter: @EnumLiteral()) bool {
     return this.observable_getters.contains(getter);
 }
 
@@ -740,7 +740,7 @@ pub fn onProcessExit(this: *Subprocess, process: *Process, status: bun.spawn.Sta
     }
 }
 
-fn closeIO(this: *Subprocess, comptime io: @Type(.enum_literal)) void {
+fn closeIO(this: *Subprocess, comptime io: @EnumLiteral()) void {
     if (this.closed.contains(io)) return;
     this.closed.insert(io);
 

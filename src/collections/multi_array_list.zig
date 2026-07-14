@@ -32,12 +32,7 @@ pub fn MultiArrayList(comptime T: type) type {
         const Elem = switch (@typeInfo(T)) {
             .@"struct" => T,
             .@"union" => |u| struct {
-                pub const Bare = @Type(.{ .@"union" = .{
-                    .layout = u.layout,
-                    .tag_type = null,
-                    .fields = u.fields,
-                    .decls = &.{},
-                } });
+                pub const Bare = meta.BareUnion(T);
                 pub const Tag =
                     u.tag_type orelse @compileError("MultiArrayList does not support untagged unions");
                 tags: Tag,
@@ -602,20 +597,18 @@ pub fn MultiArrayList(comptime T: type) type {
         }
 
         const Entry = entry: {
-            var entry_fields: [fields.len]std.builtin.Type.StructField = undefined;
-            for (&entry_fields, sizes.fields) |*entry_field, i| entry_field.* = .{
-                .name = fields[i].name ++ "_ptr",
-                .type = *fields[i].type,
-                .default_value_ptr = null,
-                .is_comptime = fields[i].is_comptime,
-                .alignment = fields[i].alignment,
-            };
-            break :entry @Type(.{ .@"struct" = .{
-                .layout = .@"extern",
-                .fields = &entry_fields,
-                .decls = &.{},
-                .is_tuple = false,
-            } });
+            var entry_field_names: [fields.len][]const u8 = undefined;
+            var entry_field_types: [fields.len]type = undefined;
+            var entry_field_attrs: [fields.len]std.builtin.Type.Struct.FieldAttributes = undefined;
+            for (sizes.fields, &entry_field_names, &entry_field_types, &entry_field_attrs) |i, *name, *Type, *attrs| {
+                name.* = fields[i].name ++ "_ptr";
+                Type.* = *fields[i].type;
+                attrs.* = .{
+                    .@"comptime" = fields[i].is_comptime,
+                    .@"align" = fields[i].alignment,
+                };
+            }
+            break :entry @Struct(.@"extern", null, &entry_field_names, &entry_field_types, &entry_field_attrs);
         };
         /// This function is used in the debugger pretty formatters in tools/ to fetch the
         /// child field order and entry type to facilitate fancy debug printing for this type.

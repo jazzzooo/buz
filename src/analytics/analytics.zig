@@ -177,48 +177,32 @@ pub const packed_features_list = brk: {
     const decls = std.meta.declarations(Features);
     var names: [decls.len][:0]const u8 = undefined;
     var i = 0;
-    for (decls) |decl| {
-        if (@TypeOf(@field(Features, decl.name)) == usize) {
-            validateFeatureName(decl.name);
-            names[i] = decl.name;
+    for (decls) |name| {
+        if (@TypeOf(@field(Features, name)) == usize) {
+            validateFeatureName(name);
+            names[i] = name;
             i += 1;
         }
     }
     break :brk names[0..i].*;
 };
 
-pub const PackedFeatures = @Type(.{
-    .@"struct" = .{
-        .layout = .@"packed",
-        .backing_integer = u64,
-        .fields = brk: {
-            var fields: [64]std.builtin.Type.StructField = undefined;
-            var i: usize = 0;
-            for (packed_features_list) |name| {
-                fields[i] = .{
-                    .name = name,
-                    .type = bool,
-                    .default_value_ptr = &false,
-                    .is_comptime = false,
-                    .alignment = 0,
-                };
-                i += 1;
-            }
-            while (i < fields.len) : (i += 1) {
-                fields[i] = .{
-                    .name = std.fmt.comptimePrint("_{d}", .{i}),
-                    .type = bool,
-                    .default_value_ptr = &false,
-                    .is_comptime = false,
-                    .alignment = 0,
-                };
-            }
-            break :brk &fields;
-        },
-        .decls = &.{},
-        .is_tuple = false,
-    },
-});
+pub const PackedFeatures = blk: {
+    var field_names: [64][]const u8 = undefined;
+    for (packed_features_list, 0..) |name, i| field_names[i] = name;
+    for (packed_features_list.len..field_names.len) |i| {
+        field_names[i] = std.fmt.comptimePrint("_{d}", .{i});
+    }
+
+    const default_bit = false;
+    break :blk @Struct(
+        .@"packed",
+        u64,
+        &field_names,
+        &@splat(bool),
+        &@splat(.{ .default_value_ptr = &default_bit }),
+    );
+};
 
 pub fn packedFeatures() PackedFeatures {
     var bits = PackedFeatures{};
