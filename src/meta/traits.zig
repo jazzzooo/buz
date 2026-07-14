@@ -18,7 +18,7 @@ pub inline fn isZigString(comptime T: type) bool {
 
         const ptr = &info.pointer;
         // Check for CV qualifiers that would prevent coerction to []const u8
-        if (ptr.is_volatile or ptr.is_allowzero) break :blk false;
+        if (ptr.attrs.@"volatile" or ptr.attrs.@"allowzero") break :blk false;
 
         // If it's already a slice, simple check.
         if (ptr.size == .slice) {
@@ -26,10 +26,10 @@ pub inline fn isZigString(comptime T: type) bool {
         }
 
         // Otherwise check if it's an array type that coerces to slice.
-        if (ptr.size == .One) {
+        if (ptr.size == .one) {
             const child = @typeInfo(ptr.child);
-            if (child == .Array) {
-                const arr = &child.Array;
+            if (child == .array) {
+                const arr = &child.array;
                 break :blk arr.child == u8;
             }
         }
@@ -59,7 +59,7 @@ pub inline fn isContainer(comptime T: type) bool {
 
 pub inline fn isSingleItemPtr(comptime T: type) bool {
     const info = @typeInfo(T);
-    return info == .pointer and .pointer.size == .One;
+    return info == .pointer and info.pointer.size == .one;
 }
 
 pub fn isExternContainer(comptime T: type) bool {
@@ -72,14 +72,14 @@ pub fn isExternContainer(comptime T: type) bool {
 
 pub fn isConstPtr(comptime T: type) bool {
     const info = @typeInfo(T);
-    return info == .pointer and info.pointer.is_const;
+    return info == .pointer and info.pointer.attrs.@"const";
 }
 
 pub fn isIndexable(comptime T: type) bool {
     const info = @typeInfo(T);
     return switch (info) {
         .pointer => |ptr| switch (ptr.size) {
-            .One => @typeInfo(ptr.child) == .array,
+            .one => @typeInfo(ptr.child) == .array,
             else => true,
         },
         .array, .vector => true,

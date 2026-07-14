@@ -342,7 +342,7 @@ pub const String = extern struct {
                 const info = @typeInfo(Type);
 
                 // Zig string literals
-                if (info == .pointer and info.pointer.size == .one and info.pointer.is_const) {
+                if (info == .pointer and info.pointer.size == .one and info.pointer.attrs.@"const") {
                     const child_info = @typeInfo(info.pointer.child);
                     if (child_info == .array and child_info.array.child == u8) {
                         if (child_info.array.len == 0) return String.empty;

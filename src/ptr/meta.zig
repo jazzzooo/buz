@@ -32,7 +32,7 @@ pub const PointerInfo = struct {
     }
 
     pub fn isConst(self: Self) bool {
-        return @typeInfo(self.NonOptionalPointer).pointer.is_const;
+        return @typeInfo(self.NonOptionalPointer).pointer.attrs.@"const";
     }
 
     pub const ParseOptions = struct {
@@ -59,16 +59,18 @@ pub const PointerInfo = struct {
             .c => @compileError("C pointers not supported"),
         }
 
-        if (pointer_info.is_const and !options.allow_const) {
+        if (pointer_info.attrs.@"const" and !options.allow_const) {
             @compileError("const pointers not supported");
         }
-        if (pointer_info.is_volatile) {
+        if (pointer_info.attrs.@"volatile") {
             @compileError("volatile pointers not supported");
         }
-        if (pointer_info.alignment != @alignOf(Child)) {
-            @compileError("non-default alignment not supported");
+        if (pointer_info.attrs.@"align") |alignment| {
+            if (alignment != @alignOf(Child)) {
+                @compileError("non-default alignment not supported");
+            }
         }
-        if (pointer_info.is_allowzero) {
+        if (pointer_info.attrs.@"allowzero") {
             @compileError("allowzero not supported");
         }
         if (pointer_info.sentinel_ptr != null) {

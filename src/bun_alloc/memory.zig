@@ -96,7 +96,7 @@ pub fn deinit(ptr_or_slice: anytype) void {
     }
 
     const Child = ptr_info.pointer.child;
-    const mutable = !ptr_info.pointer.is_const;
+    const mutable = !ptr_info.pointer.attrs.@"const";
     defer {
         if (comptime mutable) {
             ptr_or_slice.* = undefined;

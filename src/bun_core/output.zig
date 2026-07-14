@@ -1217,7 +1217,7 @@ pub inline fn err(error_name: anytype, comptime fmt: []const u8, args: anytype) 
     const display_name, const is_comptime_name = display_name: {
         // Zig string literals are of type *const [n:0]u8
         // we assume that no one will pass this type from not using a string literal.
-        if (info == .pointer and info.pointer.size == .one and info.pointer.is_const) {
+        if (info == .pointer and info.pointer.size == .one and info.pointer.attrs.@"const") {
             const child_info = @typeInfo(info.pointer.child);
             if (child_info == .array and child_info.array.child == u8) {
                 if (child_info.array.len == 0) @compileError("Output.err should not be passed an empty string (use errGeneric)");
