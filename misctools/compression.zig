@@ -8,13 +8,13 @@ const CompressionFramework = struct {
         if (handle == null)
             return error.@"failed to load Compression.framework";
 
-        compression_encode_scratch_buffer_size = @alignCast(@ptrCast(std.c.dlsym(handle, "compression_encode_scratch_buffer_size").?));
-        compression_encode_buffer = @alignCast(@ptrCast(std.c.dlsym(handle, "compression_encode_buffer").?));
-        compression_decode_scratch_buffer_size = @alignCast(@ptrCast(std.c.dlsym(handle, "compression_decode_scratch_buffer_size").?));
-        compression_decode_buffer = @alignCast(@ptrCast(std.c.dlsym(handle, "compression_decode_buffer").?));
-        compression_stream_init = @alignCast(@ptrCast(std.c.dlsym(handle, "compression_stream_init").?));
-        compression_stream_process = @alignCast(@ptrCast(std.c.dlsym(handle, "compression_stream_process").?));
-        compression_stream_destroy = @alignCast(@ptrCast(std.c.dlsym(handle, "compression_stream_destroy").?));
+        compression_encode_scratch_buffer_size = @ptrCast(@alignCast(std.c.dlsym(handle, "compression_encode_scratch_buffer_size").?));
+        compression_encode_buffer = @ptrCast(@alignCast(std.c.dlsym(handle, "compression_encode_buffer").?));
+        compression_decode_scratch_buffer_size = @ptrCast(@alignCast(std.c.dlsym(handle, "compression_decode_scratch_buffer_size").?));
+        compression_decode_buffer = @ptrCast(@alignCast(std.c.dlsym(handle, "compression_decode_buffer").?));
+        compression_stream_init = @ptrCast(@alignCast(std.c.dlsym(handle, "compression_stream_init").?));
+        compression_stream_process = @ptrCast(@alignCast(std.c.dlsym(handle, "compression_stream_process").?));
+        compression_stream_destroy = @ptrCast(@alignCast(std.c.dlsym(handle, "compression_stream_destroy").?));
     }
 
     pub const compression_algorithm = enum(c_uint) {

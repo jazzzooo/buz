@@ -644,8 +644,7 @@ comptime {
     std.debug.assert(AF.INET6.int() == ares.AF.INET6);
 }
 
-pub const inet = if (bun.Environment.isWindows)
-win: {
+pub const inet = if (bun.Environment.isWindows) win: {
     const ws2 = std.os.windows.ws2_32;
     break :win struct {
         pub const IN4ADDR_LOOPBACK: u32 = ws2.IN4ADDR_LOOPBACK;

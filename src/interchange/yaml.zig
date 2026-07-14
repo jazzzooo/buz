@@ -2446,8 +2446,7 @@ pub fn Parser(comptime enc: Encoding) type {
                         .block_out,
                         .block_in,
                         => {},
-                        .flow_in,
-                        .flow_key => {
+                        .flow_in, .flow_key => {
                             switch (self.peek(1)) {
                                 ',',
                                 '[',
