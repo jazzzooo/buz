@@ -194,6 +194,14 @@ fn captureLibcBacktrace(begin_addr: usize, stack_trace: *std.builtin.StackTrace)
     }
 }
 
+fn captureStackTrace(begin_addr: usize, stack_trace: *std.builtin.StackTrace) void {
+    const trace = std.debug.captureCurrentStackTrace(
+        .{ .first_address = begin_addr },
+        stack_trace.instruction_addresses,
+    );
+    stack_trace.index = trace.return_addresses.len;
+}
+
 /// This function is invoked when a crash happens. A crash is classified in `CrashReason`.
 pub fn crashHandler(
     reason: CrashReason,
@@ -349,7 +357,7 @@ pub fn crashHandler(
                         .instruction_addresses = &addr_buf,
                     };
                     const desired_begin_addr = begin_addr orelse @returnAddress();
-                    std.debug.captureStackTrace(desired_begin_addr, &trace_buf);
+                    captureStackTrace(desired_begin_addr, &trace_buf);
 
                     if (comptime bun.Environment.isGlibc) {
                         var addr_buf_libc: [20]usize = undefined;
@@ -1812,7 +1820,7 @@ fn spawnSymbolizer(program: [:0]const u8, alloc: std.mem.Allocator, trace: *cons
 pub fn dumpCurrentStackTrace(first_address: ?usize, limits: WriteStackTraceLimits) void {
     var addrs: [32]usize = undefined;
     var stack: std.builtin.StackTrace = .{ .index = 0, .instruction_addresses = &addrs };
-    std.debug.captureStackTrace(first_address orelse @returnAddress(), &stack);
+    captureStackTrace(first_address orelse @returnAddress(), &stack);
     dumpStackTrace(stack, limits);
 }
 
@@ -1861,7 +1869,7 @@ pub const StoredTrace = struct {
     pub fn capture(begin: ?usize) StoredTrace {
         var stored: StoredTrace = StoredTrace.empty;
         var frame = stored.trace();
-        std.debug.captureStackTrace(begin orelse @returnAddress(), &frame);
+        captureStackTrace(begin orelse @returnAddress(), &frame);
         stored.index = frame.index;
         for (frame.instruction_addresses[0..frame.index], 0..) |addr, i| {
             if (addr == 0) {
