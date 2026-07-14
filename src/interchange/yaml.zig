@@ -1156,7 +1156,7 @@ pub fn Parser(comptime enc: Encoding) type {
                         return unexpectedToken();
                     },
                     .mapping_value => {
-                        if (key_line != self.token.line) {
+                        if (!explicit_key and key_line != self.token.line) {
                             return error.MultilineImplicitKey;
                         }
                     },
