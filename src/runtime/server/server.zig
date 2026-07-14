@@ -572,7 +572,7 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
         /// These associate a route to the index in RouteList.cpp.
         /// User routes may get applied multiple times due to SNI.
         /// So we have to store it.
-        user_routes: std.ArrayListUnmanaged(UserRoute) = .{},
+        user_routes: std.ArrayListUnmanaged(UserRoute) = .empty,
 
         on_clienterror: jsc.Strong.Optional = .empty,
 

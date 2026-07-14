@@ -28,7 +28,7 @@ mutex: Mutex = .{},
 
 /// Compressed .tgz bytes that have arrived from the HTTP thread but have
 /// not yet been consumed by libarchive.
-pending: std.ArrayListUnmanaged(u8) = .{},
+pending: std.ArrayListUnmanaged(u8) = .empty,
 
 /// True once the HTTP thread has delivered the final chunk (or an error).
 closed: bool = false,
@@ -55,7 +55,7 @@ draining: std.atomic.Value(bool) = .init(false),
 /// read callback hands out `reading.items[read_pos..]` and advances
 /// `read_pos`; the slice must remain valid until the next callback, so
 /// we only recycle this buffer on the *following* swap.
-reading: std.ArrayListUnmanaged(u8) = .{},
+reading: std.ArrayListUnmanaged(u8) = .empty,
 read_pos: usize = 0,
 
 archive: ?*lib.Archive = null,

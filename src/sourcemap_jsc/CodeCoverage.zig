@@ -420,7 +420,7 @@ pub const ByteRangeMapping = struct {
         defer if (parsed_mappings_) |parsed_mapping| parsed_mapping.deref();
         var line_hits = LinesHits{};
 
-        var functions = std.ArrayListUnmanaged(Block){};
+        var functions = std.ArrayListUnmanaged(Block).empty;
         try functions.ensureTotalCapacityPrecise(allocator, function_blocks.len);
         errdefer functions.deinit(allocator);
         var functions_which_have_executed: Bitset = try Bitset.initEmpty(allocator, function_blocks.len);
@@ -428,7 +428,7 @@ pub const ByteRangeMapping = struct {
         var stmts_which_have_executed: Bitset = try Bitset.initEmpty(allocator, blocks.len);
         errdefer stmts_which_have_executed.deinit(allocator);
 
-        var stmts = std.ArrayListUnmanaged(Block){};
+        var stmts = std.ArrayListUnmanaged(Block).empty;
         try stmts.ensureTotalCapacityPrecise(allocator, function_blocks.len);
         errdefer stmts.deinit(allocator);
 

@@ -7,7 +7,7 @@ pub const HtmlRenderer = struct {
     tag_filter: bool = false,
     tag_filter_raw_depth: u32 = 0,
     autolink_headings: bool = false,
-    heading_buf: std.ArrayListUnmanaged(u8) = .{},
+    heading_buf: std.ArrayListUnmanaged(u8) = .empty,
     heading_tracker: helpers.HeadingIdTracker = helpers.HeadingIdTracker.init(false),
 
     pub const OutputBuffer = struct {
@@ -32,7 +32,7 @@ pub const HtmlRenderer = struct {
 
     pub fn init(allocator: Allocator, src_text: []const u8, render_opts: RenderOptions) HtmlRenderer {
         return .{
-            .out = .{ .list = .{}, .allocator = allocator, .oom = false },
+            .out = .{ .list = .empty, .allocator = allocator, .oom = false },
             .allocator = allocator,
             .src_text = src_text,
             .tag_filter = render_opts.tag_filter,

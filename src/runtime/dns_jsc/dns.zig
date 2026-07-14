@@ -1249,7 +1249,7 @@ pub const internal = struct {
         key: Key,
         result: ?Result = null,
 
-        notify: std.ArrayListUnmanaged(DNSRequestOwner) = .{},
+        notify: std.ArrayListUnmanaged(DNSRequestOwner) = .empty,
 
         /// number of sockets that have a reference to result or are waiting for the result
         /// while this is non-zero, this entry cannot be freed

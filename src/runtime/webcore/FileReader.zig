@@ -15,7 +15,7 @@ started: bool = false,
 waiting_for_onReaderDone: bool = false,
 event_loop: jsc.EventLoopHandle,
 lazy: Lazy = .{ .none = {} },
-buffered: std.ArrayListUnmanaged(u8) = .{},
+buffered: std.ArrayListUnmanaged(u8) = .empty,
 read_inside_on_pull: ReadDuringJSOnPullResult = .{ .none = {} },
 highwater_mark: usize = 16384,
 flowing: bool = true,
@@ -433,7 +433,7 @@ pub fn onReadChunk(this: *@This(), init_buf: []const u8, state: bun.io.ReadState
 
         bun.assert_eql(buf.ptr, this.buffered.items.ptr);
         var buffered = this.buffered;
-        this.buffered = .{};
+        this.buffered = .empty;
         buffered.shrinkRetainingCapacity(buf.len);
 
         this.pending.result = if (this.reader.isDone())
@@ -596,7 +596,7 @@ pub fn onReaderDone(this: *FileReader) void {
             } else {
                 this.pending.result = .{ .done = {} };
             }
-            this.buffered = .{};
+            this.buffered = .empty;
             this.pending.run();
         }
         // Don't handle buffered data here - it will be returned on the next onPull
@@ -617,7 +617,7 @@ pub fn onReaderError(this: *FileReader, err: bun.sys.Error) void {
     this.consumeReaderBuffer();
     if (this.buffered.capacity > 0 and this.buffered.items.len == 0) {
         this.buffered.deinit(bun.default_allocator);
-        this.buffered = .{};
+        this.buffered = .empty;
     }
 
     this.pending.result = .{ .err = .{ .Error = err } };

@@ -13,11 +13,11 @@ postgresql_context: bun.api.Postgres.PostgresSQLContext = .{},
 entropy_cache: ?*EntropyCache = null,
 
 hot_map: ?HotMap = null,
-cron_jobs: std.ArrayListUnmanaged(*bun.api.cron.CronJob) = .{},
+cron_jobs: std.ArrayListUnmanaged(*bun.api.cron.CronJob) = .empty,
 
 // TODO: make this per JSGlobalObject instead of global
 // This does not handle ShadowRealm correctly!
-cleanup_hooks: std.ArrayListUnmanaged(CleanupHook) = .{},
+cleanup_hooks: std.ArrayListUnmanaged(CleanupHook) = .empty,
 
 file_polls_: ?*Async.FilePoll.Store = null,
 
@@ -61,11 +61,11 @@ mime_types: ?bun.http.MimeType.Map = null,
 
 node_fs_stat_watcher_scheduler: ?bun.ptr.RefPtr(StatWatcherScheduler) = null,
 
-listening_sockets_for_watch_mode: std.ArrayListUnmanaged(bun.FD) = .{},
+listening_sockets_for_watch_mode: std.ArrayListUnmanaged(bun.FD) = .empty,
 listening_sockets_for_watch_mode_lock: bun.Mutex = .{},
 
-fs_watchers_for_isolation: std.ArrayListUnmanaged(*FSWatcher) = .{},
-stat_watchers_for_isolation: std.ArrayListUnmanaged(*StatWatcher) = .{},
+fs_watchers_for_isolation: std.ArrayListUnmanaged(*FSWatcher) = .empty,
+stat_watchers_for_isolation: std.ArrayListUnmanaged(*StatWatcher) = .empty,
 
 temp_pipe_read_buffer: ?*PipeReadBuffer = null,
 

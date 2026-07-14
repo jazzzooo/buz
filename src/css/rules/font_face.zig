@@ -562,7 +562,7 @@ pub const UrlSource = struct {
                 .result => |vv| vv,
                 .err => |e| return .{ .err = e },
             };
-        } else ArrayList(FontTechnology){};
+        } else ArrayList(FontTechnology).empty;
 
         return .{
             .result = UrlSource{ .url = url, .format = format, .tech = tech },

@@ -426,7 +426,7 @@ pub fn decodeHeaderBlock(session: *ClientSession, stream: *Stream) void {
     defer stream.header_block.clearRetainingCapacity();
 
     var status: u32 = 0;
-    var bounds: std.ArrayListUnmanaged([3]u32) = .{};
+    var bounds: std.ArrayListUnmanaged([3]u32) = .empty;
     defer bounds.deinit(bun.default_allocator);
     const start_len = stream.decoded_bytes.items.len;
     var seen_regular = false;

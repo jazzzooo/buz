@@ -360,7 +360,7 @@ pub fn scheduleBarrelDeferredImports(this: *BundleV2, result: *ParseTask.Result.
     // (targets with deferred records).
     var queue_stack = std.heap.stackFallback(8192, this.allocator());
     const queue_alloc = queue_stack.get();
-    var queue = std.ArrayListUnmanaged(BarrelWorkItem){};
+    var queue = std.ArrayListUnmanaged(BarrelWorkItem).empty;
     defer queue.deinit(queue_alloc);
 
     ni_iter = result.ast.named_imports.iterator();

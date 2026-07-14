@@ -1301,7 +1301,7 @@ pub const RunCommand = struct {
         // HTTP worker or allocate any Download structs.
         var seen = bun.StringHashMapUnmanaged(void){};
         defer seen.deinit(allocator);
-        var remote_urls = std.ArrayListUnmanaged([]const u8){};
+        var remote_urls = std.ArrayListUnmanaged([]const u8).empty;
         defer remote_urls.deinit(allocator);
         for (collector.urls.items) |u| {
             if (!bun.strings.hasPrefixComptime(u, "http://") and
@@ -1317,7 +1317,7 @@ pub const RunCommand = struct {
 
         // Heap-allocate each Download so AsyncHTTP.task has a stable
         // address (see RemoteImageDownload doc comment).
-        var downloads = std.ArrayListUnmanaged(*RemoteImageDownload){};
+        var downloads = std.ArrayListUnmanaged(*RemoteImageDownload).empty;
         defer {
             for (downloads.items) |d| {
                 d.response_buffer.deinit();

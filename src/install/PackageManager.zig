@@ -88,7 +88,7 @@ env_configure: ?ScriptRunEnvironment = null,
 lockfile: *Lockfile = undefined,
 
 options: Options,
-preinstall_state: std.ArrayListUnmanaged(PreinstallState) = .{},
+preinstall_state: std.ArrayListUnmanaged(PreinstallState) = .empty,
 postinstall_optimizer: PostinstallOptimizer.List = .{},
 
 global_link_dir: ?std.fs.Dir = null,
@@ -107,7 +107,7 @@ event_loop: jsc.AnyEventLoop,
 
 // During `installPackages` we learn exactly what dependencies from --trust
 // actually have scripts to run, and we add them to this list
-trusted_deps_to_add_to_package_json: std.ArrayListUnmanaged(string) = .{},
+trusted_deps_to_add_to_package_json: std.ArrayListUnmanaged(string) = .empty,
 
 any_failed_to_install: bool = false,
 

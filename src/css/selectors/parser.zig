@@ -1085,7 +1085,7 @@ pub const SelectorParser = struct {
                 })));
             }
 
-            var args = std.ArrayListUnmanaged(css.css_properties.custom.TokenOrValue){};
+            var args = std.ArrayListUnmanaged(css.css_properties.custom.TokenOrValue).empty;
             if (css.TokenList.parseRaw(input, &args, this.options, 0).asErr()) |e| return .{ .err = e };
 
             return .{ .result = .{ .custom_function = .{
@@ -1283,7 +1283,7 @@ pub const SelectorParser = struct {
                 if (!bun.strings.startsWithChar(name, '-')) {
                     this.options.warn(parser.newCustomError(SelectorParseErrorKind.intoDefaultParserError(.{ .unsupported_pseudo_class_or_element = name })));
                 }
-                var args = ArrayList(css.css_properties.custom.TokenOrValue){};
+                var args = ArrayList(css.css_properties.custom.TokenOrValue).empty;
                 _ = switch (css.TokenListFns.parseRaw(parser, &args, this.options, 0)) {
                     .err => |e| return .{ .err = e },
                     .result => |v| v,

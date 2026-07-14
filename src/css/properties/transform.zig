@@ -21,7 +21,7 @@ pub const TransformList = struct {
         }
 
         input.skipWhitespace();
-        var results = ArrayList(Transform){};
+        var results = ArrayList(Transform).empty;
         switch (Transform.parse(input)) {
             .result => |first| bun.handleOom(results.append(input.allocator(), first)),
             .err => |e| return .{ .err = e },

@@ -144,7 +144,7 @@ fn split(
         .utf16 => u16,
     };
 
-    var lines: std.ArrayListUnmanaged(bun.String) = .{};
+    var lines: std.ArrayListUnmanaged(bun.String) = .empty;
     defer {
         for (lines.items) |out| {
             out.deref();

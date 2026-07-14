@@ -48,10 +48,10 @@ pub const PropertyHandlerContext = struct {
             .allocator = allocator,
             .targets = targets,
             .is_important = false,
-            .supports = ArrayList(SupportsEntry){},
-            .ltr = ArrayList(css.Property){},
-            .rtl = ArrayList(css.Property){},
-            .dark = ArrayList(css.Property){},
+            .supports = ArrayList(SupportsEntry).empty,
+            .ltr = ArrayList(css.Property).empty,
+            .rtl = ArrayList(css.Property).empty,
+            .dark = ArrayList(css.Property).empty,
             .context = DeclarationContext.none,
             .unused_symbols = unused_symbols,
         };
@@ -138,7 +138,7 @@ pub const PropertyHandlerContext = struct {
         style_rule: *const css.StyleRule(T),
     ) ArrayList(css.CssRule(T)) {
         // TODO: :dir/:lang raises the specificity of the selector. Use :where to lower it?
-        var dest = ArrayList(css.CssRule(T)){};
+        var dest = ArrayList(css.CssRule(T)).empty;
 
         if (this.ltr.items.len > 0) {
             getAdditionalRulesHelper(this, T, "ltr", "ltr", style_rule, &dest);
@@ -267,8 +267,8 @@ pub const PropertyHandlerContext = struct {
                 bun.handleOom(entry.declarations.append(this.allocator, property));
             }
         } else {
-            var important_declarations = ArrayList(css.Property){};
-            var declarations = ArrayList(css.Property){};
+            var important_declarations = ArrayList(css.Property).empty;
+            var declarations = ArrayList(css.Property).empty;
             if (this.is_important) {
                 bun.handleOom(important_declarations.append(this.allocator, property));
             } else {

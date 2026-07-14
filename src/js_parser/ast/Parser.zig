@@ -532,7 +532,7 @@ pub const Parser = struct {
             // The TypeScript compiler itself contains code with this pattern, so
             // it's important to implement this optimization.
 
-            var preprocessed_enums: std.ArrayListUnmanaged([]js_ast.Part) = .{};
+            var preprocessed_enums: std.ArrayListUnmanaged([]js_ast.Part) = .empty;
             var preprocessed_enum_i: usize = 0;
             if (p.scopes_in_order_for_enum.count() > 0) {
                 for (stmts) |*stmt| {

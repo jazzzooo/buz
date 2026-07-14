@@ -10,7 +10,7 @@ pub const deref = RefCount.deref;
 
 fd: bun.FD,
 reader: ReaderImpl,
-buf: std.ArrayListUnmanaged(u8) = .{},
+buf: std.ArrayListUnmanaged(u8) = .empty,
 readers: Readers = .{ .inlined = .{} },
 read: usize = 0,
 ref_count: RefCount,

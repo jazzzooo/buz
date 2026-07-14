@@ -37,7 +37,7 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
         to_send: []const u8 = "",
         read_length: usize = 0,
         headers_buf: [128]PicoHTTP.Header = undefined,
-        body: std.ArrayListUnmanaged(u8) = .{},
+        body: std.ArrayListUnmanaged(u8) = .empty,
         hostname: [:0]const u8 = "",
         poll_ref: Async.KeepAlive = Async.KeepAlive.init(),
         state: State = .initializing,

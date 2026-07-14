@@ -118,7 +118,7 @@ pub fn CssRule(comptime Rule: type) type {
 
 pub fn CssRuleList(comptime AtRule: type) type {
     return struct {
-        v: ArrayList(CssRule(AtRule)) = .{},
+        v: ArrayList(CssRule(AtRule)) = .empty,
 
         const This = @This();
 
@@ -131,7 +131,7 @@ pub fn CssRuleList(comptime AtRule: type) type {
             // _ = property_rules; // autofix
             var style_rules = StyleRuleKey(AtRule).HashMap(usize){};
             // _ = style_rules; // autofix
-            var rules = ArrayList(CssRule(AtRule)){};
+            var rules = ArrayList(CssRule(AtRule)).empty;
 
             for (this.v.items) |*rule| {
                 // NOTE Anytime you append to `rules` with this `rule`, you must set `moved_rule` to true.

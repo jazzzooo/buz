@@ -94,12 +94,12 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
         secure: ?*BoringSSL.SSL_CTX = null,
         /// HTTP/2 sessions with at least one active stream, available for
         /// concurrent attachment if `hasHeadroom()`.
-        active_h2_sessions: std.ArrayListUnmanaged(*H2.ClientSession) = .{},
+        active_h2_sessions: std.ArrayListUnmanaged(*H2.ClientSession) = .empty,
         /// HTTPClients whose fresh TLS connect is in flight and whose request
         /// is h2-capable. Subsequent h2-capable requests to the same origin
         /// coalesce onto the first one's session once ALPN resolves rather
         /// than each opening its own socket.
-        pending_h2_connects: std.ArrayListUnmanaged(*H2.PendingConnect) = .{},
+        pending_h2_connects: std.ArrayListUnmanaged(*H2.PendingConnect) = .empty,
 
         const Context = @This();
         pub const HTTPSocket = uws.NewSocketHandler(ssl);

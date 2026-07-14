@@ -5,30 +5,30 @@ pub const LOLHTMLContext = struct {
     pub const deref = RefCount.deref;
 
     ref_count: RefCount,
-    selectors: SelectorMap = .{},
-    element_handlers: std.ArrayListUnmanaged(*ElementHandler) = .{},
-    document_handlers: std.ArrayListUnmanaged(*DocumentHandler) = .{},
+    selectors: SelectorMap = .empty,
+    element_handlers: std.ArrayListUnmanaged(*ElementHandler) = .empty,
+    document_handlers: std.ArrayListUnmanaged(*DocumentHandler) = .empty,
 
     fn deinit(this: *LOLHTMLContext) void {
         for (this.selectors.items) |selector| {
             selector.deinit();
         }
         this.selectors.deinit(bun.default_allocator);
-        this.selectors = .{};
+        this.selectors = .empty;
 
         for (this.element_handlers.items) |handler| {
             handler.deinit();
             bun.default_allocator.destroy(handler);
         }
         this.element_handlers.deinit(bun.default_allocator);
-        this.element_handlers = .{};
+        this.element_handlers = .empty;
 
         for (this.document_handlers.items) |handler| {
             handler.deinit();
             bun.default_allocator.destroy(handler);
         }
         this.document_handlers.deinit(bun.default_allocator);
-        this.document_handlers = .{};
+        this.document_handlers = .empty;
 
         bun.destroy(this);
     }
@@ -1701,7 +1701,7 @@ pub const Element = struct {
     /// from `element`. They must be detached in `invalidate()` when the
     /// handler returns so that JS cannot dereference the freed lol-html
     /// attribute buffer.
-    attribute_iterators: std.ArrayListUnmanaged(*AttributeIterator) = .{},
+    attribute_iterators: std.ArrayListUnmanaged(*AttributeIterator) = .empty,
 
     pub const js = jsc.Codegen.JSElement;
     pub const toJS = js.toJS;

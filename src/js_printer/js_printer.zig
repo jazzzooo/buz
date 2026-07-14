@@ -628,7 +628,7 @@ fn NewPrinter(
 
         symbol_counter: u32 = 0,
 
-        temporary_bindings: std.ArrayListUnmanaged(B.Property) = .{},
+        temporary_bindings: std.ArrayListUnmanaged(B.Property) = .empty,
 
         binary_expression_stack: std.array_list.Managed(BinaryExpressionVisitor) = undefined,
 

@@ -151,7 +151,7 @@ pub fn SelectorBuilder(comptime Impl: type) type {
                 this.combinators.setLen(0);
             }
 
-            var components = ArrayList(T){};
+            var components = ArrayList(T).empty;
 
             var current_simple_selectors_i: usize = 0;
             var combinator_i: i64 = @as(i64, @intCast(this.combinators.len())) - 1;

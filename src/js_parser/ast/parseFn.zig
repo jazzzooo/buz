@@ -169,7 +169,7 @@ pub fn ParseFn(
 
             var rest_arg: bool = false;
             var arg_has_decorators: bool = false;
-            var args = List(G.Arg){};
+            var args = List(G.Arg).empty;
             while (p.lexer.token != T.t_close_paren) {
                 // Skip over "this" type annotations
                 if (is_typescript_enabled and p.lexer.token == T.t_this) {

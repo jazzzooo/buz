@@ -96,7 +96,7 @@ pub const ManifestBindings = struct {
             return global.throw("manifest is invalid ", .{});
         };
 
-        var buf: std.ArrayListUnmanaged(u8) = .{};
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
         const writer = buf.writer(bun.default_allocator);
 
         // TODO: we can add more information. for now just versions is fine

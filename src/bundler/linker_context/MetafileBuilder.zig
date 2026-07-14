@@ -437,7 +437,7 @@ pub fn generateMarkdown(allocator: std.mem.Allocator, metafile_json: []const u8)
         format: []const u8,
     };
 
-    var input_files: std.ArrayListUnmanaged(InputFileInfo) = .{};
+    var input_files: std.ArrayListUnmanaged(InputFileInfo) = .empty;
     defer input_files.deinit(allocator);
 
     var imported_by = bun.StringHashMap(std.ArrayListUnmanaged([]const u8)).init(allocator);
@@ -729,7 +729,7 @@ pub fn generateMarkdown(allocator: std.mem.Allocator, metafile_json: []const u8)
 
                 // Collect and sort by size
                 const ModuleSize = struct { path: []const u8, bytes: u64 };
-                var module_sizes: std.ArrayListUnmanaged(ModuleSize) = .{};
+                var module_sizes: std.ArrayListUnmanaged(ModuleSize) = .empty;
                 defer module_sizes.deinit(allocator);
 
                 var oi_iter = output_inputs.object.iterator();
@@ -771,7 +771,7 @@ pub fn generateMarkdown(allocator: std.mem.Allocator, metafile_json: []const u8)
 
     // Show modules that are imported by many files (potential optimization targets)
     const ImportedByInfo = struct { path: []const u8, count: usize };
-    var highly_imported: std.ArrayListUnmanaged(ImportedByInfo) = .{};
+    var highly_imported: std.ArrayListUnmanaged(ImportedByInfo) = .empty;
     defer highly_imported.deinit(allocator);
 
     var ib_iter = imported_by.iterator();
@@ -821,7 +821,7 @@ pub fn generateMarkdown(allocator: std.mem.Allocator, metafile_json: []const u8)
 
     // Sort inputs alphabetically for easier navigation
     const PathOnly = struct { path: []const u8 };
-    var sorted_paths: std.ArrayListUnmanaged(PathOnly) = .{};
+    var sorted_paths: std.ArrayListUnmanaged(PathOnly) = .empty;
     defer sorted_paths.deinit(allocator);
 
     var path_iter = inputs.object.iterator();

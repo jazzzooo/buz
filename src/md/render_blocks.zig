@@ -100,7 +100,7 @@ pub fn processTableRow(self: *Parser, vline: VerbatimLine, is_header: bool, col_
             // replacing \| with | before inline processing. This matters for
             // code spans where backslash escapes don't apply.
             if (std.mem.indexOf(u8, cell_content, "\\|") != null) {
-                var buf: std.ArrayListUnmanaged(u8) = .{};
+                var buf: std.ArrayListUnmanaged(u8) = .empty;
                 defer buf.deinit(self.allocator);
                 const unescaped = if (buf.ensureTotalCapacity(self.allocator, cell_content.len)) |_| blk: {
                     var ci: usize = 0;

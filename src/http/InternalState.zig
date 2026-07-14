@@ -49,8 +49,8 @@ pub fn init(body: HTTPRequestBody, body_out_str: *MutableString) InternalState {
     return .{
         .original_request_body = body,
         .request_body = if (body == .bytes) body.bytes else "",
-        .compressed_body = MutableString{ .allocator = bun.http.default_allocator, .list = .{} },
-        .response_message_buffer = MutableString{ .allocator = bun.http.default_allocator, .list = .{} },
+        .compressed_body = MutableString{ .allocator = bun.http.default_allocator, .list = .empty },
+        .response_message_buffer = MutableString{ .allocator = bun.http.default_allocator, .list = .empty },
         .body_out_str = body_out_str,
         .stage = Stage.pending,
         .pending_response = null,
@@ -84,8 +84,8 @@ pub fn reset(this: *InternalState, allocator: std.mem.Allocator) void {
     this.original_request_body.deinit();
     this.* = .{
         .body_out_str = body_msg,
-        .compressed_body = MutableString{ .allocator = bun.http.default_allocator, .list = .{} },
-        .response_message_buffer = MutableString{ .allocator = bun.http.default_allocator, .list = .{} },
+        .compressed_body = MutableString{ .allocator = bun.http.default_allocator, .list = .empty },
+        .response_message_buffer = MutableString{ .allocator = bun.http.default_allocator, .list = .empty },
         .original_request_body = .{ .bytes = "" },
         .request_body = "",
         .certificate_info = null,

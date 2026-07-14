@@ -794,7 +794,7 @@ pub fn Visit(
                 //
                 // The TypeScript compiler itself contains code with this pattern, so
                 // it's important to implement this optimization.
-                var preprocessed_enums: std.ArrayListUnmanaged([]Stmt) = .{};
+                var preprocessed_enums: std.ArrayListUnmanaged([]Stmt) = .empty;
                 defer preprocessed_enums.deinit(p.allocator);
                 if (p.scopes_in_order_for_enum.count() > 0) {
                     var found: usize = 0;

@@ -75,8 +75,8 @@ pub const Config = struct {
                 // writing at `define_iter.i` would leave earlier slots uninitialized.
                 // Use ArrayLists so the stored slice is always exactly what was appended.
                 // `allocator` is an arena, so ownership transfers via `.items`.
-                var names: std.ArrayListUnmanaged([]const u8) = .{};
-                var values: std.ArrayListUnmanaged([]const u8) = .{};
+                var names: std.ArrayListUnmanaged([]const u8) = .empty;
+                var values: std.ArrayListUnmanaged([]const u8) = .empty;
                 names.ensureTotalCapacityPrecise(allocator, define_iter.len) catch unreachable;
                 values.ensureTotalCapacityPrecise(allocator, define_iter.len) catch unreachable;
 

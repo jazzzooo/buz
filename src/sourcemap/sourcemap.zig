@@ -189,7 +189,7 @@ pub fn parseJSON(
                     var names_list = try std.ArrayListUnmanaged(bun.Semver.String).initCapacity(alloc, names.data.e_array.items.len);
                     errdefer names_list.deinit(alloc);
 
-                    var names_buffer = std.ArrayListUnmanaged(u8){};
+                    var names_buffer = std.ArrayListUnmanaged(u8).empty;
                     errdefer names_buffer.deinit(alloc);
 
                     for (names.data.e_array.items.slice()) |*item| {

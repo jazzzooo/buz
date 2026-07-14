@@ -11,8 +11,8 @@ tasks: Queue = undefined,
 ///   - immediate_tasks: tasks that will run on the current tick
 ///
 /// Having two queues avoids infinite loops creating by calling `setImmediate` in a `setImmediate` callback.
-immediate_tasks: std.ArrayListUnmanaged(*Timer.ImmediateObject) = .{},
-next_immediate_tasks: std.ArrayListUnmanaged(*Timer.ImmediateObject) = .{},
+immediate_tasks: std.ArrayListUnmanaged(*Timer.ImmediateObject) = .empty,
+next_immediate_tasks: std.ArrayListUnmanaged(*Timer.ImmediateObject) = .empty,
 
 concurrent_tasks: ConcurrentTask.Queue = ConcurrentTask.Queue{},
 global: *jsc.JSGlobalObject = undefined,

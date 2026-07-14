@@ -215,7 +215,7 @@ pub fn downloadToPath(this: *const CompileTarget, env: *bun.DotEnv.Loader, alloc
             }
         }
 
-        var tarball_bytes = std.ArrayListUnmanaged(u8){};
+        var tarball_bytes = std.ArrayListUnmanaged(u8).empty;
         {
             refresher.refresh();
             defer compressed_archive_bytes.list.deinit(allocator);

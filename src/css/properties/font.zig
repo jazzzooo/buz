@@ -311,7 +311,7 @@ pub const FontFamily = union(enum) {
         var string: ?ArrayList(u8) = null;
         while (input.tryParse(css.Parser.expectIdent, .{}).asValue()) |ident| {
             if (string == null) {
-                string = ArrayList(u8){};
+                string = ArrayList(u8).empty;
                 bun.handleOom(string.?.appendSlice(stralloc, value));
             }
 

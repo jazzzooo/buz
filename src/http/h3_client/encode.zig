@@ -14,7 +14,7 @@ pub fn writeRequest(session: *ClientSession, stream: *Stream, qs: *quic.Stream) 
 
     var sfa = std.heap.stackFallback(2048, bun.default_allocator);
     const alloc = sfa.get();
-    var headers: std.ArrayListUnmanaged(quic.Header) = .{};
+    var headers: std.ArrayListUnmanaged(quic.Header) = .empty;
     defer headers.deinit(alloc);
     try headers.ensureTotalCapacityPrecise(alloc, request.headers.len + 4);
 

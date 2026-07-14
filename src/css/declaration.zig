@@ -33,9 +33,9 @@ const BoxShadowHandler = css.css_properties.box_shadow.BoxShadowHandler;
 /// instead of two.
 pub const DeclarationBlock = struct {
     /// A list of `!important` declarations in the block.
-    important_declarations: ArrayList(css.Property) = .{},
+    important_declarations: ArrayList(css.Property) = .empty,
     /// A list of normal declarations in the block.
-    declarations: ArrayList(css.Property) = .{},
+    declarations: ArrayList(css.Property) = .empty,
 
     const This = @This();
 

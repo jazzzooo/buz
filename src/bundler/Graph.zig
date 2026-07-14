@@ -4,7 +4,7 @@ pool: *ThreadPool,
 heap: ThreadLocalArena,
 
 /// Mapping user-specified entry points to their Source Index
-entry_points: std.ArrayListUnmanaged(Index) = .{},
+entry_points: std.ArrayListUnmanaged(Index) = .empty,
 /// Maps entry point source indices to their original specifiers (for virtual entries resolved by plugins)
 entry_point_original_names: IndexStringMap = .{},
 /// Every source index has an associated InputFile
@@ -57,7 +57,7 @@ estimated_file_loader_count: usize = 0,
 /// pre-allocations without re-iterating the file listing.
 css_file_count: usize = 0,
 
-additional_output_files: std.ArrayListUnmanaged(options.OutputFile) = .{},
+additional_output_files: std.ArrayListUnmanaged(options.OutputFile) = .empty,
 
 kit_referenced_server_data: bool,
 kit_referenced_client_data: bool,

@@ -16,8 +16,8 @@ qstream: ?*quic.Stream = null,
 /// of the `onStreamHeaders` callback that populated it. `cloneMetadata`
 /// deep-copies synchronously inside that callback, so nothing reads these
 /// after they go stale.
-decoded_headers: std.ArrayListUnmanaged(picohttp.Header) = .{},
-body_buffer: std.ArrayListUnmanaged(u8) = .{},
+decoded_headers: std.ArrayListUnmanaged(picohttp.Header) = .empty,
+body_buffer: std.ArrayListUnmanaged(u8) = .empty,
 status_code: u16 = 0,
 
 pending_body: []const u8 = "",

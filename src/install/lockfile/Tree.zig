@@ -253,7 +253,7 @@ pub fn Builder(comptime method: BuilderMethod) type {
         // could be visited multiple times before it's resolved.
         pending_optional_peers: std.AutoArrayHashMap(PackageNameHash, std.AutoArrayHashMap(DependencyID, void)),
         manager: if (method == .filter) *const PackageManager else void,
-        sort_buf: std.ArrayListUnmanaged(DependencyID) = .{},
+        sort_buf: std.ArrayListUnmanaged(DependencyID) = .empty,
         workspace_filters: if (method == .filter) []const WorkspaceFilter else void = if (method == .filter) &.{},
         install_root_dependencies: if (method == .filter) bool else void,
         packages_to_install: if (method == .filter) ?[]const PackageID else void,

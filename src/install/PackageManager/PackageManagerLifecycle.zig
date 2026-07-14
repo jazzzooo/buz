@@ -8,7 +8,7 @@ pub const LifecycleScriptTimeLog = struct {
     };
 
     mutex: bun.Mutex = .{},
-    list: std.ArrayListUnmanaged(Entry) = .{},
+    list: std.ArrayListUnmanaged(Entry) = .empty,
 
     pub fn appendConcurrent(log: *LifecycleScriptTimeLog, allocator: std.mem.Allocator, entry: Entry) void {
         log.mutex.lock();

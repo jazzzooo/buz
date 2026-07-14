@@ -1,5 +1,5 @@
 state: enum { idle, err, done } = .idle,
-buf: std.ArrayListUnmanaged(u8) = .{},
+buf: std.ArrayListUnmanaged(u8) = .empty,
 
 pub fn start(this: *@This()) Yield {
     const args = this.bltn().argsSlice();

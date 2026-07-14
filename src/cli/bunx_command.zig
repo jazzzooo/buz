@@ -6,7 +6,7 @@ pub const BunxCommand = struct {
     /// bunx-specific options parsed from argv.
     const Options = struct {
         /// CLI arguments to pass to the command being run.
-        passthrough_list: std.ArrayListUnmanaged(string) = .{},
+        passthrough_list: std.ArrayListUnmanaged(string) = .empty,
         /// `bunx <package_name>`
         package_name: string,
         /// The binary name to run (when using --package)

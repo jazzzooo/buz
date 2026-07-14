@@ -570,7 +570,7 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
     // Example: ["/assets/main.css", "/assets/blog.css"]
     const route_style_references = try JSValue.createEmptyArray(global, navigatable_routes.items.len);
 
-    var params_buf: std.ArrayListUnmanaged([]const u8) = .{};
+    var params_buf: std.ArrayListUnmanaged([]const u8) = .empty;
     for (navigatable_routes.items, 0..) |route_index, nav_index| {
         defer params_buf.clearRetainingCapacity();
 

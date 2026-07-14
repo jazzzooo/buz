@@ -7,7 +7,7 @@ pub const new = bun.TrivialNew(@This());
 hostname: []const u8,
 port: u16,
 ssl_config: ?*SSLConfig,
-waiters: std.ArrayListUnmanaged(*HTTPClient) = .{},
+waiters: std.ArrayListUnmanaged(*HTTPClient) = .empty,
 
 pub fn matches(this: *const @This(), hostname: []const u8, port: u16, ssl_config: ?*SSLConfig) bool {
     return this.port == port and this.ssl_config == ssl_config and strings.eqlLong(this.hostname, hostname, true);

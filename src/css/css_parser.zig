@@ -2096,7 +2096,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                             };
                             const selectors = switch (input.tryParse(Fn.parsefn, .{})) {
                                 .result => |v| v,
-                                .err => ArrayList(css_rules.page.PageSelector){},
+                                .err => ArrayList(css_rules.page.PageSelector).empty,
                             };
                             break :brk .{ .page = selectors };
                         },
@@ -2232,7 +2232,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                         var decl_parser = css_rules.font_face.FontFaceDeclarationParser{};
                         var parser = RuleBodyParser(css_rules.font_face.FontFaceDeclarationParser).new(input, &decl_parser);
                         // todo_stuff.think_mem_mgmt
-                        var properties: ArrayList(css_rules.font_face.FontFaceProperty) = .{};
+                        var properties: ArrayList(css_rules.font_face.FontFaceProperty) = .empty;
 
                         while (parser.next()) |result| {
                             if (result.asValue()) |decl| {
@@ -2369,7 +2369,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                         var parser = css_rules.keyframes.KeyframesListParser{};
                         var iter = RuleBodyParser(css_rules.keyframes.KeyframesListParser).new(input, &parser);
                         // todo_stuff.think_mem_mgmt
-                        var keyframes = ArrayList(css_rules.keyframes.Keyframe){};
+                        var keyframes = ArrayList(css_rules.keyframes.Keyframe).empty;
 
                         while (iter.next()) |result| {
                             if (result.asValue()) |keyframe| {
@@ -2742,7 +2742,7 @@ pub fn NestedRuleParser(comptime T: type) type {
 
             const parse_declarations = This.RuleBodyItemParser.parseDeclarations(&nested_parser);
             // TODO: think about memory management
-            var errors = ArrayList(ParseError(ParserError)){};
+            var errors = ArrayList(ParseError(ParserError)).empty;
             var iter = RuleBodyParser(This).new(input, &nested_parser);
 
             while (iter.next()) |result| {
@@ -3299,7 +3299,7 @@ pub fn StyleSheet(comptime AtRule: type) type {
                 &parser_extra,
             );
 
-            var license_comments = ArrayList([]const u8){};
+            var license_comments = ArrayList([]const u8).empty;
             var state = parser.state();
             while (switch (parser.nextIncludingWhitespaceAndComments()) {
                 .result => |v| v,
@@ -3334,9 +3334,9 @@ pub fn StyleSheet(comptime AtRule: type) type {
                 }
             }
 
-            var sources = ArrayList([]const u8){};
+            var sources = ArrayList([]const u8).empty;
             bun.handleOom(sources.append(allocator, options.filename));
-            var source_map_urls = ArrayList(?[]const u8){};
+            var source_map_urls = ArrayList(?[]const u8).empty;
             bun.handleOom(source_map_urls.append(allocator, parser.currentSourceMapUrl()));
 
             return .{

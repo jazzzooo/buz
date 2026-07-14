@@ -28,7 +28,7 @@ registry_index: u32 = std.math.maxInt(u32),
 
 /// Requests waiting for `onStreamOpen` to hand them a stream. Order is
 /// FIFO; `lsquic_conn_make_stream` was already called once per entry.
-pending: std.ArrayListUnmanaged(*Stream) = .{},
+pending: std.ArrayListUnmanaged(*Stream) = .empty,
 
 pub fn matches(this: *const ClientSession, hostname: []const u8, port: u16, reject_unauthorized: bool) bool {
     return !this.closed and this.port == port and

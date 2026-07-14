@@ -106,7 +106,7 @@ pub fn decodeUTF16(
     comptime big_endian: bool,
     comptime flush: bool,
 ) error{OutOfMemory}!struct { std.ArrayListUnmanaged(u16), bool } {
-    var output: std.ArrayListUnmanaged(u16) = .{};
+    var output: std.ArrayListUnmanaged(u16) = .empty;
     try output.ensureTotalCapacity(bun.default_allocator, @divFloor(bytes.len, 2));
 
     var remain = bytes;

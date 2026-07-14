@@ -66,12 +66,12 @@ pub const Scripts = struct {
 
     const RunCommand = @import("../cli/run_command.zig").RunCommand;
 
-    preinstall: Entries = .{},
-    install: Entries = .{},
-    postinstall: Entries = .{},
-    preprepare: Entries = .{},
-    prepare: Entries = .{},
-    postprepare: Entries = .{},
+    preinstall: Entries = .empty,
+    install: Entries = .empty,
+    postinstall: Entries = .empty,
+    preprepare: Entries = .empty,
+    prepare: Entries = .empty,
+    postprepare: Entries = .empty,
 
     pub fn hasAny(this: *Scripts) bool {
         inline for (Scripts.names) |hook| {

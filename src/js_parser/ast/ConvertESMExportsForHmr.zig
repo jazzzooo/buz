@@ -3,9 +3,9 @@ last_part: *js_ast.Part,
 // can be a bit more concise for re-exports
 is_in_node_modules: bool,
 imports_seen: bun.StringArrayHashMapUnmanaged(ImportRef) = .{},
-export_star_props: std.ArrayListUnmanaged(G.Property) = .{},
-export_props: std.ArrayListUnmanaged(G.Property) = .{},
-stmts: std.ArrayListUnmanaged(Stmt) = .{},
+export_star_props: std.ArrayListUnmanaged(G.Property) = .empty,
+export_props: std.ArrayListUnmanaged(G.Property) = .empty,
+stmts: std.ArrayListUnmanaged(Stmt) = .empty,
 
 const ImportRef = struct {
     /// Index into ConvertESMExportsForHmr.stmts

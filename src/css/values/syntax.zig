@@ -79,7 +79,7 @@ pub const SyntaxString = union(enum) {
             return .{ .result = SyntaxString.universal };
         }
 
-        var components = ArrayList(SyntaxComponent){};
+        var components = ArrayList(SyntaxComponent).empty;
 
         // PERF(alloc): count first?
         while (true) {
@@ -126,7 +126,7 @@ pub const SyntaxString = union(enum) {
                 for (components.items) |component| {
                     const state = input.state();
                     // PERF: deinit this on error
-                    var parsed = ArrayList(ParsedComponent){};
+                    var parsed = ArrayList(ParsedComponent).empty;
 
                     while (true) {
                         const value_result = input.tryParse(struct {

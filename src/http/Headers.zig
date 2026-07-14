@@ -7,8 +7,8 @@ pub const Entry = struct {
     pub const List = bun.MultiArrayList(Entry);
 };
 
-entries: Entry.List = .{},
-buf: std.ArrayListUnmanaged(u8) = .{},
+entries: Entry.List = .empty,
+buf: std.ArrayListUnmanaged(u8) = .empty,
 allocator: std.mem.Allocator,
 
 pub fn memoryCost(this: *const Headers) usize {

@@ -76,10 +76,10 @@ pub const FFI = struct {
         library_dirs: StringArray = .{},
         include_dirs: StringArray = .{},
         symbols: SymbolsMap = .{},
-        define: std.ArrayListUnmanaged([2][:0]const u8) = .{},
+        define: std.ArrayListUnmanaged([2][:0]const u8) = .empty,
         // Flags to replace the default flags
         flags: [:0]const u8 = "",
-        deferred_errors: std.ArrayListUnmanaged([]const u8) = .{},
+        deferred_errors: std.ArrayListUnmanaged([]const u8) = .empty,
 
         const Source = union(enum) {
             file: [:0]const u8,
@@ -1291,7 +1291,7 @@ pub const FFI = struct {
     pub fn generateSymbolForFunction(global: *JSGlobalObject, allocator: std.mem.Allocator, value: jsc.JSValue, function: *Function) bun.JSError!?JSValue {
         jsc.markBinding(@src());
 
-        var abi_types = std.ArrayListUnmanaged(ABIType){};
+        var abi_types = std.ArrayListUnmanaged(ABIType).empty;
 
         if (try value.getOwn(global, "args")) |args| {
             if (args.isEmptyOrUndefinedOrNull() or !args.jsType().isArray()) {
@@ -1442,7 +1442,7 @@ pub const FFI = struct {
         state: ?*TCC.State = null,
 
         return_type: ABIType = ABIType.void,
-        arg_types: std.ArrayListUnmanaged(ABIType) = .{},
+        arg_types: std.ArrayListUnmanaged(ABIType) = .empty,
         step: Step = Step{ .pending = {} },
         threadsafe: bool = false,
         allocator: Allocator,

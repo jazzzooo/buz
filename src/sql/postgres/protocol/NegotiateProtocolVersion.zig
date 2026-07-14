@@ -1,5 +1,5 @@
 version: int4 = 0,
-unrecognized_options: std.ArrayListUnmanaged(String) = .{},
+unrecognized_options: std.ArrayListUnmanaged(String) = .empty,
 
 pub fn decodeInternal(
     this: *@This(),

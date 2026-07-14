@@ -795,7 +795,7 @@ pub const WebKitGradient = union(enum) {
     }
 
     pub fn getFallback(this: *const @This(), allocator: Allocator, kind: css.ColorFallbackKind) WebKitGradient {
-        var stops: ArrayList(WebKitColorStop) = .{};
+        var stops: ArrayList(WebKitColorStop) = .empty;
         switch (this.*) {
             .linear => |linear| {
                 stops = bun.handleOom(ArrayList(WebKitColorStop).initCapacity(allocator, linear.stops.items.len));
@@ -1525,7 +1525,7 @@ pub const Circle = union(enum) {
 };
 
 pub fn parseItems(comptime D: type, input: *css.Parser) Result(ArrayList(GradientItem(D))) {
-    var items = ArrayList(GradientItem(D)){};
+    var items = ArrayList(GradientItem(D)).empty;
     var seen_stop = false;
 
     while (true) {

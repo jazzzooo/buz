@@ -820,7 +820,7 @@ pub const H2FrameParser = struct {
             }
         };
         const PendingQueue = struct {
-            data: std.ArrayListUnmanaged(PendingFrame) = .{},
+            data: std.ArrayListUnmanaged(PendingFrame) = .empty,
             front: usize = 0,
             len: usize = 0,
 
@@ -829,7 +829,7 @@ pub const H2FrameParser = struct {
                 self.len = 0;
                 var data = self.data;
                 if (data.capacity > 0) {
-                    self.data = .{};
+                    self.data = .empty;
                     data.clearAndFree(allocator);
                 }
             }
@@ -3602,7 +3602,7 @@ pub const H2FrameParser = struct {
         var buf_fallback = bun.allocators.BufferFallbackAllocator.init(&shared_request_buffer, bun.default_allocator);
         const alloc = buf_fallback.allocator();
         // Use ArrayList with initial capacity of shared buffer size, doubling when needed
-        var encoded_headers = std.ArrayListUnmanaged(u8){};
+        var encoded_headers = std.ArrayListUnmanaged(u8).empty;
         // IMPORTANT: defer cleanup immediately after init to prevent memory leaks on early returns
         defer encoded_headers.deinit(alloc);
         // Pre-allocate to shared buffer size (this uses the stack buffer via BufferFallbackAllocator)
@@ -4070,7 +4070,7 @@ pub const H2FrameParser = struct {
         var buf_fallback = bun.allocators.BufferFallbackAllocator.init(&shared_request_buffer, bun.default_allocator);
         const alloc = buf_fallback.allocator();
         // Use ArrayList with initial capacity of shared buffer size, doubling when needed
-        var encoded_headers = std.ArrayListUnmanaged(u8){};
+        var encoded_headers = std.ArrayListUnmanaged(u8).empty;
         // IMPORTANT: defer cleanup immediately after init to prevent memory leaks on early returns
         defer encoded_headers.deinit(alloc);
         // Pre-allocate to shared buffer size (this uses the stack buffer via BufferFallbackAllocator)

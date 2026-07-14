@@ -149,7 +149,7 @@ pub const PackageInstaller = struct {
         /// Trees are drained breadth first because if the current tree is completed from
         /// the remaining pending installs, then any child tree has a higher chance of
         /// being able to install it's dependencies
-        pending_installs: std.ArrayListUnmanaged(DependencyInstallContext) = .{},
+        pending_installs: std.ArrayListUnmanaged(DependencyInstallContext) = .empty,
 
         binaries: Bin.PriorityQueue,
 

@@ -17,7 +17,7 @@ pub const PageSelector = struct {
 
     pub fn parse(input: *css.Parser) Result(PageSelector) {
         const name = if (input.tryParse(css.Parser.expectIdent, .{}).asValue()) |name| name else null;
-        var pseudo_classes = ArrayList(PagePseudoClass){};
+        var pseudo_classes = ArrayList(PagePseudoClass).empty;
 
         while (true) {
             // Whitespace is not allowed between pseudo classes
@@ -106,7 +106,7 @@ pub const PageRule = struct {
 
     pub fn parse(selectors: ArrayList(PageSelector), input: *css.Parser, loc: Location, options: *const css.ParserOptions) Result(PageRule) {
         var declarations = css.DeclarationBlock{};
-        var rules = ArrayList(PageMarginRule){};
+        var rules = ArrayList(PageMarginRule).empty;
         var rule_parser = PageRuleParser{
             .declarations = &declarations,
             .rules = &rules,

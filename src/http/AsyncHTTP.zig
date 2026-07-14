@@ -139,7 +139,7 @@ pub fn preconnect(
 
     var this = Preconnect.new(.{
         .async_http = undefined,
-        .response_buffer = MutableString{ .allocator = bun.http.default_allocator, .list = .{} },
+        .response_buffer = MutableString{ .allocator = bun.http.default_allocator, .list = .empty },
         .url = url,
         .is_url_owned = is_url_owned,
     });

@@ -211,7 +211,7 @@ pub fn generateChunksInParallel(
         defer path_names_map.deinit();
 
         const DuplicateEntry = struct {
-            sources: std.ArrayListUnmanaged(*Chunk) = .{},
+            sources: std.ArrayListUnmanaged(*Chunk) = .empty,
         };
         var duplicates_map: bun.StringArrayHashMapUnmanaged(DuplicateEntry) = .{};
 
@@ -335,7 +335,7 @@ pub fn generateChunksInParallel(
 
             // Collect replacements first (can't modify string table while iterating)
             const Replacement = struct { old_id: analyze_transpiled_module.StringID, resolved_path: []const u8 };
-            var replacements: std.ArrayListUnmanaged(Replacement) = .{};
+            var replacements: std.ArrayListUnmanaged(Replacement) = .empty;
             defer replacements.deinit(c.allocator());
 
             var offset: usize = 0;

@@ -5,7 +5,7 @@
 const ClientContext = @This();
 
 qctx: *quic.Context,
-sessions: std.ArrayListUnmanaged(*ClientSession) = .{},
+sessions: std.ArrayListUnmanaged(*ClientSession) = .empty,
 
 /// One instance per HTTP-thread loop. Stored as a process global only
 /// because `bun.http.http_thread` is itself a process singleton — the

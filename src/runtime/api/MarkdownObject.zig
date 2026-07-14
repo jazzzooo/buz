@@ -319,7 +319,7 @@ fn renderAST(
 const ParseRenderer = struct {
     globalObject: *jsc.JSGlobalObject,
     marked_args: *jsc.MarkedArgumentBuffer,
-    stack: std.ArrayListUnmanaged(StackEntry) = .{},
+    stack: std.ArrayListUnmanaged(StackEntry) = .empty,
     stack_check: bun.StackCheck,
     src_text: []const u8,
     heading_tracker: md.helpers.HeadingIdTracker = md.helpers.HeadingIdTracker.init(false),
@@ -692,7 +692,7 @@ const ParseRenderer = struct {
                 }
             } else if (len > 1) {
                 // Multiple children — concatenate string parts
-                var alt_buf = std.ArrayListUnmanaged(u8){};
+                var alt_buf = std.ArrayListUnmanaged(u8).empty;
                 defer alt_buf.deinit(bun.default_allocator);
                 for (0..len) |i| {
                     const child = try entry.children.getIndex(g, @truncate(i));
@@ -778,7 +778,7 @@ const JsCallbackRenderer = struct {
     globalObject: *jsc.JSGlobalObject,
     allocator: std.mem.Allocator,
     src_text: []const u8,
-    stack: std.ArrayListUnmanaged(StackEntry) = .{},
+    stack: std.ArrayListUnmanaged(StackEntry) = .empty,
     callbacks: Callbacks = .{},
     heading_tracker: md.helpers.HeadingIdTracker = md.helpers.HeadingIdTracker.init(false),
     stack_check: bun.StackCheck,
@@ -820,7 +820,7 @@ const JsCallbackRenderer = struct {
     };
 
     const StackEntry = struct {
-        buffer: std.ArrayListUnmanaged(u8) = .{},
+        buffer: std.ArrayListUnmanaged(u8) = .empty,
         block_type: md.BlockType = .doc,
         data: u32 = 0,
         flags: u32 = 0,

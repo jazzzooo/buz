@@ -34,11 +34,11 @@ pub fn ValidQueryCondition(comptime T: type) void {
 /// A [media query list](https://drafts.csswg.org/mediaqueries/#mq-list).
 pub const MediaList = struct {
     /// The list of media queries.
-    media_queries: ArrayList(MediaQuery) = .{},
+    media_queries: ArrayList(MediaQuery) = .empty,
 
     /// Parse a media query list from CSS.
     pub fn parse(input: *css.Parser) Result(MediaList) {
-        var media_queries = ArrayList(MediaQuery){};
+        var media_queries = ArrayList(MediaQuery).empty;
         while (true) {
             const mq = switch (input.parseUntilBefore(css.Delimiters{ .comma = true }, MediaQuery, {}, css.voidWrap(MediaQuery, MediaQuery.parse))) {
                 .result => |v| v,
@@ -528,7 +528,7 @@ pub fn parseQueryCondition(
         return .{ .err = location.newUnexpectedTokenError(css.Token{ .ident = "or" }) };
     }
 
-    var conditions = ArrayList(QueryCondition){};
+    var conditions = ArrayList(QueryCondition).empty;
     conditions.append(
         input.allocator(),
         first_condition,

@@ -278,7 +278,7 @@ pub fn print(
     var had_printed_new_install = false;
     if (this.successfully_installed) |*installed| {
         if (log_level.isVerbose()) {
-            var workspaces_to_print: std.ArrayListUnmanaged(DependencyID) = .{};
+            var workspaces_to_print: std.ArrayListUnmanaged(DependencyID) = .empty;
             defer workspaces_to_print.deinit(allocator);
 
             for (resolutions_list[0].begin()..resolutions_list[0].end()) |dep_id| {

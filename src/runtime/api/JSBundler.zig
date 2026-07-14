@@ -949,12 +949,12 @@ pub const JSBundler = struct {
                 // writing at `loader_iter.i` would leave earlier slots uninitialized and
                 // later freed as garbage. Use ArrayLists so the stored slice is always
                 // exactly what was appended.
-                var loader_names: std.ArrayListUnmanaged(string) = .{};
+                var loader_names: std.ArrayListUnmanaged(string) = .empty;
                 errdefer {
                     for (loader_names.items) |name| bun.default_allocator.free(name);
                     loader_names.deinit(allocator);
                 }
-                var loader_values: std.ArrayListUnmanaged(api.Loader) = .{};
+                var loader_values: std.ArrayListUnmanaged(api.Loader) = .empty;
                 errdefer loader_values.deinit(allocator);
 
                 try loader_names.ensureTotalCapacityPrecise(allocator, loader_iter.len);

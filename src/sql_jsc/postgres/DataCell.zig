@@ -76,7 +76,7 @@ fn parseArray(bytes: []const u8, bigint: bool, comptime arrayType: types.Tag, gl
         return SQLDataCell{ .tag = .array, .value = .{ .array = .{ .ptr = null, .len = 0, .cap = 0 } } };
     }
 
-    var array = std.ArrayListUnmanaged(SQLDataCell){};
+    var array = std.ArrayListUnmanaged(SQLDataCell).empty;
     var stack_buffer: [16 * 1024]u8 = undefined;
 
     errdefer {

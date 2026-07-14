@@ -591,7 +591,7 @@ pub const PublishCommand = struct {
 
         const publish_req_body = try constructPublishRequestBody(directory_publish, ctx);
 
-        var print_buf: std.ArrayListUnmanaged(u8) = .{};
+        var print_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer print_buf.deinit(ctx.allocator);
         var print_writer = print_buf.writer(ctx.allocator);
 
@@ -1280,7 +1280,7 @@ pub const PublishCommand = struct {
                     }
                 };
 
-                var dirs: std.ArrayListUnmanaged(struct { std.fs.Dir, string, bool }) = .{};
+                var dirs: std.ArrayListUnmanaged(struct { std.fs.Dir, string, bool }) = .empty;
                 defer dirs.deinit(allocator);
 
                 try dirs.append(allocator, .{ bin_dir.stdDir(), normalized_bin_dir, false });

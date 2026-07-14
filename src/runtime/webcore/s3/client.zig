@@ -557,7 +557,7 @@ pub fn downloadStream(
     }, false, null) catch |sign_err| {
         if (range) |range_| bun.default_allocator.free(range_);
         const error_code_and_message = Error.getSignErrorCodeAndMessage(sign_err);
-        callback(.{ .allocator = bun.default_allocator, .list = .{} }, false, .{
+        callback(.{ .allocator = bun.default_allocator, .list = .empty }, false, .{
             .code = error_code_and_message.code,
             .message = error_code_and_message.message,
         }, callback_context);

@@ -20,18 +20,18 @@ pub const Parser = struct {
     mark_char_map: bun.bit_set.StaticBitSet(256) = bun.bit_set.StaticBitSet(256).initEmpty(),
 
     // Dynamic arrays
-    marks: std.ArrayListUnmanaged(Mark) = .{},
-    containers: std.ArrayListUnmanaged(Container) = .{},
-    block_bytes: std.ArrayListAlignedUnmanaged(u8, .@"4") = .{},
-    buffer: std.ArrayListUnmanaged(u8) = .{},
-    emph_delims: std.ArrayListUnmanaged(EmphDelim) = .{},
+    marks: std.ArrayListUnmanaged(Mark) = .empty,
+    containers: std.ArrayListUnmanaged(Container) = .empty,
+    block_bytes: std.ArrayListAlignedUnmanaged(u8, .@"4") = .empty,
+    buffer: std.ArrayListUnmanaged(u8) = .empty,
+    emph_delims: std.ArrayListUnmanaged(EmphDelim) = .empty,
 
     // Number of active containers
     n_containers: u32 = 0,
 
     // Current block being built
     current_block: ?usize = null,
-    current_block_lines: std.ArrayListUnmanaged(VerbatimLine) = .{},
+    current_block_lines: std.ArrayListUnmanaged(VerbatimLine) = .empty,
 
     // Opener stacks
     opener_stacks: [types.NUM_OPENER_STACKS]types.OpenerStack =
@@ -53,7 +53,7 @@ pub const Parser = struct {
     table_alignments: [types.TABLE_MAXCOLCOUNT]Align = @splat(.default),
 
     // Ref defs
-    ref_defs: std.ArrayListUnmanaged(RefDef) = .{},
+    ref_defs: std.ArrayListUnmanaged(RefDef) = .empty,
 
     // State
     last_line_has_list_loosening_effect: bool = false,

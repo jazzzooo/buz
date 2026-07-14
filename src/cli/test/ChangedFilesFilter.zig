@@ -150,7 +150,7 @@ pub fn filter(
     }
     for (importers) |*list| list.* = .{};
 
-    var graph_files: std.ArrayListUnmanaged([]const u8) = .{};
+    var graph_files: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer {
         for (graph_files.items) |p| allocator.free(p);
         graph_files.deinit(allocator);
@@ -197,7 +197,7 @@ pub fn filter(
     // BFS backward from every changed file that participates in the graph.
     var affected = try bun.bit_set.DynamicBitSetUnmanaged.initEmpty(allocator, sources.len);
     defer affected.deinit(allocator);
-    var queue: std.ArrayListUnmanaged(u32) = .{};
+    var queue: std.ArrayListUnmanaged(u32) = .empty;
     defer queue.deinit(allocator);
 
     {

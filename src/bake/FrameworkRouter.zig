@@ -590,7 +590,7 @@ pub const Style = union(enum) {
         comptime conventions: NextRoutingConvention,
     ) ![]Part {
         var i: usize = 1;
-        var parts: std.ArrayListUnmanaged(Part) = .{};
+        var parts: std.ArrayListUnmanaged(Part) = .empty;
         const stop_chars = switch (conventions) {
             .pages => "[",
             .app => "[(@",

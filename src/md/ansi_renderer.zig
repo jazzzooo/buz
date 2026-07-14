@@ -34,7 +34,7 @@ pub const Theme = struct {
 /// Renderer that only collects image URLs — no output. Used by the CLI
 /// pre-scan pass to decide which remote images to download.
 pub const ImageUrlCollector = struct {
-    urls: std.ArrayListUnmanaged([]const u8) = .{},
+    urls: std.ArrayListUnmanaged([]const u8) = .empty,
     allocator: Allocator,
 
     pub fn init(allocator: Allocator) ImageUrlCollector {
@@ -82,7 +82,7 @@ pub const AnsiRenderer = struct {
     src_text: []const u8,
     theme: Theme,
     /// Stack of active block contexts (li/quote) for indentation.
-    block_stack: std.ArrayListUnmanaged(BlockContext) = .{},
+    block_stack: std.ArrayListUnmanaged(BlockContext) = .empty,
     /// Currently open span styles (bit flags).
     span_flags: u32 = 0,
     /// Non-null when we're inside a link span; the href to emit in OSC 8.
@@ -94,7 +94,7 @@ pub const AnsiRenderer = struct {
     /// rather than normal output.
     image_depth: u32 = 0,
     /// Buffered alt text for the innermost image.
-    image_alt: std.ArrayListUnmanaged(u8) = .{},
+    image_alt: std.ArrayListUnmanaged(u8) = .empty,
     /// Saved image src URL for when the image span closes (owned).
     image_src: ?[]const u8 = null,
     /// Saved image title (rendered after alt, owned).
@@ -110,17 +110,17 @@ pub const AnsiRenderer = struct {
     /// Whether the current code block is fenced (not indented).
     code_fenced: bool = false,
     /// Buffer of the current code block body, flushed on leaveBlock(.code).
-    code_buf: std.ArrayListUnmanaged(u8) = .{},
+    code_buf: std.ArrayListUnmanaged(u8) = .empty,
     /// Heading level currently being rendered (0 = none).
     heading_level: u8 = 0,
     /// Buffer of the current heading text, flushed on leaveBlock(.h).
-    heading_buf: std.ArrayListUnmanaged(u8) = .{},
+    heading_buf: std.ArrayListUnmanaged(u8) = .empty,
     /// Table state: cells of the current row with their alignment + width.
-    table_cells: std.ArrayListUnmanaged(TableCell) = .{},
+    table_cells: std.ArrayListUnmanaged(TableCell) = .empty,
     /// Buffered rows for the current table, flushed on leaveBlock(.table).
-    table_rows: std.ArrayListUnmanaged(TableRow) = .{},
+    table_rows: std.ArrayListUnmanaged(TableRow) = .empty,
     /// Buffer for the current table cell being rendered.
-    table_cell_buf: std.ArrayListUnmanaged(u8) = .{},
+    table_cell_buf: std.ArrayListUnmanaged(u8) = .empty,
     /// True when inside a table header row.
     in_thead: bool = false,
     /// True when inside a table cell (th/td) to capture output.
@@ -199,7 +199,7 @@ pub const AnsiRenderer = struct {
 
     pub fn init(allocator: Allocator, src_text: []const u8, theme: Theme) AnsiRenderer {
         var r: AnsiRenderer = .{
-            .out = .{ .list = .{}, .allocator = allocator, .oom = false },
+            .out = .{ .list = .empty, .allocator = allocator, .oom = false },
             .allocator = allocator,
             .src_text = src_text,
             .theme = theme,
@@ -2007,7 +2007,7 @@ fn extractLanguage(src_text: []const u8, info_beg: u32) []const u8 {
 /// Build the final href string with autolink prefixes (mailto:, http://).
 /// Caller owns the returned memory.
 fn resolveHref(detail: SpanDetail, allocator: Allocator) ![]u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .{};
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(allocator);
     if (detail.autolink_email) try buf.appendSlice(allocator, "mailto:");
     if (detail.autolink_www) try buf.appendSlice(allocator, "http://");

@@ -22,7 +22,7 @@ queued_tasks: Queue = Queue{},
 /// `active_requests_count >= max_simultaneous_requests`. Kept in FIFO order
 /// and processed before `queued_tasks` on the next `drainEvents`. Owned by
 /// the HTTP thread; never accessed concurrently.
-deferred_tasks: std.ArrayListUnmanaged(*AsyncHTTP) = .{},
+deferred_tasks: std.ArrayListUnmanaged(*AsyncHTTP) = .empty,
 /// Set by `drainQueuedShutdowns` when a shutdown's `async_http_id` wasn't in
 /// `socket_async_http_abort_tracker` — the request is either not yet started
 /// (still in `queued_tasks`/`deferred_tasks`) or already done. `drainEvents`
@@ -31,15 +31,15 @@ deferred_tasks: std.ArrayListUnmanaged(*AsyncHTTP) = .{},
 /// path stays O(1). Owned by the HTTP thread.
 has_pending_queued_abort: bool = false,
 
-queued_shutdowns: std.ArrayListUnmanaged(ShutdownMessage) = std.ArrayListUnmanaged(ShutdownMessage){},
-queued_writes: std.ArrayListUnmanaged(WriteMessage) = std.ArrayListUnmanaged(WriteMessage){},
-queued_response_body_drains: std.ArrayListUnmanaged(DrainMessage) = std.ArrayListUnmanaged(DrainMessage){},
+queued_shutdowns: std.ArrayListUnmanaged(ShutdownMessage) = .empty,
+queued_writes: std.ArrayListUnmanaged(WriteMessage) = .empty,
+queued_response_body_drains: std.ArrayListUnmanaged(DrainMessage) = .empty,
 
 queued_shutdowns_lock: bun.Mutex = .{},
 queued_writes_lock: bun.Mutex = .{},
 queued_response_body_drains_lock: bun.Mutex = .{},
 
-queued_threadlocal_proxy_derefs: std.ArrayListUnmanaged(*ProxyTunnel) = std.ArrayListUnmanaged(*ProxyTunnel){},
+queued_threadlocal_proxy_derefs: std.ArrayListUnmanaged(*ProxyTunnel) = .empty,
 
 has_awoken: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 timer: std.time.Timer,

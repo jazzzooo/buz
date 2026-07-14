@@ -801,7 +801,7 @@ pub const PackageJSON = struct {
                 if (side_effects_field.asArray()) |array_| {
                     var array = array_;
                     var map = SideEffects.Map{};
-                    var glob_list = SideEffects.GlobList{};
+                    var glob_list = SideEffects.GlobList.empty;
                     var has_globs = false;
                     var has_exact = false;
 

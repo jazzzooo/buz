@@ -25,7 +25,7 @@ pub const PatchFilePart = union(enum) {
 };
 
 pub const PatchFile = struct {
-    parts: List(PatchFilePart) = .{},
+    parts: List(PatchFilePart) = .empty,
 
     pub fn deinit(this: *PatchFile, allocator: Allocator) void {
         for (this.parts.items) |*part| part.deinit(allocator);
@@ -368,11 +368,11 @@ const FileDeets = struct {
     after_hash: ?[]const u8 = null,
     from_path: ?[]const u8 = null,
     to_path: ?[]const u8 = null,
-    hunks: List(Hunk) = .{},
+    hunks: List(Hunk) = .empty,
 
     fn takeHunks(this: *FileDeets) List(Hunk) {
         const hunks = this.hunks;
-        this.hunks = .{};
+        this.hunks = .empty;
         return hunks;
     }
 
@@ -397,7 +397,7 @@ const FileDeets = struct {
 
 pub const PatchMutationPart = struct {
     type: PartType,
-    lines: List([]const u8) = .{},
+    lines: List([]const u8) = .empty,
     /// This technically can only be on the last part of a hunk
     no_newline_at_end_of_file: bool = false,
 
@@ -411,7 +411,7 @@ pub const PatchMutationPart = struct {
 
 pub const Hunk = struct {
     header: Header,
-    parts: List(PatchMutationPart) = .{},
+    parts: List(PatchMutationPart) = .empty,
 
     pub const Header = struct {
         original: struct {
@@ -702,7 +702,7 @@ const LookbackIterator = struct {
 };
 
 const PatchLinesParser = struct {
-    result: List(FileDeets) = .{},
+    result: List(FileDeets) = .empty,
     current_file_patch: FileDeets = .{},
     state: State = .parsing_header,
     current_hunk: ?Hunk = null,
@@ -776,7 +776,7 @@ const PatchLinesParser = struct {
                 .parsing_header => {
                     if (bun.strings.hasPrefix(line, "@@")) {
                         this.state = .parsing_hunks;
-                        this.current_file_patch.hunks = .{};
+                        this.current_file_patch.hunks = .empty;
                         lines.back();
                     } else if (bun.strings.hasPrefix(line, "diff --git ")) {
                         if (this.current_file_patch.diff_line_from_path != null) {

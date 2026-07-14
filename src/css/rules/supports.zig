@@ -112,7 +112,7 @@ pub const SupportsCondition = union(enum) {
             .err => |e| return .{ .err = e },
         };
         var expected_type: ?i32 = null;
-        var conditions = ArrayList(SupportsCondition){};
+        var conditions = ArrayList(SupportsCondition).empty;
         const mapalloc: std.mem.Allocator = input.allocator();
         var seen_declarations = std.ArrayHashMap(
             SeenDeclKey,

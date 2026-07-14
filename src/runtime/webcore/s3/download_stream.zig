@@ -118,7 +118,7 @@ pub const S3HttpDownloadStreamingTask = struct {
                         .message = message,
                     };
                 }
-                break :brk bun.MutableString{ .allocator = bun.default_allocator, .list = .{} };
+                break :brk bun.MutableString{ .allocator = bun.default_allocator, .list = .empty };
             } else {
                 const buffer = this.reported_response_buffer;
                 break :brk buffer;

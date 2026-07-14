@@ -102,7 +102,7 @@ pub const CssModule = struct {
             if (gop.found_existing) {
                 gop.value_ptr.is_referenced = true;
             } else {
-                var res = ArrayList(u8){};
+                var res = ArrayList(u8).empty;
                 bun.handleOom(res.appendSlice(allocator, "--"));
                 gop.value_ptr.* = CssModuleExport{
                     .name = this.config.pattern.writeToString(

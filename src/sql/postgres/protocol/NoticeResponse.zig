@@ -1,6 +1,6 @@
 const NoticeResponse = @This();
 
-messages: std.ArrayListUnmanaged(FieldMessage) = .{},
+messages: std.ArrayListUnmanaged(FieldMessage) = .empty,
 pub fn deinit(this: *NoticeResponse) void {
     for (this.messages.items) |*message| {
         message.deinit();

@@ -650,8 +650,8 @@ fn emitVLQ(state: *const State, prev: *SourceMapState, generated_line: *i32, out
 
 pub const Builder = struct {
     allocator: std.mem.Allocator,
-    sync_entries: std.ArrayListUnmanaged(SyncEntry) = .{},
-    win_stream: std.ArrayListUnmanaged(u8) = .{},
+    sync_entries: std.ArrayListUnmanaged(SyncEntry) = .empty,
+    win_stream: std.ArrayListUnmanaged(u8) = .empty,
     pending: [sync_interval]State = undefined,
     pending_n: u8 = 0,
     pending_generated_line_delta: i32 = 0,

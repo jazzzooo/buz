@@ -439,7 +439,7 @@ const Linux = struct {
     pub const Watch = struct {
         /// All wds belonging to this PathWatcher (one for a file/non-recursive dir,
         /// many for a recursive dir).
-        wds: std.ArrayListUnmanaged(i32) = .{},
+        wds: std.ArrayListUnmanaged(i32) = .empty,
 
         pub fn deinit(this: *Watch) void {
             this.wds.deinit(bun.default_allocator);
@@ -792,7 +792,7 @@ const Kqueue = struct {
     };
 
     pub const Watch = struct {
-        fds: std.ArrayListUnmanaged(i32) = .{},
+        fds: std.ArrayListUnmanaged(i32) = .empty,
 
         pub fn deinit(this: *Watch) void {
             this.fds.deinit(bun.default_allocator);

@@ -341,7 +341,7 @@ pub fn GlobWalker_(
         end_byte_of_basename_excluding_special_syntax: u32 = 0,
         basename_excluding_special_syntax_component_idx: u32 = 0,
 
-        patternComponents: ArrayList(Component) = .{},
+        patternComponents: ArrayList(Component) = .empty,
         matchedPaths: MatchedMap = .{},
         i: u32 = 0,
 
@@ -355,7 +355,7 @@ pub fn GlobWalker_(
 
         pathBuf: bun.PathBuffer = undefined,
         // iteration state
-        workbuf: ArrayList(WorkItem) = ArrayList(WorkItem){},
+        workbuf: ArrayList(WorkItem) = .empty,
 
         /// Array hashmap used as a set (values are the keys)
         /// to store matched paths and prevent duplicates

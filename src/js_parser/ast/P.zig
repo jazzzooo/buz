@@ -159,15 +159,15 @@ pub fn NewParser_(
         fn_or_arrow_data_parse: FnOrArrowDataParse = FnOrArrowDataParse{},
         fn_or_arrow_data_visit: FnOrArrowDataVisit = FnOrArrowDataVisit{},
         fn_only_data_visit: FnOnlyDataVisit = FnOnlyDataVisit{},
-        allocated_names: List(string) = .{},
+        allocated_names: List(string) = .empty,
         // allocated_names: ListManaged(string) = ListManaged(string).init(bun.default_allocator),
         // allocated_names_pool: ?*AllocatedNamesPool.Node = null,
         latest_arrow_arg_loc: logger.Loc = logger.Loc.Empty,
         forbid_suffix_after_as_loc: logger.Loc = logger.Loc.Empty,
         current_scope: *js_ast.Scope = undefined,
-        scopes_for_current_part: List(*js_ast.Scope) = .{},
+        scopes_for_current_part: List(*js_ast.Scope) = .empty,
         symbols: ListManaged(js_ast.Symbol) = undefined,
-        ts_use_counts: List(u32) = .{},
+        ts_use_counts: List(u32) = .empty,
         exports_ref: Ref = Ref.None,
         require_ref: Ref = Ref.None,
         module_ref: Ref = Ref.None,
@@ -216,14 +216,14 @@ pub fn NewParser_(
 
         legacy_cjs_import_stmts: std.array_list.Managed(Stmt),
 
-        injected_define_symbols: List(Ref) = .{},
+        injected_define_symbols: List(Ref) = .empty,
         symbol_uses: SymbolUseMap = .{},
         declared_symbols: DeclaredSymbol.List = .{},
         declared_symbols_for_reuse: DeclaredSymbol.List = .{},
         runtime_imports: RuntimeImports = RuntimeImports{},
 
         /// Used with unwrap_commonjs_packages
-        imports_to_convert_from_require: List(DeferredImportNamespace) = .{},
+        imports_to_convert_from_require: List(DeferredImportNamespace) = .empty,
         unwrap_all_requires: bool = false,
 
         commonjs_named_exports: js_ast.Ast.CommonJSNamedExports = .{},
@@ -306,8 +306,8 @@ pub fn NewParser_(
 
         // Imports (both ES6 and CommonJS) are tracked at the top level
         import_records: ImportRecordList,
-        import_records_for_current_part: List(u32) = .{},
-        export_star_import_records: List(u32) = .{},
+        import_records_for_current_part: List(u32) = .empty,
+        export_star_import_records: List(u32) = .empty,
         import_symbol_property_uses: SymbolPropertyUseMap = .{},
 
         // These are for handling ES6 imports and exports
@@ -342,7 +342,7 @@ pub fn NewParser_(
         // symbols must be separate from the pass that binds identifiers to declared
         // symbols to handle declaring a hoisted "var" symbol in a nested scope and
         // binding a name to it in a parent or sibling scope.
-        scopes_in_order: ScopeOrderList = .{},
+        scopes_in_order: ScopeOrderList = .empty,
         scope_order_to_visit: []ScopeOrder = &.{},
 
         // These properties are for the visit pass, which runs after the parse pass.
@@ -430,7 +430,7 @@ pub fn NewParser_(
         then_catch_chain: ThenCatchChain,
 
         // Temporary variables used for lowering
-        temp_refs_to_declare: List(TempRef) = .{},
+        temp_refs_to_declare: List(TempRef) = .empty,
         temp_ref_count: i32 = 0,
 
         // When bundling, hoisted top-level local variables declared with "var" in
@@ -438,7 +438,7 @@ pub fn NewParser_(
         // The old "var" statements are turned into regular assignments instead. This
         // makes it easier to quickly scan the top-level statements for "var" locals
         // with the guarantee that all will be found.
-        relocated_top_level_vars: List(js_ast.LocRef) = .{},
+        relocated_top_level_vars: List(js_ast.LocRef) = .empty,
 
         // ArrowFunction is a special case in the grammar. Although it appears to be
         // a PrimaryExpression, it's actually an AssignmentExpression. This means if
@@ -481,7 +481,7 @@ pub fn NewParser_(
         /// will be set to the most recently visited node (as a way to mark that this
         /// node has metadata) and "tsNamespaceMemberData" will be set to the metadata.
         ts_namespace: RecentlyVisitedTSNamespace = .{},
-        top_level_enums: std.ArrayListUnmanaged(Ref) = .{},
+        top_level_enums: std.ArrayListUnmanaged(Ref) = .empty,
 
         scopes_in_order_for_enum: std.AutoArrayHashMapUnmanaged(logger.Loc, []ScopeOrder) = .{},
 

@@ -8,7 +8,7 @@ pub const RefDef = struct {
 /// strip leading/trailing whitespace, case-fold.
 pub fn normalizeLabel(self: *Parser, raw: []const u8) []const u8 {
     // Collapse whitespace and apply Unicode case folding (per CommonMark §6.7)
-    var result = std.ArrayListUnmanaged(u8){};
+    var result = std.ArrayListUnmanaged(u8).empty;
     var in_ws = true; // skip leading whitespace
     var i: usize = 0;
     while (i < raw.len) {

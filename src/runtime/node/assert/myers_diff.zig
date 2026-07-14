@@ -608,7 +608,7 @@ pub fn split(
     //
     // thing
     var it = std.mem.splitScalar(T, s, newline);
-    var lines = std.ArrayListUnmanaged([]const T){};
+    var lines = std.ArrayListUnmanaged([]const T).empty;
     try lines.ensureUnusedCapacity(alloc, s.len >> 4);
     errdefer lines.deinit(alloc);
     while (it.next()) |l| {

@@ -196,7 +196,7 @@ fn defineVar(allocator: Allocator, name: []const u8, value: css.Token) css.Prope
             .name = css.css_properties.custom.CustomPropertyName{ .custom = css.DashedIdent{ .v = name } },
             .value = css.TokenList{
                 .v = brk: {
-                    var list = ArrayList(css.css_properties.custom.TokenOrValue){};
+                    var list = ArrayList(css.css_properties.custom.TokenOrValue).empty;
                     bun.handleOom(list.append(allocator, css.css_properties.custom.TokenOrValue{ .token = value }));
                     break :brk list;
                 },

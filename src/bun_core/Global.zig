@@ -82,7 +82,7 @@ pub fn setThreadName(name: [:0]const u8) void {
 
 const ExitFn = *const fn () callconv(.c) void;
 
-var on_exit_callbacks = std.ArrayListUnmanaged(ExitFn){};
+var on_exit_callbacks = std.ArrayListUnmanaged(ExitFn).empty;
 export fn Bun__atexit(function: ExitFn) void {
     if (std.mem.indexOfScalar(ExitFn, on_exit_callbacks.items, function) == null) {
         on_exit_callbacks.append(bun.default_allocator, function) catch {};

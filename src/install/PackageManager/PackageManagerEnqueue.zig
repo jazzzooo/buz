@@ -831,7 +831,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
 
                         var manifest_entry_parse = try this.task_queue.getOrPutContext(this.allocator, task_id, .{});
                         if (!manifest_entry_parse.found_existing) {
-                            manifest_entry_parse.value_ptr.* = TaskCallbackList{};
+                            manifest_entry_parse.value_ptr.* = TaskCallbackList.empty;
                         }
 
                         const callback_tag = comptime if (successFn == assignRootResolution) "root_dependency" else "dependency";
@@ -951,7 +951,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
             const task_id = Task.Id.forTarball(url);
             var entry = this.task_queue.getOrPutContext(this.allocator, task_id, .{}) catch unreachable;
             if (!entry.found_existing) {
-                entry.value_ptr.* = TaskCallbackList{};
+                entry.value_ptr.* = TaskCallbackList.empty;
             }
 
             if (comptime Environment.allow_assert)
@@ -1139,7 +1139,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
             const task_id = Task.Id.forTarball(url);
             var entry = this.task_queue.getOrPutContext(this.allocator, task_id, .{}) catch unreachable;
             if (!entry.found_existing) {
-                entry.value_ptr.* = TaskCallbackList{};
+                entry.value_ptr.* = TaskCallbackList.empty;
             }
 
             if (comptime Environment.allow_assert)

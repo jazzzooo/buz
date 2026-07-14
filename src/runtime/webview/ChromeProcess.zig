@@ -285,7 +285,7 @@ fn spawn(vm: *jsc.VirtualMachine, userDataDir: ?[*:0]const u8, explicitPath: ?[*
         break :blk try std.fmt.allocPrintSentinel(alloc, "--user-data-dir=/tmp/bun-chrome-{d}", .{pid}, 0);
     };
 
-    var argv: std.ArrayListUnmanaged(?[*:0]const u8) = .{};
+    var argv: std.ArrayListUnmanaged(?[*:0]const u8) = .empty;
     try argv.append(alloc, chrome.ptr);
     try argv.append(alloc, dataDir.ptr);
     try argv.append(alloc, "--remote-debugging-pipe");

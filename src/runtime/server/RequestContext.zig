@@ -73,7 +73,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
 
         request_body_readable_stream_ref: jsc.WebCore.ReadableStream.Strong = .{},
         request_body: ?*WebCore.Body.Value.HiveRef = null,
-        request_body_buf: std.ArrayListUnmanaged(u8) = .{},
+        request_body_buf: std.ArrayListUnmanaged(u8) = .empty,
         request_body_content_len: usize = 0,
 
         sink: ?*ResponseStream.JSSink = null,
@@ -86,7 +86,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
 
         /// Used either for temporary blob data or fallback
         /// When the response body is a temporary value
-        response_buf_owned: std.ArrayListUnmanaged(u8) = .{},
+        response_buf_owned: std.ArrayListUnmanaged(u8) = .empty,
 
         /// Defer finalization until after the request handler task is completed?
         defer_deinit_until_callback_completes: ?*bool = null,

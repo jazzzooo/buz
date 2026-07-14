@@ -1457,7 +1457,7 @@ pub fn Calc(comptime V: type) type {
         fn reduceArgs(allocator: Allocator, args: *ArrayList(This), order: std.math.Order) void {
             // Reduces the arguments of a min() or max() expression, combining compatible values.
             // e.g. min(1px, 1em, 2px, 3in) => min(1px, 1em)
-            var reduced = ArrayList(This){};
+            var reduced = ArrayList(This).empty;
 
             for (args.items) |*arg| {
                 var found: ??*This = null;
@@ -1819,7 +1819,7 @@ fn arr2(allocator: std.mem.Allocator, a: anytype, b: anytype) ArrayList(@TypeOf(
     if (T != @TypeOf(b)) {
         @compileError("arr2: types must match");
     }
-    var arr = ArrayList(T){};
+    var arr = ArrayList(T).empty;
     bun.handleOom(arr.appendSlice(allocator, &.{ a, b }));
     return arr;
 }

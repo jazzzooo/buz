@@ -168,7 +168,7 @@ pub const TrustCommand = struct {
         PackageManagerCommand.handleLoadLockfileErrors(load_lockfile, pm);
         try pm.updateLockfileIfNeeded(load_lockfile);
 
-        var packages_to_trust: std.ArrayListUnmanaged(string) = .{};
+        var packages_to_trust: std.ArrayListUnmanaged(string) = .empty;
         defer packages_to_trust.deinit(ctx.allocator);
         try packages_to_trust.ensureUnusedCapacity(ctx.allocator, args[2..].len);
         for (args[2..]) |arg| {

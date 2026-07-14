@@ -134,7 +134,7 @@ pub const BundleV2 = struct {
     dynamic_import_entry_points: std.AutoArrayHashMap(Index.Int, void) = undefined,
     has_on_parse_plugins: bool = false,
 
-    finalizers: std.ArrayListUnmanaged(CacheEntry.ExternalFreeFunction) = .{},
+    finalizers: std.ArrayListUnmanaged(CacheEntry.ExternalFreeFunction) = .empty,
 
     drain_defer_task: DeferredBatchTask = .{},
 
@@ -1246,8 +1246,8 @@ pub const BundleV2 = struct {
         var server = try AstBuilder.init(this.allocator(), &bake.server_virtual_source, this.transpiler.options.hot_module_reloading);
         var client = try AstBuilder.init(this.allocator(), &bake.client_virtual_source, this.transpiler.options.hot_module_reloading);
 
-        var server_manifest_props: std.ArrayListUnmanaged(G.Property) = .{};
-        var client_manifest_props: std.ArrayListUnmanaged(G.Property) = .{};
+        var server_manifest_props: std.ArrayListUnmanaged(G.Property) = .empty;
+        var client_manifest_props: std.ArrayListUnmanaged(G.Property) = .empty;
 
         const scbs = this.graph.server_component_boundaries.list.slice();
         const named_exports_array = this.graph.ast.items(.named_exports);

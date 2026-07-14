@@ -53,7 +53,7 @@ threadlocal var unsupported_uv_function: ?[*:0]const u8 = null;
 /// rate or only crash due to assertion failures, are debug-only. See `Action`.
 pub threadlocal var current_action: ?Action = null;
 
-var before_crash_handlers: std.ArrayListUnmanaged(struct { *anyopaque, *const OnBeforeCrash }) = .{};
+var before_crash_handlers: std.ArrayListUnmanaged(struct { *anyopaque, *const OnBeforeCrash }) = .empty;
 
 var before_crash_handlers_mutex: bun.Mutex = .{};
 

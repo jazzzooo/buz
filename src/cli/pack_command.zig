@@ -10,7 +10,7 @@ pub const PackCommand = struct {
         // pointer in this file. `manager.lockfile` is incorrect
         lockfile: ?*Lockfile,
 
-        bundled_deps: std.ArrayListUnmanaged(BundledDep) = .{},
+        bundled_deps: std.ArrayListUnmanaged(BundledDep) = .empty,
 
         stats: Stats = .{},
 
@@ -247,15 +247,15 @@ pub const PackCommand = struct {
             }
         }
 
-        var ignores: std.ArrayListUnmanaged(IgnorePatterns) = .{};
+        var ignores: std.ArrayListUnmanaged(IgnorePatterns) = .empty;
         defer ignores.deinit(allocator);
 
-        var dirs: std.ArrayListUnmanaged(DirInfo) = .{};
+        var dirs: std.ArrayListUnmanaged(DirInfo) = .empty;
         defer dirs.deinit(allocator);
 
         try dirs.append(allocator, .{ root_dir, "", 1 });
 
-        var included_dirs: std.ArrayListUnmanaged(DirInfo) = .{};
+        var included_dirs: std.ArrayListUnmanaged(DirInfo) = .empty;
         defer included_dirs.deinit(allocator);
 
         var subpath_dedupe = bun.StringHashMap(void).init(allocator);
@@ -390,15 +390,15 @@ pub const PackCommand = struct {
         dedupe: *bun.StringHashMap(void),
         log_level: LogLevel,
     ) OOM!void {
-        var dirs: std.ArrayListUnmanaged(DirInfo) = .{};
+        var dirs: std.ArrayListUnmanaged(DirInfo) = .empty;
         defer dirs.deinit(allocator);
 
         try dirs.append(allocator, root_dir_info);
 
-        var ignores: std.ArrayListUnmanaged(IgnorePatterns) = .{};
+        var ignores: std.ArrayListUnmanaged(IgnorePatterns) = .empty;
         defer ignores.deinit(allocator);
 
-        var negated_excludes: std.ArrayListUnmanaged(Pattern) = .{};
+        var negated_excludes: std.ArrayListUnmanaged(Pattern) = .empty;
         defer negated_excludes.deinit(allocator);
 
         if (excludes.len > 0) {
@@ -560,7 +560,7 @@ pub const PackCommand = struct {
         var dedupe = bun.StringHashMap(void).init(ctx.allocator);
         defer dedupe.deinit();
 
-        var additional_bundled_deps: std.ArrayListUnmanaged(DirInfo) = .{};
+        var additional_bundled_deps: std.ArrayListUnmanaged(DirInfo) = .empty;
         defer additional_bundled_deps.deinit(ctx.allocator);
 
         var iter = DirIterator.iterate(.fromStdDir(dir), .u8);
@@ -678,7 +678,7 @@ pub const PackCommand = struct {
     ) OOM!void {
         ctx.stats.bundled_deps += 1;
 
-        var dirs: std.ArrayListUnmanaged(DirInfo) = .{};
+        var dirs: std.ArrayListUnmanaged(DirInfo) = .empty;
         defer dirs.deinit(ctx.allocator);
 
         try dirs.append(ctx.allocator, bundled_dir_info);
@@ -808,12 +808,12 @@ pub const PackCommand = struct {
         root_dir: DirInfo,
         log_level: LogLevel,
     ) OOM!void {
-        var ignores: std.ArrayListUnmanaged(IgnorePatterns) = .{};
+        var ignores: std.ArrayListUnmanaged(IgnorePatterns) = .empty;
         defer ignores.deinit(allocator);
 
         // Stacks and depth-first traversal. Doing so means we can push and pop from
         // ignore patterns without needing to clone the entire list for future use.
-        var dirs: std.ArrayListUnmanaged(DirInfo) = .{};
+        var dirs: std.ArrayListUnmanaged(DirInfo) = .empty;
         defer dirs.deinit(allocator);
 
         try dirs.append(allocator, root_dir);
@@ -915,7 +915,7 @@ pub const PackCommand = struct {
         json: Expr,
         comptime field: string,
     ) OOM!?std.ArrayListUnmanaged(BundledDep) {
-        var deps: std.ArrayListUnmanaged(BundledDep) = .{};
+        var deps: std.ArrayListUnmanaged(BundledDep) = .empty;
         const bundled_deps = json.get(field) orelse return null;
 
         invalid_field: {
@@ -977,7 +977,7 @@ pub const PackCommand = struct {
         allocator: std.mem.Allocator,
         json: Expr,
     ) OOM![]const BinInfo {
-        var bins: std.ArrayListUnmanaged(BinInfo) = .{};
+        var bins: std.ArrayListUnmanaged(BinInfo) = .empty;
 
         var path_buf: PathBuffer = undefined;
 
@@ -1470,8 +1470,8 @@ pub const PackCommand = struct {
             if (json.root.get("files")) |files| {
                 files_error: {
                     if (files.asArray()) |_files_array| {
-                        var includes: std.ArrayListUnmanaged(Pattern) = .{};
-                        var excludes: std.ArrayListUnmanaged(Pattern) = .{};
+                        var includes: std.ArrayListUnmanaged(Pattern) = .empty;
+                        var excludes: std.ArrayListUnmanaged(Pattern) = .empty;
                         defer {
                             includes.deinit(ctx.allocator);
                             excludes.deinit(ctx.allocator);
@@ -1685,7 +1685,7 @@ pub const PackCommand = struct {
         }
 
         // append removed items from `pack_queue` with their file size
-        var pack_list: PackList = .{};
+        var pack_list: PackList = .empty;
         defer pack_list.deinit(ctx.allocator);
 
         var read_buf: [8192]u8 = undefined;
@@ -2456,7 +2456,7 @@ pub const PackCommand = struct {
 
         // ignore files are always ignored, don't need to worry about opening or reading twice
         pub fn readFromDisk(allocator: std.mem.Allocator, dir: std.fs.Dir, dir_depth: usize) OOM!?IgnorePatterns {
-            var patterns: std.ArrayListUnmanaged(Pattern) = .{};
+            var patterns: std.ArrayListUnmanaged(Pattern) = .empty;
             errdefer patterns.deinit(allocator);
 
             var ignore_kind: Kind = .@".npmignore";

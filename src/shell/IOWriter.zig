@@ -27,7 +27,7 @@ writer: WriterImpl = if (bun.Environment.isWindows) .{
 } else .{ .close_fd = false },
 fd: MovableIfWindowsFd,
 writers: Writers = .{ .inlined = .{} },
-buf: std.ArrayListUnmanaged(u8) = .{},
+buf: std.ArrayListUnmanaged(u8) = .empty,
 /// quick hack to get windows working
 /// ideally this should be removed
 winbuf: if (bun.Environment.isWindows) std.ArrayListUnmanaged(u8) else u0 = if (bun.Environment.isWindows) .empty else 0,
