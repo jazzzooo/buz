@@ -3599,13 +3599,13 @@ pub const H2FrameParser = struct {
         const settings = this.remoteSettings orelse this.localSettings;
         _ = settings;
         // Use shared buffer when possible, fall back to heap for large headers
-        var buf_fallback = bun.allocators.BufferFallbackAllocator.init(&shared_request_buffer, bun.default_allocator);
+        var buf_fallback: std.heap.BufferFirstAllocator = .init(&shared_request_buffer, bun.default_allocator);
         const alloc = buf_fallback.allocator();
         // Use ArrayList with initial capacity of shared buffer size, doubling when needed
         var encoded_headers = std.ArrayListUnmanaged(u8).empty;
         // IMPORTANT: defer cleanup immediately after init to prevent memory leaks on early returns
         defer encoded_headers.deinit(alloc);
-        // Pre-allocate to shared buffer size (this uses the stack buffer via BufferFallbackAllocator)
+        // Pre-allocate to the shared buffer size.
         encoded_headers.ensureTotalCapacity(alloc, shared_request_buffer.len) catch {
             return globalObject.throw("Failed to allocate header buffer", .{});
         };
@@ -4067,13 +4067,13 @@ pub const H2FrameParser = struct {
         const settings = this.remoteSettings orelse this.localSettings;
         _ = settings;
         // Use shared buffer when possible, fall back to heap for large headers
-        var buf_fallback = bun.allocators.BufferFallbackAllocator.init(&shared_request_buffer, bun.default_allocator);
+        var buf_fallback: std.heap.BufferFirstAllocator = .init(&shared_request_buffer, bun.default_allocator);
         const alloc = buf_fallback.allocator();
         // Use ArrayList with initial capacity of shared buffer size, doubling when needed
         var encoded_headers = std.ArrayListUnmanaged(u8).empty;
         // IMPORTANT: defer cleanup immediately after init to prevent memory leaks on early returns
         defer encoded_headers.deinit(alloc);
-        // Pre-allocate to shared buffer size (this uses the stack buffer via BufferFallbackAllocator)
+        // Pre-allocate to the shared buffer size.
         encoded_headers.ensureTotalCapacity(alloc, shared_request_buffer.len) catch {
             return globalObject.throw("Failed to allocate header buffer", .{});
         };
