@@ -1879,18 +1879,13 @@ pub extern fn d2i_ASN1_UTCTIME(out: [*c][*c]ASN1_UTCTIME, inp: [*c][*c]const u8,
 pub extern fn i2d_ASN1_UTCTIME(in: [*c]const ASN1_UTCTIME, outp: [*c][*c]u8) c_int;
 pub extern const ASN1_UTCTIME_it: ASN1_ITEM;
 pub extern fn ASN1_UTCTIME_check(a: [*c]const ASN1_UTCTIME) c_int;
-pub extern fn ASN1_UTCTIME_set(s: [*c]ASN1_UTCTIME, t: time_t) [*c]ASN1_UTCTIME;
-pub extern fn ASN1_UTCTIME_adj(s: [*c]ASN1_UTCTIME, t: time_t, offset_day: c_int, offset_sec: c_long) [*c]ASN1_UTCTIME;
 pub extern fn ASN1_UTCTIME_set_string(s: [*c]ASN1_UTCTIME, str: [*c]const u8) c_int;
-pub extern fn ASN1_UTCTIME_cmp_time_t(s: [*c]const ASN1_UTCTIME, t: time_t) c_int;
 pub extern fn ASN1_GENERALIZEDTIME_new() [*c]ASN1_GENERALIZEDTIME;
 pub extern fn ASN1_GENERALIZEDTIME_free(str: [*c]ASN1_GENERALIZEDTIME) void;
 pub extern fn d2i_ASN1_GENERALIZEDTIME(out: [*c][*c]ASN1_GENERALIZEDTIME, inp: [*c][*c]const u8, len: c_long) [*c]ASN1_GENERALIZEDTIME;
 pub extern fn i2d_ASN1_GENERALIZEDTIME(in: [*c]const ASN1_GENERALIZEDTIME, outp: [*c][*c]u8) c_int;
 pub extern const ASN1_GENERALIZEDTIME_it: ASN1_ITEM;
 pub extern fn ASN1_GENERALIZEDTIME_check(a: [*c]const ASN1_GENERALIZEDTIME) c_int;
-pub extern fn ASN1_GENERALIZEDTIME_set(s: [*c]ASN1_GENERALIZEDTIME, t: time_t) [*c]ASN1_GENERALIZEDTIME;
-pub extern fn ASN1_GENERALIZEDTIME_adj(s: [*c]ASN1_GENERALIZEDTIME, t: time_t, offset_day: c_int, offset_sec: c_long) [*c]ASN1_GENERALIZEDTIME;
 pub extern fn ASN1_GENERALIZEDTIME_set_string(s: [*c]ASN1_GENERALIZEDTIME, str: [*c]const u8) c_int;
 pub extern fn ASN1_TIME_new() [*c]ASN1_TIME;
 pub extern fn ASN1_TIME_free(str: [*c]ASN1_TIME) void;
@@ -1898,12 +1893,9 @@ pub extern fn d2i_ASN1_TIME(out: [*c][*c]ASN1_TIME, inp: [*c][*c]const u8, len: 
 pub extern fn i2d_ASN1_TIME(in: [*c]const ASN1_TIME, outp: [*c][*c]u8) c_int;
 pub extern const ASN1_TIME_it: ASN1_ITEM;
 pub extern fn ASN1_TIME_diff(out_days: [*c]c_int, out_seconds: [*c]c_int, from: [*c]const ASN1_TIME, to: [*c]const ASN1_TIME) c_int;
-pub extern fn ASN1_TIME_set(s: [*c]ASN1_TIME, t: time_t) [*c]ASN1_TIME;
-pub extern fn ASN1_TIME_adj(s: [*c]ASN1_TIME, t: time_t, offset_day: c_int, offset_sec: c_long) [*c]ASN1_TIME;
 pub extern fn ASN1_TIME_check(t: [*c]const ASN1_TIME) c_int;
 pub extern fn ASN1_TIME_to_generalizedtime(t: [*c]const ASN1_TIME, out: [*c][*c]ASN1_GENERALIZEDTIME) [*c]ASN1_GENERALIZEDTIME;
 pub extern fn ASN1_TIME_set_string(s: [*c]ASN1_TIME, str: [*c]const u8) c_int;
-pub extern fn ASN1_TIME_to_time_t(t: [*c]const ASN1_TIME, out: [*c]time_t) c_int;
 pub extern fn ASN1_TIME_to_posix(t: [*c]const ASN1_TIME, out: [*c]i64) c_int;
 pub extern fn ASN1_NULL_new() ?*ASN1_NULL;
 pub extern fn ASN1_NULL_free(@"null": ?*ASN1_NULL) void;
@@ -2439,8 +2431,6 @@ pub extern fn i2d_ECDSA_SIG(sig: [*c]const ECDSA_SIG, outp: [*c][*c]u8) c_int;
 // pub extern fn CBS_is_valid_asn1_integer(cbs: [*c]const CBS, out_is_negative: [*c]c_int) c_int;
 // pub extern fn CBS_is_unsigned_asn1_integer(cbs: [*c]const CBS) c_int;
 // pub extern fn CBS_asn1_oid_to_text(cbs: [*c]const CBS) [*c]u8;
-// pub extern fn CBS_parse_generalized_time(cbs: [*c]const CBS, out_tm: [*c]struct_tm, allow_timezone_offset: c_int) c_int;
-// pub extern fn CBS_parse_utc_time(cbs: [*c]const CBS, out_tm: [*c]struct_tm, allow_timezone_offset: c_int) c_int;
 // pub extern fn CBB_zero(cbb: ?*CBB) void;
 // pub extern fn CBB_init(cbb: ?*CBB, initial_capacity: usize) c_int;
 // pub extern fn CBB_init_fixed(cbb: ?*CBB, buf: [*c]u8, len: usize) c_int;
@@ -4244,10 +4234,7 @@ pub extern fn NETSCAPE_SPKI_set_pubkey(spki: [*c]NETSCAPE_SPKI, pkey: [*c]EVP_PK
 pub extern fn NETSCAPE_SPKI_sign(spki: [*c]NETSCAPE_SPKI, pkey: [*c]EVP_PKEY, md: ?*const EVP_MD) c_int;
 pub extern fn X509_ATTRIBUTE_dup(xa: ?*const X509_ATTRIBUTE) ?*X509_ATTRIBUTE;
 pub extern fn X509_REVOKED_dup(rev: ?*const X509_REVOKED) ?*X509_REVOKED;
-pub extern fn X509_cmp_time(s: [*c]const ASN1_TIME, t: [*c]time_t) c_int;
 pub extern fn X509_cmp_current_time(s: [*c]const ASN1_TIME) c_int;
-pub extern fn X509_time_adj(s: [*c]ASN1_TIME, offset_sec: c_long, t: [*c]time_t) [*c]ASN1_TIME;
-pub extern fn X509_time_adj_ex(s: [*c]ASN1_TIME, offset_day: c_int, offset_sec: c_long, t: [*c]time_t) [*c]ASN1_TIME;
 pub extern fn X509_gmtime_adj(s: [*c]ASN1_TIME, offset_sec: c_long) [*c]ASN1_TIME;
 pub extern fn X509_get_default_cert_area() [*c]const u8;
 pub extern fn X509_get_default_cert_dir() [*c]const u8;
@@ -4854,7 +4841,6 @@ pub extern fn X509_STORE_CTX_set_purpose(ctx: ?*X509_STORE_CTX, purpose: c_int) 
 pub extern fn X509_STORE_CTX_set_trust(ctx: ?*X509_STORE_CTX, trust: c_int) c_int;
 pub extern fn X509_STORE_CTX_purpose_inherit(ctx: ?*X509_STORE_CTX, def_purpose: c_int, purpose: c_int, trust: c_int) c_int;
 pub extern fn X509_STORE_CTX_set_flags(ctx: ?*X509_STORE_CTX, flags: c_ulong) void;
-pub extern fn X509_STORE_CTX_set_time(ctx: ?*X509_STORE_CTX, flags: c_ulong, t: time_t) void;
 pub extern fn X509_STORE_CTX_set_verify_cb(ctx: ?*X509_STORE_CTX, verify_cb: ?*const fn (c_int, ?*X509_STORE_CTX) callconv(.c) c_int) void;
 pub extern fn X509_STORE_CTX_get0_param(ctx: ?*X509_STORE_CTX) ?*X509_VERIFY_PARAM;
 pub extern fn X509_STORE_CTX_set0_param(ctx: ?*X509_STORE_CTX, param: ?*X509_VERIFY_PARAM) void;
@@ -4870,7 +4856,6 @@ pub extern fn X509_VERIFY_PARAM_get_flags(param: ?*X509_VERIFY_PARAM) c_ulong;
 pub extern fn X509_VERIFY_PARAM_set_purpose(param: ?*X509_VERIFY_PARAM, purpose: c_int) c_int;
 pub extern fn X509_VERIFY_PARAM_set_trust(param: ?*X509_VERIFY_PARAM, trust: c_int) c_int;
 pub extern fn X509_VERIFY_PARAM_set_depth(param: ?*X509_VERIFY_PARAM, depth: c_int) void;
-pub extern fn X509_VERIFY_PARAM_set_time(param: ?*X509_VERIFY_PARAM, t: time_t) void;
 pub extern fn X509_VERIFY_PARAM_add0_policy(param: ?*X509_VERIFY_PARAM, policy: ?*ASN1_OBJECT) c_int;
 pub extern fn X509_VERIFY_PARAM_set1_policies(param: ?*X509_VERIFY_PARAM, policies: ?*const struct_stack_st_ASN1_OBJECT) c_int;
 pub extern fn X509_VERIFY_PARAM_set1_host(param: ?*X509_VERIFY_PARAM, name: [*c]const u8, namelen: usize) c_int;
@@ -4900,7 +4885,6 @@ pub extern fn OPENSSL_tolower(c: c_int) c_int;
 pub extern fn OPENSSL_strcasecmp(a: [*c]const u8, b: [*c]const u8) c_int;
 pub extern fn OPENSSL_strncasecmp(a: [*c]const u8, b: [*c]const u8, n: usize) c_int;
 pub extern fn BIO_snprintf(buf: [*c]u8, n: usize, format: [*c]const u8, ...) c_int;
-pub extern fn BIO_vsnprintf(buf: [*c]u8, n: usize, format: [*c]const u8, args: va_list) c_int;
 pub extern fn OPENSSL_strndup(str: [*c]const u8, size: usize) [*c]u8;
 pub extern fn OPENSSL_memdup(data: ?*const anyopaque, size: usize) ?*anyopaque;
 pub extern fn OPENSSL_strlcpy(dst: [*c]u8, src: [*c]const u8, dst_size: usize) usize;
@@ -5102,7 +5086,6 @@ pub extern fn SSL_get_error(ssl: ?*const SSL, ret_code: c_int) c_int;
 pub extern fn SSL_error_description(err: c_int) [*c]const u8;
 pub extern fn SSL_set_mtu(ssl: ?*SSL, mtu: c_uint) c_int;
 pub extern fn DTLSv1_set_initial_timeout_duration(ssl: ?*SSL, duration_ms: c_uint) void;
-pub extern fn DTLSv1_get_timeout(ssl: ?*const SSL, out: [*c]struct_timeval) c_int;
 pub extern fn DTLSv1_handle_timeout(ssl: ?*SSL) c_int;
 pub extern fn SSL_CTX_set_min_proto_version(ctx: ?*SSL_CTX, version: u16) c_int;
 pub extern fn SSL_CTX_set_max_proto_version(ctx: ?*SSL_CTX, version: u16) c_int;
@@ -5424,7 +5407,6 @@ pub extern fn SSL_set_verify(ssl: ?*SSL, mode: c_int, callback: ?*const fn (c_in
 pub const ssl_verify_ok: c_int = 0;
 pub const ssl_verify_invalid: c_int = 1;
 pub const ssl_verify_retry: c_int = 2;
-pub extern fn SSL_set_custom_verify(ssl: ?*SSL, mode: c_int, callback: ?*const fn (?*SSL, [*c]u8) callconv(.c) enum_ssl_verify_result_t) void;
 pub extern fn SSL_CTX_get_verify_mode(ctx: ?*const SSL_CTX) c_int;
 pub extern fn SSL_get_verify_mode(ssl: ?*const SSL) c_int;
 pub extern fn SSL_CTX_get_verify_callback(ctx: ?*const SSL_CTX) ?*const fn (c_int, ?*X509_STORE_CTX) callconv(.c) c_int;
@@ -5707,7 +5689,6 @@ pub extern fn SSL_set_msg_callback(ssl: ?*SSL, cb: ?*const fn (c_int, c_int, c_i
 pub extern fn SSL_set_msg_callback_arg(ssl: ?*SSL, arg: ?*anyopaque) void;
 pub extern fn SSL_CTX_set_keylog_callback(ctx: ?*SSL_CTX, cb: ?*const fn (?*const SSL, [*c]const u8) callconv(.c) void) void;
 pub extern fn SSL_CTX_get_keylog_callback(ctx: ?*const SSL_CTX) ?*const fn (?*const SSL, [*c]const u8) callconv(.c) void;
-pub extern fn SSL_CTX_set_current_time_cb(ctx: ?*SSL_CTX, cb: ?*const fn (?*const SSL, [*c]struct_timeval) callconv(.c) void) void;
 pub extern fn SSL_set_shed_handshake_config(ssl: ?*SSL, enable: c_int) void;
 pub const ssl_renegotiate_never: c_int = 0;
 pub const ssl_renegotiate_once: c_int = 1;
@@ -6158,9 +6139,6 @@ pub inline fn ERR_PACK(lib: anytype, reason: anytype) @TypeOf(((__helpers.cast(u
 }
 pub const OPENSSL_HEADER_EX_DATA_H = "";
 pub const OPENSSL_HEADER_STACK_H = "";
-pub inline fn DEFINE_STACK_OF(@"type": anytype) @TypeOf(DEFINE_NAMED_STACK_OF(@"type", @"type")) {
-    return DEFINE_NAMED_STACK_OF(@"type", @"type");
-}
 pub const OPENSSL_HEADER_THREAD_H = "";
 pub const CRYPTO_LOCK = @as(c_int, 1);
 pub const CRYPTO_UNLOCK = @as(c_int, 2);
@@ -16657,9 +16635,6 @@ pub const BN_DEC_FMT1 = "%" ++ PRIu64;
 pub const BN_DEC_FMT2 = "%019" ++ PRIu64;
 pub const BN_HEX_FMT1 = "%" ++ PRIx64;
 pub const BN_HEX_FMT2 = "%016" ++ PRIx64;
-pub inline fn BN_mod(rem: anytype, numerator: anytype, divisor: anytype, ctx: anytype) @TypeOf(BN_div(NULL, rem, numerator, divisor, ctx)) {
-    return BN_div(NULL, rem, numerator, divisor, ctx);
-}
 pub const BN_RAND_TOP_ANY = -@as(c_int, 1);
 pub const BN_RAND_TOP_ONE = @as(c_int, 0);
 pub const BN_RAND_TOP_TWO = @as(c_int, 1);
@@ -16778,12 +16753,6 @@ pub const ASN1_STRFLGS_DUMP_ALL = @as(c_int, 0x80);
 pub const ASN1_STRFLGS_DUMP_UNKNOWN = @as(c_int, 0x100);
 pub const ASN1_STRFLGS_DUMP_DER = @as(c_int, 0x200);
 pub const ASN1_STRFLGS_RFC2253 = ((((ASN1_STRFLGS_ESC_2253 | ASN1_STRFLGS_ESC_CTRL) | ASN1_STRFLGS_ESC_MSB) | ASN1_STRFLGS_UTF8_CONVERT) | ASN1_STRFLGS_DUMP_UNKNOWN) | ASN1_STRFLGS_DUMP_DER;
-pub inline fn DECLARE_ASN1_FUNCTIONS(@"type": anytype) @TypeOf(DECLARE_ASN1_FUNCTIONS_name(@"type", @"type")) {
-    return DECLARE_ASN1_FUNCTIONS_name(@"type", @"type");
-}
-pub inline fn DECLARE_ASN1_ALLOC_FUNCTIONS(@"type": anytype) @TypeOf(DECLARE_ASN1_ALLOC_FUNCTIONS_name(@"type", @"type")) {
-    return DECLARE_ASN1_ALLOC_FUNCTIONS_name(@"type", @"type");
-}
 pub inline fn M_ASN1_STRING_length(x: anytype) @TypeOf(ASN1_STRING_length(x)) {
     return ASN1_STRING_length(x);
 }
@@ -17295,12 +17264,6 @@ pub const X509_LU_CRL = @as(c_int, 2);
 pub const X509_LU_PKEY = @as(c_int, 3);
 pub const X509_L_FILE_LOAD = @as(c_int, 1);
 pub const X509_L_ADD_DIR = @as(c_int, 2);
-pub inline fn X509_LOOKUP_load_file(x: anytype, name: anytype, @"type": anytype) @TypeOf(X509_LOOKUP_ctrl(x, X509_L_FILE_LOAD, name, __helpers.cast(c_long, @"type"), NULL)) {
-    return X509_LOOKUP_ctrl(x, X509_L_FILE_LOAD, name, __helpers.cast(c_long, @"type"), NULL);
-}
-pub inline fn X509_LOOKUP_add_dir(x: anytype, name: anytype, @"type": anytype) @TypeOf(X509_LOOKUP_ctrl(x, X509_L_ADD_DIR, name, __helpers.cast(c_long, @"type"), NULL)) {
-    return X509_LOOKUP_ctrl(x, X509_L_ADD_DIR, name, __helpers.cast(c_long, @"type"), NULL);
-}
 pub const X509_V_OK = @as(c_int, 0);
 pub const X509_V_ERR_UNSPECIFIED = @as(c_int, 1);
 pub const X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT = @as(c_int, 2);
@@ -17985,9 +17948,6 @@ pub const DST_EET = @as(c_int, 5);
 pub const DST_CAN = @as(c_int, 6);
 pub inline fn timerisset(tvp: anytype) @TypeOf((tvp.*.tv_sec != 0) or (tvp.*.tv_usec != 0)) {
     return (tvp.*.tv_sec != 0) or (tvp.*.tv_usec != 0);
-}
-pub inline fn timevalcmp(l: anytype, r: anytype, cmp: anytype) @TypeOf(timercmp(l, r, cmp)) {
-    return timercmp(l, r, cmp);
 }
 pub const _SYS__SELECT_H_ = "";
 pub const OPENSSL_HEADER_HMAC_H = "";
@@ -18699,8 +18659,6 @@ pub const evp_aead_direction_t = enum_evp_aead_direction_t;
 pub const stack_st_CRYPTO_BUFFER = struct_stack_st_CRYPTO_BUFFER;
 pub const stack_st_X509 = struct_stack_st_X509;
 pub const stack_st_X509_CRL = struct_stack_st_X509_CRL;
-pub const timespec = struct_timespec;
-pub const tm = struct_tm;
 pub const bn_primality_result_t = enum_bn_primality_result_t;
 pub const stack_st_ASN1_INTEGER = struct_stack_st_ASN1_INTEGER;
 pub const stack_st_ASN1_OBJECT = struct_stack_st_ASN1_OBJECT;
@@ -18724,7 +18682,6 @@ pub const stack_st_X509_OBJECT = struct_stack_st_X509_OBJECT;
 pub const stack_st_X509_VERIFY_PARAM = struct_stack_st_X509_VERIFY_PARAM;
 pub const fips_counter_t = enum_fips_counter_t;
 pub const stack_st_SSL_CIPHER = struct_stack_st_SSL_CIPHER;
-pub const ssl_verify_result_t = enum_ssl_verify_result_t;
 pub const stack_st_SRTP_PROTECTION_PROFILE = struct_stack_st_SRTP_PROTECTION_PROFILE;
 pub const ssl_early_data_reason_t = enum_ssl_early_data_reason_t;
 pub const ssl_renegotiate_mode_t = enum_ssl_renegotiate_mode_t;
@@ -19293,16 +19250,3 @@ pub fn getError(this: *SSL, rc: c_int) SSL.Error!u32 {
 
 const bun = @import("bun");
 const std = @import("std");
-
-const C = @import("std").zig.c_builtins;
-const DECLARE_ASN1_ALLOC_FUNCTIONS_name = C.DECLARE_ASN1_ALLOC_FUNCTIONS_name;
-const DECLARE_ASN1_FUNCTIONS_name = C.DECLARE_ASN1_FUNCTIONS_name;
-const DEFINE_NAMED_STACK_OF = C.DEFINE_NAMED_STACK_OF;
-const NULL = C.NULL;
-const enum_ssl_verify_result_t = C.enum_ssl_verify_result_t;
-const struct_timespec = C.struct_timespec;
-const struct_timeval = C.struct_timeval;
-const struct_tm = C.struct_tm;
-const time_t = C.time_t;
-const timercmp = C.timercmp;
-const va_list = C.va_list;
