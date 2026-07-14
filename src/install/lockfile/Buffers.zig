@@ -29,20 +29,20 @@ pub fn preallocate(this: *Buffers, that: Buffers, allocator: Allocator) !void {
 }
 
 const sizes = blk: {
-    const fields = std.meta.fields(Lockfile.Buffers);
+    const info = @typeInfo(Lockfile.Buffers).@"struct";
     const Data = struct {
         size: usize,
         name: []const u8,
         type: type,
         alignment: usize,
     };
-    var data: [fields.len]Data = undefined;
-    for (fields, &data) |field_info, *elem| {
+    var data: [info.field_names.len]Data = undefined;
+    for (info.field_names, info.field_types, info.field_attrs, &data) |field_name, FieldType, field_attr, *elem| {
         elem.* = .{
-            .size = @sizeOf(field_info.type),
-            .name = field_info.name,
-            .alignment = if (@sizeOf(field_info.type) == 0) 1 else field_info.alignment,
-            .type = field_info.type.Slice,
+            .size = @sizeOf(FieldType),
+            .name = field_name,
+            .alignment = if (@sizeOf(FieldType) == 0) 1 else field_attr.@"align" orelse @alignOf(FieldType),
+            .type = FieldType.Slice,
         };
     }
 
@@ -58,12 +58,12 @@ const sizes = blk: {
         }
     };
 
-    std.sort.insertionContext(0, fields.len, SortContext{
+    std.sort.insertionContext(0, info.field_names.len, SortContext{
         .data = &data,
     });
-    var sizes_bytes: [fields.len]usize = undefined;
-    var names: [fields.len][]const u8 = undefined;
-    var types: [fields.len]type = undefined;
+    var sizes_bytes: [info.field_names.len]usize = undefined;
+    var names: [info.field_names.len][]const u8 = undefined;
+    var types: [info.field_names.len]type = undefined;
     for (data, &sizes_bytes, &names, &types) |elem, *size, *name, *Type| {
         size.* = elem.size;
         name.* = elem.name;

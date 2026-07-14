@@ -39,7 +39,7 @@ const TokenKind = enum {
     option,
     @"option-terminator",
 
-    const COUNT = @typeInfo(TokenKind).@"enum".fields.len;
+    const COUNT = @typeInfo(TokenKind).@"enum".field_names.len;
 };
 const Token = union(TokenKind) {
     positional: struct { index: u32, value: ValueRef },

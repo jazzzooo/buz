@@ -3674,8 +3674,8 @@ pub inline fn wrappingNegation(val: anytype) @TypeOf(val) {
 fn assertNoPointers(T: type) void {
     switch (@typeInfo(T)) {
         .pointer => @compileError("no pointers!"),
-        inline .@"struct", .@"union" => |s| for (s.fields) |field| {
-            assertNoPointers(field.type);
+        inline .@"struct", .@"union" => |info| for (info.field_types) |FieldType| {
+            assertNoPointers(FieldType);
         },
         .array => |a| assertNoPointers(a.child),
         else => {},
@@ -3689,7 +3689,7 @@ pub inline fn writeAnyToHasher(hasher: anytype, thing: anytype) void {
 
 pub const perf = @import("./perf/perf.zig");
 pub inline fn isComptimeKnown(x: anytype) bool {
-    return comptime @typeInfo(@TypeOf(.{x})).@"struct".fields[0].is_comptime;
+    return comptime @typeInfo(@TypeOf(.{x})).@"struct".field_attrs[0].@"comptime";
 }
 
 pub inline fn itemOrNull(comptime T: type, slice: []const T, index: usize) ?T {

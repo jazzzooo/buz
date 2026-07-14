@@ -2019,20 +2019,20 @@ pub fn Package(comptime SemverIntType: type) type {
 
         pub const Serializer = struct {
             pub const sizes = blk: {
-                const fields = std.meta.fields(PackageType);
+                const info = @typeInfo(PackageType).@"struct";
                 const Data = struct {
                     size: usize,
                     size_index: usize,
                     alignment: usize,
                     Type: type,
                 };
-                var data: [fields.len]Data = undefined;
-                for (fields, &data, 0..) |field_info, *elem, i| {
+                var data: [info.field_names.len]Data = undefined;
+                for (info.field_types, info.field_attrs, &data, 0..) |FieldType, field_attr, *elem, i| {
                     elem.* = .{
-                        .size = @sizeOf(field_info.type),
+                        .size = @sizeOf(FieldType),
                         .size_index = i,
-                        .Type = field_info.type,
-                        .alignment = if (@sizeOf(field_info.type) == 0) 1 else field_info.alignment,
+                        .Type = FieldType,
+                        .alignment = if (@sizeOf(FieldType) == 0) 1 else field_attr.@"align" orelse @alignOf(FieldType),
                     };
                 }
                 const SortContext = struct {
@@ -2046,12 +2046,12 @@ pub fn Package(comptime SemverIntType: type) type {
                         return ctx.data[lhs].alignment > ctx.data[rhs].alignment;
                     }
                 };
-                std.sort.insertionContext(0, fields.len, SortContext{
+                std.sort.insertionContext(0, info.field_names.len, SortContext{
                     .data = &data,
                 });
-                var sizes_bytes: [fields.len]usize = undefined;
-                var field_indexes: [fields.len]usize = undefined;
-                var Types: [fields.len]type = undefined;
+                var sizes_bytes: [info.field_names.len]usize = undefined;
+                var field_indexes: [info.field_names.len]usize = undefined;
+                var Types: [info.field_names.len]type = undefined;
                 for (data, &sizes_bytes, &field_indexes, &Types) |elem, *size, *index, *Type| {
                     size.* = elem.size;
                     index.* = elem.size_index;
@@ -2088,18 +2088,18 @@ pub fn Package(comptime SemverIntType: type) type {
                 const really_begin_at = try stream.getPos();
                 var sliced = list.slice();
 
-                inline for (FieldsEnum.fields) |field| {
-                    const value = sliced.items(@field(List.Field, field.name));
+                inline for (FieldsEnum.field_names) |field_name| {
+                    const value = sliced.items(@field(List.Field, field_name));
                     if (comptime Environment.allow_assert) {
-                        debug("save(\"{s}\") = {d} bytes", .{ field.name, std.mem.sliceAsBytes(value).len });
-                        if (comptime strings.eqlComptime(field.name, "meta")) {
+                        debug("save(\"{s}\") = {d} bytes", .{ field_name, std.mem.sliceAsBytes(value).len });
+                        if (comptime strings.eqlComptime(field_name, "meta")) {
                             for (value) |meta| {
                                 assert(meta.has_install_script != .old);
                             }
                         }
                     }
                     comptime assertNoUninitializedPadding(@TypeOf(value));
-                    if (comptime strings.eqlComptime(field.name, "resolution")) {
+                    if (comptime strings.eqlComptime(field_name, "resolution")) {
                         // copy each resolution to make sure the union is zero initialized
                         for (value) |val| {
                             const copy = val.copy();
@@ -2216,8 +2216,8 @@ pub fn Package(comptime SemverIntType: type) type {
             fn loadFields(stream: *Stream, end_at: u64, comptime ListType: type, list: *ListType, needs_update: *bool) !void {
                 var sliced = list.slice();
 
-                inline for (FieldsEnum.fields) |field| {
-                    const value = sliced.items(@field(List.Field, field.name));
+                inline for (FieldsEnum.field_names) |field_name| {
+                    const value = sliced.items(@field(List.Field, field_name));
 
                     comptime assertNoUninitializedPadding(@TypeOf(value));
                     const bytes = std.mem.sliceAsBytes(value);
@@ -2225,7 +2225,7 @@ pub fn Package(comptime SemverIntType: type) type {
                     if (end_pos <= end_at) {
                         @memcpy(bytes, stream.buffer[stream.pos..][0..bytes.len]);
                         stream.pos = end_pos;
-                        if (comptime strings.eqlComptime(field.name, "meta")) {
+                        if (comptime strings.eqlComptime(field_name, "meta")) {
                             // need to check if any values were created from an older version of bun
                             // (currently just `has_install_script`). If any are found, the values need
                             // to be updated before saving the lockfile.
@@ -2236,7 +2236,7 @@ pub fn Package(comptime SemverIntType: type) type {
                                 }
                             }
                         }
-                    } else if (comptime strings.eqlComptime(field.name, "scripts")) {
+                    } else if (comptime strings.eqlComptime(field_name, "scripts")) {
                         @memset(bytes, 0);
                     } else {
                         return error.@"Lockfile validation failed: invalid package list range";

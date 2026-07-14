@@ -796,7 +796,7 @@ pub fn NewSizeHandler(
                 var value: ValueType = undefined;
                 @field(value, start_name) = @field(start.*.?, @tagName(start_prop)).deepClone(context.allocator);
                 @field(value, end_name) = @field(end.*.?, @tagName(end_prop)).deepClone(context.allocator);
-                if (std.meta.fields(ValueType).len != 2) {
+                if (std.meta.fieldNames(ValueType).len != 2) {
                     @compileError(@typeName(ValueType) ++ " has more than two fields. This could cause undefined memory.");
                 }
 

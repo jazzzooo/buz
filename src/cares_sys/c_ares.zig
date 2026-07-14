@@ -1142,9 +1142,9 @@ pub const struct_any_reply = struct {
     }
 
     pub fn deinit(this: *struct_any_reply) void {
-        inline for (@typeInfo(struct_any_reply).@"struct".fields) |field| {
-            if (comptime std.mem.endsWith(u8, field.name, "_reply")) {
-                if (@field(this, field.name)) |reply| {
+        inline for (@typeInfo(struct_any_reply).@"struct".field_names) |field_name| {
+            if (comptime std.mem.endsWith(u8, field_name, "_reply")) {
+                if (@field(this, field_name)) |reply| {
                     reply.deinit();
                 }
             }

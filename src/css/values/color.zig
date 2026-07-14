@@ -3251,10 +3251,10 @@ pub fn ColorspaceConversions(comptime T: type) type {
 }
 
 pub fn DefineColorspace(comptime T: type, comptime ChannelTypeMap: anytype) type {
-    const fields: []const std.builtin.Type.StructField = @typeInfo(T).@"struct".fields;
-    const a = fields[0].name;
-    const b = fields[1].name;
-    const c = fields[2].name;
+    const field_names = @typeInfo(T).@"struct".field_names;
+    const a = field_names[0];
+    const b = field_names[1];
+    const c = field_names[2];
     const alpha = "alpha";
     if (!@hasField(T, "alpha")) {
         @compileError("A Colorspace must define an alpha field");
@@ -3312,10 +3312,10 @@ pub fn DefineColorspace(comptime T: type, comptime ChannelTypeMap: anytype) type
 }
 
 pub fn BoundedColorGamut(comptime T: type) type {
-    const fields: []const std.builtin.Type.StructField = std.meta.fields(T);
-    const a = fields[0].name;
-    const b = fields[1].name;
-    const c = fields[2].name;
+    const field_names = std.meta.fieldNames(T);
+    const a = field_names[0];
+    const b = field_names[1];
+    const c = field_names[2];
     return struct {
         pub fn inGamut(this: *const T) bool {
             return @field(this, a) >= 0.0 and

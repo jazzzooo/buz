@@ -332,8 +332,8 @@ pub const Field = struct {
                 .max_value = self.max_value,
             };
 
-            inline for (@typeInfo(@TypeOf(overrides)).@"struct".fields) |f| {
-                @field(result, f.name) = @field(overrides, f.name);
+            inline for (@typeInfo(@TypeOf(overrides)).@"struct".field_names) |field_name| {
+                @field(result, field_name) = @field(overrides, field_name);
             }
 
             return result;
@@ -477,8 +477,8 @@ pub const Field = struct {
                 return isPackable(optional.child);
             },
             .@"union" => |info| {
-                return for (info.fields) |f| {
-                    if (f.type != void and !isPackable(f.type)) {
+                return for (info.field_types) |FieldType| {
+                    if (FieldType != void and !isPackable(FieldType)) {
                         break false;
                     }
                 } else true;
@@ -510,19 +510,19 @@ pub const Field = struct {
     pub fn override(self: Field, overrides: anytype) Field {
         var result = self;
 
-        inline for (@typeInfo(@TypeOf(overrides)).@"struct".fields) |f| {
-            if (!is_updating_ucd and (std.mem.eql(u8, f.name, "name") or
-                std.mem.eql(u8, f.name, "type") or
-                std.mem.eql(u8, f.name, "shift_low") or
-                std.mem.eql(u8, f.name, "shift_high") or
-                std.mem.eql(u8, f.name, "max_len")) or
-                std.mem.eql(u8, f.name, "min_value") or
-                std.mem.eql(u8, f.name, "max_value"))
+        inline for (@typeInfo(@TypeOf(overrides)).@"struct".field_names) |field_name| {
+            if (!is_updating_ucd and (std.mem.eql(u8, field_name, "name") or
+                std.mem.eql(u8, field_name, "type") or
+                std.mem.eql(u8, field_name, "shift_low") or
+                std.mem.eql(u8, field_name, "shift_high") or
+                std.mem.eql(u8, field_name, "max_len")) or
+                std.mem.eql(u8, field_name, "min_value") or
+                std.mem.eql(u8, field_name, "max_value"))
             {
-                @compileError("Cannot override field '" ++ f.name ++ "'");
+                @compileError("Cannot override field '" ++ field_name ++ "'");
             }
 
-            @field(result, f.name) = @field(overrides, f.name);
+            @field(result, field_name) = @field(overrides, field_name);
         }
 
         return result;

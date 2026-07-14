@@ -44,12 +44,12 @@ pub const Reader = struct {
             /// An integer was read, but it did not match any of the tags in the supplied enum.
             InvalidValue,
         };
-        const type_info = @typeInfo(Enum).Enum;
+        const type_info = @typeInfo(Enum).@"enum";
         const tag = try this.readInt(type_info.tag_type);
 
-        inline for (std.meta.fields(Enum)) |field| {
-            if (tag == field.value) {
-                return @field(Enum, field.name);
+        inline for (type_info.field_names, type_info.field_values) |field_name, field_value| {
+            if (tag == field_value) {
+                return @field(Enum, field_name);
             }
         }
 
@@ -76,9 +76,9 @@ pub const Reader = struct {
             },
             else => {
                 switch (comptime @typeInfo(T)) {
-                    .Struct => |Struct| {
-                        switch (Struct.layout) {
-                            .Packed => {
+                    .@"struct" => |struct_info| {
+                        switch (struct_info.layout) {
+                            .@"packed" => {
                                 const sizeof = @sizeOf(T);
                                 const slice = try this.read(sizeof * length);
                                 return std.mem.bytesAsSlice(T, slice);
@@ -86,7 +86,7 @@ pub const Reader = struct {
                             else => {},
                         }
                     },
-                    .Enum => |type_info| {
+                    .@"enum" => |type_info| {
                         const enum_values = try this.read(length * @sizeOf(type_info.tag_type));
                         return @as([*]T, @ptrCast(enum_values.ptr))[0..length];
                     },
@@ -142,9 +142,9 @@ pub const Reader = struct {
             },
             else => {
                 switch (comptime @typeInfo(T)) {
-                    .Struct => |Struct| {
-                        switch (Struct.layout) {
-                            .Packed => {
+                    .@"struct" => |struct_info| {
+                        switch (struct_info.layout) {
+                            .@"packed" => {
                                 const sizeof = @sizeOf(T);
                                 var slice = try this.read(sizeof);
                                 return @as(*align(1) T, @ptrCast(slice[0..sizeof])).*;
@@ -152,7 +152,7 @@ pub const Reader = struct {
                             else => {},
                         }
                     },
-                    .Enum => {
+                    .@"enum" => {
                         return try this.readEnum(T);
                     },
                     else => {},

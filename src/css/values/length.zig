@@ -251,15 +251,17 @@ pub const LengthValue = union(enum) {
     };
 
     comptime {
-        const struct_fields = std.meta.fields(LengthValue);
-        const feature_fields = std.meta.fields(@TypeOf(FeatureMap));
-        if (struct_fields.len != feature_fields.len) {
+        const length_field_names = @typeInfo(LengthValue).@"union".field_names;
+        const feature_field_names = std.meta.fieldNames(@TypeOf(FeatureMap));
+        if (length_field_names.len != feature_field_names.len) {
             @compileError("LengthValue and FeatureMap must have the same number of fields");
         }
-        for (struct_fields) |field| {
-            _ = @field(FeatureMap, field.name);
+        for (length_field_names) |field_name| {
+            _ = @field(FeatureMap, field_name);
         }
     }
+
+    const tag_info = bun.meta.EnumInfo(LengthValue);
 
     pub fn parse(input: *css.Parser) Result(@This()) {
         const location = input.currentSourceLocation();
@@ -270,9 +272,9 @@ pub const LengthValue = union(enum) {
         switch (token.*) {
             .dimension => |*dim| {
                 // todo_stuff.match_ignore_ascii_case
-                inline for (std.meta.fields(@This())) |field| {
-                    if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(field.name, dim.unit)) {
-                        return .{ .result = @unionInit(LengthValue, field.name, dim.num.value) };
+                inline for (tag_info.field_names) |field_name| {
+                    if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(field_name, dim.unit)) {
+                        return .{ .result = @unionInit(LengthValue, field_name, dim.num.value) };
                     }
                 }
             },
@@ -295,9 +297,9 @@ pub const LengthValue = union(enum) {
     }
 
     pub fn isZero(this: *const LengthValue) bool {
-        inline for (bun.meta.EnumFields(@This())) |field| {
-            if (@intFromEnum(this.*) == field.value) {
-                return @field(this, field.name) == 0.0;
+        inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
+            if (@intFromEnum(this.*) == field_value) {
+                return @field(this, field_name) == 0.0;
             }
         }
         unreachable;
@@ -327,9 +329,9 @@ pub const LengthValue = union(enum) {
     }
 
     pub inline fn eql(this: *const @This(), other: *const @This()) bool {
-        inline for (bun.meta.EnumFields(@This())) |field| {
-            if (field.value == @intFromEnum(this.*) and field.value == @intFromEnum(other.*)) {
-                return @field(this, field.name) == @field(other, field.name);
+        inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
+            if (field_value == @intFromEnum(this.*) and field_value == @intFromEnum(other.*)) {
+                return @field(this, field_name) == @field(other, field_name);
             }
         }
         return false;
@@ -350,10 +352,9 @@ pub const LengthValue = union(enum) {
     }
 
     pub fn sign(this: *const @This()) f32 {
-        const enum_fields = @typeInfo(@typeInfo(@This()).@"union".tag_type.?).@"enum".fields;
-        inline for (std.meta.fields(@This()), 0..) |field, i| {
-            if (enum_fields[i].value == @intFromEnum(this.*)) {
-                return css.signfns.signF32(@field(this, field.name));
+        inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
+            if (field_value == @intFromEnum(this.*)) {
+                return css.signfns.signF32(@field(this, field_name));
             }
         }
         unreachable;
@@ -362,9 +363,9 @@ pub const LengthValue = union(enum) {
     pub fn tryFromToken(token: *const css.Token) css.Maybe(@This(), void) {
         switch (token.*) {
             .dimension => |*dim| {
-                inline for (std.meta.fields(@This())) |field| {
-                    if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(field.name, dim.unit)) {
-                        return .{ .result = @unionInit(LengthValue, field.name, dim.num.value) };
+                inline for (tag_info.field_names) |field_name| {
+                    if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(field_name, dim.unit)) {
+                        return .{ .result = @unionInit(LengthValue, field_name, dim.num.value) };
                     }
                 }
             },
@@ -374,29 +375,27 @@ pub const LengthValue = union(enum) {
     }
 
     pub fn toUnitValue(this: *const @This()) struct { CSSNumber, []const u8 } {
-        const enum_fields = @typeInfo(@typeInfo(@This()).@"union".tag_type.?).@"enum".fields;
-        inline for (std.meta.fields(@This()), 0..) |field, i| {
-            if (enum_fields[i].value == @intFromEnum(this.*)) {
-                return .{ @field(this, field.name), field.name };
+        inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
+            if (field_value == @intFromEnum(this.*)) {
+                return .{ @field(this, field_name), field_name };
             }
         }
         unreachable;
     }
 
     pub fn map(this: *const @This(), comptime map_fn: *const fn (f32) f32) LengthValue {
-        inline for (comptime bun.meta.EnumFields(@This())) |field| {
-            if (field.value == @intFromEnum(this.*)) {
-                return @unionInit(LengthValue, field.name, map_fn(@field(this, field.name)));
+        inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
+            if (field_value == @intFromEnum(this.*)) {
+                return @unionInit(LengthValue, field_name, map_fn(@field(this, field_name)));
             }
         }
         unreachable;
     }
 
     pub fn mulF32(this: @This(), _: Allocator, other: f32) LengthValue {
-        const fields = comptime bun.meta.EnumFields(@This());
-        inline for (fields) |field| {
-            if (field.value == @intFromEnum(this)) {
-                return @unionInit(LengthValue, field.name, @field(this, field.name) * other);
+        inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
+            if (field_value == @intFromEnum(this)) {
+                return @unionInit(LengthValue, field_name, @field(this, field_name) * other);
             }
         }
         unreachable;
@@ -408,10 +407,10 @@ pub const LengthValue = union(enum) {
 
     pub fn partialCmp(this: *const LengthValue, other: *const LengthValue) ?std.math.Order {
         if (@intFromEnum(this.*) == @intFromEnum(other.*)) {
-            inline for (bun.meta.EnumFields(LengthValue)) |field| {
-                if (field.value == @intFromEnum(this.*)) {
-                    const a = @field(this, field.name);
-                    const b = @field(other, field.name);
+            inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
+                if (field_value == @intFromEnum(this.*)) {
+                    const a = @field(this, field_name);
+                    const b = @field(other, field_name);
                     return css.generic.partialCmpF32(&a, &b);
                 }
             }
@@ -433,11 +432,11 @@ pub const LengthValue = union(enum) {
         comptime op_fn: *const fn (@TypeOf(ctx), a: f32, b: f32) f32,
     ) ?LengthValue {
         if (@intFromEnum(this.*) == @intFromEnum(other.*)) {
-            inline for (bun.meta.EnumFields(LengthValue)) |field| {
-                if (field.value == @intFromEnum(this.*)) {
-                    const a = @field(this, field.name);
-                    const b = @field(other, field.name);
-                    return @unionInit(LengthValue, field.name, op_fn(ctx, a, b));
+            inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
+                if (field_value == @intFromEnum(this.*)) {
+                    const a = @field(this, field_name);
+                    const b = @field(other, field_name);
+                    return @unionInit(LengthValue, field_name, op_fn(ctx, a, b));
                 }
             }
             unreachable;
@@ -459,10 +458,10 @@ pub const LengthValue = union(enum) {
         comptime op_fn: *const fn (@TypeOf(ctx), a: f32, b: f32) R,
     ) ?R {
         if (@intFromEnum(this.*) == @intFromEnum(other.*)) {
-            inline for (bun.meta.EnumFields(LengthValue)) |field| {
-                if (field.value == @intFromEnum(this.*)) {
-                    const a = @field(this, field.name);
-                    const b = @field(other, field.name);
+            inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
+                if (field_value == @intFromEnum(this.*)) {
+                    const a = @field(this, field_name);
+                    const b = @field(other, field_name);
                     return op_fn(ctx, a, b);
                 }
             }
@@ -483,9 +482,9 @@ pub const LengthValue = union(enum) {
 
     pub fn tryAdd(this: *const LengthValue, _: std.mem.Allocator, rhs: *const LengthValue) ?LengthValue {
         if (@intFromEnum(this.*) == @intFromEnum(rhs.*)) {
-            inline for (bun.meta.EnumFields(LengthValue)) |field| {
-                if (field.value == @intFromEnum(this.*)) {
-                    return @unionInit(LengthValue, field.name, @field(this, field.name) + @field(rhs, field.name));
+            inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
+                if (field_value == @intFromEnum(this.*)) {
+                    return @unionInit(LengthValue, field_name, @field(this, field_name) + @field(rhs, field_name));
                 }
             }
             unreachable;
@@ -499,10 +498,10 @@ pub const LengthValue = union(enum) {
     }
 
     pub fn isCompatible(this: *const @This(), browsers: css.targets.Browsers) bool {
-        inline for (bun.meta.EnumFields(LengthValue)) |field| {
-            if (field.value == @intFromEnum(this.*)) {
-                if (comptime @TypeOf(@field(FeatureMap, field.name)) == css.compat.Feature) {
-                    const feature = @field(FeatureMap, field.name);
+        inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
+            if (field_value == @intFromEnum(this.*)) {
+                if (comptime @TypeOf(@field(FeatureMap, field_name)) == css.compat.Feature) {
+                    const feature = @field(FeatureMap, field_name);
                     return css.compat.Feature.isCompatible(feature, browsers);
                 }
                 return true;

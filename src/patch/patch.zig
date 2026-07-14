@@ -384,13 +384,11 @@ const FileDeets = struct {
     }
 
     fn nullifyEmptyStrings(this: *FileDeets) void {
-        const fields: []const std.builtin.Type.StructField = std.meta.fields(FileDeets);
-
-        inline for (fields) |field| {
-            if (field.type == ?[]const u8) {
-                const value = @field(this, field.name);
+        inline for (std.meta.fieldNames(FileDeets), std.meta.fieldTypes(FileDeets)) |field_name, FieldType| {
+            if (FieldType == ?[]const u8) {
+                const value = @field(this, field_name);
                 if (value != null and value.?.len == 0) {
-                    @field(this, field.name) = null;
+                    @field(this, field_name) = null;
                 }
             }
         }

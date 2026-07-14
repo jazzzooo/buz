@@ -573,22 +573,22 @@ pub const AST = struct {
                 return false;
             }
 
-            const SINGLE_ARG_OPS: []const std.builtin.Type.EnumField = brk: {
-                const fields: []const std.builtin.Type.EnumField = std.meta.fields(AST.CondExpr.Op);
+            const SINGLE_ARG_OPS: []const Op = brk: {
+                const info = @typeInfo(Op).@"enum";
                 const count = count: {
                     var count: usize = 0;
-                    for (fields) |f| {
-                        if (f.name[0] == '-' and f.name.len == 2) {
+                    for (info.field_names) |name| {
+                        if (name[0] == '-' and name.len == 2) {
                             count += 1;
                         }
                     }
                     break :count count;
                 };
-                var ret: [count]std.builtin.Type.EnumField = undefined;
+                var ret: [count]Op = undefined;
                 var len: usize = 0;
-                for (fields) |f| {
-                    if (f.name[0] == '-' and f.name.len == 2) {
-                        ret[len] = f;
+                for (info.field_names, info.field_values) |name, value| {
+                    if (name[0] == '-' and name.len == 2) {
+                        ret[len] = @enumFromInt(value);
                         len += 1;
                     }
                 }
@@ -596,22 +596,22 @@ pub const AST = struct {
                 break :brk &final;
             };
 
-            const BINARY_OPS: []const std.builtin.Type.EnumField = brk: {
-                const fields: []const std.builtin.Type.EnumField = std.meta.fields(AST.CondExpr.Op);
+            const BINARY_OPS: []const Op = brk: {
+                const info = @typeInfo(Op).@"enum";
                 const count = count: {
                     var count: usize = 0;
-                    for (fields) |f| {
-                        if (!(f.name[0] == '-' and f.name.len == 2)) {
+                    for (info.field_names) |name| {
+                        if (!(name[0] == '-' and name.len == 2)) {
                             count += 1;
                         }
                     }
                     break :count count;
                 };
-                var ret: [count]std.builtin.Type.EnumField = undefined;
+                var ret: [count]Op = undefined;
                 var len: usize = 0;
-                for (fields) |f| {
-                    if (!(f.name[0] == '-' and f.name.len == 2)) {
-                        ret[len] = f;
+                for (info.field_names, info.field_values) |name, value| {
+                    if (!(name[0] == '-' and name.len == 2)) {
+                        ret[len] = @enumFromInt(value);
                         len += 1;
                     }
                 }
@@ -1385,10 +1385,11 @@ pub const Parser = struct {
                 if (txt[0] == '-') {
                     // Is a potential single arg op
                     inline for (AST.CondExpr.Op.SINGLE_ARG_OPS) |single_arg_op| {
-                        if (bun.strings.eqlComptime(txt, single_arg_op.name)) {
-                            const is_supported = comptime AST.CondExpr.Op.isSupported(@enumFromInt(single_arg_op.value));
+                        const name = @tagName(single_arg_op);
+                        if (bun.strings.eqlComptime(txt, name)) {
+                            const is_supported = comptime AST.CondExpr.Op.isSupported(single_arg_op);
                             if (!is_supported) {
-                                try self.add_error("Conditional expression operation: {s}, is not supported right now. Please open a GitHub issue if you would like it to be supported.", .{single_arg_op.name});
+                                try self.add_error("Conditional expression operation: {s}, is not supported right now. Please open a GitHub issue if you would like it to be supported.", .{name});
                                 return ParseError.Unsupported;
                             }
 
@@ -1445,10 +1446,11 @@ pub const Parser = struct {
         const txt = self.text(op.Text);
 
         inline for (AST.CondExpr.Op.BINARY_OPS) |binary_op| {
-            if (bun.strings.eqlComptime(txt, binary_op.name)) {
-                const is_supported = comptime AST.CondExpr.Op.isSupported(@enumFromInt(binary_op.value));
+            const name = @tagName(binary_op);
+            if (bun.strings.eqlComptime(txt, name)) {
+                const is_supported = comptime AST.CondExpr.Op.isSupported(binary_op);
                 if (!is_supported) {
-                    try self.add_error("Conditional expression operation: {s}, is not supported right now. Please open a GitHub issue if you would like it to be supported.", .{binary_op.name});
+                    try self.add_error("Conditional expression operation: {s}, is not supported right now. Please open a GitHub issue if you would like it to be supported.", .{name});
                     return ParseError.Unsupported;
                 }
 

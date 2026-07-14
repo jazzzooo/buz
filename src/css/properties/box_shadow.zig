@@ -192,6 +192,7 @@ pub const BoxShadowHandler = struct {
             const ColorFallbackKind = css.ColorFallbackKind;
             var prefixes = context.targets.prefixes(prefixes2, Feature.box_shadow);
             var fallbacks = ColorFallbackKind{};
+            const box_shadow_info = @typeInfo(BoxShadow).@"struct";
             for (box_shadows.slice()) |*shadow| {
                 bun.bits.insert(ColorFallbackKind, &fallbacks, shadow.color.getNecessaryFallbacks(context.targets));
             }
@@ -201,10 +202,9 @@ pub const BoxShadowHandler = struct {
                 rgb.setLen(box_shadows.len());
                 for (box_shadows.slice(), rgb.slice_mut()) |*input, *output| {
                     output.color = input.color.toRGB(context.allocator) orelse input.color.deepClone(context.allocator);
-                    const fields = std.meta.fields(BoxShadow);
-                    inline for (fields) |field| {
-                        if (comptime std.mem.eql(u8, field.name, "color")) continue;
-                        @field(output, field.name) = css.generic.deepClone(field.type, &@field(input, field.name), context.allocator);
+                    inline for (box_shadow_info.field_names, box_shadow_info.field_types) |field_name, FieldType| {
+                        if (comptime std.mem.eql(u8, field_name, "color")) continue;
+                        @field(output, field_name) = css.generic.deepClone(FieldType, &@field(input, field_name), context.allocator);
                     }
                 }
 
@@ -222,10 +222,9 @@ pub const BoxShadowHandler = struct {
                 p3.setLen(box_shadows.len());
                 for (box_shadows.slice(), p3.slice_mut()) |*input, *output| {
                     output.color = input.color.toP3(context.allocator) orelse input.color.deepClone(context.allocator);
-                    const fields = std.meta.fields(BoxShadow);
-                    inline for (fields) |field| {
-                        if (comptime std.mem.eql(u8, field.name, "color")) continue;
-                        @field(output, field.name) = css.generic.deepClone(field.type, &@field(input, field.name), context.allocator);
+                    inline for (box_shadow_info.field_names, box_shadow_info.field_types) |field_name, FieldType| {
+                        if (comptime std.mem.eql(u8, field_name, "color")) continue;
+                        @field(output, field_name) = css.generic.deepClone(FieldType, &@field(input, field_name), context.allocator);
                     }
                 }
                 bun.handleOom(dest.append(context.allocator, .{ .@"box-shadow" = .{ p3, VendorPrefix.NONE } }));
@@ -236,10 +235,9 @@ pub const BoxShadowHandler = struct {
                 lab.setLen(box_shadows.len());
                 for (box_shadows.slice(), lab.slice_mut()) |*input, *output| {
                     output.color = input.color.toLAB(context.allocator) orelse input.color.deepClone(context.allocator);
-                    const fields = std.meta.fields(BoxShadow);
-                    inline for (fields) |field| {
-                        if (comptime std.mem.eql(u8, field.name, "color")) continue;
-                        @field(output, field.name) = css.generic.deepClone(field.type, &@field(input, field.name), context.allocator);
+                    inline for (box_shadow_info.field_names, box_shadow_info.field_types) |field_name, FieldType| {
+                        if (comptime std.mem.eql(u8, field_name, "color")) continue;
+                        @field(output, field_name) = css.generic.deepClone(FieldType, &@field(input, field_name), context.allocator);
                     }
                 }
                 bun.handleOom(dest.append(context.allocator, .{ .@"box-shadow" = .{ lab, VendorPrefix.NONE } }));

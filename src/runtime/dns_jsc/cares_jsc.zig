@@ -431,9 +431,9 @@ fn anyReplyAppendAll(globalThis: *jsc.JSGlobalObject, allocator: std.mem.Allocat
 pub fn anyReplyToJS(this: *c_ares.struct_any_reply, globalThis: *jsc.JSGlobalObject, allocator: std.mem.Allocator) bun.JSError!jsc.JSValue {
     const array = try jsc.JSValue.createEmptyArray(globalThis, blk: {
         var len: usize = 0;
-        inline for (comptime @typeInfo(c_ares.struct_any_reply).@"struct".fields) |field| {
-            if (comptime std.mem.endsWith(u8, field.name, "_reply")) {
-                len += @intFromBool(@field(this, field.name) != null);
+        inline for (comptime @typeInfo(c_ares.struct_any_reply).@"struct".field_names) |field_name| {
+            if (comptime std.mem.endsWith(u8, field_name, "_reply")) {
+                len += @intFromBool(@field(this, field_name) != null);
             }
         }
         break :blk len;
@@ -441,10 +441,10 @@ pub fn anyReplyToJS(this: *c_ares.struct_any_reply, globalThis: *jsc.JSGlobalObj
 
     var i: u32 = 0;
 
-    inline for (comptime @typeInfo(c_ares.struct_any_reply).@"struct".fields) |field| {
-        if (comptime std.mem.endsWith(u8, field.name, "_reply")) {
-            if (@field(this, field.name)) |reply| {
-                const lookup_name = comptime field.name[0 .. field.name.len - "_reply".len];
+    inline for (comptime @typeInfo(c_ares.struct_any_reply).@"struct".field_names) |field_name| {
+        if (comptime std.mem.endsWith(u8, field_name, "_reply")) {
+            if (@field(this, field_name)) |reply| {
+                const lookup_name = comptime field_name[0 .. field_name.len - "_reply".len];
                 try anyReplyAppendAll(globalThis, allocator, array, &i, reply, lookup_name);
             }
         }

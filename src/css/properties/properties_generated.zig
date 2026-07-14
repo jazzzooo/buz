@@ -9194,10 +9194,12 @@ pub const PropertyId = union(PropertyIdTag) {
 
     pub fn eql(lhs: *const PropertyId, rhs: *const PropertyId) bool {
         if (@intFromEnum(lhs.*) != @intFromEnum(rhs.*)) return false;
-        inline for (bun.meta.EnumFields(PropertyId), std.meta.fields(PropertyId)) |enum_field, union_field| {
-            if (enum_field.value == @intFromEnum(lhs.*)) {
-                if (comptime union_field.type == css.VendorPrefix) {
-                    return @field(lhs, union_field.name) == @field(rhs, union_field.name);
+        const enum_info = bun.meta.EnumInfo(PropertyId);
+        const union_info = @typeInfo(PropertyId).@"union";
+        inline for (enum_info.field_names, enum_info.field_values, union_info.field_types) |field_name, field_value, FieldType| {
+            if (field_value == @intFromEnum(lhs.*)) {
+                if (comptime FieldType == css.VendorPrefix) {
+                    return @field(lhs, field_name) == @field(rhs, field_name);
                 } else {
                     return true;
                 }

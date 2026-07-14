@@ -924,15 +924,14 @@ fn makeTest(cwd_path: string, data: anytype) !void {
     try cwd.setAsCwd();
 
     const Data = @TypeOf(data);
-    const fields: []const std.builtin.Type.StructField = comptime std.meta.fields(Data);
-    inline for (fields) |field| {
+    inline for (comptime std.meta.fieldNames(Data)) |field_name| {
         @setEvalBranchQuota(9999);
-        const value = @field(data, field.name);
+        const value = @field(data, field_name);
 
-        if (std.fs.path.dirname(field.name)) |dir| {
+        if (std.fs.path.dirname(field_name)) |dir| {
             try cwd.makePath(dir);
         }
-        var file = try cwd.createFile(field.name, .{ .truncate = true });
+        var file = try cwd.createFile(field_name, .{ .truncate = true });
         try file.writeAll(value);
 
         file.close();

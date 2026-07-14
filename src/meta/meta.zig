@@ -2,17 +2,17 @@ pub fn OptionalChild(comptime T: type) type {
     const tyinfo = @typeInfo(T);
     if (tyinfo != .pointer) @compileError("OptionalChild(T) requires that T be a pointer to an optional type.");
     const child = @typeInfo(tyinfo.pointer.child);
-    if (child != .Optional) @compileError("OptionalChild(T) requires that T be a pointer to an optional type.");
-    return child.Optional.child;
+    if (child != .optional) @compileError("OptionalChild(T) requires that T be a pointer to an optional type.");
+    return child.optional.child;
 }
 
-pub fn EnumFields(comptime T: type) []const std.builtin.Type.EnumField {
+pub fn EnumInfo(comptime T: type) std.builtin.Type.Enum {
     const tyinfo = @typeInfo(T);
     return switch (tyinfo) {
-        .@"union" => std.meta.fields(tyinfo.@"union".tag_type.?),
-        .@"enum" => tyinfo.@"enum".fields,
+        .@"union" => @typeInfo(tyinfo.@"union".tag_type.?).@"enum",
+        .@"enum" => tyinfo.@"enum",
         else => {
-            @compileError("Used `EnumFields(T)` on a type that is not an `enum` or a `union(enum)`");
+            @compileError("Used `EnumInfo(T)` on a type that is not an `enum` or a `union(enum)`");
         },
     };
 }
@@ -28,17 +28,17 @@ pub fn MaybeResult(comptime MaybeType: type) type {
     const maybe_ty_info = @typeInfo(MaybeType);
 
     const maybe = maybe_ty_info.@"union";
-    if (maybe.fields.len != 2) @compileError("Expected the Maybe type to be a union(enum) with two variants");
+    if (maybe.field_names.len != 2) @compileError("Expected the Maybe type to be a union(enum) with two variants");
 
-    if (!std.mem.eql(u8, maybe.fields[0].name, "err")) {
-        @compileError("Expected the first field of the Maybe type to be \"err\", got: " ++ maybe.fields[0].name);
+    if (!std.mem.eql(u8, maybe.field_names[0], "err")) {
+        @compileError("Expected the first field of the Maybe type to be \"err\", got: " ++ maybe.field_names[0]);
     }
 
-    if (!std.mem.eql(u8, maybe.fields[1].name, "result")) {
-        @compileError("Expected the second field of the Maybe type to be \"result\"" ++ maybe.fields[1].name);
+    if (!std.mem.eql(u8, maybe.field_names[1], "result")) {
+        @compileError("Expected the second field of the Maybe type to be \"result\"" ++ maybe.field_names[1]);
     }
 
-    return maybe.fields[1].type;
+    return maybe.field_types[1];
 }
 
 pub fn ReturnOf(comptime function: anytype) type {
@@ -175,20 +175,20 @@ pub const TaggedUnion = @import("./tagged_union.zig").TaggedUnion;
 pub fn hasStableMemoryLayout(comptime T: type) bool {
     const tyinfo = @typeInfo(T);
     return switch (tyinfo) {
-        .Type => true,
-        .Void => true,
-        .Bool => true,
-        .Int => true,
-        .Float => true,
+        .type => true,
+        .void => true,
+        .bool => true,
+        .int => true,
+        .float => true,
         .@"enum" => {
             // not supporting this rn
-            if (tyinfo.@"enum".is_exhaustive) return false;
+            if (tyinfo.@"enum".mode == .exhaustive) return false;
             return hasStableMemoryLayout(tyinfo.@"enum".tag_type);
         },
         .@"struct" => switch (tyinfo.@"struct".layout) {
             .auto => {
-                inline for (tyinfo.@"struct".fields) |field| {
-                    if (!hasStableMemoryLayout(field.field_type)) return false;
+                inline for (tyinfo.@"struct".field_types) |FieldType| {
+                    if (!hasStableMemoryLayout(FieldType)) return false;
                 }
                 return true;
             },
@@ -199,8 +199,8 @@ pub fn hasStableMemoryLayout(comptime T: type) bool {
             .auto => {
                 if (tyinfo.@"union".tag_type == null or !hasStableMemoryLayout(tyinfo.@"union".tag_type.?)) return false;
 
-                inline for (tyinfo.@"union".fields) |field| {
-                    if (!hasStableMemoryLayout(field.type)) return false;
+                inline for (tyinfo.@"union".field_types) |FieldType| {
+                    if (!hasStableMemoryLayout(FieldType)) return false;
                 }
 
                 return true;
@@ -222,14 +222,14 @@ pub fn isSimpleCopyType(comptime T: type) bool {
         .float => true,
         .@"enum" => true,
         .@"struct" => {
-            inline for (tyinfo.@"struct".fields) |field| {
-                if (!isSimpleCopyType(field.type)) return false;
+            inline for (tyinfo.@"struct".field_types) |FieldType| {
+                if (!isSimpleCopyType(FieldType)) return false;
             }
             return true;
         },
         .@"union" => {
-            inline for (tyinfo.@"union".fields) |field| {
-                if (!isSimpleCopyType(field.type)) return false;
+            inline for (tyinfo.@"union".field_types) |FieldType| {
+                if (!isSimpleCopyType(FieldType)) return false;
             }
             return true;
         },
@@ -271,13 +271,14 @@ pub const ListContainerType = enum {
 pub fn looksLikeListContainerType(comptime T: type) ?struct { list: ListContainerType, child: type } {
     const tyinfo = @typeInfo(T);
     if (tyinfo == .@"struct") {
-        const fields = tyinfo.@"struct".fields;
+        const field_names = tyinfo.@"struct".field_names;
+        const field_types = tyinfo.@"struct".field_types;
 
         // Looks like array list
-        if (fields.len == 2 and
-            std.mem.eql(u8, fields[0].name, "items") and
-            std.mem.eql(u8, fields[1].name, "capacity"))
-            return .{ .list = .array_list, .child = std.meta.Child(fields[0].type) };
+        if (field_names.len == 2 and
+            std.mem.eql(u8, field_names[0], "items") and
+            std.mem.eql(u8, field_names[1], "capacity"))
+            return .{ .list = .array_list, .child = std.meta.Child(field_types[0]) };
 
         // Looks like babylist
         if (@hasDecl(T, "looksLikeContainerTypeBabyList")) {
@@ -295,7 +296,7 @@ pub fn looksLikeListContainerType(comptime T: type) ?struct { list: ListContaine
 
 pub fn Tagged(comptime U: type, comptime T: type) type {
     const info = @typeInfo(U).@"union";
-    return @Union(.auto, T, info.field_names, info.field_types, info.field_attrs);
+    return @Union(.auto, T, info.field_names, info.field_types[0..], info.field_attrs[0..]);
 }
 
 pub fn SliceChild(comptime T: type) type {

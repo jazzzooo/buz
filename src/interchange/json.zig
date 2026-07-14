@@ -565,13 +565,12 @@ pub fn toAST(
             return Expr.init(js_ast.E.Array, js_ast.E.Array{ .items = exprs }, logger.Loc.Empty);
         },
         .@"struct" => |Struct| {
-            const fields: []const std.builtin.Type.StructField = Struct.fields;
-            var properties = try BabyList(js_ast.G.Property).initCapacity(allocator, fields.len);
+            var properties = try BabyList(js_ast.G.Property).initCapacity(allocator, Struct.field_names.len);
 
-            inline for (fields) |field| {
+            inline for (Struct.field_names, Struct.field_types) |field_name, FieldType| {
                 properties.appendAssumeCapacity(G.Property{
-                    .key = Expr.init(E.String, E.String{ .data = field.name }, logger.Loc.Empty),
-                    .value = try toAST(allocator, field.type, @field(value, field.name)),
+                    .key = Expr.init(E.String, E.String{ .data = field_name }, logger.Loc.Empty),
+                    .value = try toAST(allocator, FieldType, @field(value, field_name)),
                 });
             }
 

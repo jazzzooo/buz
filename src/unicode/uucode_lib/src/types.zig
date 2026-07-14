@@ -562,10 +562,11 @@ pub fn writeDataItems(comptime D: type, writer: *std.Io.Writer, data_items: []co
                 \\
             );
 
-            inline for (@typeInfo(D).@"struct".fields) |field| {
-                try writer.print("    .{s} = ", .{field.name});
+            const info = @typeInfo(D).@"struct";
+            inline for (info.field_names, info.field_types) |field_name, FieldType| {
+                try writer.print("    .{s} = ", .{field_name});
 
-                try writeDataField(field.type, writer, @field(item, field.name));
+                try writeDataField(FieldType, writer, @field(item, field_name));
 
                 try writer.writeAll(",\n");
             }

@@ -487,35 +487,35 @@ pub const BorderInlineWidth = struct {
 
 pub fn ImplFallbacks(comptime T: type) type {
     return struct {
-        const fields = std.meta.fields(T);
+        const field_names = std.meta.fieldNames(T);
 
         pub fn getFallbacks(this: *T, allocator: std.mem.Allocator, targets: css.Targets) css.SmallList(T, 2) {
             const ColorFallbackKind = css.css_values.color.ColorFallbackKind;
             var fallbacks = ColorFallbackKind{};
-            inline for (fields) |field| {
-                bun.bits.insert(ColorFallbackKind, &fallbacks, @field(this, field.name).getNecessaryFallbacks(targets));
+            inline for (field_names) |field_name| {
+                bun.bits.insert(ColorFallbackKind, &fallbacks, @field(this, field_name).getNecessaryFallbacks(targets));
             }
 
             var res = css.SmallList(T, 2){};
             if (fallbacks.rgb) {
                 var out: T = undefined;
-                inline for (fields) |field| {
-                    @field(out, field.name) = @field(this, field.name).getFallback(allocator, ColorFallbackKind{ .rgb = true });
+                inline for (field_names) |field_name| {
+                    @field(out, field_name) = @field(this, field_name).getFallback(allocator, ColorFallbackKind{ .rgb = true });
                 }
                 res.append(allocator, out);
             }
 
             if (fallbacks.p3) {
                 var out: T = undefined;
-                inline for (fields) |field| {
-                    @field(out, field.name) = @field(this, field.name).getFallback(allocator, ColorFallbackKind{ .p3 = true });
+                inline for (field_names) |field_name| {
+                    @field(out, field_name) = @field(this, field_name).getFallback(allocator, ColorFallbackKind{ .p3 = true });
                 }
                 res.append(allocator, out);
             }
 
             if (fallbacks.lab) {
-                inline for (fields) |field| {
-                    @field(this, field.name) = @field(this, field.name).getFallback(allocator, ColorFallbackKind{ .lab = true });
+                inline for (field_names) |field_name| {
+                    @field(this, field_name) = @field(this, field_name).getFallback(allocator, ColorFallbackKind{ .lab = true });
                 }
             }
 
@@ -633,11 +633,11 @@ const BorderProperty = packed struct(u32) {
 
     pub fn tryFromPropertyId(property_id: css.PropertyIdTag) ?@This() {
         @setEvalBranchQuota(10000);
-        const fields = bun.meta.EnumFields(css.PropertyIdTag);
-        inline for (fields) |field| {
-            if (field.value == @intFromEnum(property_id)) {
-                if (comptime std.mem.startsWith(u8, field.name, "border") and @hasDecl(@This(), field.name)) {
-                    return @field(@This(), field.name);
+        const enum_info = bun.meta.EnumInfo(css.PropertyIdTag);
+        inline for (enum_info.field_names, enum_info.field_values) |field_name, field_value| {
+            if (field_value == @intFromEnum(property_id)) {
+                if (comptime std.mem.startsWith(u8, field_name, "border") and @hasDecl(@This(), field_name)) {
+                    return @field(@This(), field_name);
                 }
             }
         }

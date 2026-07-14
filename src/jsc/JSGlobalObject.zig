@@ -997,7 +997,7 @@ pub const JSGlobalObject = opaque {
         comptime fmt: string,
         args: anytype,
     ) jsc.JSValue {
-        if (comptime std.meta.fields(@TypeOf(args)).len == 0) {
+        if (comptime std.meta.fieldNames(@TypeOf(args)).len == 0) {
             var zig_str = jsc.ZigString.init(fmt);
             if (comptime !strings.isAllASCII(fmt)) {
                 zig_str.markUTF16();

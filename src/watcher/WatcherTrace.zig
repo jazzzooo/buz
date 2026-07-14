@@ -59,13 +59,12 @@ pub fn writeEvents(watcher: *Watcher, events: []Watcher.WatchEvent, changed_file
         writer.writeAll(":{\"events\":[") catch return;
 
         // Write array of event types using comptime reflection
-        const fields = std.meta.fields(@TypeOf(event.op));
         var first = true;
-        inline for (fields) |field| {
+        inline for (std.meta.fieldNames(@TypeOf(event.op)), std.meta.fieldTypes(@TypeOf(event.op))) |field_name, FieldType| {
             // Only process bool fields (skip _padding and other non-bool fields)
-            if (field.type == bool and @field(event.op, field.name)) {
+            if (FieldType == bool and @field(event.op, field_name)) {
                 if (!first) writer.writeAll(",") catch return;
-                writer.print("\"{s}\"", .{field.name}) catch return;
+                writer.print("\"{s}\"", .{field_name}) catch return;
                 first = false;
             }
         }

@@ -906,19 +906,19 @@ pub const PackageManifest = struct {
                 @compileError("header bytes must be exactly 49 bytes long, length is not serialized");
 
             // skip name
-            const fields = std.meta.fields(Npm.PackageManifest);
+            const info = @typeInfo(Npm.PackageManifest).@"struct";
 
             const Data = struct {
                 size: usize,
                 name: []const u8,
                 alignment: usize,
             };
-            var data: [fields.len]Data = undefined;
-            for (fields, &data) |field_info, *dat| {
+            var data: [info.field_names.len]Data = undefined;
+            for (info.field_names, info.field_types, info.field_attrs, &data) |field_name, FieldType, field_attr, *dat| {
                 dat.* = .{
-                    .size = @sizeOf(field_info.type),
-                    .name = field_info.name,
-                    .alignment = if (@sizeOf(field_info.type) == 0) 1 else field_info.alignment,
+                    .size = @sizeOf(FieldType),
+                    .name = field_name,
+                    .alignment = if (@sizeOf(FieldType) == 0) 1 else field_attr.@"align" orelse @alignOf(FieldType),
                 };
             }
             const Sort = struct {
@@ -927,8 +927,8 @@ pub const PackageManifest = struct {
                 }
             };
             std.sort.pdq(Data, &data, {}, Sort.lessThan);
-            var sizes_bytes: [fields.len]usize = undefined;
-            var names: [fields.len][]const u8 = undefined;
+            var sizes_bytes: [info.field_names.len]usize = undefined;
+            var names: [info.field_names.len][]const u8 = undefined;
             for (data, &sizes_bytes, &names) |elem, *size_, *name_| {
                 size_.* = elem.size;
                 name_.* = elem.name;

@@ -1577,8 +1577,8 @@ const HostProvider = enum {
         shortcut_str: []const u8,
         comptime with_colon: enum { with_colon, without_colon },
     ) ?HostProvider {
-        inline for (std.meta.fields(Self)) |field| {
-            const provider: HostProvider = @enumFromInt(field.value);
+        inline for (@typeInfo(Self).@"enum".field_values) |field_value| {
+            const provider: HostProvider = @enumFromInt(field_value);
 
             const shortcut_matches = std.mem.eql(
                 u8,
@@ -1599,8 +1599,8 @@ const HostProvider = enum {
 
     /// Find the appropriate host provider by its domain (e.g. "github.com").
     fn fromDomain(domain_str: []const u8) ?HostProvider {
-        inline for (std.meta.fields(Self)) |field| {
-            const provider: HostProvider = @enumFromInt(field.value);
+        inline for (@typeInfo(Self).@"enum".field_values) |field_value| {
+            const provider: HostProvider = @enumFromInt(field_value);
 
             if (std.mem.eql(u8, provider.domain(), domain_str)) {
                 return provider;

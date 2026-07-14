@@ -2101,9 +2101,9 @@ pub const Resolver = struct {
     }
 
     fn anyRequestsPending(this: *Resolver) bool {
-        inline for (@typeInfo(Resolver).@"struct".fields) |field| {
-            if (comptime std.mem.startsWith(u8, field.name, "pending_")) {
-                const set = &@field(this, field.name).used;
+        inline for (@typeInfo(Resolver).@"struct".field_names) |field_name| {
+            if (comptime std.mem.startsWith(u8, field_name, "pending_")) {
+                const set = &@field(this, field_name).used;
                 if (set.findFirstSet() != null) {
                     return true;
                 }

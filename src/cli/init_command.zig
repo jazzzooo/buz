@@ -42,17 +42,17 @@ pub const InitCommand = struct {
         const colors = Output.enable_ansi_colors_stdout;
         const choices = switch (colors) {
             inline else => |colors_comptime| comptime choices: {
-                const choices_fields = bun.meta.EnumFields(Choices);
-                if (choices_fields.len == 0) {
+                const choices_info = bun.meta.EnumInfo(Choices);
+                if (choices_info.field_names.len == 0) {
                     @compileError("Choices must be an enum type with at least one field");
                 }
                 var expected_value = 0;
-                var choices: [choices_fields.len][]const u8 = undefined;
-                for (choices_fields, 0..) |field, i| {
-                    if (field.value != expected_value) {
+                var choices: [choices_info.field_names.len][]const u8 = undefined;
+                for (choices_info.field_values, 0..) |value, i| {
+                    if (value != expected_value) {
                         @compileError("Choices must be an enum type with consecutive values starting from 0");
                     }
-                    const e: Choices = @enumFromInt(field.value);
+                    const e: Choices = @enumFromInt(value);
                     choices[i] = Output.prettyFmt(e.fmt(), colors_comptime);
                     expected_value += 1;
                 }
@@ -229,12 +229,12 @@ pub const InitCommand = struct {
         /// Create a new asset file, overriding anything that already exists. Known
         /// assets will have their contents pre-populated; otherwise the file will be empty.
         fn create(comptime asset_name: []const u8, args: anytype) !void {
-            const is_template = comptime (@TypeOf(args) != @TypeOf(null)) and @typeInfo(@TypeOf(args)).@"struct".fields.len > 0;
+            const is_template = comptime (@TypeOf(args) != @TypeOf(null)) and @typeInfo(@TypeOf(args)).@"struct".field_names.len > 0;
             return createFull(asset_name, asset_name, "", is_template, args);
         }
 
         pub fn createWithContents(comptime asset_name: []const u8, comptime contents: []const u8, args: anytype) !void {
-            const is_template = comptime (@TypeOf(args) != @TypeOf(null)) and @typeInfo(@TypeOf(args)).@"struct".fields.len > 0;
+            const is_template = comptime (@TypeOf(args) != @TypeOf(null)) and @typeInfo(@TypeOf(args)).@"struct".field_names.len > 0;
             return createFullWithContents(asset_name, contents, "", is_template, args);
         }
 

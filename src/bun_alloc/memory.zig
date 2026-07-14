@@ -130,7 +130,7 @@ pub fn deinit(ptr_or_slice: anytype) void {
                 @compileError("cannot deinit an untagged union: " ++ @typeName(Child));
             }
         },
-        .type, .noreturn, .@"fn", .@"opaque", .frame, .@"anyframe", .enum_literal => {
+        .type, .noreturn, .@"fn", .@"opaque", .frame, .@"anyframe", .enum_literal, .spirv => {
             @compileError("unsupported type for deinit: " ++ @typeName(Child));
         },
     }

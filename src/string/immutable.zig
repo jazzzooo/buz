@@ -1920,17 +1920,17 @@ pub fn NewGlobLengthSorter(comptime Type: type, comptime field: string) type {
 pub fn moveAllSlices(comptime Type: type, container: *Type, from: string, to: string) void {
     const fields_we_care_about = comptime brk: {
         var count: usize = 0;
-        for (std.meta.fields(Type)) |field| {
-            if (std.meta.isSlice(field.type) and std.meta.Child(field.type) == u8) {
+        for (std.meta.fieldTypes(Type)) |FieldType| {
+            if (std.meta.isSlice(FieldType) and std.meta.Child(FieldType) == u8) {
                 count += 1;
             }
         }
 
         var fields: [count][]const u8 = undefined;
         count = 0;
-        for (std.meta.fields(Type)) |field| {
-            if (std.meta.isSlice(field.type) and std.meta.Child(field.type) == u8) {
-                fields[count] = field.name;
+        for (std.meta.fieldNames(Type), std.meta.fieldTypes(Type)) |field_name, FieldType| {
+            if (std.meta.isSlice(FieldType) and std.meta.Child(FieldType) == u8) {
+                fields[count] = field_name;
                 count += 1;
             }
         }

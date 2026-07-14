@@ -1663,10 +1663,10 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
 
 pub fn MaybeChild(comptime T: type) type {
     return switch (@typeInfo(T)) {
-        .Array => |info| info.child,
-        .Vector => |info| info.child,
+        .array => |info| info.child,
+        .vector => |info| info.child,
         .pointer => |info| info.child,
-        .Optional => |info| info.child,
+        .optional => |info| info.child,
         else => T,
     };
 }

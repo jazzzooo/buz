@@ -151,24 +151,6 @@ pub fn fromJSHostCallGeneric(
     return result;
 }
 
-const ParsedHostFunctionErrorSet = struct {
-    OutOfMemory: bool = false,
-    JSError: bool = false,
-};
-
-inline fn parseErrorSet(T: type, errors: []const std.builtin.Type.Error) ParsedHostFunctionErrorSet {
-    return comptime brk: {
-        var errs: ParsedHostFunctionErrorSet = .{};
-        for (errors) |err| {
-            if (!@hasField(ParsedHostFunctionErrorSet, err.name)) {
-                @compileError("Return value from host function '" ++ @typeInfo(T) ++ "' can not contain error '" ++ err.name ++ "'");
-            }
-            @field(errs, err.name) = true;
-        }
-        break :brk errs;
-    };
-}
-
 // For when bubbling up errors to functions that require a C ABI boundary
 // TODO: make this not need a 'globalThis'
 pub fn voidFromJSError(err: bun.JSError, globalThis: *jsc.JSGlobalObject) void {

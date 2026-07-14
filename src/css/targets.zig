@@ -64,12 +64,11 @@ pub const Targets = struct {
     pub fn forBundlerTarget(target: bun.transpiler.options.Target) Targets {
         if (comptime bun.Environment.isDebug) {
             var browsers: Browsers = .{};
-            const browser_fields = std.meta.fields(Browsers);
             var has_any = false;
-            inline for (browser_fields) |field| {
-                const env_var = "BUN_DEBUG_CSS_TARGET_" ++ field.name;
+            inline for (std.meta.fieldNames(Browsers)) |field_name| {
+                const env_var = "BUN_DEBUG_CSS_TARGET_" ++ field_name;
                 if (bun.getenvZAnyCase(env_var)) |val| {
-                    @field(browsers, field.name) = parseDebugTarget(val);
+                    @field(browsers, field_name) = parseDebugTarget(val);
                     has_any = true;
                 }
             }

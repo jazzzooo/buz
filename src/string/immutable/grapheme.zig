@@ -99,8 +99,8 @@ const Precompute = struct {
 
         const max_state_int = blk: {
             var max: usize = 0;
-            for (@typeInfo(BreakState).@"enum".fields) |field| {
-                if (field.value > max) max = field.value;
+            for (@typeInfo(BreakState).@"enum".field_values) |field_value| {
+                if (field_value > max) max = field_value;
             }
             break :blk max;
         };
@@ -108,13 +108,13 @@ const Precompute = struct {
         @setEvalBranchQuota(10_000);
         const info = @typeInfo(GraphemeBreakNoControl).@"enum";
         for (0..max_state_int + 1) |state_int| {
-            for (info.fields) |field1| {
-                for (info.fields) |field2| {
+            for (info.field_names) |field1_name| {
+                for (info.field_names) |field2_name| {
                     var state: BreakState = @enumFromInt(state_int);
 
                     const key: Key = .{
-                        .gb1 = @field(GraphemeBreakNoControl, field1.name),
-                        .gb2 = @field(GraphemeBreakNoControl, field2.name),
+                        .gb1 = @field(GraphemeBreakNoControl, field1_name),
+                        .gb2 = @field(GraphemeBreakNoControl, field2_name),
                         .state = state,
                     };
                     const v = computeGraphemeBreakNoControl(

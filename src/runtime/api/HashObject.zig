@@ -119,7 +119,7 @@ fn hashWrap(comptime Hasher_: anytype) jsc.JSHostFnZig {
             //
             const Function = if (@hasDecl(Hasher, "hashWithSeed")) Hasher.hashWithSeed else Hasher.hash;
             var function_args: std.meta.ArgsTuple(@TypeOf(Function)) = undefined;
-            if (comptime std.meta.fields(std.meta.ArgsTuple(@TypeOf(Function))).len == 1) {
+            if (comptime std.meta.fieldNames(std.meta.ArgsTuple(@TypeOf(Function))).len == 1) {
                 return jsc.JSValue.jsNumber(Function(input));
             } else {
                 var seed: u64 = 0;

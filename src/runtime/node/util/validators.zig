@@ -273,15 +273,16 @@ pub fn validateUndefined(globalThis: *JSGlobalObject, value: JSValue, comptime n
 pub fn validateStringEnum(comptime T: type, globalThis: *JSGlobalObject, value: JSValue, comptime name_fmt: string, name_args: anytype) bun.JSError!T {
     const str = try value.toBunString(globalThis);
     defer str.deref();
-    inline for (@typeInfo(T).@"enum".fields) |enum_field| {
-        if (str.eqlComptime(enum_field.name))
-            return @field(T, enum_field.name);
+    const field_names = @typeInfo(T).@"enum".field_names;
+    inline for (field_names) |field_name| {
+        if (str.eqlComptime(field_name))
+            return @field(T, field_name);
     }
 
     const values_info = comptime blk: {
         var out: []const u8 = "";
-        for (@typeInfo(T).@"enum".fields, 0..) |enum_field, i| {
-            out = out ++ (if (i > 0) "|" else "") ++ enum_field.name;
+        for (field_names, 0..) |field_name, i| {
+            out = out ++ (if (i > 0) "|" else "") ++ field_name;
         }
         break :blk out;
     };

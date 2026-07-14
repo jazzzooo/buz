@@ -18,7 +18,8 @@ pub const FallbackHandler = struct {
     // @"caret-color": ?usize = null,
     // caret: ?usize = null,
 
-    const field_count = @typeInfo(FallbackHandler).Struct.fields.len;
+    const field_names = std.meta.fieldNames(FallbackHandler);
+    const field_count = field_names.len;
 
     pub fn handleProperty(
         this: *FallbackHandler,
@@ -26,15 +27,15 @@ pub const FallbackHandler = struct {
         dest: *css.DeclarationList,
         context: *css.PropertyHandlerContext,
     ) bool {
-        inline for (std.meta.fields(FallbackHandler)) |field| {
-            if (@intFromEnum(@field(PropertyIdTag, field.name)) == @intFromEnum(@as(PropertyIdTag, property.*))) {
-                const has_vendor_prefix = comptime PropertyIdTag.hasVendorPrefix(@field(PropertyIdTag, field.name));
+        inline for (field_names) |field_name| {
+            if (@intFromEnum(@field(PropertyIdTag, field_name)) == @intFromEnum(@as(PropertyIdTag, property.*))) {
+                const has_vendor_prefix = comptime PropertyIdTag.hasVendorPrefix(@field(PropertyIdTag, field_name));
                 var val = if (comptime has_vendor_prefix)
-                    @field(property, field.name)[0].deepClone(context.allocator)
+                    @field(property, field_name)[0].deepClone(context.allocator)
                 else
-                    @field(property, field.name).deepClone(context.allocator);
+                    @field(property, field_name).deepClone(context.allocator);
 
-                if (@field(this, field.name) == null) {
+                if (@field(this, field_name) == null) {
                     const fallbacks = val.getFallbacks(context.allocator, context.targets);
                     const has_fallbacks = !fallbacks.isEmpty();
 
@@ -43,43 +44,43 @@ pub const FallbackHandler = struct {
                             context.allocator,
                             @unionInit(
                                 Property,
-                                field.name,
+                                field_name,
                                 if (comptime has_vendor_prefix)
-                                    .{ fallback, @field(property, field.name)[1] }
+                                    .{ fallback, @field(property, field_name)[1] }
                                 else
                                     fallback,
                             ),
                         ) catch |err| bun.handleOom(err);
                     }
                     if (comptime has_vendor_prefix) {
-                        if (has_fallbacks and @field(property, field.name[1]).contains(VendorPrefix{ .none = true })) {
-                            @field(property, field.name[1]) = css.VendorPrefix{ .none = true };
+                        if (has_fallbacks and @field(property, field_name)[1].contains(VendorPrefix{ .none = true })) {
+                            @field(property, field_name)[1] = css.VendorPrefix{ .none = true };
                         }
                     }
                 }
 
-                if (@field(this, field.name) == null or
+                if (@field(this, field_name) == null or
                     context.targets.browsers != null and !val.isCompatible(context.targets.browsers.?))
                 {
-                    @field(this, field.name) = dest.items.len;
+                    @field(this, field_name) = dest.items.len;
                     dest.append(
                         context.allocator,
                         @unionInit(
                             Property,
-                            field.name,
+                            field_name,
                             if (comptime has_vendor_prefix)
-                                .{ val, @field(property, field.name)[1] }
+                                .{ val, @field(property, field_name)[1] }
                             else
                                 val,
                         ),
                     ) catch |err| bun.handleOom(err);
-                } else if (@field(this, field.name) != null) {
-                    const index = @field(this, field.name).?;
+                } else if (@field(this, field_name) != null) {
+                    const index = @field(this, field_name).?;
                     dest.items[index] = @unionInit(
                         Property,
-                        field.name,
+                        field_name,
                         if (comptime has_vendor_prefix)
-                            .{ val, @field(property, field.name)[1] }
+                            .{ val, @field(property, field_name)[1] }
                         else
                             val,
                     );
@@ -94,17 +95,17 @@ pub const FallbackHandler = struct {
         if (@as(PropertyIdTag, property.*) == .unparsed) {
             const val: *const UnparsedProperty = &property.unparsed;
             var unparsed, const index = unparsed_and_index: {
-                inline for (std.meta.fields(FallbackHandler)) |field| {
-                    if (@intFromEnum(@field(PropertyIdTag, field.name)) == @intFromEnum(val.property_id)) {
-                        const has_vendor_prefix = comptime PropertyIdTag.hasVendorPrefix(@field(PropertyIdTag, field.name));
+                inline for (field_names) |field_name| {
+                    if (@intFromEnum(@field(PropertyIdTag, field_name)) == @intFromEnum(val.property_id)) {
+                        const has_vendor_prefix = comptime PropertyIdTag.hasVendorPrefix(@field(PropertyIdTag, field_name));
                         const newval = newval: {
                             if (comptime has_vendor_prefix) {
-                                if (@field(val.property_id, field.name)[1].contains(VendorPrefix{ .none = true }))
-                                    break :newval val.getPrefixed(context.targets, @field(css.prefixes.Feature, field.name));
+                                if (@field(val.property_id, field_name)[1].contains(VendorPrefix{ .none = true }))
+                                    break :newval val.getPrefixed(context.targets, @field(css.prefixes.Feature, field_name));
                             }
                             break :newval val.deepClone(context.allocator);
                         };
-                        break :unparsed_and_index .{ newval, &@field(this, field.name) };
+                        break :unparsed_and_index .{ newval, &@field(this, field_name) };
                     }
                 }
                 return false;
@@ -125,8 +126,8 @@ pub const FallbackHandler = struct {
     }
 
     pub fn finalize(this: *FallbackHandler, _: *css.DeclarationList, _: *css.PropertyHandlerContext) void {
-        inline for (std.meta.fields(FallbackHandler)) |field| {
-            @field(this, field.name) = null;
+        inline for (field_names) |field_name| {
+            @field(this, field_name) = null;
         }
     }
 };
