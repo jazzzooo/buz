@@ -1,5 +1,7 @@
 // TODO: prefer generating this file via translate_c
 
+pub const __helpers = @import("std").zig.c_translation.helpers;
+
 pub const brotli_alloc_func = ?*const fn (?*anyopaque, usize) callconv(.c) ?*anyopaque;
 pub const brotli_free_func = ?*const fn (?*anyopaque, *anyopaque) callconv(.c) void;
 pub const struct_BrotliSharedDictionaryStruct = opaque {};
@@ -192,8 +194,8 @@ pub const BrotliDecoderParameter = enum(c_uint) {
     LARGE_WINDOW = 1,
 };
 
-pub const BROTLI_UINT32_MAX = ~@import("std").zig.c_translation.cast(u32, @as(c_int, 0));
-pub const BROTLI_SIZE_MAX = ~@import("std").zig.c_translation.cast(usize, @as(c_int, 0));
+pub const BROTLI_UINT32_MAX = ~__helpers.cast(u32, @as(c_int, 0));
+pub const BROTLI_SIZE_MAX = ~__helpers.cast(usize, @as(c_int, 0));
 pub const BROTLI_LAST_ERROR_CODE = BROTLI_DECODER_ERROR_UNREACHABLE;
 pub const BrotliSharedDictionaryStruct = struct_BrotliSharedDictionaryStruct;
 

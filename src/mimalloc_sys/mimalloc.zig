@@ -1,3 +1,5 @@
+pub const __helpers = @import("std").zig.c_translation.helpers;
+
 pub extern fn mi_malloc(size: usize) ?*anyopaque;
 pub extern fn mi_calloc(count: usize, size: usize) ?*anyopaque;
 pub extern fn mi_realloc(p: ?*anyopaque, newsize: usize) ?*anyopaque;
@@ -212,7 +214,7 @@ pub extern fn mi_new_n(count: usize, size: usize) ?*anyopaque;
 pub extern fn mi_new_realloc(p: ?*anyopaque, newsize: usize) ?*anyopaque;
 pub extern fn mi_new_reallocn(p: ?*anyopaque, newcount: usize, size: usize) ?*anyopaque;
 pub const MI_SMALL_WSIZE_MAX = @as(c_int, 128);
-pub const MI_SMALL_SIZE_MAX = MI_SMALL_WSIZE_MAX * @import("std").zig.c_translation.sizeof(?*anyopaque);
+pub const MI_SMALL_SIZE_MAX = MI_SMALL_WSIZE_MAX * __helpers.sizeof(?*anyopaque);
 pub const MI_ALIGNMENT_MAX = (@as(c_int, 16) * @as(c_int, 1024)) * @as(c_ulong, 1024);
 pub const MI_MAX_ALIGN_SIZE = 16;
 

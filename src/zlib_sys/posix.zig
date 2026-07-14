@@ -1,3 +1,5 @@
+pub const __helpers = @import("std").zig.c_translation.helpers;
+
 const uInt = c_uint;
 const uLong = c_ulong;
 pub const struct_internal_state = extern struct {
@@ -64,17 +66,17 @@ pub extern fn inflateInit2_(strm: z_streamp, windowBits: c_int, version: [*c]con
 pub extern fn inflateBackInit_(strm: z_streamp, windowBits: c_int, window: [*c]u8, version: [*c]const u8, stream_size: c_int) ReturnCode;
 
 pub inline fn deflateInit(strm: anytype, level: anytype) ReturnCode {
-    return deflateInit_(strm, level, zlibVersion(), @import("std").zig.c_translation.cast(c_int, @import("std").zig.c_translation.sizeof(z_stream)));
+    return deflateInit_(strm, level, zlibVersion(), __helpers.cast(c_int, __helpers.sizeof(z_stream)));
 }
 pub inline fn inflateInit(strm: anytype) ReturnCode {
-    return inflateInit_(strm, zlibVersion(), @import("std").zig.c_translation.cast(c_int, @import("std").zig.c_translation.sizeof(z_stream)));
+    return inflateInit_(strm, zlibVersion(), __helpers.cast(c_int, __helpers.sizeof(z_stream)));
 }
 pub inline fn deflateInit2(strm: anytype, level: anytype, method: anytype, windowBits: anytype, memLevel: anytype, strategy: anytype) ReturnCode {
-    return deflateInit2_(strm, level, method, windowBits, memLevel, strategy, zlibVersion(), @import("std").zig.c_translation.cast(c_int, @import("std").zig.c_translation.sizeof(z_stream)));
+    return deflateInit2_(strm, level, method, windowBits, memLevel, strategy, zlibVersion(), __helpers.cast(c_int, __helpers.sizeof(z_stream)));
 }
 pub inline fn inflateInit2(strm: anytype, windowBits: anytype) ReturnCode {
-    return inflateInit2_(strm, windowBits, zlibVersion(), @import("std").zig.c_translation.cast(c_int, @import("std").zig.c_translation.sizeof(z_stream)));
+    return inflateInit2_(strm, windowBits, zlibVersion(), __helpers.cast(c_int, __helpers.sizeof(z_stream)));
 }
 pub inline fn inflateBackInit(strm: anytype, windowBits: anytype, window: anytype) ReturnCode {
-    return inflateBackInit_(strm, windowBits, window, zlibVersion(), @import("std").zig.c_translation.cast(c_int, @import("std").zig.c_translation.sizeof(z_stream)));
+    return inflateBackInit_(strm, windowBits, window, zlibVersion(), __helpers.cast(c_int, __helpers.sizeof(z_stream)));
 }

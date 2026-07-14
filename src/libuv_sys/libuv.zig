@@ -1,3 +1,5 @@
+pub const __helpers = @import("std").zig.c_translation.helpers;
+
 const WORD = c_ushort;
 const LARGE_INTEGER = i64;
 const SOCKET = *anyopaque;
@@ -151,7 +153,7 @@ pub const UV_VERSION_HEX = ((UV_VERSION_MAJOR << @as(c_int, 16)) | (UV_VERSION_M
 
 pub const UV_THREADPOOL_H_ = "";
 pub const MAX_PIPENAME_LEN = @as(c_int, 256);
-pub const S_IFLNK = @import("std").zig.c_translation.promoteIntLiteral(c_int, 0xA000, .hex);
+pub const S_IFLNK = __helpers.promoteIntLiteral(c_int, 0xA000, .hex);
 pub const SIGHUP = @as(c_int, 1);
 pub const SIGQUIT = @as(c_int, 3);
 pub const SIGKILL = @as(c_int, 9);
