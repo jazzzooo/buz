@@ -441,8 +441,8 @@ pub const InternalSocket = union(enum) {
                 if (pause) socket.pause() else socket.@"resume"();
                 return true;
             },
-            .connecting => |_| return false,
-            .upgradedDuplex => |_| return false, // TODO: pause/resume upgraded duplex
+            .connecting => return false,
+            .upgradedDuplex => return false, // TODO: pause/resume upgraded duplex
             .pipe => |pipe| {
                 if (Environment.isWindows) {
                     return if (pause) pipe.pauseStream() else pipe.resumeStream();

@@ -111,7 +111,7 @@ pub fn testingImpl(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, c
             var minify_options: bun.css.MinifyOptions = bun.css.MinifyOptions.default();
             minify_options.targets.browsers = browsers;
             switch (stylesheet.minify(alloc, minify_options, &extra)) {
-                .result => |_| {},
+                .result => {},
                 .err => |*err| {
                     return globalThis.throwValue(try err.toErrorInstance(globalThis));
                 },

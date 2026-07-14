@@ -967,7 +967,7 @@ pub const PlaceContent = struct {
         };
         const justify = switch (@call(.auto, @field(JustifyContent, "parse"), .{input})) {
             .result => |v| v,
-            .err => |_| switch (@"align") {
+            .err => switch (@"align") {
                 .baseline_position => JustifyContent{ .content_position = .{
                     .overflow = null,
                     .value = .start,

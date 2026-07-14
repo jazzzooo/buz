@@ -362,7 +362,7 @@ pub const S3BlobStatTask = struct {
             .not_found => {
                 try this.promise.resolve(this.global, .false);
             },
-            .success => |_| {
+            .success => {
                 // calling .exists() should not prevent it to download a bigger file
                 // this would make it download a slice of the actual value, if the file changes before we download it
                 // if (this.blob.size == Blob.max_size) {

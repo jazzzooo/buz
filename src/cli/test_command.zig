@@ -633,7 +633,7 @@ pub const CommandLineReporter = struct {
             };
 
             switch (Output.enable_ansi_colors_stderr) {
-                inline else => |_| switch (status) {
+                inline else => switch (status) {
                     .fail_because_expected_assertion_count => {
                         // not sent to writer so it doesn't get printed twice
                         const expected_count = if (sequence.expect_assertions == .exact) sequence.expect_assertions.exact else 12345;

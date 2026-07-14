@@ -3599,7 +3599,7 @@ pub fn RuleBodyParser(comptime P: type) type {
                 const start = this.input.state();
 
                 const tok: *Token = switch (this.input.nextIncludingWhitespaceAndComments()) {
-                    .err => |_| return null,
+                    .err => return null,
                     .result => |vvv| vvv,
                 };
 

@@ -532,7 +532,7 @@ pub const UrlProtocolPair = struct {
             .managed => |*u| {
                 u.allocator.free(u.buf);
             },
-            .unmanaged => |_| {},
+            .unmanaged => {},
         }
     }
 

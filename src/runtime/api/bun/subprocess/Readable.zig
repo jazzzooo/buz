@@ -84,7 +84,7 @@ pub const Readable = union(enum) {
                 this.* = .{ .closed = {} };
                 fd.close();
             },
-            .fd => |_| {
+            .fd => {
                 this.* = .{ .closed = {} };
             },
             .pipe => {
