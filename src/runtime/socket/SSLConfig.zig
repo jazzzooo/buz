@@ -132,7 +132,8 @@ pub fn forClientVerification(this: SSLConfig) SSLConfig {
 }
 
 pub fn isSame(this: *const SSLConfig, other: *const SSLConfig) bool {
-    inline for (comptime std.meta.fieldNames(SSLConfig), comptime std.meta.fieldTypes(SSLConfig)) |field_name, FieldType| {
+    const info = @typeInfo(SSLConfig).@"struct";
+    inline for (info.field_names, info.field_types) |field_name, FieldType| {
         if (comptime std.mem.eql(u8, field_name, "cached_hash")) continue;
         const first = @field(this, field_name);
         const second = @field(other, field_name);
@@ -259,7 +260,8 @@ pub fn clone(this: *const SSLConfig) SSLConfig {
 pub fn contentHash(this: *SSLConfig) u64 {
     if (this.cached_hash != 0) return this.cached_hash;
     var hasher = std.hash.Wyhash.init(0);
-    inline for (comptime std.meta.fieldNames(SSLConfig), comptime std.meta.fieldTypes(SSLConfig)) |field_name, FieldType| {
+    const info = @typeInfo(SSLConfig).@"struct";
+    inline for (info.field_names, info.field_types) |field_name, FieldType| {
         if (comptime std.mem.eql(u8, field_name, "cached_hash")) continue;
         const value = @field(this, field_name);
         switch (FieldType) {

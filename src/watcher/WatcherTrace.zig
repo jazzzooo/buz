@@ -60,9 +60,9 @@ pub fn writeEvents(watcher: *Watcher, events: []Watcher.WatchEvent, changed_file
 
         // Write array of event types using comptime reflection
         var first = true;
-        inline for (std.meta.fieldNames(@TypeOf(event.op)), std.meta.fieldTypes(@TypeOf(event.op))) |field_name, FieldType| {
+        inline for (@typeInfo(@TypeOf(event.op)).@"struct".field_names) |field_name| {
             // Only process bool fields (skip _padding and other non-bool fields)
-            if (FieldType == bool and @field(event.op, field_name)) {
+            if (@FieldType(@TypeOf(event.op), field_name) == bool and @field(event.op, field_name)) {
                 if (!first) writer.writeAll(",") catch return;
                 writer.print("\"{s}\"", .{field_name}) catch return;
                 first = false;

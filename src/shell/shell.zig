@@ -1410,7 +1410,7 @@ pub const Parser = struct {
                             }
 
                             return .{
-                                .op = @enumFromInt(single_arg_op.value),
+                                .op = single_arg_op,
                                 .args = AST.CondExpr.ArgList.initWith(arg),
                             };
                         }
@@ -1465,7 +1465,7 @@ pub const Parser = struct {
                 }
 
                 return .{
-                    .op = @enumFromInt(binary_op.value),
+                    .op = binary_op,
                     .args = AST.CondExpr.ArgList.initWithSlice(&.{ arg1, arg2 }),
                 };
             }

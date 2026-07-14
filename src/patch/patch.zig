@@ -385,8 +385,8 @@ const FileDeets = struct {
     }
 
     fn nullifyEmptyStrings(this: *FileDeets) void {
-        inline for (std.meta.fieldNames(FileDeets), std.meta.fieldTypes(FileDeets)) |field_name, FieldType| {
-            if (FieldType == ?[]const u8) {
+        inline for (@typeInfo(FileDeets).@"struct".field_names) |field_name| {
+            if (@FieldType(FileDeets, field_name) == ?[]const u8) {
                 const value = @field(this, field_name);
                 if (value != null and value.?.len == 0) {
                     @field(this, field_name) = null;

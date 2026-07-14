@@ -100,8 +100,8 @@ pub fn fromMapLike(
 }
 
 pub fn FieldType(comptime Map: type, comptime name: []const u8) ?type {
-    const i = std.meta.fieldIndex(Map, name) orelse return null;
-    return std.meta.fieldTypes(Map)[i];
+    if (!@hasField(Map, name)) return null;
+    return @FieldType(Map, name);
 }
 
 pub fn Of(comptime ArrayLike: type) type {

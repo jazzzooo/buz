@@ -86,7 +86,12 @@ pub fn enumFieldNames(comptime Type: type) []const []const u8 {
 
 pub fn banFieldType(comptime Container: type, comptime T: type) void {
     comptime {
-        for (std.meta.fieldNames(Container), std.meta.fieldTypes(Container)) |field_name, FieldType| {
+        const field_names, const field_types = switch (@typeInfo(Container)) {
+            .@"struct" => |info| .{ info.field_names, info.field_types },
+            .@"union" => |info| .{ info.field_names, info.field_types },
+            else => @compileError("Expected struct or union type, found '" ++ @typeName(Container) ++ "'"),
+        };
+        for (field_names, field_types) |field_name, FieldType| {
             if (FieldType == T) {
                 @compileError(std.fmt.comptimePrint(typeName(T) ++ " field \"" ++ field_name ++ "\" not allowed in " ++ typeName(Container), .{}));
             }

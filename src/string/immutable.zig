@@ -1919,8 +1919,9 @@ pub fn NewGlobLengthSorter(comptime Type: type, comptime field: string) type {
 /// Update all strings in a struct pointing to "from" to point to "to".
 pub fn moveAllSlices(comptime Type: type, container: *Type, from: string, to: string) void {
     const fields_we_care_about = comptime brk: {
+        const info = @typeInfo(Type).@"struct";
         var count: usize = 0;
-        for (std.meta.fieldTypes(Type)) |FieldType| {
+        for (info.field_types) |FieldType| {
             if (bun.trait.isSlice(FieldType) and std.meta.Child(FieldType) == u8) {
                 count += 1;
             }
@@ -1928,7 +1929,7 @@ pub fn moveAllSlices(comptime Type: type, container: *Type, from: string, to: st
 
         var fields: [count][]const u8 = undefined;
         count = 0;
-        for (std.meta.fieldNames(Type), std.meta.fieldTypes(Type)) |field_name, FieldType| {
+        for (info.field_names, info.field_types) |field_name, FieldType| {
             if (bun.trait.isSlice(FieldType) and std.meta.Child(FieldType) == u8) {
                 fields[count] = field_name;
                 count += 1;
