@@ -2852,7 +2852,7 @@ pub fn translateUVErrorToE(code_in: anytype) bun.sys.E {
         // codes in the -4000s). `bun.sys.E` is exhaustive, so a strict @enumFromInt
         // on an unmapped value panics in safe builds. Fall back to UNKNOWN instead.
         // Wrapping negation so minInt(c_int) maps to UNKNOWN instead of overflowing.
-        else => std.meta.intToEnum(bun.sys.E, -%code) catch bun.sys.E.UNKNOWN,
+        else => std.enums.fromInt(bun.sys.E, -%code) orelse bun.sys.E.UNKNOWN,
     };
 }
 

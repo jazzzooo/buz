@@ -2632,7 +2632,7 @@ pub const PackageManifest = struct {
 
         switch (how_many_bytes_to_store_indices) {
             inline 1...8 => |int_bytes| {
-                const Int = std.meta.Int(.unsigned, int_bytes * 8);
+                const Int = @Int(.unsigned, int_bytes * 8);
 
                 const ExternVersionSorter = struct {
                     string_bytes: []const u8,

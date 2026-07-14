@@ -49,7 +49,7 @@ pub fn getEncoding(
 ) jsc.JSValue {
     return ZigString.init(EncodingLabel.getLabel(this.encoding)).toJS(globalThis);
 }
-const Vector16 = std.meta.Vector(16, u16);
+const Vector16 = @Vector(16, u16);
 const max_16_ascii: Vector16 = @splat(@as(u16, 127));
 
 fn processCodeUnitUTF16(

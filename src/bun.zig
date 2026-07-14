@@ -750,7 +750,7 @@ pub fn onceUnsafe(comptime function: anytype, comptime ReturnType: type) ReturnT
 pub fn isHeapMemory(mem: anytype) bool {
     if (comptime use_mimalloc) {
         const Memory = @TypeOf(mem);
-        if (comptime std.meta.trait.isSingleItemPtr(Memory)) {
+        if (comptime trait.isSingleItemPtr(Memory)) {
             return mimalloc.mi_is_in_heap_region(mem);
         }
         return mimalloc.mi_is_in_heap_region(std.mem.sliceAsBytes(mem).ptr);

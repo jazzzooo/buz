@@ -538,7 +538,7 @@ pub fn Data(comptime c: config.Table) type {
 
 pub fn writeDataItems(comptime D: type, writer: *std.Io.Writer, data_items: []const D) !void {
     if (@typeInfo(D).@"struct".layout == .@"packed") {
-        const IntEquivalent = std.meta.Int(.unsigned, @bitSizeOf(D));
+        const IntEquivalent = @Int(.unsigned, @bitSizeOf(D));
 
         try writer.print("@bitCast([_]{s}{{\n", .{@typeName(IntEquivalent)});
 

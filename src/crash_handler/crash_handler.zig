@@ -1613,7 +1613,7 @@ fn crash() noreturn {
 
 pub var verbose_error_trace = false;
 
-noinline fn coldHandleErrorReturnTrace(err_int_workaround_for_zig_ccall_bug: std.meta.Int(.unsigned, @bitSizeOf(anyerror)), trace: *std.builtin.StackTrace, comptime is_root: bool) void {
+noinline fn coldHandleErrorReturnTrace(err_int_workaround_for_zig_ccall_bug: @Int(.unsigned, @bitSizeOf(anyerror)), trace: *std.builtin.StackTrace, comptime is_root: bool) void {
     @branchHint(.cold);
     const err = @errorFromInt(err_int_workaround_for_zig_ccall_bug);
 

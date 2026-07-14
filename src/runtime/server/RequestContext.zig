@@ -2657,7 +2657,7 @@ fn NewFlags(comptime debug_mode: bool) type {
                 size -= 1;
             }
 
-            break :brk std.meta.Int(.unsigned, size);
+            break :brk @Int(.unsigned, size);
         };
     };
 }

@@ -254,7 +254,7 @@ pub fn setModeFromJS(this: *PostgresSQLQuery, globalObject: *jsc.JSGlobalObject,
     }
 
     const mode = try js_mode.coerce(i32, globalObject);
-    this.flags.result_mode = std.meta.intToEnum(PostgresSQLQueryResultMode, mode) catch {
+    this.flags.result_mode = std.enums.fromInt(PostgresSQLQueryResultMode, mode) orelse {
         return globalObject.throwInvalidArgumentTypeValue("mode", "Number", js_mode);
     };
     return .js_undefined;

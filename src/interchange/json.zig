@@ -594,7 +594,7 @@ pub fn toAST(
             }
         },
         .@"enum" => {
-            _ = std.meta.intToEnum(Type, @intFromEnum(value)) catch {
+            _ = std.enums.fromInt(Type, @intFromEnum(value)) orelse {
                 return Expr{ .data = .{ .e_null = .{} }, .loc = logger.Loc{} };
             };
 

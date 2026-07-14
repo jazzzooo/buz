@@ -218,7 +218,7 @@ pub const Tag = enum(short) {
                     current = current[1..];
 
                     const val = current[0];
-                    const Int = std.meta.Int(.unsigned, @bitSizeOf(T));
+                    const Int = @Int(.unsigned, @bitSizeOf(T));
                     const swapped = @byteSwap(@as(Int, @bitCast(val)));
 
                     head[i] = @bitCast(swapped);

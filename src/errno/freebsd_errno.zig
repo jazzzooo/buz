@@ -197,7 +197,7 @@ pub fn getErrno(rc: anytype) E {
     // (matches linux_errno.zig).
     const info = @typeInfo(T);
     const is_neg1 = if (info == .int and info.int.signedness == .unsigned)
-        @as(std.meta.Int(.signed, info.int.bits), @bitCast(rc)) == -1
+        @as(@Int(.signed, info.int.bits), @bitCast(rc)) == -1
     else
         rc == -1;
     if (is_neg1) {

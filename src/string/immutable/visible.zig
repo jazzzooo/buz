@@ -723,7 +723,7 @@ pub const visible = struct {
     fn scanLaneInRange(comptime T: type, comptime Lo: T, comptime Hi: T, slice: []const T) ?usize {
         comptime bun.assert(Lo <= Hi);
         const stride = 16 / @sizeOf(T);
-        const MaskInt = std.meta.Int(.unsigned, stride);
+        const MaskInt = @Int(.unsigned, stride);
         var i: usize = 0;
         const lo: @Vector(stride, T) = @splat(Lo);
         const range: @Vector(stride, T) = @splat(Hi - Lo);
@@ -747,7 +747,7 @@ pub const visible = struct {
     fn scanLaneAnyOf(comptime T: type, comptime targets: []const T, slice: []const T) ?usize {
         comptime bun.assert(targets.len > 0);
         const stride = 16 / @sizeOf(T);
-        const MaskInt = std.meta.Int(.unsigned, stride);
+        const MaskInt = @Int(.unsigned, stride);
         var i: usize = 0;
 
         while (slice.len - i >= stride) : (i += stride) {

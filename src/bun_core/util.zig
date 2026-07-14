@@ -204,7 +204,7 @@ pub fn fromSlice(
             } else {
                 @compileError("Cannot set length of " ++ @typeName(Array));
             }
-        } else if (comptime std.meta.trait.isSlice(Array)) {
+        } else if (comptime bun.trait.isSlice(Array)) {
             slice = try allocator.alloc(Of(Array), default.len);
         } else if (comptime @hasField(map, "ptr")) {
             slice = try allocator.alloc(Of(Array), default.len);

@@ -61,7 +61,7 @@ pub fn containsCaseInsensitiveASCII(self: string, str: string) callconv(bun.call
     return false;
 }
 
-pub const OptionalUsize = std.meta.Int(.unsigned, @bitSizeOf(usize) - 1);
+pub const OptionalUsize = @Int(.unsigned, @bitSizeOf(usize) - 1);
 pub fn indexOfAny(slice: string, comptime str: []const u8) ?OptionalUsize {
     return switch (comptime str.len) {
         0 => @compileError("str cannot be empty"),
@@ -96,7 +96,7 @@ pub fn containsComptime(self: string, comptime str: string) callconv(bun.callcon
 
     const start = std.mem.indexOfScalar(u8, self, str[0]) orelse return false;
     var remain = self[start..];
-    const Int = std.meta.Int(.unsigned, str.len * 8);
+    const Int = @Int(.unsigned, str.len * 8);
 
     while (remain.len >= comptime str.len) {
         if (@as(Int, @bitCast(remain.ptr[0..str.len].*)) == @as(Int, @bitCast(str.ptr[0..str.len].*))) {
@@ -1149,8 +1149,8 @@ pub fn substring(self: anytype, start: ?usize, stop: ?usize) @TypeOf(self) {
 
 pub const ascii_vector_size = if (Environment.isWasm) 8 else 16;
 pub const ascii_u16_vector_size = if (Environment.isWasm) 4 else 8;
-pub const AsciiVectorInt = std.meta.Int(.unsigned, ascii_vector_size);
-pub const AsciiVectorIntU16 = std.meta.Int(.unsigned, ascii_u16_vector_size);
+pub const AsciiVectorInt = @Int(.unsigned, ascii_vector_size);
+pub const AsciiVectorIntU16 = @Int(.unsigned, ascii_u16_vector_size);
 pub const max_16_ascii: @Vector(ascii_vector_size, u8) = @splat(@as(u8, 127));
 pub const min_16_ascii: @Vector(ascii_vector_size, u8) = @splat(@as(u8, 0x20));
 pub const max_u16_ascii: @Vector(ascii_u16_vector_size, u16) = @splat(@as(u16, 127));
@@ -1921,7 +1921,7 @@ pub fn moveAllSlices(comptime Type: type, container: *Type, from: string, to: st
     const fields_we_care_about = comptime brk: {
         var count: usize = 0;
         for (std.meta.fieldTypes(Type)) |FieldType| {
-            if (std.meta.isSlice(FieldType) and std.meta.Child(FieldType) == u8) {
+            if (bun.trait.isSlice(FieldType) and std.meta.Child(FieldType) == u8) {
                 count += 1;
             }
         }
@@ -1929,7 +1929,7 @@ pub fn moveAllSlices(comptime Type: type, container: *Type, from: string, to: st
         var fields: [count][]const u8 = undefined;
         count = 0;
         for (std.meta.fieldNames(Type), std.meta.fieldTypes(Type)) |field_name, FieldType| {
-            if (std.meta.isSlice(FieldType) and std.meta.Child(FieldType) == u8) {
+            if (bun.trait.isSlice(FieldType) and std.meta.Child(FieldType) == u8) {
                 fields[count] = field_name;
                 count += 1;
             }

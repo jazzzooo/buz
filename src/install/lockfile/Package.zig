@@ -2067,7 +2067,7 @@ pub fn Package(comptime SemverIntType: type) type {
             const FieldsEnum = @typeInfo(List.Field).@"enum";
 
             pub fn byteSize(list: List) usize {
-                const sizes_vector: std.meta.Vector(sizes.bytes.len, usize) = sizes.bytes;
+                const sizes_vector: @Vector(sizes.bytes.len, usize) = sizes.bytes;
                 const capacity_vector: @Vector(sizes.bytes.len, usize) = @splat(list.len);
                 return @reduce(.Add, capacity_vector * sizes_vector);
             }
