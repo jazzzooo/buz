@@ -5,8 +5,8 @@ fn isOomOnlyError(comptime ErrorUnionOrSet: type) bool {
         .error_set => ErrorUnionOrSet,
         else => @compileError("argument must be an error union or error set"),
     };
-    for (@typeInfo(ErrorSet).error_set orelse return false) |err| {
-        if (!std.mem.eql(u8, err.name, "OutOfMemory")) return false;
+    for (@typeInfo(ErrorSet).error_set.error_names orelse return false) |error_name| {
+        if (!std.mem.eql(u8, error_name, "OutOfMemory")) return false;
     }
     return true;
 }
