@@ -266,123 +266,73 @@ pub fn Parser(comptime enc: Encoding) type {
             self.alias_expansion.deinit();
         }
 
-        const Diagnostic = union(enum) {
-            oom,
-            stack_overflow,
-            unexpected_eof: struct {
-                pos: Pos,
-            },
-            unexpected_token: struct {
-                pos: Pos,
-            },
-            unexpected_character: struct {
-                pos: Pos,
-            },
-            invalid_directive: struct {
-                pos: Pos,
-            },
-            unresolved_tag_handle: struct {
-                pos: Pos,
-            },
-            unresolved_alias: struct {
-                pos: Pos,
-            },
-            multiline_implicit_key: struct {
-                pos: Pos,
-            },
-            multiple_anchors: struct {
-                pos: Pos,
-            },
-            multiple_tags: struct {
-                pos: Pos,
-            },
-            unexpected_document_start: struct {
-                pos: Pos,
-            },
-            unexpected_document_end: struct {
-                pos: Pos,
-            },
-            multiple_yaml_directives: struct {
-                pos: Pos,
-            },
-            invalid_indentation: struct {
-                pos: Pos,
-            },
-            excessive_aliasing: struct {
-                pos: Pos,
-            },
+        const Diagnostic = struct {
+            kind: Kind,
+            pos: Pos,
+
+            const Kind = enum {
+                oom,
+                stack_overflow,
+                unexpected_eof,
+                unexpected_token,
+                unexpected_character,
+                invalid_directive,
+                unresolved_tag_handle,
+                unresolved_alias,
+                multiline_implicit_key,
+                multiple_anchors,
+                multiple_tags,
+                unexpected_document_start,
+                unexpected_document_end,
+                multiple_yaml_directives,
+                invalid_indentation,
+                excessive_aliasing,
+            };
 
             pub fn addToLog(this: *const Diagnostic, source: *const logger.Source, log: *logger.Log) (OOM || error{StackOverflow})!void {
-                switch (this.*) {
+                const message = switch (this.kind) {
                     .oom => return error.OutOfMemory,
                     .stack_overflow => return error.StackOverflow,
-                    .unexpected_eof => |e| {
-                        try log.addError(source, e.pos.loc(), "Unexpected EOF");
-                    },
-                    .unexpected_token => |e| {
-                        try log.addError(source, e.pos.loc(), "Unexpected token");
-                    },
-                    .unexpected_character => |e| {
-                        try log.addError(source, e.pos.loc(), "Unexpected character");
-                    },
-                    .invalid_directive => |e| {
-                        try log.addError(source, e.pos.loc(), "Invalid directive");
-                    },
-                    .unresolved_tag_handle => |e| {
-                        try log.addError(source, e.pos.loc(), "Unresolved tag handle");
-                    },
-                    .unresolved_alias => |e| {
-                        try log.addError(source, e.pos.loc(), "Unresolved alias");
-                    },
-                    .multiline_implicit_key => |e| {
-                        try log.addError(source, e.pos.loc(), "Multiline implicit key");
-                    },
-                    .multiple_anchors => |e| {
-                        try log.addError(source, e.pos.loc(), "Multiple anchors");
-                    },
-                    .multiple_tags => |e| {
-                        try log.addError(source, e.pos.loc(), "Multiple tags");
-                    },
-                    .unexpected_document_start => |e| {
-                        try log.addError(source, e.pos.loc(), "Unexpected document start");
-                    },
-                    .unexpected_document_end => |e| {
-                        try log.addError(source, e.pos.loc(), "Unexpected document end");
-                    },
-                    .multiple_yaml_directives => |e| {
-                        try log.addError(source, e.pos.loc(), "Multiple YAML directives");
-                    },
-                    .invalid_indentation => |e| {
-                        try log.addError(source, e.pos.loc(), "Tab characters cannot be used as indentation");
-                    },
-                    .excessive_aliasing => |e| {
-                        try log.addError(source, e.pos.loc(), "Excessive aliasing");
-                    },
-                }
+                    .unexpected_eof => "Unexpected EOF",
+                    .unexpected_token => "Unexpected token",
+                    .unexpected_character => "Unexpected character",
+                    .invalid_directive => "Invalid directive",
+                    .unresolved_tag_handle => "Unresolved tag handle",
+                    .unresolved_alias => "Unresolved alias",
+                    .multiline_implicit_key => "Multiline implicit key",
+                    .multiple_anchors => "Multiple anchors",
+                    .multiple_tags => "Multiple tags",
+                    .unexpected_document_start => "Unexpected document start",
+                    .unexpected_document_end => "Unexpected document end",
+                    .multiple_yaml_directives => "Multiple YAML directives",
+                    .invalid_indentation => "Tab characters cannot be used as indentation",
+                    .excessive_aliasing => "Excessive aliasing",
+                };
+                try log.addError(source, this.pos.loc(), message);
             }
         };
 
         fn errorDetails(self: *const @This(), err: ParseError) Diagnostic {
             return switch (err) {
-                error.OutOfMemory => .oom,
-                error.StackOverflow => .stack_overflow,
-                error.UnexpectedToken => .{ .unexpected_token = .{ .pos = self.token.start } },
-                error.UnexpectedEof => .{ .unexpected_eof = .{ .pos = self.token.start } },
-                error.InvalidDirective => .{ .invalid_directive = .{ .pos = self.token.start } },
+                error.OutOfMemory => .{ .kind = .oom, .pos = self.pos },
+                error.StackOverflow => .{ .kind = .stack_overflow, .pos = self.pos },
+                error.UnexpectedToken => .{ .kind = .unexpected_token, .pos = self.token.start },
+                error.UnexpectedEof => .{ .kind = .unexpected_eof, .pos = self.token.start },
+                error.InvalidDirective => .{ .kind = .invalid_directive, .pos = self.token.start },
                 error.UnexpectedCharacter => if (!self.pos.isLessThan(self.input.len))
-                    .{ .unexpected_eof = .{ .pos = self.pos } }
+                    .{ .kind = .unexpected_eof, .pos = self.pos }
                 else
-                    .{ .unexpected_character = .{ .pos = self.pos } },
-                error.UnresolvedTagHandle => .{ .unresolved_tag_handle = .{ .pos = self.pos } },
-                error.UnresolvedAlias => .{ .unresolved_alias = .{ .pos = self.token.start } },
-                error.MultilineImplicitKey => .{ .multiline_implicit_key = .{ .pos = self.token.start } },
-                error.MultipleAnchors => .{ .multiple_anchors = .{ .pos = self.token.start } },
-                error.MultipleTags => .{ .multiple_tags = .{ .pos = self.token.start } },
-                error.UnexpectedDocumentStart => .{ .unexpected_document_start = .{ .pos = self.pos } },
-                error.UnexpectedDocumentEnd => .{ .unexpected_document_end = .{ .pos = self.pos } },
-                error.MultipleYamlDirectives => .{ .multiple_yaml_directives = .{ .pos = self.token.start } },
-                error.InvalidIndentation => .{ .invalid_indentation = .{ .pos = self.pos } },
-                error.ExcessiveAliasing => .{ .excessive_aliasing = .{ .pos = self.token.start } },
+                    .{ .kind = .unexpected_character, .pos = self.pos },
+                error.UnresolvedTagHandle => .{ .kind = .unresolved_tag_handle, .pos = self.pos },
+                error.UnresolvedAlias => .{ .kind = .unresolved_alias, .pos = self.token.start },
+                error.MultilineImplicitKey => .{ .kind = .multiline_implicit_key, .pos = self.token.start },
+                error.MultipleAnchors => .{ .kind = .multiple_anchors, .pos = self.token.start },
+                error.MultipleTags => .{ .kind = .multiple_tags, .pos = self.token.start },
+                error.UnexpectedDocumentStart => .{ .kind = .unexpected_document_start, .pos = self.pos },
+                error.UnexpectedDocumentEnd => .{ .kind = .unexpected_document_end, .pos = self.pos },
+                error.MultipleYamlDirectives => .{ .kind = .multiple_yaml_directives, .pos = self.token.start },
+                error.InvalidIndentation => .{ .kind = .invalid_indentation, .pos = self.pos },
+                error.ExcessiveAliasing => .{ .kind = .excessive_aliasing, .pos = self.token.start },
             };
         }
 
