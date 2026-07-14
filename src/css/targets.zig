@@ -65,7 +65,7 @@ pub const Targets = struct {
         if (comptime bun.Environment.isDebug) {
             var browsers: Browsers = .{};
             var has_any = false;
-            inline for (std.meta.fieldNames(Browsers)) |field_name| {
+            inline for (comptime std.meta.fieldNames(Browsers)) |field_name| {
                 const env_var = "BUN_DEBUG_CSS_TARGET_" ++ field_name;
                 if (bun.getenvZAnyCase(env_var)) |val| {
                     @field(browsers, field_name) = parseDebugTarget(val);

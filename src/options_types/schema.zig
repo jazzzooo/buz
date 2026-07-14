@@ -2832,7 +2832,7 @@ pub const api = struct {
             };
 
             var i: usize = 0;
-            inline for (std.meta.fieldNames(NpmRegistry)) |field_name| {
+            inline for (comptime std.meta.fieldNames(NpmRegistry)) |field_name| {
                 const field_value = @field(this, field_name);
                 @memcpy(buf[i .. i + field_value.len], field_value);
                 @field(&out, field_name) = buf[i .. i + field_value.len];

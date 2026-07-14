@@ -8,7 +8,7 @@ pub fn createPostgresError(
     const opts_obj = JSValue.createEmptyObject(globalObject, 0);
     opts_obj.ensureStillAlive();
     opts_obj.put(globalObject, jsc.ZigString.static("code"), try bun.String.createUTF8ForJS(globalObject, options.code));
-    inline for (std.meta.fieldNames(PostgresErrorOptions)) |field_name| {
+    inline for (comptime std.meta.fieldNames(PostgresErrorOptions)) |field_name| {
         const FieldType = @typeInfo(@TypeOf(@field(options, field_name)));
         if (FieldType == .optional) {
             if (@field(options, field_name)) |value| {

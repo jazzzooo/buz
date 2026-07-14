@@ -408,7 +408,7 @@ pub const BorderImageProperty = packed struct(u8) {
     }
 
     pub fn tryFromPropertyId(property_id: css.PropertyIdTag) ?BorderImageProperty {
-        inline for (std.meta.fieldNames(BorderImageProperty)) |field_name| {
+        inline for (comptime std.meta.fieldNames(BorderImageProperty)) |field_name| {
             if (comptime std.mem.eql(u8, field_name, "__unused")) continue;
             const desired = comptime @field(css.PropertyIdTag, "border-image-" ++ field_name);
             if (desired == property_id) {
