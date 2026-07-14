@@ -4457,7 +4457,6 @@ pub fn getSelfExeSharedLibPaths(allocator: std.mem.Allocator) error{OutOfMemory}
         .netbsd,
         .dragonfly,
         .openbsd,
-        .solaris,
         => {
             var paths = List.init(allocator);
             errdefer {

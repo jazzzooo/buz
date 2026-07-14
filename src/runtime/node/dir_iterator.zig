@@ -52,7 +52,6 @@ pub fn NewIterator(comptime use_windows_ospath: bool) type {
             pub const next = switch (builtin.os.tag) {
                 .macos, .ios => nextDarwin,
                 // .freebsd, .netbsd, .dragonfly, .openbsd => nextBsd,
-                // .solaris => nextSolaris,
                 else => @compileError("unimplemented"),
             };
 
