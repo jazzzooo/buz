@@ -30,10 +30,10 @@ pub fn getZone(comptime name: [:0]const u8) *Zone {
             zone = Zone.init(name);
         }
 
-        pub var once = std.once(initOnce);
+        pub var once = bun.once(initOnce);
     };
 
-    static.once.call();
+    static.once.call(.{});
     return static.zone;
 }
 

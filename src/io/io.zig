@@ -72,14 +72,14 @@ pub const Loop = struct {
         }, onSpawnIOThread, .{}) catch @panic("Failed to spawn IO watcher thread");
         thread.detach();
     }
-    var once = std.once(load);
+    var once = bun.once(load);
 
     pub fn get() *Loop {
         if (Environment.isWindows) {
             @panic("Do not use this API on windows");
         }
 
-        once.call();
+        once.call(.{});
 
         return &loop;
     }

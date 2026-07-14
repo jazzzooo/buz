@@ -5743,11 +5743,11 @@ pub const DirectWriter = struct {
     handle: FileDescriptorType,
 
     pub fn write(writer: *DirectWriter, buf: []const u8) !usize {
-        return try std.posix.write(writer.handle, buf);
+        return try bun.sys.write(writer.handle, buf).unwrap();
     }
 
     pub fn writeAll(writer: *DirectWriter, buf: []const u8) !void {
-        _ = try std.posix.write(writer.handle, buf);
+        _ = try bun.sys.write(writer.handle, buf).unwrap();
     }
 
     pub const Error = std.posix.WriteError;

@@ -1230,10 +1230,12 @@ fn getFdPathViaCWD(fd: std.posix.fd_t, buf: *bun.PathBuffer) ![]u8 {
     }
     try std.posix.fchdir(fd);
     needs_chdir = true;
-    return std.posix.getcwd(buf);
+    return getcwd(buf);
 }
 
-pub const getcwd = std.posix.getcwd;
+pub fn getcwd(buf: []u8) ![]u8 {
+    return sys.getcwd(buf).unwrap();
+}
 
 pub fn getcwdAlloc(allocator: std.mem.Allocator) ![:0]u8 {
     var temp: PathBuffer = undefined;
@@ -1410,7 +1412,7 @@ pub noinline fn maybeHandlePanicDuringProcessReload() void {
             std.atomic.spinLoopHint();
 
             if (comptime Environment.isPosix) {
-                std.posix.nanosleep(1, 0);
+                sys.nanosleep(1, 0);
             }
         }
     }
@@ -1711,6 +1713,7 @@ pub const ParseTask = bundle_v2.ParseTask;
 
 pub const threading = @import("./threading/threading.zig");
 pub const Mutex = threading.Mutex;
+pub const Condition = threading.Condition;
 pub const Futex = threading.Futex;
 pub const ThreadPool = threading.ThreadPool;
 pub const UnboundedQueue = threading.UnboundedQueue;
@@ -1868,7 +1871,7 @@ const WindowsStat = extern struct {
     }
 };
 
-pub const Stat = if (Environment.isWindows) windows.libuv.uv_stat_t else std.posix.Stat;
+pub const Stat = sys.PosixStat;
 pub const StatFS = switch (Environment.os) {
     .mac, .linux, .freebsd => bun.c.struct_statfs,
     .windows => windows.libuv.uv_statfs_t,
@@ -3026,6 +3029,19 @@ pub fn unsafeAssert(condition: bool) callconv(callconv_inline) void {
 pub const dns = @import("./dns/dns.zig");
 
 pub const hw_timer = @import("./perf/hw_timer.zig");
+pub const SystemTimer = @import("./perf/system_timer.zig").Timer;
+
+pub inline fn awakeNanoseconds(io_: std.Io) i128 {
+    return @intCast(std.Io.Clock.awake.now(io_).nanoseconds);
+}
+
+pub inline fn realMilliseconds(io_: std.Io) i64 {
+    return @intCast(@divFloor(std.Io.Clock.real.now(io_).nanoseconds, std.time.ns_per_ms));
+}
+
+pub inline fn realSeconds(io_: std.Io) i64 {
+    return @intCast(@divFloor(std.Io.Clock.real.now(io_).nanoseconds, std.time.ns_per_s));
+}
 
 pub fn getRoughTickCount(comptime mock_mode: timespec.MockMode) timespec {
     if (mock_mode == .allow_mocked_time) {
@@ -3143,6 +3159,24 @@ pub const timespec = extern struct {
 
     pub fn now(comptime mock_mode: MockMode) timespec {
         return getRoughTickCount(mock_mode);
+    }
+
+    /// Real wall-clock time. Use only where Bun owns the clock (event-loop or
+    /// JS-observable timing); ordinary subsystem code should use
+    /// `std.Io.Clock.real` from its context.
+    pub fn realNow() timespec {
+        if (comptime Environment.isWindows) {
+            var value: bun.windows.libuv.uv_timespec64_t = undefined;
+            if (bun.windows.libuv.uv_clock_gettime(bun.windows.libuv.UV_CLOCK_REALTIME, &value) != 0)
+                return .epoch;
+            return .{ .sec = value.sec, .nsec = value.nsec };
+        }
+        if (comptime Environment.isPosix) {
+            var value: std.c.timespec = undefined;
+            if (std.c.clock_gettime(.REALTIME, &value) != 0) return .epoch;
+            return .{ .sec = value.sec, .nsec = value.nsec };
+        }
+        return .epoch;
     }
 
     pub fn sinceNow(start: *const timespec, comptime mock_mode: MockMode) u64 {
@@ -3400,7 +3434,7 @@ pub fn getThreadCount() u16 {
     const min_threads = 2;
     const ThreadCount = struct {
         pub var cached_thread_count: u16 = 0;
-        var cached_thread_count_once = std.once(getThreadCountOnce);
+        var cached_thread_count_once = bun.once(getThreadCountOnce);
         fn getThreadCountFromUser() ?u16 {
             inline for (.{ "UV_THREADPOOL_SIZE", "GOMAXPROCS" }) |envname| {
                 if (getenvZ(envname)) |env| {
@@ -3422,11 +3456,12 @@ pub fn getThreadCount() u16 {
             cached_thread_count = @min(max_threads, @max(min_threads, getThreadCountFromUser() orelse jsc.wtf.numberOfProcessorCores()));
         }
     };
-    ThreadCount.cached_thread_count_once.call();
+    ThreadCount.cached_thread_count_once.call(.{});
     return ThreadCount.cached_thread_count;
 }
 
-/// Copied from zig std. Modified to accept arguments.
+/// Bun-managed-thread-domain one-time initialization, modified to accept
+/// arguments. Io-generic code must use explicit or Io-aware initialization.
 pub fn once(comptime f: anytype) Once(f) {
     return Once(f){};
 }

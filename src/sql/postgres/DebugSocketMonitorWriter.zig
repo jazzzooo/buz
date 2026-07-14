@@ -1,6 +1,6 @@
 var file: std.fs.File = undefined;
 pub var enabled = false;
-pub var check = std.once(load);
+pub var check = bun.once(load);
 
 pub fn write(data: []const u8) void {
     file.writeAll(data) catch {};

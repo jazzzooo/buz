@@ -145,7 +145,7 @@ pub fn Bun__randomUUIDv7_(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallF
             break :brk @intCast(try globalThis.validateIntegerRange(timestamp_value, i64, 0, .{ .min = 0, .field_name = "timestamp" }));
         }
 
-        break :brk @intCast(@max(0, std.time.milliTimestamp()));
+        break :brk @intCast(@max(0, bun.timespec.realNow().ms()));
     };
 
     const entropy = globalThis.bunVM().rareData().entropySlice(8);

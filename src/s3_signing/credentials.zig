@@ -4,6 +4,7 @@ pub const S3Credentials = struct {
     pub const deref = RefCount.deref;
 
     ref_count: RefCount,
+    io: std.Io = undefined,
     accessKeyId: []const u8,
     secretAccessKey: []const u8,
     region: []const u8,
@@ -41,6 +42,7 @@ pub const S3Credentials = struct {
     pub fn dupe(this: *const @This()) *S3Credentials {
         return bun.new(S3Credentials, .{
             .ref_count = .init(),
+            .io = this.io,
             .accessKeyId = if (this.accessKeyId.len > 0)
                 bun.handleOom(bun.default_allocator.dupe(u8, this.accessKeyId))
             else
@@ -105,14 +107,14 @@ pub const S3Credentials = struct {
         date: []const u8,
     };
 
-    fn getAMZDate(allocator: std.mem.Allocator) DateResult {
+    fn getAMZDate(allocator: std.mem.Allocator, io: std.Io) DateResult {
         // We can also use Date.now() but would be slower and would add jsc dependency
         // var buffer: [28]u8 = undefined;
         // the code bellow is the same as new Date(Date.now()).toISOString()
         // Date.now() ISO string via JS removed; uses libc gmtime_r
 
         // Create UTC timestamp
-        const secs: u64 = @intCast(@divFloor(std.time.milliTimestamp(), 1000));
+        const secs: u64 = @intCast(bun.realSeconds(io));
         const utc_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
         const utc_day = utc_seconds.getEpochDay();
         const year_and_day = utc_day.calculateYearDay();
@@ -453,7 +455,7 @@ pub const S3Credentials = struct {
             }
         };
 
-        const date_result = getAMZDate(bun.default_allocator);
+        const date_result = getAMZDate(bun.default_allocator, this.io);
         const amz_date = date_result.date;
         errdefer bun.default_allocator.free(amz_date);
 

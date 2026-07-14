@@ -642,9 +642,9 @@ pub fn cleanWithLogger(
     exact_versions: bool,
     log_level: PackageManager.Options.LogLevel,
 ) !*Lockfile {
-    var timer: std.time.Timer = undefined;
+    var timer: bun.SystemTimer = undefined;
     if (log_level.isVerbose()) {
-        timer = try std.time.Timer.start();
+        timer = try bun.SystemTimer.start();
     }
 
     const old_trusted_dependencies = old.trusted_dependencies;

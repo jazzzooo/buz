@@ -104,6 +104,7 @@ peer_dependencies: bun.LinearFifo(DependencyID, .Dynamic) = .init(default_alloca
 known_npm_aliases: NpmAliasMap = .{},
 
 event_loop: jsc.AnyEventLoop,
+io: std.Io,
 
 // During `installPackages` we learn exactly what dependencies from --trust
 // actually have scripts to run, and we add them to this list
@@ -874,6 +875,7 @@ pub fn init(
         .event_loop = .{
             .mini = jsc.MiniEventLoop.init(bun.default_allocator),
         },
+        .io = ctx.io,
         .original_package_json_path = original_package_json_path,
         .workspace_package_json_cache = workspace_package_json_cache,
         .workspace_name_hash = workspace_name_hash,

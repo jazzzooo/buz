@@ -9,11 +9,11 @@ pub var current_time: struct {
     const min_timespec = bun.timespec{ .sec = std.math.minInt(i64), .nsec = std.math.minInt(i64) };
     /// starts at 0. offset in milliseconds.
     offset_raw: bun.timespec = min_timespec,
-    offset_lock: std.Thread.RwLock = .{},
+    offset_lock: bun.Mutex = .{},
     date_now_offset: f64 = 0,
     pub fn getTimespecNow(this: *@This()) ?bun.timespec {
-        this.offset_lock.lockShared();
-        defer this.offset_lock.unlockShared();
+        this.offset_lock.lock();
+        defer this.offset_lock.unlock();
         const value = this.offset_raw;
         if (value.eql(&min_timespec)) return null;
         return value;

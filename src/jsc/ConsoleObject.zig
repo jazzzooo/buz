@@ -11,8 +11,8 @@ const Counter = std.AutoHashMapUnmanaged(u64, u32);
 stderr_buffer: [4096]u8,
 stdout_buffer: [4096]u8,
 
-error_writer_backing: @TypeOf(Output.Source.StreamType.quietWriter(undefined)).Adapter,
-writer_backing: @TypeOf(Output.Source.StreamType.quietWriter(undefined)).Adapter,
+error_writer_backing: bun.sys.File.QuietWriter,
+writer_backing: bun.sys.File.QuietWriter,
 error_writer: *std.Io.Writer,
 writer: *std.Io.Writer,
 
@@ -34,11 +34,11 @@ pub fn init(out: *ConsoleObject, error_writer: Output.Source.StreamType, writer:
         .writer = undefined,
     };
 
-    out.error_writer_backing = error_writer.quietWriter().adaptToNewApi(&out.stderr_buffer);
-    out.writer_backing = writer.quietWriter().adaptToNewApi(&out.stdout_buffer);
+    out.error_writer_backing = error_writer.quietBufferedWriter(&out.stderr_buffer);
+    out.writer_backing = writer.quietBufferedWriter(&out.stdout_buffer);
 
-    out.error_writer = &out.error_writer_backing.new_interface;
-    out.writer = &out.writer_backing.new_interface;
+    out.error_writer = &out.error_writer_backing.interface;
+    out.writer = &out.writer_backing.interface;
 }
 
 pub const MessageLevel = enum(u32) {
@@ -307,35 +307,42 @@ pub const TablePrinter = struct {
 
     const VisibleCharacterCounter = struct {
         width: *usize = undefined,
+        interface: std.Io.Writer,
 
-        pub const WriteError = error{};
-
-        pub const Writer = std.Io.GenericWriter(
-            VisibleCharacterCounter,
-            VisibleCharacterCounter.WriteError,
-            VisibleCharacterCounter.write,
-        );
-
-        pub fn write(this: VisibleCharacterCounter, bytes: []const u8) WriteError!usize {
-            this.width.* += strings.visible.width.exclude_ansi_colors.utf8(bytes);
-            return bytes.len;
+        pub fn init(width: *usize, buffer: []u8) VisibleCharacterCounter {
+            return .{
+                .width = width,
+                .interface = .{ .vtable = &.{ .drain = drain }, .buffer = buffer },
+            };
         }
 
-        pub fn writeAll(this: VisibleCharacterCounter, bytes: []const u8) WriteError!void {
-            this.width.* += strings.width.exclude_ansi_colors.utf8(bytes);
+        fn countBytes(this: *VisibleCharacterCounter, bytes: []const u8) void {
+            this.width.* += strings.visible.width.exclude_ansi_colors.utf8(bytes);
+        }
+
+        fn drain(writer: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+            const this: *VisibleCharacterCounter = @alignCast(@fieldParentPtr("interface", writer));
+            this.countBytes(writer.buffered());
+            writer.end = 0;
+            var consumed: usize = 0;
+            for (data[0 .. data.len - 1]) |bytes| {
+                this.countBytes(bytes);
+                consumed += bytes.len;
+            }
+            const pattern = data[data.len - 1];
+            for (0..splat) |_| {
+                this.countBytes(pattern);
+                consumed += pattern.len;
+            }
+            return consumed;
         }
     };
 
     /// Compute how much horizontal space will take a JSValue when printed
     fn getWidthForValue(this: *TablePrinter, value: JSValue) bun.JSError!u32 {
         var width: usize = 0;
-        var old_writer = VisibleCharacterCounter.Writer{
-            .context = .{
-                .width = &width,
-            },
-        };
         var discard_buf: [512]u8 = undefined; // using a buffer decreases vtable calls but requires unnecessary memcpys. is it faster or slower?
-        var adapted_writer = old_writer.adaptToNewApi(&discard_buf);
+        var counter = VisibleCharacterCounter.init(&width, &discard_buf);
         var value_formatter = this.value_formatter;
 
         const tag = try ConsoleObject.Formatter.Tag.get(value, this.globalObject);
@@ -343,13 +350,13 @@ pub const TablePrinter = struct {
         value_formatter.format(
             tag,
             *std.Io.Writer,
-            &adapted_writer.new_interface,
+            &counter.interface,
             value,
             this.globalObject,
             false,
         ) catch {}; // TODO:
 
-        adapted_writer.new_interface.flush() catch |e| switch (e) {
+        counter.interface.flush() catch |e| switch (e) {
             error.WriteFailed => if (Environment.ci_assert) bun.assert(false), // VisibleCharacterCounter write cannot fail
         };
 
@@ -3620,7 +3627,7 @@ pub fn countReset(
     entry.value_ptr.* = 0;
 }
 
-const PendingTimers = std.AutoHashMap(u64, ?std.time.Timer);
+const PendingTimers = std.AutoHashMap(u64, ?SystemTimer);
 threadlocal var pending_time_logs: PendingTimers = undefined;
 threadlocal var pending_time_logs_loaded = false;
 
@@ -3641,7 +3648,7 @@ pub fn time(
     const result = pending_time_logs.getOrPut(id) catch unreachable;
 
     if (!result.found_existing or (result.found_existing and result.value_ptr.* == null)) {
-        result.value_ptr.* = std.time.Timer.start() catch unreachable;
+        result.value_ptr.* = SystemTimer.start() catch unreachable;
     }
 }
 pub fn timeEnd(
@@ -3658,7 +3665,7 @@ pub fn timeEnd(
 
     const id = bun.hash(chars[0..len]);
     const result = (pending_time_logs.fetchPut(id, null) catch null) orelse return;
-    var value: std.time.Timer = result.value orelse return;
+    var value: SystemTimer = result.value orelse return;
     // get the duration in microseconds
     // then display it in milliseconds
     Output.printElapsed(@as(f64, @floatFromInt(value.read() / std.time.ns_per_us)) / std.time.us_per_ms);
@@ -3688,7 +3695,7 @@ pub fn timeLog(
     }
 
     const id = bun.hash(chars[0..len]);
-    var value: std.time.Timer = (pending_time_logs.get(id) orelse return) orelse return;
+    var value: SystemTimer = (pending_time_logs.get(id) orelse return) orelse return;
     // get the duration in microseconds
     // then display it in milliseconds
     Output.printElapsed(@as(f64, @floatFromInt(value.read() / std.time.ns_per_us)) / std.time.us_per_ms);
@@ -3812,6 +3819,7 @@ comptime {
 const string = []const u8;
 
 const std = @import("std");
+const SystemTimer = @import("../perf/system_timer.zig").Timer;
 const CLI = @import("../cli/cli.zig").Command;
 const JestPrettyFormat = @import("../test_runner/pretty_format.zig").JestPrettyFormat;
 

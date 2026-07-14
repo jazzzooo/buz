@@ -13,7 +13,7 @@ pub fn installIsolatedPackages(
     const lockfile = manager.lockfile;
 
     const store: Store = store: {
-        var timer = std.time.Timer.start() catch unreachable;
+        var timer = bun.SystemTimer.start() catch unreachable;
         const pkgs = lockfile.packages.slice();
         const pkg_dependency_slices = pkgs.items(.dependencies);
         const pkg_resolutions = pkgs.items(.resolution);

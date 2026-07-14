@@ -1280,7 +1280,7 @@ pub const LinuxWaker = struct {
     fd: bun.FD,
 
     pub fn init() !Waker {
-        return initWithFileDescriptor(.fromNative(try std.posix.eventfd(0, 0)));
+        return initWithFileDescriptor(try bun.sys.eventfd(0, 0).unwrap());
     }
 
     pub fn getFd(this: *const Waker) bun.FD {
@@ -1298,10 +1298,10 @@ pub const LinuxWaker = struct {
 
     pub fn wake(this: *const Waker) void {
         var bytes: usize = 1;
-        _ = std.posix.write(
-            this.fd.cast(),
+        _ = bun.sys.write(
+            this.fd,
             @as(*[8]u8, @ptrCast(&bytes)),
-        ) catch 0;
+        ).unwrap() catch 0;
     }
 };
 

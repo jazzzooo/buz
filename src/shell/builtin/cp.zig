@@ -407,7 +407,7 @@ pub const ShellCpTask = struct {
                 return .{ .err = e };
             },
         };
-        return .{ .result = bun.S.ISDIR(stat.mode) };
+        return .{ .result = bun.S.ISDIR(@intCast(stat.mode)) };
     }
 
     fn enqueueToEventLoop(this: *ShellCpTask) void {

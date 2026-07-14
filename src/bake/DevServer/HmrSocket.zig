@@ -164,7 +164,7 @@ pub fn onMessage(s: *HmrSocket, ws: AnyWebSocket, msg: []const u8, opcode: uws.O
                 s.dev.startAsyncBundle(
                     event.entry_points,
                     true,
-                    std.time.Timer.start() catch @panic("timers unsupported"),
+                    bun.SystemTimer.start() catch @panic("timers unsupported"),
                 ) catch |err| bun.handleOom(err);
 
                 event.entry_points.deinit(s.dev.allocator());

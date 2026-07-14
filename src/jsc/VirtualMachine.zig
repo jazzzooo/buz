@@ -26,6 +26,7 @@ comptime {
 
 global: *JSGlobalObject,
 allocator: std.mem.Allocator,
+io: std.Io,
 has_loaded_constructors: bool = false,
 transpiler: Transpiler,
 bun_watcher: ImportWatcher = .{ .none = {} },
@@ -121,7 +122,7 @@ remap_stack_frames_mutex: bun.Mutex = .{},
 ///          []
 argv: []const []const u8 = &[_][]const u8{},
 
-origin_timer: std.time.Timer = undefined,
+origin_timer: SystemTimer = undefined,
 origin_timestamp: u64 = 0,
 /// For fake timers: override performance.now() with a specific value (in nanoseconds)
 /// When null, use the real timer. When set, return this value instead.
@@ -1088,17 +1089,8 @@ pub fn isWatcherEnabled(this: *VirtualMachine) bool {
 /// We subtract the timestamp from Jan 1, 2000 (Y2K)
 pub const origin_relative_epoch = 946684800 * std.time.ns_per_s;
 fn getOriginTimestamp() u64 {
-    return @as(
-        u64,
-        @truncate(@as(
-            u128,
-            // handle if they set their system clock to be before epoch
-            @intCast(@max(
-                std.time.nanoTimestamp(),
-                origin_relative_epoch,
-            )),
-        ) - origin_relative_epoch),
-    );
+    const now = @max(bun.timespec.realNow().nsSigned(), origin_relative_epoch);
+    return @intCast(now - origin_relative_epoch);
 }
 
 pub inline fn isLoaded() bool {
@@ -1125,6 +1117,7 @@ pub fn initWithModuleGraph(
         .global = undefined,
         .transpiler_store = RuntimeTranspilerStore.init(),
         .allocator = allocator,
+        .io = opts.io,
         .entry_point = ServerEntryPoint{},
         .transpiler = transpiler,
         .console = console,
@@ -1135,7 +1128,7 @@ pub fn initWithModuleGraph(
         .source_mappings = undefined,
         .macros = .empty,
         .macro_entry_points = .empty,
-        .origin_timer = std.time.Timer.start() catch @panic("Timers are not supported on this system."),
+        .origin_timer = SystemTimer.start() catch unreachable,
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
@@ -1202,6 +1195,7 @@ export fn Bun__isMainThreadVM() callconv(.c) bool {
 
 pub const Options = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     args: api.TransformOptions,
     log: ?*logger.Log = null,
     env_loader: ?*DotEnv.Loader = null,
@@ -1251,6 +1245,7 @@ pub fn init(opts: Options) !*VirtualMachine {
         .global = undefined,
         .transpiler_store = RuntimeTranspilerStore.init(),
         .allocator = allocator,
+        .io = opts.io,
         .entry_point = ServerEntryPoint{},
         .transpiler = transpiler,
         .console = console,
@@ -1264,7 +1259,7 @@ pub fn init(opts: Options) !*VirtualMachine {
         .source_mappings = undefined,
         .macros = .empty,
         .macro_entry_points = .empty,
-        .origin_timer = std.time.Timer.start() catch @panic("Please don't mess with timers."),
+        .origin_timer = SystemTimer.start() catch unreachable,
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
@@ -1419,6 +1414,7 @@ pub fn initWorker(
     vm.* = VirtualMachine{
         .global = undefined,
         .allocator = allocator,
+        .io = opts.io,
         .transpiler_store = RuntimeTranspilerStore.init(),
         .entry_point = ServerEntryPoint{},
         .transpiler = transpiler,
@@ -1432,7 +1428,7 @@ pub fn initWorker(
         .source_mappings = undefined,
         .macros = .empty,
         .macro_entry_points = .empty,
-        .origin_timer = std.time.Timer.start() catch @panic("Please don't mess with timers."),
+        .origin_timer = SystemTimer.start() catch unreachable,
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
@@ -1518,6 +1514,7 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
         .global = undefined,
         .transpiler_store = RuntimeTranspilerStore.init(),
         .allocator = allocator,
+        .io = opts.io,
         .entry_point = ServerEntryPoint{},
         .transpiler = transpiler,
         .console = console,
@@ -1528,7 +1525,7 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
         .source_mappings = undefined,
         .macros = .empty,
         .macro_entry_points = .empty,
-        .origin_timer = std.time.Timer.start() catch @panic("Please don't mess with timers."),
+        .origin_timer = SystemTimer.start() catch unreachable,
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
@@ -4105,6 +4102,7 @@ const Resolver = @import("../resolver/resolver.zig");
 const Runtime = @import("../js_parser/runtime.zig");
 const node_module_module = @import("./NodeModuleModule.zig");
 const std = @import("std");
+const SystemTimer = @import("../perf/system_timer.zig").Timer;
 const PackageManager = @import("../install/install.zig").PackageManager;
 const URL = @import("../url/url.zig").URL;
 const Allocator = std.mem.Allocator;

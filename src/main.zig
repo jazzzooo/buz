@@ -1,10 +1,6 @@
 pub const panic = _bun.crash_handler.panic;
 pub const std_options = std.Options{
     .enable_segfault_handler = false,
-    // Use BoringSSL's RAND_bytes instead of the default getrandom() syscall.
-    // BoringSSL falls back to /dev/urandom on older kernels (< 3.17) where
-    // the getrandom syscall doesn't exist, avoiding a panic on ENOSYS.
-    .cryptoRandomSeed = _bun.csprng,
 };
 
 pub const io_mode = .blocking;
@@ -18,7 +14,7 @@ extern fn bun_warn_avx_missing(url: [*:0]const u8) void;
 pub extern "c" var _environ: ?*anyopaque;
 pub extern "c" var environ: ?*anyopaque;
 
-pub fn main() void {
+pub fn main(init: std.process.Init) void {
     _bun.crash_handler.init();
 
     if (Environment.isPosix) {
@@ -49,12 +45,12 @@ pub fn main() void {
         _environ = @ptrCast(std.os.environ.ptr);
     }
 
-    _bun.start_time = std.time.nanoTimestamp();
+    _bun.start_time = @intCast(std.Io.Clock.awake.now(init.io).nanoseconds);
     _bun.initArgv() catch |err| {
         Output.panic("Failed to initialize argv: {s}\n", .{@errorName(err)});
     };
 
-    Output.Source.Stdio.init();
+    Output.Source.Stdio.init(init.io);
     defer Output.flush();
     if (Environment.isX64 and Environment.enableSIMD and Environment.isPosix) {
         bun_warn_avx_missing(_bun.cli.UpgradeCommand.Bun__githubBaselineURL.ptr);
@@ -63,7 +59,7 @@ pub fn main() void {
     _bun.StackCheck.configureThread();
     _bun.ParentDeathWatchdog.install();
 
-    _bun.cli.Cli.start(_bun.default_allocator);
+    _bun.cli.Cli.start(_bun.default_allocator, init.io);
     _bun.Global.exit(0);
 }
 

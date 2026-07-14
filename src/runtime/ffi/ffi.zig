@@ -48,9 +48,9 @@ const Offsets = extern struct {
     fn loadOnce() void {
         Bun__FFI__ensureOffsetsAreLoaded();
     }
-    var once = std.once(loadOnce);
+    var once = bun.once(loadOnce);
     pub fn get() *const Offsets {
-        once.call();
+        once.call(.{});
         return &Bun__FFI__offsets;
     }
 };
@@ -244,7 +244,7 @@ pub const FFI = struct {
 
         var cached_default_system_include_dir: [:0]const u8 = "";
         var cached_default_system_library_dir: [:0]const u8 = "";
-        var cached_default_system_include_dir_once = std.once(getSystemRootDirOnce);
+        var cached_default_system_include_dir_once = bun.once(getSystemRootDirOnce);
         fn getSystemRootDirOnce() void {
             if (Environment.isMac) {
                 var which_buf: [bun.MAX_PATH_BYTES]u8 = undefined;
@@ -306,13 +306,13 @@ pub const FFI = struct {
         }
 
         fn getSystemIncludeDir() ?[:0]const u8 {
-            cached_default_system_include_dir_once.call();
+            cached_default_system_include_dir_once.call(.{});
             if (cached_default_system_include_dir.len == 0) return null;
             return cached_default_system_include_dir;
         }
 
         fn getSystemLibraryDir() ?[:0]const u8 {
-            cached_default_system_include_dir_once.call();
+            cached_default_system_include_dir_once.call(.{});
             if (cached_default_system_library_dir.len == 0) return null;
             return cached_default_system_library_dir;
         }
@@ -1613,7 +1613,7 @@ pub const FFI = struct {
             if (comptime Environment.isDebug and Environment.isPosix) {
                 debug_write: {
                     const fd = std.posix.open("/tmp/bun-ffi-callback-source.c", .{ .CREAT = true, .ACCMODE = .WRONLY }, 0o644) catch break :debug_write;
-                    _ = std.posix.write(fd, source_code.items) catch break :debug_write;
+                    _ = bun.sys.write(.fromNative(fd), source_code.items).unwrap() catch break :debug_write;
                     std.posix.ftruncate(fd, source_code.items.len) catch break :debug_write;
                     std.posix.close(fd);
                 }
@@ -2351,10 +2351,10 @@ const CompilerRT = struct {
         var path_buf: [bun.MAX_PATH_BYTES]u8 = undefined;
         compiler_rt_dir = bun.handleOom(bun.default_allocator.dupeSentinel(u8, bun.getFdPath(.fromStdDir(bunCC), &path_buf) catch return, 0));
     }
-    var create_compiler_rt_dir_once = std.once(createCompilerRTDir);
+    var create_compiler_rt_dir_once = bun.once(createCompilerRTDir);
 
     pub fn dir() ?[:0]const u8 {
-        create_compiler_rt_dir_once.call();
+        create_compiler_rt_dir_once.call(.{});
         if (compiler_rt_dir.len == 0) return null;
         return compiler_rt_dir;
     }

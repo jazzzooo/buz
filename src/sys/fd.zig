@@ -554,7 +554,7 @@ pub const FD = packed struct(backing_int) {
     // TODO: move these methods defined in bun.sys.File to bun.sys. follow
     // similar pattern as above. then delete bun.sys.File
     pub fn quietWriter(fd: FD) bun.sys.File.QuietWriter {
-        return .{ .context = .{ .handle = fd } };
+        return (bun.sys.File{ .handle = fd }).quietWriter();
     }
 
     comptime {

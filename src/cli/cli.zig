@@ -7,10 +7,12 @@ pub var Bun__Node__ProcessTitle: ?string = null;
 pub const Cli = struct {
     pub const CompileTarget = @import("../options_types/CompileTarget.zig");
     pub var log_: logger.Log = undefined;
+    pub var io: std.Io = undefined;
     pub fn startTransform(_: std.mem.Allocator, _: api.TransformOptions, _: *logger.Log) anyerror!void {}
-    pub fn start(allocator: std.mem.Allocator) void {
+    pub fn start(allocator: std.mem.Allocator, io_: std.Io) void {
         is_main_thread = true;
-        start_time = std.time.nanoTimestamp();
+        io = io_;
+        start_time = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
         log_ = logger.Log.init(allocator);
 
         var log = &log_;
@@ -332,6 +334,7 @@ pub const Command = struct {
             .args = std.mem.zeroes(api.TransformOptions),
             .log = log,
             .start_time = start_time,
+            .io = Cli.io,
             .allocator = allocator,
         };
         global_cli_ctx = &context_data;
@@ -591,6 +594,7 @@ pub const Command = struct {
                         .args = std.mem.zeroes(api.TransformOptions),
                         .log = log,
                         .start_time = start_time,
+                        .io = Cli.io,
                         .allocator = bun.default_allocator,
                     };
                     global_cli_ctx = &context_data;

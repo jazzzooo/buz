@@ -306,6 +306,7 @@ pub const Tag = enum(u8) {
     socketpair,
     setsockopt,
     statx,
+    eventfd,
     rm,
 
     uv_spawn,
@@ -338,16 +339,16 @@ pub fn Maybe(comptime ReturnTypeT: type) type {
     return bun.api.node.Maybe(ReturnTypeT, Error);
 }
 
-pub fn getcwd(buf: *bun.PathBuffer) Maybe([]const u8) {
-    const Result = Maybe([]const u8);
+pub fn getcwd(buf: []u8) Maybe([]u8) {
+    const Result = Maybe([]u8);
     return switch (getcwdZ(buf)) {
         .err => |err| Result{ .err = err },
         .result => |cwd| Result{ .result = cwd },
     };
 }
 
-pub fn getcwdZ(buf: *bun.PathBuffer) Maybe([:0]const u8) {
-    const Result = Maybe([:0]const u8);
+pub fn getcwdZ(buf: []u8) Maybe([:0]u8) {
+    const Result = Maybe([:0]u8);
     buf[0] = 0;
 
     if (comptime Environment.isWindows) {
@@ -358,7 +359,7 @@ pub fn getcwdZ(buf: *bun.PathBuffer) Maybe([:0]const u8) {
         return Result{ .result = bun.strings.fromWPath(buf, wbuf[0..len]) };
     }
 
-    const rc: ?[*:0]u8 = @ptrCast(std.c.getcwd(buf, bun.MAX_PATH_BYTES));
+    const rc: ?[*:0]u8 = @ptrCast(std.c.getcwd(buf.ptr, buf.len));
     return if (rc != null)
         Result{ .result = rc.?[0..std.mem.len(rc.?) :0] }
     else
@@ -407,7 +408,13 @@ pub fn fchmodat(fd: bun.FD, path: [:0]const u8, mode: bun.Mode, flags: if (Envir
     if (comptime Environment.isWindows) @compileError("Use fchmod instead");
 
     while (true) {
-        const rc = syscall_or_c.fchmodat(fd.cast(), path.ptr, mode, flags);
+        const rc = if (Environment.isLinux)
+            if (flags == 0)
+                syscall.fchmodat(fd.cast(), path.ptr, mode)
+            else
+                syscall.fchmodat2(fd.cast(), path.ptr, mode, flags)
+        else
+            syscall_or_c.fchmodat(fd.cast(), path.ptr, mode, flags);
         if (Maybe(void).errnoSysFd(rc, .fchmodat, fd)) |err| {
             if (err.getErrno() == .INTR) continue;
             return err;
@@ -519,15 +526,53 @@ pub fn sendfile(src: bun.FD, dest: bun.FD, len: usize) Maybe(usize) {
     }
 }
 
+pub fn eventfd(initial_value: u32, flags: u32) Maybe(bun.FD) {
+    if (comptime Environment.isLinux) {
+        const rc = linux.eventfd(initial_value, flags);
+        if (Maybe(bun.FD).errnoSys(rc, .eventfd)) |err| return err;
+        return .{ .result = .fromNative(@intCast(rc)) };
+    }
+    if (comptime Environment.isFreeBSD) {
+        const rc = std.c.eventfd(initial_value, flags);
+        if (Maybe(bun.FD).errnoSys(rc, .eventfd)) |err| return err;
+        return .{ .result = .fromNative(rc) };
+    }
+    @compileError("eventfd is only available on Linux and FreeBSD");
+}
+
+pub fn isatty(fd: bun.FD) bool {
+    return switch (Environment.os) {
+        .mac, .linux, .freebsd => std.c.isatty(fd.cast()) != 0,
+        .windows => brk: {
+            var mode: windows.DWORD = 0;
+            break :brk kernel32.GetConsoleMode(fd.cast(), &mode) != 0;
+        },
+        .wasm => false,
+    };
+}
+
+pub fn nanosleep(seconds: usize, nanoseconds: usize) void {
+    if (comptime Environment.isPosix) {
+        var requested: std.c.timespec = .{ .sec = @intCast(seconds), .nsec = @intCast(nanoseconds) };
+        while (true) {
+            const rc = if (Environment.isLinux)
+                linux.nanosleep(&requested, &requested)
+            else
+                std.c.nanosleep(&requested, &requested);
+            if (std.posix.errno(rc) == .INTR) continue;
+            return;
+        }
+    }
+}
+
 pub fn stat(path: [:0]const u8) Maybe(bun.Stat) {
     if (Environment.isWindows) {
         return sys_uv.stat(path);
     } else {
         while (true) {
-            var stat_ = mem.zeroes(bun.Stat);
+            var stat_ = mem.zeroes(NativeStat);
             const rc = if (Environment.isLinux)
-                // aarch64 linux doesn't implement a "stat" syscall. It's all fstatat.
-                linux.fstatat(std.posix.AT.FDCWD, path, &stat_, 0)
+                workaround_symbols.directFstatat(std.posix.AT.FDCWD, path, &stat_, 0)
             else
                 workaround_symbols.stat(path, &stat_);
 
@@ -539,7 +584,7 @@ pub fn stat(path: [:0]const u8) Maybe(bun.Stat) {
                 return err;
             }
 
-            return Maybe(bun.Stat){ .result = stat_ };
+            return Maybe(bun.Stat){ .result = canonicalStat(&stat_) };
         }
     }
 }
@@ -576,12 +621,16 @@ pub fn lstat(path: [:0]const u8) Maybe(bun.Stat) {
         return sys_uv.lstat(path);
     } else {
         while (true) {
-            var stat_buf = mem.zeroes(bun.Stat);
-            if (Maybe(bun.Stat).errnoSysP(workaround_symbols.lstat(path, &stat_buf), .lstat, path)) |err| {
+            var stat_buf = mem.zeroes(NativeStat);
+            const rc = if (Environment.isLinux)
+                workaround_symbols.directFstatat(std.posix.AT.FDCWD, path, &stat_buf, linux.AT.SYMLINK_NOFOLLOW)
+            else
+                workaround_symbols.lstat(path, &stat_buf);
+            if (Maybe(bun.Stat).errnoSysP(rc, .lstat, path)) |err| {
                 if (err.getErrno() == .INTR) continue;
                 return err;
             }
-            return Maybe(bun.Stat){ .result = stat_buf };
+            return Maybe(bun.Stat){ .result = canonicalStat(&stat_buf) };
         }
     }
 }
@@ -595,9 +644,12 @@ pub fn fstat(fd: bun.FD) Maybe(bun.Stat) {
     }
 
     while (true) {
-        var stat_ = mem.zeroes(bun.Stat);
+        var stat_ = mem.zeroes(NativeStat);
 
-        const rc = workaround_symbols.fstat(fd.cast(), &stat_);
+        const rc = if (Environment.isLinux)
+            workaround_symbols.directFstat(fd.cast(), &stat_)
+        else
+            workaround_symbols.fstat(fd.cast(), &stat_);
 
         if (comptime Environment.allow_assert)
             log("fstat({f}) = {d}", .{ fd, rc });
@@ -607,24 +659,43 @@ pub fn fstat(fd: bun.FD) Maybe(bun.Stat) {
             return err;
         }
 
-        return Maybe(bun.Stat){ .result = stat_ };
+        return Maybe(bun.Stat){ .result = canonicalStat(&stat_) };
     }
 }
 
-pub const StatxField = enum(comptime_int) {
-    type = linux.STATX_TYPE,
-    mode = linux.STATX_MODE,
-    nlink = linux.STATX_NLINK,
-    uid = linux.STATX_UID,
-    gid = linux.STATX_GID,
-    atime = linux.STATX_ATIME,
-    mtime = linux.STATX_MTIME,
-    ctime = linux.STATX_CTIME,
-    btime = linux.STATX_BTIME,
-    ino = linux.STATX_INO,
-    size = linux.STATX_SIZE,
-    blocks = linux.STATX_BLOCKS,
+pub const StatxField = enum {
+    type,
+    mode,
+    nlink,
+    uid,
+    gid,
+    atime,
+    mtime,
+    ctime,
+    btime,
+    ino,
+    size,
+    blocks,
 };
+
+fn statxMask(comptime fields: []const StatxField) linux.STATX {
+    var mask: linux.STATX = .{};
+    inline for (fields) |field| switch (field) {
+        .type => mask.TYPE = true,
+        .mode => mask.MODE = true,
+        .nlink => mask.NLINK = true,
+        .uid => mask.UID = true,
+        .gid => mask.GID = true,
+        .atime => mask.ATIME = true,
+        .mtime => mask.MTIME = true,
+        .ctime => mask.CTIME = true,
+        .btime => mask.BTIME = true,
+        .ino => mask.INO = true,
+        .size => mask.SIZE = true,
+        .blocks => mask.BLOCKS = true,
+    };
+    return mask;
+}
 
 // Linux Kernel v4.11
 pub var supports_statx_on_linux = std.atomic.Value(bool).init(true);
@@ -682,18 +753,18 @@ fn statxFallback(fd: bun.FD, path: ?[*:0]const u8, flags: u32) Maybe(PosixStat) 
         const path_span = bun.span(p);
         const fallback = if (flags & linux.AT.SYMLINK_NOFOLLOW != 0) lstat(path_span) else stat(path_span);
         return switch (fallback) {
-            .result => |s| .{ .result = PosixStat.init(&s) },
+            .result => |s| .{ .result = s },
             .err => |e| .{ .err = e },
         };
     } else {
         return switch (fstat(fd)) {
-            .result => |s| .{ .result = PosixStat.init(&s) },
+            .result => |s| .{ .result = s },
             .err => |e| .{ .err = e },
         };
     }
 }
 
-fn statxImpl(fd: bun.FD, path: ?[*:0]const u8, flags: u32, mask: u32) Maybe(PosixStat) {
+fn statxImpl(fd: bun.FD, path: ?[*:0]const u8, flags: u32, mask: linux.STATX) Maybe(PosixStat) {
     if (comptime !Environment.isLinux) {
         @compileError("statx is only supported on Linux");
     }
@@ -747,7 +818,7 @@ fn statxImpl(fd: bun.FD, path: ?[*:0]const u8, flags: u32, mask: u32) Maybe(Posi
             .atim = .{ .sec = buf.atime.sec, .nsec = buf.atime.nsec },
             .mtim = .{ .sec = buf.mtime.sec, .nsec = buf.mtime.nsec },
             .ctim = .{ .sec = buf.ctime.sec, .nsec = buf.ctime.nsec },
-            .birthtim = if (buf.mask & linux.STATX_BTIME != 0)
+            .birthtim = if (buf.mask.BTIME)
                 .{ .sec = buf.btime.sec, .nsec = buf.btime.nsec }
             else
                 .{ .sec = 0, .nsec = 0 },
@@ -758,35 +829,17 @@ fn statxImpl(fd: bun.FD, path: ?[*:0]const u8, flags: u32, mask: u32) Maybe(Posi
 }
 
 pub fn fstatx(fd: bun.FD, comptime fields: []const StatxField) Maybe(PosixStat) {
-    const mask: u32 = comptime brk: {
-        var i: u32 = 0;
-        for (fields) |field| {
-            i |= @intFromEnum(field);
-        }
-        break :brk i;
-    };
+    const mask = comptime statxMask(fields);
     return statxImpl(fd, null, linux.AT.EMPTY_PATH, mask);
 }
 
 pub fn statx(path: [*:0]const u8, comptime fields: []const StatxField) Maybe(PosixStat) {
-    const mask: u32 = comptime brk: {
-        var i: u32 = 0;
-        for (fields) |field| {
-            i |= @intFromEnum(field);
-        }
-        break :brk i;
-    };
+    const mask = comptime statxMask(fields);
     return statxImpl(bun.FD.fromNative(std.posix.AT.FDCWD), path, 0, mask);
 }
 
 pub fn lstatx(path: [*:0]const u8, comptime fields: []const StatxField) Maybe(PosixStat) {
-    const mask: u32 = comptime brk: {
-        var i: u32 = 0;
-        for (fields) |field| {
-            i |= @intFromEnum(field);
-        }
-        break :brk i;
-    };
+    const mask = comptime statxMask(fields);
     return statxImpl(bun.FD.fromNative(std.posix.AT.FDCWD), path, linux.AT.SYMLINK_NOFOLLOW, mask);
 }
 
@@ -847,14 +900,18 @@ pub fn fstatat(fd: bun.FD, path: [:0]const u8) Maybe(bun.Stat) {
     }
     const fd_valid = if (fd == bun.invalid_fd) std.posix.AT.FDCWD else fd.native();
     while (true) {
-        var stat_buf = mem.zeroes(bun.Stat);
-        if (Maybe(bun.Stat).errnoSysFP(syscall.fstatat(fd_valid, path, &stat_buf, 0), .fstatat, fd, path)) |err| {
+        var stat_buf = mem.zeroes(NativeStat);
+        const rc = if (Environment.isLinux)
+            workaround_symbols.directFstatat(fd_valid, path, &stat_buf, 0)
+        else
+            syscall.fstatat(fd_valid, path, &stat_buf, 0);
+        if (Maybe(bun.Stat).errnoSysFP(rc, .fstatat, fd, path)) |err| {
             if (err.getErrno() == .INTR) continue;
             log("fstatat({f}, {s}) = {s}", .{ fd, path, @tagName(err.getErrno()) });
             return err;
         }
         log("fstatat({f}, {s}) = 0", .{ fd, path });
-        return Maybe(bun.Stat){ .result = stat_buf };
+        return Maybe(bun.Stat){ .result = canonicalStat(&stat_buf) };
     }
 }
 
@@ -873,14 +930,18 @@ pub fn lstatat(fd: bun.FD, path: [:0]const u8) Maybe(bun.Stat) {
     }
     const fd_valid = if (fd == bun.invalid_fd) std.posix.AT.FDCWD else fd.native();
     while (true) {
-        var stat_buf = mem.zeroes(bun.Stat);
-        if (Maybe(bun.Stat).errnoSysFP(syscall.fstatat(fd_valid, path, &stat_buf, std.posix.AT.SYMLINK_NOFOLLOW), .fstatat, fd, path)) |err| {
+        var stat_buf = mem.zeroes(NativeStat);
+        const rc = if (Environment.isLinux)
+            workaround_symbols.directFstatat(fd_valid, path, &stat_buf, std.posix.AT.SYMLINK_NOFOLLOW)
+        else
+            syscall.fstatat(fd_valid, path, &stat_buf, std.posix.AT.SYMLINK_NOFOLLOW);
+        if (Maybe(bun.Stat).errnoSysFP(rc, .fstatat, fd, path)) |err| {
             if (err.getErrno() == .INTR) continue;
             log("lstatat({f}, {s}) = {s}", .{ fd, path, @tagName(err.getErrno()) });
             return err;
         }
         log("lstatat({f}, {s}) = 0", .{ fd, path });
-        return Maybe(bun.Stat){ .result = stat_buf };
+        return Maybe(bun.Stat){ .result = canonicalStat(&stat_buf) };
     }
 }
 
@@ -1835,6 +1896,41 @@ pub const max_count = switch (builtin.os.tag) {
     .windows => std.math.maxInt(u32),
     else => std.math.maxInt(isize),
 };
+
+/// Emergency output primitive. This must remain free of logging, timers,
+/// allocation, and locks so it is safe before Output initialization and from
+/// crash paths.
+pub fn rawWrite(fd: bun.FD, bytes: []const u8) Maybe(usize) {
+    const adjusted_len = @min(max_count, bytes.len);
+    return switch (Environment.os) {
+        .mac => rawWritePosix(fd, bytes, adjusted_len, darwin_nocancel.@"write$NOCANCEL"),
+        .linux => rawWritePosix(fd, bytes, adjusted_len, std.os.linux.write),
+        .freebsd => rawWritePosix(fd, bytes, adjusted_len, std.c.write),
+        .windows => {
+            var bytes_written: u32 = 0;
+            if (kernel32.WriteFile(fd.cast(), bytes.ptr, @intCast(adjusted_len), &bytes_written, null) == 0) {
+                return .{ .err = .{
+                    .errno = @intFromEnum(bun.windows.getLastErrno()),
+                    .syscall = .WriteFile,
+                    .fd = fd,
+                } };
+            }
+            return .{ .result = bytes_written };
+        },
+        .wasm => @compileError("rawWrite is not implemented on this platform"),
+    };
+}
+
+fn rawWritePosix(fd: bun.FD, bytes: []const u8, len: usize, writeFn: anytype) Maybe(usize) {
+    while (true) {
+        const rc = writeFn(fd.cast(), bytes.ptr, len);
+        if (Maybe(usize).errnoSysFd(rc, .write, fd)) |err| {
+            if (err.getErrno() == .INTR) continue;
+            return err;
+        }
+        return .{ .result = @intCast(rc) };
+    }
+}
 
 pub fn write(fd: bun.FD, bytes: []const u8) Maybe(usize) {
     const adjusted_len = @min(max_count, bytes.len);
@@ -3783,7 +3879,7 @@ pub fn existsAtType(fd: bun.FD, subpath: anytype) Maybe(ExistsAtType) {
 
     return switch (fstatat(fd, subpath)) {
         .err => |err| .{ .err = err },
-        .result => |result| if (S.ISDIR(result.mode)) .{ .result = .directory } else .{ .result = .file },
+        .result => |result| if (S.ISDIR(@intCast(result.mode))) .{ .result = .directory } else .{ .result = .file },
     };
 }
 
@@ -4267,49 +4363,34 @@ pub fn lstat_absolute(path: [:0]const u8) !Stat {
         @compileError("Not implemented yet, consider using lstat()");
     }
 
-    var st = std.mem.zeroes(libc_stat);
-    switch (std.posix.errno(workaround_symbols.lstat(path.ptr, &st))) {
-        .SUCCESS => {},
-        .NOENT => return error.FileNotFound,
-        // .EINVAL => unreachable,
-        .BADF => unreachable, // Always a race condition.
-        .NOMEM => return error.SystemResources,
-        .ACCES => return error.AccessDenied,
-        else => |err| return posix.unexpectedErrno(err),
-    }
+    const st = switch (lstat(path)) {
+        .result => |result| result,
+        .err => |err| return err.toZigErr(),
+    };
 
     const atime = st.atime();
     const mtime = st.mtime();
     const ctime = st.ctime();
     const Kind = std.Io.File.Kind;
     return Stat{
-        .inode = st.ino,
-        .size = @as(u64, @bitCast(st.size)),
-        .mode = st.mode,
-        .kind = switch (builtin.os.tag) {
-            .wasi => switch (st.filetype) {
-                posix.FILETYPE_BLOCK_DEVICE => Kind.block_device,
-                posix.FILETYPE_CHARACTER_DEVICE => Kind.character_device,
-                posix.FILETYPE_DIRECTORY => Kind.directory,
-                posix.FILETYPE_SYMBOLIC_LINK => Kind.sym_link,
-                posix.FILETYPE_REGULAR_FILE => Kind.file,
-                posix.FILETYPE_SOCKET_STREAM, posix.FILETYPE_SOCKET_DGRAM => Kind.unix_domain_socket,
-                else => Kind.unknown,
-            },
-            else => switch (st.mode & posix.S.IFMT) {
-                posix.S.IFBLK => Kind.block_device,
-                posix.S.IFCHR => Kind.character_device,
-                posix.S.IFDIR => Kind.directory,
-                posix.S.IFIFO => Kind.named_pipe,
-                posix.S.IFLNK => Kind.sym_link,
-                posix.S.IFREG => Kind.file,
-                posix.S.IFSOCK => Kind.unix_domain_socket,
-                else => Kind.unknown,
-            },
+        .inode = @intCast(st.ino),
+        .nlink = @intCast(st.nlink),
+        .size = st.size,
+        .permissions = .fromMode(@intCast(st.mode)),
+        .kind = switch (st.mode & posix.S.IFMT) {
+            posix.S.IFBLK => Kind.block_device,
+            posix.S.IFCHR => Kind.character_device,
+            posix.S.IFDIR => Kind.directory,
+            posix.S.IFIFO => Kind.named_pipe,
+            posix.S.IFLNK => Kind.sym_link,
+            posix.S.IFREG => Kind.file,
+            posix.S.IFSOCK => Kind.unix_domain_socket,
+            else => Kind.unknown,
         },
-        .atime = @as(i128, atime.sec) * std.time.ns_per_s + atime.nsec,
-        .mtime = @as(i128, mtime.sec) * std.time.ns_per_s + mtime.nsec,
-        .ctime = @as(i128, ctime.sec) * std.time.ns_per_s + ctime.nsec,
+        .atime = .fromNanoseconds(@intCast(@as(i128, atime.sec) * std.time.ns_per_s + atime.nsec)),
+        .mtime = .fromNanoseconds(@intCast(@as(i128, mtime.sec) * std.time.ns_per_s + mtime.nsec)),
+        .ctime = .fromNanoseconds(@intCast(@as(i128, ctime.sec) * std.time.ns_per_s + ctime.nsec)),
+        .block_size = @intCast(st.blksize),
     };
 }
 
@@ -4651,7 +4732,7 @@ pub fn dlsymWithHandle(comptime Type: type, comptime name: [:0]const u8, comptim
     const Wrapper = struct {
         pub var function: Type = undefined;
         var failed = false;
-        pub var once = std.once(loadOnce);
+        pub var once = bun.once(loadOnce);
         fn loadOnce() void {
             function = bun.cast(Type, dlsymImpl(@call(bun.callmod_inline, handle_getter, .{}), name) orelse {
                 failed = true;
@@ -4659,7 +4740,7 @@ pub fn dlsymWithHandle(comptime Type: type, comptime name: [:0]const u8, comptim
             });
         }
     };
-    Wrapper.once.call();
+    Wrapper.once.call(.{});
     if (Wrapper.failed) {
         return null;
     }
@@ -4685,7 +4766,22 @@ const Environment = bun.Environment;
 const FD = bun.FD;
 const MAX_PATH_BYTES = bun.MAX_PATH_BYTES;
 const jsc = bun.jsc;
-const libc_stat = bun.Stat;
+const NativeStat = switch (Environment.os) {
+    .linux => bun.c.struct_stat,
+    .mac, .freebsd => std.c.Stat,
+    .windows => bun.windows.libuv.uv_stat_t,
+    .wasm => void,
+};
+
+fn canonicalStat(stat_: *const NativeStat) bun.Stat {
+    return switch (Environment.os) {
+        .linux => PosixStat.fromLinux(stat_),
+        .mac, .freebsd => PosixStat.fromLibc(stat_),
+        .windows => PosixStat.fromLibuv(stat_),
+        .wasm => unreachable,
+    };
+}
+
 const darwin_nocancel = bun.darwin.nocancel;
 
 const c = bun.c; // translated c headers
@@ -4699,7 +4795,7 @@ const std = @import("std");
 const mem = std.mem;
 const page_size_min = std.heap.page_size_min;
 const w = std.os.windows;
-const Stat = std.fs.File.Stat;
+const Stat = std.Io.File.Stat;
 
 const posix = std.posix;
 const libc = std.posix.system;

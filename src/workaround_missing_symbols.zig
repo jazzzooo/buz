@@ -10,9 +10,80 @@ pub const linux = struct {
         return if (signed > -4096 and signed < 0) -1 else int;
     }
 
-    pub export fn stat(path: [*:0]const u8, buf: *std.os.linux.Stat) c_int {
+    fn assertNativeStatLayout() void {
+        const Stat = bun.c.struct_stat;
+        const expected = switch (bun.Environment.arch) {
+            .x64 => .{
+                .size = 144,
+                .dev = 0,
+                .ino = 8,
+                .nlink = 16,
+                .mode = 24,
+                .uid = 28,
+                .gid = 32,
+                .rdev = 40,
+                .size_field = 48,
+                .blksize = 56,
+                .blocks = 64,
+                .atim = 72,
+                .mtim = 88,
+                .ctim = 104,
+            },
+            .arm64 => .{
+                .size = 128,
+                .dev = 0,
+                .ino = 8,
+                .nlink = 20,
+                .mode = 16,
+                .uid = 24,
+                .gid = 28,
+                .rdev = 32,
+                .size_field = 48,
+                .blksize = 56,
+                .blocks = 64,
+                .atim = 72,
+                .mtim = 88,
+                .ctim = 104,
+            },
+            .wasm => unreachable,
+        };
+        comptime {
+            std.debug.assert(@sizeOf(Stat) == expected.size);
+            std.debug.assert(@offsetOf(Stat, "st_dev") == expected.dev);
+            std.debug.assert(@offsetOf(Stat, "st_ino") == expected.ino);
+            std.debug.assert(@offsetOf(Stat, "st_nlink") == expected.nlink);
+            std.debug.assert(@offsetOf(Stat, "st_mode") == expected.mode);
+            std.debug.assert(@offsetOf(Stat, "st_uid") == expected.uid);
+            std.debug.assert(@offsetOf(Stat, "st_gid") == expected.gid);
+            std.debug.assert(@offsetOf(Stat, "st_rdev") == expected.rdev);
+            std.debug.assert(@offsetOf(Stat, "st_size") == expected.size_field);
+            std.debug.assert(@offsetOf(Stat, "st_blksize") == expected.blksize);
+            std.debug.assert(@offsetOf(Stat, "st_blocks") == expected.blocks);
+            std.debug.assert(@offsetOf(Stat, "st_atim") == expected.atim);
+            std.debug.assert(@offsetOf(Stat, "st_mtim") == expected.mtim);
+            std.debug.assert(@offsetOf(Stat, "st_ctim") == expected.ctim);
+        }
+    }
+
+    pub fn directFstatat(dirfd: i32, path: [*:0]const u8, buf: *bun.c.struct_stat, flags: u32) usize {
+        assertNativeStatLayout();
+        return std.os.linux.syscall4(
+            .newfstatat,
+            @as(u32, @bitCast(dirfd)),
+            @intFromPtr(path),
+            @intFromPtr(buf),
+            flags,
+        );
+    }
+
+    pub fn directFstat(fd: c_int, buf: *bun.c.struct_stat) usize {
+        assertNativeStatLayout();
+        return std.os.linux.syscall2(.fstat, @as(u32, @bitCast(fd)), @intFromPtr(buf));
+    }
+
+    pub export fn stat(path: [*:0]const u8, buf: *bun.c.struct_stat) c_int {
         // https://git.musl-libc.org/cgit/musl/tree/src/stat/stat.c
-        const rc = std.os.linux.fstatat(std.os.linux.AT.FDCWD, path, buf, 0);
+        const rc = directFstatat(std.os.linux.AT.FDCWD, path, buf, 0);
         return simulateLibcErrno(rc);
     }
 
@@ -21,24 +92,24 @@ pub const linux = struct {
     pub const fstat64 = fstat;
     pub const fstatat64 = fstatat;
 
-    pub export fn lstat(path: [*:0]const u8, buf: *std.os.linux.Stat) c_int {
+    pub export fn lstat(path: [*:0]const u8, buf: *bun.c.struct_stat) c_int {
         // https://git.musl-libc.org/cgit/musl/tree/src/stat/lstat.c
-        const rc = std.os.linux.fstatat(std.os.linux.AT.FDCWD, path, buf, std.os.linux.AT.SYMLINK_NOFOLLOW);
+        const rc = directFstatat(std.os.linux.AT.FDCWD, path, buf, std.os.linux.AT.SYMLINK_NOFOLLOW);
         return simulateLibcErrno(rc);
     }
 
-    pub export fn fstat(fd: c_int, buf: *std.os.linux.Stat) c_int {
-        const rc = std.os.linux.fstat(fd, buf);
+    pub export fn fstat(fd: c_int, buf: *bun.c.struct_stat) c_int {
+        const rc = directFstat(fd, buf);
         return simulateLibcErrno(rc);
     }
 
-    pub export fn fstatat(dirfd: i32, path: [*:0]const u8, buf: *std.os.linux.Stat, flags: u32) c_int {
-        const rc = std.os.linux.fstatat(dirfd, path, buf, flags);
+    pub export fn fstatat(dirfd: i32, path: [*:0]const u8, buf: *bun.c.struct_stat, flags: u32) c_int {
+        const rc = directFstatat(dirfd, path, buf, flags);
         return simulateLibcErrno(rc);
     }
 
     pub export fn statx(dirfd: i32, path: [*:0]const u8, flags: u32, mask: u32, buf: *std.os.linux.Statx) c_int {
-        const rc = std.os.linux.statx(dirfd, path, flags, mask, buf);
+        const rc = std.os.linux.statx(dirfd, path, flags, @bitCast(mask), buf);
         return simulateLibcErrno(rc);
     }
 
@@ -65,15 +136,15 @@ pub const darwin = struct {
     // The symbol name depends on the arch.
 
     pub const lstat = blk: {
-        const T = *const fn (?[*:0]const u8, ?*bun.Stat) callconv(.c) c_int;
+        const T = *const fn (?[*:0]const u8, ?*std.c.Stat) callconv(.c) c_int;
         break :blk @extern(T, .{ .name = if (bun.Environment.isAarch64) "lstat" else "lstat64" });
     };
     pub const fstat = blk: {
-        const T = *const fn (i32, ?*bun.Stat) callconv(.c) c_int;
+        const T = *const fn (i32, ?*std.c.Stat) callconv(.c) c_int;
         break :blk @extern(T, .{ .name = if (bun.Environment.isAarch64) "fstat" else "fstat64" });
     };
     pub const stat = blk: {
-        const T = *const fn (?[*:0]const u8, ?*bun.Stat) callconv(.c) c_int;
+        const T = *const fn (?[*:0]const u8, ?*std.c.Stat) callconv(.c) c_int;
         break :blk @extern(T, .{ .name = if (bun.Environment.isAarch64) "stat" else "stat64" });
     };
 };

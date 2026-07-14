@@ -187,7 +187,7 @@ current_bundle: ?struct {
     /// Information BundleV2 needs to finalize the bundle
     start_data: bun.bundle_v2.DevServerInput,
     /// Started when the bundle was queued
-    timer: std.time.Timer,
+    timer: bun.SystemTimer,
     /// If any files in this bundle were due to hot-reloading, some extra work
     /// must be done to inform clients to reload routes. When this is false,
     /// all entry points do not have bundles yet.
@@ -1174,7 +1174,7 @@ fn ensureRouteIsBundled(
             dev.startAsyncBundle(
                 entry_points,
                 false,
-                std.time.Timer.start() catch @panic("timers unsupported"),
+                bun.SystemTimer.start() catch @panic("timers unsupported"),
             ) catch |err| bun.handleOom(err);
         },
         .deferred_to_next_bundle => {
@@ -1869,7 +1869,7 @@ pub fn startAsyncBundle(
     dev: *DevServer,
     entry_points: EntryPointList,
     had_reload_event: bool,
-    timer: std.time.Timer,
+    timer: bun.SystemTimer,
 ) bun.OOM!void {
     assert(dev.current_bundle == null);
     assert(entry_points.set.count() > 0);
@@ -3054,7 +3054,7 @@ fn startNextBundleIfPresent(dev: *DevServer) void {
             }
 
             break :brk .{ true, reload_event_timer };
-        } else .{ false, std.time.Timer.start() catch @panic("timers unsupported") };
+        } else .{ false, bun.SystemTimer.start() catch @panic("timers unsupported") };
 
         for (dev.next_bundle.route_queue.keys()) |route_bundle_index| {
             const rb = dev.routeBundlePtr(route_bundle_index);

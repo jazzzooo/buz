@@ -631,7 +631,7 @@ pub fn stdin(rare: *RareData) *Blob.Store {
             .data = .{
                 .file = .{
                     .pathlike = .{ .fd = fd },
-                    .is_atty = if (fd.unwrapValid()) |valid| std.posix.isatty(valid.native()) else false,
+                    .is_atty = if (fd.unwrapValid()) |valid| bun.sys.isatty(valid) else false,
                     .mode = mode,
                 },
             },

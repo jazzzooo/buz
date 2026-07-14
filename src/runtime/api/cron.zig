@@ -914,7 +914,7 @@ pub const CronJob = struct {
     fn computeNextTimespec(this: *CronJob) ?bun.timespec {
         // Cron occurrences are calendar-based (real epoch); the timer heap is
         // monotonic. Anchor both to real time so fake timers don't half-apply.
-        const now_ms: f64 = @floatFromInt(std.time.milliTimestamp());
+        const now_ms: f64 = @floatFromInt(bun.timespec.realNow().ms());
         // The monotonic timer can fire fractionally before the wall-clock target
         // (clock skew / NTP step); floor next() at the prior target so it can't
         // recompute the same minute and double-fire.
@@ -1148,7 +1148,7 @@ pub fn cronParse(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
         } else {
             return globalObject.throwInvalidArguments("Bun.cron.parse() expects the second argument to be a Date or number (ms since epoch)", .{});
         }
-    } else @as(f64, @floatFromInt(std.time.milliTimestamp()));
+    } else @as(f64, @floatFromInt(bun.timespec.realNow().ms()));
 
     if (std.math.isNan(from_ms) or std.math.isInf(from_ms))
         return globalObject.throwInvalidArguments("Invalid date value", .{});

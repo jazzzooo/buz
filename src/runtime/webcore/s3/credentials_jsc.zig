@@ -12,6 +12,7 @@ pub fn getCredentialsWithOptions(this: S3Credentials, default_options: MultiPart
         .storage_class = default_storage_class,
         .request_payer = default_request_payer,
     };
+    new_credentials.credentials.io = globalObject.bunVM().io;
     errdefer {
         new_credentials.deinit();
     }

@@ -14,7 +14,7 @@ pub const LifecycleScriptSubprocess = struct {
     envp: [:null]?[*:0]const u8,
     shell_bin: ?[:0]const u8,
 
-    timer: ?Timer = null,
+    timer: ?std.Io.Timestamp = null,
 
     has_incremented_alive_count: bool = false,
 
@@ -139,6 +139,7 @@ pub const LifecycleScriptSubprocess = struct {
         }
 
         const manager = this.manager;
+        this.timer = std.Io.Clock.awake.now(manager.io);
         const original_script = this.scripts.items[next_script_index].?;
         const cwd = this.scripts.cwd;
         this.stdout.setParent(this);
@@ -342,7 +343,10 @@ pub const LifecycleScriptSubprocess = struct {
 
         switch (status) {
             .exited => |exit| {
-                const maybe_duration = if (this.timer) |*t| t.read() else null;
+                const maybe_duration = if (this.timer) |started|
+                    @as(u64, @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(this.manager.io)).nanoseconds)))
+                else
+                    null;
 
                 if (exit.code > 0) {
                     if (this.optional) {
@@ -594,8 +598,6 @@ const string = []const u8;
 const Lockfile = @import("./lockfile.zig");
 const std = @import("std");
 const PackageManager = @import("./install.zig").PackageManager;
-const Timer = std.time.Timer;
-
 const bun = @import("bun");
 const Environment = bun.Environment;
 const Global = bun.Global;

@@ -31,17 +31,35 @@ pub const PosixStat = extern struct {
         };
     }
 
-    /// Convert platform-specific bun.Stat to PosixStat
-    pub fn init(stat_: *const bun.Stat) PosixStat {
+    pub fn init(stat_: *const PosixStat) PosixStat {
+        return stat_.*;
+    }
+
+    pub fn fromLinux(stat_: *const bun.c.struct_stat) PosixStat {
+        return .{
+            .dev = toU64(stat_.st_dev),
+            .ino = toU64(stat_.st_ino),
+            .mode = toU64(stat_.st_mode),
+            .nlink = toU64(stat_.st_nlink),
+            .uid = toU64(stat_.st_uid),
+            .gid = toU64(stat_.st_gid),
+            .rdev = toU64(stat_.st_rdev),
+            .size = toU64(stat_.st_size),
+            .blksize = toU64(stat_.st_blksize),
+            .blocks = toU64(stat_.st_blocks),
+            .atim = .{ .sec = stat_.st_atim.tv_sec, .nsec = stat_.st_atim.tv_nsec },
+            .mtim = .{ .sec = stat_.st_mtim.tv_sec, .nsec = stat_.st_mtim.tv_nsec },
+            .ctim = .{ .sec = stat_.st_ctim.tv_sec, .nsec = stat_.st_ctim.tv_nsec },
+            .birthtim = bun.timespec.epoch,
+        };
+    }
+
+    pub fn fromLibc(stat_: *const std.c.Stat) PosixStat {
         const atime_val = stat_.atime();
         const mtime_val = stat_.mtime();
         const ctime_val = stat_.ctime();
-        const birthtime_val = if (Environment.isLinux)
-            bun.timespec.epoch
-        else
-            stat_.birthtime();
-
-        return PosixStat{
+        const birthtime_val = stat_.birthtime();
+        return .{
             .dev = toU64(stat_.dev),
             .ino = toU64(stat_.ino),
             .mode = toU64(stat_.mode),
@@ -56,6 +74,25 @@ pub const PosixStat = extern struct {
             .mtim = .{ .sec = mtime_val.sec, .nsec = mtime_val.nsec },
             .ctim = .{ .sec = ctime_val.sec, .nsec = ctime_val.nsec },
             .birthtim = .{ .sec = birthtime_val.sec, .nsec = birthtime_val.nsec },
+        };
+    }
+
+    pub fn fromLibuv(stat_: *const bun.windows.libuv.uv_stat_t) PosixStat {
+        return .{
+            .dev = stat_.dev,
+            .ino = stat_.ino,
+            .mode = stat_.mode,
+            .nlink = stat_.nlink,
+            .uid = stat_.uid,
+            .gid = stat_.gid,
+            .rdev = stat_.rdev,
+            .size = stat_.size,
+            .blksize = stat_.blksize,
+            .blocks = stat_.blocks,
+            .atim = .{ .sec = stat_.atim.sec, .nsec = stat_.atim.nsec },
+            .mtim = .{ .sec = stat_.mtim.sec, .nsec = stat_.mtim.nsec },
+            .ctim = .{ .sec = stat_.ctim.sec, .nsec = stat_.ctim.nsec },
+            .birthtim = .{ .sec = stat_.birthtim.sec, .nsec = stat_.birthtim.nsec },
         };
     }
 
@@ -78,3 +115,4 @@ pub const PosixStat = extern struct {
 
 const bun = @import("bun");
 const Environment = bun.Environment;
+const std = @import("std");

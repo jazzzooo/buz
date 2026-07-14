@@ -249,7 +249,7 @@ pub const GenerateHeader = struct {
         var platform_: analytics.Platform = undefined;
         pub const Platform = analytics.Platform;
         var linux_kernel_version: Semver.Version = undefined;
-        var run_once = std.once(struct {
+        var run_once = bun.once(struct {
             fn run() void {
                 if (comptime Environment.isMac) {
                     platform_ = forMac();
@@ -273,13 +273,13 @@ pub const GenerateHeader = struct {
         }.run);
 
         pub fn forOS() analytics.Platform {
-            run_once.call();
+            run_once.call(.{});
             return platform_;
         }
 
         // On macOS 13, tests that use sendmsg_x or recvmsg_x hang.
         var use_msgx_on_macos_14_or_later: bool = undefined;
-        var detectUseMsgXOnMacOS14OrLater_once = std.once(detectUseMsgXOnMacOS14OrLater);
+        var detectUseMsgXOnMacOS14OrLater_once = bun.once(detectUseMsgXOnMacOS14OrLater);
         fn detectUseMsgXOnMacOS14OrLater() void {
             const version = Semver.Version.parseUTF8(forOS().version);
             use_msgx_on_macos_14_or_later = version.valid and version.version.max().major >= 14;
@@ -290,7 +290,7 @@ pub const GenerateHeader = struct {
                 return 0;
             }
 
-            detectUseMsgXOnMacOS14OrLater_once.call();
+            detectUseMsgXOnMacOS14OrLater_once.call(.{});
             return @intFromBool(use_msgx_on_macos_14_or_later);
         }
 

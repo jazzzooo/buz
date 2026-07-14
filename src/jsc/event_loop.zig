@@ -397,13 +397,13 @@ pub fn autoTick(this: *EventLoop) void {
 
     if (loop.isActive()) {
         this.processGCTimer();
-        var event_loop_sleep_timer = if (comptime Environment.isDebug) std.time.Timer.start() catch unreachable;
+        var event_loop_sleep_timer = if (comptime Environment.isDebug) bun.SystemTimer.start() catch unreachable;
         // for the printer, this is defined:
         var timespec: bun.timespec = if (Environment.isDebug) .{ .sec = 0, .nsec = 0 } else undefined;
         loop.tickWithTimeout(if (ctx.timer.getTimeout(&timespec, ctx)) &timespec else null);
 
         if (comptime Environment.isDebug) {
-            log("tick {D}, timeout: {D}", .{ event_loop_sleep_timer.read(), timespec.ns() });
+            log("tick {d}ns, timeout: {d}ns", .{ event_loop_sleep_timer.read(), timespec.ns() });
         }
     } else {
         loop.tickWithoutIdle();

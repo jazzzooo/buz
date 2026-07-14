@@ -970,7 +970,7 @@ const WaiterThreadPosix = struct {
 
         if (comptime Environment.isLinux) {
             const one = @as([8]u8, @bitCast(@as(usize, 1)));
-            _ = std.posix.write(instance.eventfd.cast(), &one) catch @panic("Failed to write to eventfd");
+            _ = bun.sys.write(instance.eventfd, &one).unwrap() catch @panic("Failed to write to eventfd");
         }
     }
 
@@ -987,7 +987,7 @@ const WaiterThreadPosix = struct {
 
         if (comptime Environment.isLinux) {
             const linux = std.os.linux;
-            instance.eventfd = .fromNative(try std.posix.eventfd(0, linux.EFD.NONBLOCK | linux.EFD.CLOEXEC | 0));
+            instance.eventfd = try bun.sys.eventfd(0, linux.EFD.NONBLOCK | linux.EFD.CLOEXEC).unwrap();
         }
 
         var thread = try std.Thread.spawn(.{ .stack_size = stack_size }, loop, .{});

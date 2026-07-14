@@ -226,7 +226,7 @@ pub fn fstat(fd: FD) Maybe(bun.Stat) {
     return if (rc.errno()) |errno|
         .{ .err = .{ .errno = errno, .syscall = .fstat, .fd = fd } }
     else
-        .{ .result = req.statbuf };
+        .{ .result = bun.Stat.fromLibuv(&req.statbuf) };
 }
 
 pub fn fdatasync(fd: FD) Maybe(void) {
@@ -264,7 +264,7 @@ pub fn stat(path: [:0]const u8) Maybe(bun.Stat) {
     return if (rc.errno()) |errno|
         .{ .err = .{ .errno = errno, .syscall = .stat, .path = path } }
     else
-        .{ .result = req.statbuf };
+        .{ .result = bun.Stat.fromLibuv(&req.statbuf) };
 }
 
 pub fn lstat(path: [:0]const u8) Maybe(bun.Stat) {
@@ -276,7 +276,7 @@ pub fn lstat(path: [:0]const u8) Maybe(bun.Stat) {
     return if (rc.errno()) |errno|
         .{ .err = .{ .errno = errno, .syscall = .lstat, .path = path } }
     else
-        .{ .result = req.statbuf };
+        .{ .result = bun.Stat.fromLibuv(&req.statbuf) };
 }
 
 pub fn close(fd: FD) ?bun.sys.Error {

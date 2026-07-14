@@ -12,6 +12,7 @@ pub const ContextData = struct {
     args: api.TransformOptions,
     log: *logger.Log,
     allocator: std.mem.Allocator,
+    io: std.Io,
     positionals: []const string = &.{},
     passthrough: []const string = &.{},
     install: ?*api.BunInstall = null,

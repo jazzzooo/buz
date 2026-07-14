@@ -47,7 +47,7 @@ pub inline fn readCounter() u64 {
 /// resolved without measuring it. Never recurses into `getRoughTickCount`.
 pub inline fn nowNs() u64 {
     if (comptime is_supported) {
-        calibrate_once.call();
+        calibrate_once.call(.{});
         if (calibration.mult != 0) {
             const ticks = readCounter() -% calibration.start_counter;
             // u64×u64→u128 widening mul + shift: 2 insns on x64 (`mul`+`shrd`),
@@ -74,7 +74,7 @@ const Calibration = struct {
     mult: u64 = 0,
 };
 var calibration: Calibration = .{};
-var calibrate_once = std.once(calibrate);
+var calibrate_once = bun.once(calibrate);
 
 fn calibrate() void {
     const freq = readFrequency();

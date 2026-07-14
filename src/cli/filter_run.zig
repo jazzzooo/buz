@@ -35,8 +35,8 @@ pub const ProcessHandle = struct {
     } = null,
     options: bun.spawn.SpawnOptions,
 
-    start_time: ?std.time.Instant = null,
-    end_time: ?std.time.Instant = null,
+    start_time: ?u64 = null,
+    end_time: ?u64 = null,
 
     remaining_dependencies: usize = 0,
     dependents: std.array_list.Managed(*This) = std.array_list.Managed(*This).init(bun.default_allocator),
@@ -49,7 +49,7 @@ pub const ProcessHandle = struct {
 
         var argv = [_:null]?[*:0]const u8{ this.state.shell_bin, if (Environment.isPosix) "-c" else "exec", this.config.combined, null };
 
-        this.start_time = std.time.Instant.now() catch null;
+        this.start_time = bun.hw_timer.nowNs();
         var spawned: bun.spawn.process.SpawnProcessResult = brk: {
 
             // Get the envp with the PATH configured
@@ -117,7 +117,7 @@ pub const ProcessHandle = struct {
 
     pub fn onProcessExit(this: *This, proc: *bun.spawn.Process, status: bun.spawn.Status, _: *const bun.spawn.Rusage) void {
         this.process.?.status = status;
-        this.end_time = std.time.Instant.now() catch null;
+        this.end_time = bun.hw_timer.nowNs();
         // We just leak the process because we're going to exit anyway after all processes are done
         _ = proc;
         this.state.processExit(this) catch {};
@@ -299,7 +299,7 @@ const State = struct {
                     .exited => |exited| {
                         if (exited.code == 0) {
                             if (handle.start_time != null and handle.end_time != null) {
-                                const duration = handle.end_time.?.since(handle.start_time.?);
+                                const duration = handle.end_time.? -| handle.start_time.?;
                                 const ms = @as(f64, @floatFromInt(duration)) / 1_000_000.0;
                                 if (ms > 1000.0) {
                                     try this.draw_buf.writer().print(fmt("<cyan>Done in {d:.2} s<r>\n"), .{ms / 1_000.0});

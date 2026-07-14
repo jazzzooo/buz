@@ -42,7 +42,7 @@ queued_response_body_drains_lock: bun.Mutex = .{},
 queued_threadlocal_proxy_derefs: std.ArrayListUnmanaged(*ProxyTunnel) = .empty,
 
 has_awoken: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-timer: std.time.Timer,
+timer: SystemTimer,
 lazy_libdeflater: ?*LibdeflateState = null,
 lazy_request_body_buffer: ?*HeapRequestBodyBuffer = null,
 
@@ -204,7 +204,7 @@ fn initOnce(opts: *const InitOpts) void {
             .ref_count = .init(),
             .pending_sockets = NewHTTPContext(true).PooledSocketHiveAllocator.empty,
         },
-        .timer = std.time.Timer.start() catch unreachable,
+        .timer = SystemTimer.start() catch unreachable,
     };
     bun.libdeflate.load();
     const thread = std.Thread.spawn(
@@ -657,7 +657,7 @@ fn processEvents(this: *@This()) noreturn {
         // this.loop.run();
         if (comptime Environment.isDebug) {
             const end = std.time.nanoTimestamp();
-            threadlog("Waited {D}\n", .{@as(i64, @truncate(end - start_time))});
+            threadlog("Waited {d}ns\n", .{@as(i64, @truncate(end - start_time))});
             Output.flush();
         }
     }
@@ -737,6 +737,7 @@ const stringZ = [:0]const u8;
 
 const ProxyTunnel = @import("./ProxyTunnel.zig");
 const std = @import("std");
+const SystemTimer = @import("../perf/system_timer.zig").Timer;
 
 const bun = @import("bun");
 const Environment = bun.Environment;

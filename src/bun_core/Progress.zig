@@ -38,7 +38,7 @@ root: Node = undefined,
 
 /// Keeps track of how much time has passed since the beginning.
 /// Used to compare with `initial_delay_ms` and `refresh_rate_ms`.
-timer: ?std.time.Timer = null,
+timer: ?bun.SystemTimer = null,
 
 /// When the previous refresh was written to the terminal.
 /// Used to compare with `refresh_rate_ms`.
@@ -198,7 +198,7 @@ pub fn start(self: *Progress, name: []const u8, estimated_total_items: usize) *N
     };
     self.columns_written = 0;
     self.prev_refresh_timestamp = 0;
-    self.timer = std.time.Timer.start() catch null;
+    self.timer = bun.SystemTimer.start() catch null;
     self.done = false;
     return &self.root;
 }
@@ -212,7 +212,7 @@ pub fn maybeRefresh(self: *Progress) void {
     }
 }
 
-fn maybeRefreshWithHeldLock(self: *Progress, timer: *std.time.Timer) void {
+fn maybeRefreshWithHeldLock(self: *Progress, timer: *bun.SystemTimer) void {
     const now = timer.read();
     if (now < self.initial_delay_ns) return;
     // TODO I have observed this to happen sometimes. I think we need to follow Rust's

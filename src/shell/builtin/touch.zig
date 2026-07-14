@@ -231,7 +231,7 @@ pub const ShellTouchTask = struct {
         };
 
         var node_fs = jsc.Node.fs.NodeFS{};
-        const milliseconds: f64 = @floatFromInt(std.time.milliTimestamp());
+        const milliseconds: f64 = @floatFromInt(bun.timespec.realNow().ms());
         const atime: jsc.Node.TimeLike = if (bun.Environment.isWindows) milliseconds / 1000.0 else jsc.Node.TimeLike{
             .sec = @intFromFloat(@divFloor(milliseconds, std.time.ms_per_s)),
             .nsec = @intFromFloat(@mod(milliseconds, std.time.ms_per_s) * std.time.ns_per_ms),

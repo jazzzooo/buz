@@ -5,6 +5,7 @@ threadlocal var source_set: bool = false;
 // These are not threadlocal so we avoid opening stdout/stderr for every thread
 var stderr_stream: Source.StreamType = undefined;
 var stdout_stream: Source.StreamType = undefined;
+var application_io: Source.IoType = undefined;
 var stdout_stream_set = false;
 
 // Track which stdio descriptors are TTYs (0=stdin, 1=stdout, 2=stderr)
@@ -18,25 +19,20 @@ pub var terminal_size: std.posix.winsize = .{
 };
 
 pub const Source = struct {
-    pub const StreamType: type = brk: {
-        if (Environment.isWasm) {
-            break :brk std.io.FixedBufferStream([]u8);
-        } else {
-            break :brk File;
-            // var stdout = std.fs.File.stdout();
-            // return @TypeOf(bun.deprecated.bufferedWriter(stdout.writer()));
-        }
-    };
+    pub const StreamType = if (Environment.isWasm) []u8 else File;
+    pub const IoType = if (Environment.isWasm) void else std.Io;
+    const WriterBacking = if (Environment.isWasm) std.Io.Writer else std.Io.File.Writer;
+    const BufferedWriterBacking = if (Environment.isWasm) void else std.Io.File.Writer;
 
     stdout_buffer: [4096]u8,
     stderr_buffer: [4096]u8,
-    buffered_stream_backing: @TypeOf(StreamType.quietWriter(undefined)).Adapter,
-    buffered_error_stream_backing: @TypeOf(StreamType.quietWriter(undefined)).Adapter,
+    buffered_stream_backing: BufferedWriterBacking,
+    buffered_error_stream_backing: BufferedWriterBacking,
     buffered_stream: *std.Io.Writer,
     buffered_error_stream: *std.Io.Writer,
 
-    stream_backing: @TypeOf(StreamType.quietWriter(undefined)).Adapter,
-    error_stream_backing: @TypeOf(StreamType.quietWriter(undefined)).Adapter,
+    stream_backing: WriterBacking,
+    error_stream_backing: WriterBacking,
     stream: *std.Io.Writer,
     error_stream: *std.Io.Writer,
 
@@ -47,6 +43,7 @@ pub const Source = struct {
 
     pub fn init(
         out: *Source,
+        io: IoType,
         stream: StreamType,
         err_stream: StreamType,
     ) void {
@@ -72,21 +69,36 @@ pub const Source = struct {
             .error_stream = undefined,
         };
 
-        out.buffered_stream_backing = out.raw_stream.quietWriter().adaptToNewApi(&out.stdout_buffer);
-        out.buffered_error_stream_backing = out.raw_error_stream.quietWriter().adaptToNewApi(&out.stderr_buffer);
-        out.buffered_stream = &out.buffered_stream_backing.new_interface;
-        out.buffered_error_stream = &out.buffered_error_stream_backing.new_interface;
+        if (comptime Environment.isWasm) {
+            out.stream_backing = .fixed(stream);
+            out.error_stream_backing = .fixed(err_stream);
+            out.stream = &out.stream_backing;
+            out.error_stream = &out.error_stream_backing;
+            out.buffered_stream = out.stream;
+            out.buffered_error_stream = out.error_stream;
+        } else {
+            const stdout_file = stdFile(stream);
+            const stderr_file = stdFile(err_stream);
+            out.buffered_stream_backing = .initStreaming(stdout_file, io, &out.stdout_buffer);
+            out.buffered_error_stream_backing = .initStreaming(stderr_file, io, &out.stderr_buffer);
+            out.buffered_stream = &out.buffered_stream_backing.interface;
+            out.buffered_error_stream = &out.buffered_error_stream_backing.interface;
 
-        out.stream_backing = out.raw_stream.quietWriter().adaptToNewApi(&.{});
-        out.error_stream_backing = out.raw_error_stream.quietWriter().adaptToNewApi(&.{});
-        out.stream = &out.stream_backing.new_interface;
-        out.error_stream = &out.error_stream_backing.new_interface;
+            out.stream_backing = .initStreaming(stdout_file, io, &.{});
+            out.error_stream_backing = .initStreaming(stderr_file, io, &.{});
+            out.stream = &out.stream_backing.interface;
+            out.error_stream = &out.error_stream_backing.interface;
+        }
+    }
+
+    fn stdFile(file: File) std.Io.File {
+        return .{ .handle = file.handle.cast(), .flags = .{ .nonblocking = false } };
     }
 
     pub fn configureThread() void {
         if (source_set) return;
         bun.debugAssert(stdout_stream_set);
-        source.init(stdout_stream, stderr_stream);
+        source.init(application_io, stdout_stream, stderr_stream);
         bun.StackCheck.configureThread();
     }
 
@@ -183,8 +195,6 @@ pub const Source = struct {
             fd_internals.windows_cached_stdin = if (stdin != INVALID_HANDLE_VALUE) .fromSystem(stdin) else .invalid;
             if (Environment.isDebug) fd_internals.windows_cached_fd_set = true;
 
-            buffered_stdin.unbuffered_reader.context.handle = .stdin();
-
             // https://learn.microsoft.com/en-us/windows/console/setconsoleoutputcp
             const CP_UTF8 = 65001;
             console_output_codepage = c.GetConsoleOutputCP();
@@ -206,14 +216,10 @@ pub const Source = struct {
 
             if (c.GetConsoleMode(stdout, &mode) != 0) {
                 console_mode[1] = mode;
-                bun_stdio_tty[1] = 1;
-                _ = c.SetConsoleMode(stdout, w.ENABLE_PROCESSED_OUTPUT | std.os.windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING | w.ENABLE_WRAP_AT_EOL_OUTPUT | mode);
             }
 
             if (c.GetConsoleMode(stderr, &mode) != 0) {
                 console_mode[2] = mode;
-                bun_stdio_tty[2] = 1;
-                _ = c.SetConsoleMode(stderr, w.ENABLE_PROCESSED_OUTPUT | std.os.windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING | w.ENABLE_WRAP_AT_EOL_OUTPUT | mode);
             }
         }
     };
@@ -234,17 +240,28 @@ pub const Source = struct {
         }
 
         pub extern "c" fn bun_initialize_process() void;
-        pub fn init() void {
+        pub fn init(io: IoType) void {
             bun_initialize_process();
 
             if (Environment.isWindows) {
                 WindowsStdio.init();
             }
 
-            const stdout = bun.sys.File.from(std.fs.File.stdout());
-            const stderr = bun.sys.File.from(std.fs.File.stderr());
+            const stdout_file = std.Io.File.stdout();
+            const stderr_file = std.Io.File.stderr();
+            const stdin_file = std.Io.File.stdin();
+            const stdout = bun.sys.File{ .handle = .fromNative(stdout_file.handle) };
+            const stderr = bun.sys.File{ .handle = .fromNative(stderr_file.handle) };
+            const stdin = bun.sys.File{ .handle = .fromNative(stdin_file.handle) };
 
-            Source.setInit(stdout, stderr);
+            const stdout_terminal = std.Io.Terminal.Mode.detect(io, stdout_file, false, false) catch .no_color;
+            const stderr_terminal = std.Io.Terminal.Mode.detect(io, stderr_file, false, false) catch .no_color;
+            bun_stdio_tty[0] = @intFromBool(stdin_file.isTty(io) catch false);
+            bun_stdio_tty[1] = @intFromBool(stdout_terminal != .no_color);
+            bun_stdio_tty[2] = @intFromBool(stderr_terminal != .no_color);
+
+            Source.setInit(io, stdout, stderr);
+            buffered_stdin = .init(stdin, &stdin_buffer);
 
             if (comptime Environment.isDebug or Environment.enable_logs) {
                 initScopedDebugWriterAtStartup();
@@ -268,7 +285,7 @@ pub const Source = struct {
         @"16m",
     };
     var lazy_color_depth: ColorDepth = .none;
-    var color_depth_once = std.once(getColorDepthOnce);
+    var color_depth_once = bun.once(getColorDepthOnce);
     fn getColorDepthOnce() void {
         if (getForceColorDepth()) |depth| {
             lazy_color_depth = depth;
@@ -374,12 +391,12 @@ pub const Source = struct {
         lazy_color_depth = .none;
     }
     pub fn colorDepth() ColorDepth {
-        color_depth_once.call();
+        color_depth_once.call(.{});
         return lazy_color_depth;
     }
 
-    pub fn setInit(stdout: StreamType, stderr: StreamType) void {
-        source.init(stdout, stderr);
+    pub fn setInit(io: IoType, stdout: StreamType, stderr: StreamType) void {
+        source.init(io, stdout, stderr);
 
         source_set = true;
         if (!stdout_stream_set) {
@@ -408,6 +425,7 @@ pub const Source = struct {
                 enable_ansi_colors_stderr = enable_color orelse is_stderr_tty;
             }
 
+            application_io = io;
             stdout_stream = stdout;
             stderr_stream = stderr;
         }
@@ -489,10 +507,10 @@ pub fn isAIAgent() bool {
             value = evaluate();
         }
 
-        var once = std.once(setValue);
+        var once = bun.once(setValue);
 
         pub fn isEnabled() bool {
-            once.call();
+            once.call(.{});
             return value;
         }
     };
@@ -542,7 +560,7 @@ pub fn panic(comptime fmt: string, args: anytype) noreturn {
     }
 }
 
-pub const WriterType: type = @TypeOf(Source.StreamType.quietWriter(undefined));
+pub const WriterType = std.Io.Writer;
 
 pub fn rawErrorWriter() Source.StreamType {
     bun.debugAssert(source_set);
@@ -849,14 +867,14 @@ fn ScopedLogger(comptime tagname: []const u8, comptime visibility: Visibility) t
 
     return struct {
         var buffer: [4096]u8 = undefined;
-        var buffered_writer: File.QuietWriter.Adapter = undefined;
+        var buffered_writer: File.QuietWriter = undefined;
         var out: *std.Io.Writer = undefined;
         var out_set = false;
         var really_disable = std.atomic.Value(bool).init(visibility == .hidden);
 
         var lock = bun.Mutex{};
 
-        var is_visible_once = std.once(evaluateIsVisible);
+        var is_visible_once = bun.once(evaluateIsVisible);
 
         fn evaluateIsVisible() void {
             if (bun.getenvZAnyCase("BUN_DEBUG_" ++ tagname)) |val| {
@@ -879,7 +897,7 @@ fn ScopedLogger(comptime tagname: []const u8, comptime visibility: Visibility) t
         }
 
         pub fn isVisible() bool {
-            is_visible_once.call();
+            is_visible_once.call(.{});
             return !really_disable.load(.monotonic);
         }
 
@@ -912,14 +930,14 @@ fn ScopedLogger(comptime tagname: []const u8, comptime visibility: Visibility) t
                 return;
 
             if (!out_set) {
-                buffered_writer = scopedWriter().adaptToNewApi(&buffer);
-                out = &buffered_writer.new_interface;
+                buffered_writer = scopedWriter().quietBufferedWriter(&buffer);
+                out = &buffered_writer.interface;
                 out_set = true;
             }
             lock.lock();
             defer lock.unlock();
 
-            switch (enable_ansi_colors_stdout and source_set and scopedWriter().context.handle == rawWriter().handle) {
+            switch (enable_ansi_colors_stdout and source_set and scopedWriter().handle == rawWriter().handle) {
                 inline else => |use_ansi| {
                     out.print(comptime prettyFmt("<r><d>[" ++ tagname ++ "]<r> " ++ fmt, use_ansi), args) catch {
                         really_disable.store(true, .monotonic);
@@ -1153,12 +1171,12 @@ pub inline fn printError(comptime fmt: string, args: anytype) void {
 }
 
 pub const DebugTimer = struct {
-    timer: bun.DebugOnly(std.time.Timer) = undefined,
+    timer: bun.DebugOnly(SystemTimer) = undefined,
 
     pub inline fn start() DebugTimer {
         if (comptime Environment.isDebug) {
             return DebugTimer{
-                .timer = std.time.Timer.start() catch unreachable,
+                .timer = SystemTimer.start() catch unreachable,
             };
         } else {
             return .{};
@@ -1271,7 +1289,7 @@ pub inline fn err(error_name: anytype, comptime fmt: []const u8, args: anytype) 
 }
 
 pub const ScopedDebugWriter = struct {
-    pub var scoped_file_writer: File.QuietWriter = undefined;
+    pub var scoped_file: File = undefined;
     pub threadlocal var disable_inside_log: isize = 0;
 };
 pub fn disableScopedDebugWriter() void {
@@ -1309,19 +1327,19 @@ pub fn initScopedDebugWriterAtStartup() void {
                 panic("Failed to open file for debug output: {s} ({s})", .{ @errorName(open_err), path });
             });
             _ = fd.truncate(0); // windows
-            ScopedDebugWriter.scoped_file_writer = fd.quietWriter();
+            ScopedDebugWriter.scoped_file = .{ .handle = fd };
             return;
         }
     }
 
-    ScopedDebugWriter.scoped_file_writer = source.raw_stream.quietWriter();
+    ScopedDebugWriter.scoped_file = source.raw_stream;
 }
-fn scopedWriter() File.QuietWriter {
+fn scopedWriter() File {
     if (comptime !Environment.isDebug and !Environment.enable_logs) {
         @compileError("scopedWriter() should only be called in debug mode");
     }
 
-    return ScopedDebugWriter.scoped_file_writer;
+    return ScopedDebugWriter.scoped_file;
 }
 
 /// Print a red error message with "error: " as the prefix. For custom prefixes see `err()`
@@ -1334,10 +1352,8 @@ pub inline fn errFmt(formatter: anytype) void {
     return errGeneric("{f}", .{formatter});
 }
 
-pub var buffered_stdin = bun.deprecated.BufferedReader(4096, File.Reader){
-    .unbuffered_reader = .{ .context = .{ .handle = if (Environment.isWindows) undefined else .stdin() } },
-    .buf = undefined,
-};
+var stdin_buffer: [4096]u8 = undefined;
+pub var buffered_stdin: File.Reader = undefined;
 
 const string = []const u8;
 

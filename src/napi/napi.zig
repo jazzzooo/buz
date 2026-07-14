@@ -1440,8 +1440,7 @@ pub const ThreadSafeFunction = struct {
 
     // User implementation error can cause this number to go negative.
     thread_count: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
-    // for std.condvar
-    lock: std.Thread.Mutex = .{},
+    lock: bun.Mutex = .{},
 
     event_loop: *jsc.EventLoop,
     tracker: jsc.Debugger.AsyncTaskTracker,
@@ -1460,7 +1459,7 @@ pub const ThreadSafeFunction = struct {
 
     callback: Callback = undefined,
     dispatch_state: DispatchState.Atomic = DispatchState.Atomic.init(.idle),
-    blocking_condvar: std.Thread.Condition = .{},
+    blocking_condvar: bun.Condition = .{},
     closing: std.atomic.Value(ClosingState) = std.atomic.Value(ClosingState).init(.not_closing),
     aborted: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
 

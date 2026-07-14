@@ -97,10 +97,10 @@ pub const Lazy = union(enum) {
 
         if (comptime Environment.isPosix) {
             if ((file.is_atty orelse false) or
-                (fd.stdioTag() != null and std.posix.isatty(fd.cast())) or
+                (fd.stdioTag() != null and bun.sys.isatty(fd)) or
                 (file.pathlike == .fd and
                     file.pathlike.fd.stdioTag() != null and
-                    std.posix.isatty(file.pathlike.fd.cast())))
+                    bun.sys.isatty(file.pathlike.fd)))
             {
                 // var termios = std.mem.zeroes(std.posix.termios);
                 // _ = std.c.tcgetattr(fd.cast(), &termios);
@@ -117,12 +117,12 @@ pub const Lazy = union(enum) {
                 },
             };
 
-            if (bun.S.ISDIR(stat.mode)) {
+            if (bun.S.ISDIR(@intCast(stat.mode))) {
                 bun.Async.Closer.close(fd, {});
                 return .{ .err = .fromCode(.ISDIR, .fstat) };
             }
 
-            if (bun.S.ISREG(stat.mode)) {
+            if (bun.S.ISREG(@intCast(stat.mode))) {
                 is_nonblocking = false;
             }
 

@@ -16,7 +16,7 @@ pub const Ctx = union(enum) {
         }
     }
 };
-var is_enabled_once = std.once(isEnabledOnce);
+var is_enabled_once = bun.once(isEnabledOnce);
 var is_enabled = std.atomic.Value(bool).init(false);
 fn isEnabledOnMacOSOnce() void {
     if (bun.env_var.DYLD_ROOT_PATH.get() != null or bun.feature_flag.BUN_INSTRUMENTS.get()) {
@@ -45,7 +45,7 @@ fn isEnabledOnce() void {
 }
 
 pub fn isEnabled() bool {
-    is_enabled_once.call();
+    is_enabled_once.call(.{});
     return is_enabled.load(.seq_cst);
 }
 
@@ -106,13 +106,13 @@ pub const Darwin = struct {
     }
 
     var os_log: ?*OSLog = null;
-    var os_log_once = std.once(getOnce);
+    var os_log_once = bun.once(getOnce);
     fn getOnce() void {
         os_log = OSLog.init();
     }
 
     pub fn get() ?*OSLog {
-        os_log_once.call();
+        os_log_once.call(.{});
         return os_log;
     }
 };
@@ -122,7 +122,7 @@ pub const Linux = struct {
     event: PerfEvent,
 
     var is_initialized = std.atomic.Value(bool).init(false);
-    var init_once = std.once(initOnce);
+    var init_once = bun.once(initOnce);
 
     extern "c" fn Bun__linux_trace_init() c_int;
     extern "c" fn Bun__linux_trace_close() void;
@@ -134,7 +134,7 @@ pub const Linux = struct {
     }
 
     pub fn isSupported() bool {
-        init_once.call();
+        init_once.call(.{});
         return is_initialized.load(.monotonic);
     }
 

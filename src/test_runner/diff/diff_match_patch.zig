@@ -120,7 +120,7 @@ pub fn DMP(comptime Unit: type) type {
             const deadline = if (dmp.config.diff_timeout == 0)
                 std.math.maxInt(u64)
             else
-                @as(u64, @intCast(std.time.milliTimestamp())) + dmp.config.diff_timeout;
+                bun.hw_timer.nowMs() + dmp.config.diff_timeout;
             return dmp.diffInternal(allocator, before, after, check_lines, deadline);
         }
 
@@ -564,7 +564,7 @@ pub fn DMP(comptime Unit: type) type {
             var d: isize = 0;
             while (d < max_d) : (d += 1) {
                 // Bail out if deadline is reached.
-                if (@as(u64, @intCast(std.time.milliTimestamp())) > deadline) {
+                if (bun.hw_timer.nowMs() > deadline) {
                     break;
                 }
 
@@ -2534,12 +2534,12 @@ pub fn DMP(comptime Unit: type) type {
                     .config = .{ .diff_timeout = 100 }, // 100ms
                 };
 
-                const start_time = std.time.milliTimestamp();
+                const start_time = bun.hw_timer.nowMs();
                 {
                     var time_diff = try with_timout.diff(allocator, a, b, false);
                     defer deinitDiffList(allocator, &time_diff);
                 }
-                const end_time = std.time.milliTimestamp();
+                const end_time = bun.hw_timer.nowMs();
 
                 // Test that we took at least the timeout period.
                 try testing.expect(with_timout.config.diff_timeout <= end_time - start_time); // diff: Timeout min.

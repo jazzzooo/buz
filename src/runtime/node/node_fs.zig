@@ -779,7 +779,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
                     },
                 };
 
-                if (!bun.S.ISDIR(stat_.mode)) {
+                if (!bun.S.ISDIR(@intCast(stat_.mode))) {
                     // This is the only file, there is no point in dispatching subtasks
                     const r = nodefs._copySingleFileSync(
                         src,
@@ -3723,12 +3723,12 @@ pub const NodeFS = struct {
                 src_fd.close();
             }
 
-            const stat_: linux.Stat = switch (Syscall.fstat(src_fd)) {
+            const stat_: bun.Stat = switch (Syscall.fstat(src_fd)) {
                 .result => |result| result,
                 .err => |err| return Maybe(Return.CopyFile){ .err = err },
             };
 
-            if (!posix.S.ISREG(stat_.mode)) {
+            if (!posix.S.ISREG(@intCast(stat_.mode))) {
                 return Maybe(Return.CopyFile){ .err = .{ .errno = @intFromEnum(SystemErrno.ENOTSUP), .syscall = .copyfile } };
             }
 
@@ -3753,16 +3753,16 @@ pub const NodeFS = struct {
                     _ = bun.sys.unlink(dest);
                     return err;
                 }
-                _ = Syscall.fchmod(dest_fd, stat_.mode);
+                _ = Syscall.fchmod(dest_fd, @intCast(stat_.mode));
                 dest_fd.close();
                 return ret.success;
             }
 
             // If we know it's a regular file and ioctl_ficlone is available, attempt to use it.
-            if (posix.S.ISREG(stat_.mode) and bun.can_use_ioctl_ficlone()) {
+            if (posix.S.ISREG(@intCast(stat_.mode)) and bun.can_use_ioctl_ficlone()) {
                 const rc = bun.linux.ioctl_ficlone(dest_fd, src_fd);
                 if (rc == 0) {
-                    _ = Syscall.fchmod(dest_fd, stat_.mode);
+                    _ = Syscall.fchmod(dest_fd, @intCast(stat_.mode));
                     dest_fd.close();
                     return ret.success;
                 }
@@ -3774,7 +3774,7 @@ pub const NodeFS = struct {
 
             defer {
                 _ = linux.ftruncate(dest_fd.cast(), @as(i64, @intCast(@as(u63, @truncate(wrote)))));
-                _ = linux.fchmod(dest_fd.cast(), stat_.mode);
+                _ = linux.fchmod(dest_fd.cast(), @intCast(stat_.mode));
                 dest_fd.close();
             }
 
@@ -6235,7 +6235,7 @@ pub const NodeFS = struct {
                 },
             };
 
-            if (!posix.S.ISDIR(stat_.mode)) {
+            if (!posix.S.ISDIR(@intCast(stat_.mode))) {
                 const r = this._copySingleFileSync(
                     src,
                     dest,
@@ -6461,7 +6461,7 @@ pub const NodeFS = struct {
         dest: bun.OSPathSliceZ,
         mode: constants.Copyfile,
         /// Stat on posix, file attributes on windows
-        reuse_stat: ?if (Environment.isWindows) windows.DWORD else std.posix.Stat,
+        reuse_stat: ?if (Environment.isWindows) windows.DWORD else bun.Stat,
         args: Arguments.Cp,
     ) Maybe(Return.CopyFile) {
         const ret = Maybe(Return.CopyFile);
@@ -6480,8 +6480,8 @@ pub const NodeFS = struct {
                     },
                 };
 
-                if (!posix.S.ISREG(stat_.mode)) {
-                    if (posix.S.ISLNK(stat_.mode)) {
+                if (!posix.S.ISREG(@intCast(stat_.mode))) {
+                    if (posix.S.ISLNK(@intCast(stat_.mode))) {
                         var mode_: u32 = c.COPYFILE_ACL | c.COPYFILE_DATA | c.COPYFILE_NOFOLLOW_SRC;
                         if (mode.shouldntOverwrite()) {
                             mode_ |= c.COPYFILE_EXCL;
@@ -6604,12 +6604,12 @@ pub const NodeFS = struct {
                 src_fd.close();
             }
 
-            const stat_: linux.Stat = switch (Syscall.fstat(src_fd)) {
+            const stat_: bun.Stat = switch (Syscall.fstat(src_fd)) {
                 .result => |result| result,
                 .err => |err| return Maybe(Return.CopyFile){ .err = err.withFd(src_fd) },
             };
 
-            if (!posix.S.ISREG(stat_.mode)) {
+            if (!posix.S.ISREG(@intCast(stat_.mode))) {
                 return Maybe(Return.CopyFile){ .err = .{
                     .errno = @intFromEnum(SystemErrno.ENOTSUP),
                     .syscall = .copyfile,

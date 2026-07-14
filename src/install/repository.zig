@@ -10,10 +10,10 @@ const SloppyGlobalGitConfig = struct {
     has_ssh_command: bool = false,
 
     var holder: SloppyGlobalGitConfig = .{};
-    var load_and_parse_once = std.once(loadAndParse);
+    var load_and_parse_once = bun.once(loadAndParse);
 
     pub fn get() SloppyGlobalGitConfig {
-        load_and_parse_once.call();
+        load_and_parse_once.call(.{});
         return holder;
     }
 

@@ -150,7 +150,7 @@ pub const PathWatcher = struct {
     /// Called from the platform reader thread with `manager.mutex` held.
     /// `rel_path` is borrowed — `onPathUpdatePosix` dupes it before enqueuing.
     fn emit(this: *PathWatcher, event_type: EventType, rel_path: []const u8, is_file: bool) void {
-        const timestamp = std.time.milliTimestamp();
+        const timestamp = bun.timespec.realNow().ms();
         const hash = bun.hash(rel_path);
         for (this.handlers.keys(), this.handlers.values()) |ctx, *last| {
             if (last.shouldEmit(hash, timestamp, event_type)) {

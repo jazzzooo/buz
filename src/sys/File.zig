@@ -150,8 +150,6 @@ pub fn writeFile(
     return .success;
 }
 
-pub const ReadError = anyerror;
-
 pub fn closeAndMoveTo(this: File, src: [:0]const u8, dest: [:0]const u8) !void {
     // On POSIX, close the file after moving it.
     defer if (Environment.isPosix) this.close();
@@ -161,44 +159,141 @@ pub fn closeAndMoveTo(this: File, src: [:0]const u8, dest: [:0]const u8) !void {
     try bun.sys.moveFileZWithHandle(this.handle, cwd, src, cwd, dest);
 }
 
-fn stdIoRead(this: File, buf: []u8) ReadError!usize {
-    return try this.read(buf).unwrap();
-}
+pub const Reader = struct {
+    file: File,
+    interface: std.Io.Reader,
+    err: ?sys.Error = null,
 
-pub const Reader = std.Io.GenericReader(File, anyerror, stdIoRead);
+    pub const Error = anyerror;
+
+    pub fn init(file: File, buffer: []u8) Reader {
+        return .{
+            .file = file,
+            .interface = .{
+                .vtable = &.{ .stream = stream },
+                .buffer = buffer,
+                .seek = 0,
+                .end = 0,
+            },
+        };
+    }
+
+    fn stream(io_reader: *std.Io.Reader, sink: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
+        const self: *Reader = @alignCast(@fieldParentPtr("interface", io_reader));
+        const destination = limit.slice(try sink.writableSliceGreedy(1));
+        const count = switch (self.file.read(destination)) {
+            .result => |count| count,
+            .err => |err| {
+                self.err = err;
+                return error.ReadFailed;
+            },
+        };
+        if (count == 0) return error.EndOfStream;
+        sink.advance(count);
+        return count;
+    }
+
+    pub fn read(self: *Reader, destination: []u8) anyerror!usize {
+        return self.interface.readSliceShort(destination) catch |err| switch (err) {
+            error.ReadFailed => return (self.err orelse return error.ReadFailed).toZigErr(),
+        };
+    }
+
+    pub fn reader(self: *Reader) *std.Io.Reader {
+        return &self.interface;
+    }
+};
 
 pub fn reader(self: File) Reader {
-    return Reader{ .context = self };
+    return .init(self, &.{});
 }
 
-pub const WriteError = anyerror;
-fn stdIoWrite(this: File, bytes: []const u8) WriteError!usize {
-    try this.writeAll(bytes).unwrap();
-
-    return bytes.len;
+pub fn bufferedReader(self: File, buffer: []u8) Reader {
+    return .init(self, buffer);
 }
 
-fn stdIoWriteQuietDebug(this: File, bytes: []const u8) WriteError!usize {
-    bun.Output.disableScopedDebugWriter();
-    defer bun.Output.enableScopedDebugWriter();
-    try this.writeAll(bytes).unwrap();
+pub const Writer = struct {
+    file: File,
+    interface: std.Io.Writer,
+    err: ?sys.Error = null,
+    quiet: bool = false,
 
-    return bytes.len;
-}
+    pub const Error = anyerror;
 
-pub const Writer = std.Io.GenericWriter(File, anyerror, stdIoWrite);
-pub const QuietWriter = if (Environment.isDebug) std.Io.GenericWriter(File, anyerror, stdIoWriteQuietDebug) else Writer;
+    pub fn init(file: File, buffer: []u8, quiet: bool) Writer {
+        return .{
+            .file = file,
+            .interface = .{
+                .vtable = &.{ .drain = drain },
+                .buffer = buffer,
+            },
+            .quiet = quiet,
+        };
+    }
+
+    fn writeAllToFile(self: *Writer, bytes: []const u8) std.Io.Writer.Error!void {
+        if (self.quiet and Environment.isDebug) bun.Output.disableScopedDebugWriter();
+        defer if (self.quiet and Environment.isDebug) bun.Output.enableScopedDebugWriter();
+        switch (self.file.writeAll(bytes)) {
+            .result => {},
+            .err => |err| {
+                self.err = err;
+                return error.WriteFailed;
+            },
+        }
+    }
+
+    fn drain(io_writer: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *Writer = @alignCast(@fieldParentPtr("interface", io_writer));
+        try self.writeAllToFile(io_writer.buffered());
+        io_writer.end = 0;
+
+        var consumed: usize = 0;
+        for (data[0 .. data.len - 1]) |bytes| {
+            try self.writeAllToFile(bytes);
+            consumed += bytes.len;
+        }
+        const pattern = data[data.len - 1];
+        for (0..splat) |_| {
+            try self.writeAllToFile(pattern);
+            consumed += pattern.len;
+        }
+        return consumed;
+    }
+
+    pub fn write(self: *Writer, bytes: []const u8) anyerror!usize {
+        return self.interface.write(bytes) catch return (self.err orelse return error.WriteFailed).toZigErr();
+    }
+
+    pub fn writeAll(self: *Writer, bytes: []const u8) anyerror!void {
+        self.interface.writeAll(bytes) catch return (self.err orelse return error.WriteFailed).toZigErr();
+    }
+
+    pub fn flush(self: *Writer) anyerror!void {
+        self.interface.flush() catch return (self.err orelse return error.WriteFailed).toZigErr();
+    }
+};
+
+pub const QuietWriter = Writer;
 
 pub fn writer(self: File) Writer {
-    return Writer{ .context = self };
+    return .init(self, &.{}, false);
+}
+
+pub fn bufferedWriter(self: File, buffer: []u8) Writer {
+    return .init(self, buffer, false);
 }
 
 pub fn quietWriter(self: File) QuietWriter {
-    return QuietWriter{ .context = self };
+    return .init(self, &.{}, true);
+}
+
+pub fn quietBufferedWriter(self: File, buffer: []u8) QuietWriter {
+    return .init(self, buffer, true);
 }
 
 pub fn isTty(self: File) bool {
-    return std.posix.isatty(self.handle.cast());
+    return sys.isatty(self.handle);
 }
 
 /// Asserts in debug that this File object is valid

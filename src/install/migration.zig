@@ -11,7 +11,7 @@ pub fn detectAndLoadOtherLockfile(
     // if it exists, do an in-memory migration
 
     npm: {
-        var timer = std.time.Timer.start() catch unreachable;
+        var timer = bun.SystemTimer.start() catch unreachable;
         const lockfile = File.openat(dir, "package-lock.json", bun.O.RDONLY, 0).unwrap() catch break :npm;
         defer lockfile.close();
         var lockfile_path_buf: bun.PathBuffer = undefined;
@@ -45,7 +45,7 @@ pub fn detectAndLoadOtherLockfile(
     }
 
     yarn: {
-        var timer = std.time.Timer.start() catch unreachable;
+        var timer = bun.SystemTimer.start() catch unreachable;
         const lockfile = File.openat(dir, "yarn.lock", bun.O.RDONLY, 0).unwrap() catch break :yarn;
         defer lockfile.close();
         const data = lockfile.readToEnd(allocator).unwrap() catch break :yarn;
@@ -69,7 +69,7 @@ pub fn detectAndLoadOtherLockfile(
     }
 
     pnpm: {
-        var timer = std.time.Timer.start() catch unreachable;
+        var timer = bun.SystemTimer.start() catch unreachable;
         const lockfile = File.openat(dir, "pnpm-lock.yaml", bun.O.RDONLY, 0).unwrap() catch break :pnpm;
         defer lockfile.close();
         const data = lockfile.readToEnd(allocator).unwrap() catch break :pnpm;

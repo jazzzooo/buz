@@ -83,7 +83,7 @@ pub fn waitForDebuggerIfNecessary(this: *VirtualMachine) void {
                 this.eventLoop().autoTickActive();
 
                 if (comptime Environment.enable_logs)
-                    log("waited: {D}", .{@as(i64, @truncate(std.time.nanoTimestamp() - bun.cli.start_time))});
+                    log("waited: {d}ns", .{@as(i64, @truncate(bun.awakeNanoseconds(this.io) - bun.cli.start_time))});
             },
             .shortly => {
                 // Handle .incrementRefConcurrently
@@ -98,7 +98,7 @@ pub fn waitForDebuggerIfNecessary(this: *VirtualMachine) void {
                 this.uwsLoop().tickWithTimeout(&deadline);
 
                 if (comptime Environment.enable_logs)
-                    log("waited: {D}", .{@as(i64, @truncate(std.time.nanoTimestamp() - bun.cli.start_time))});
+                    log("waited: {d}ns", .{@as(i64, @truncate(bun.awakeNanoseconds(ctx.io) - bun.cli.start_time))});
 
                 const elapsed = bun.timespec.now(.force_real_time);
                 if (elapsed.order(&deadline) != .lt) {
