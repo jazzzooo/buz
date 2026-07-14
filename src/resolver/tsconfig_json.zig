@@ -4,7 +4,7 @@
 const PathsMap = bun.StringArrayHashMap([]string);
 
 fn FlagSet(comptime Type: type) type {
-    return std.EnumSet(std.meta.FieldEnum(Type));
+    return std.enums.EnumSet(std.meta.FieldEnum(Type));
 }
 
 const JSXFieldSet = FlagSet(options.JSX.Pragma);

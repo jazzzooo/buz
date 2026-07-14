@@ -41,14 +41,14 @@ pub const Method = enum(u8) {
     pub const Set = std.enums.EnumSet(Method);
 
     const with_body: Set = brk: {
-        var values = Set.initFull();
+        var values = Set.full;
         values.remove(.HEAD);
         values.remove(.TRACE);
         break :brk values;
     };
 
     const with_request_body: Set = brk: {
-        var values = Set.initFull();
+        var values = Set.full;
         values.remove(.GET);
         values.remove(.HEAD);
         values.remove(.OPTIONS);
@@ -68,7 +68,7 @@ pub const Method = enum(u8) {
     /// keep-alive connection resets. POST and PATCH are NOT idempotent
     /// and must not be silently retried.
     const idempotent: Set = brk: {
-        var values = Set.initEmpty();
+        var values = Set.empty;
         values.insert(.GET);
         values.insert(.HEAD);
         values.insert(.PUT);
@@ -189,7 +189,7 @@ pub const Method = enum(u8) {
                 .any => {},
                 .method => |*set| {
                     set.insert(method);
-                    if (set.eql(Set.initFull())) {
+                    if (set.eql(Set.full)) {
                         this.* = .any;
                     }
                 },

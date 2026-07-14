@@ -453,7 +453,7 @@ pub const SkipTypeOptions = enum {
     disallow_conditional_types,
 
     pub const Bitset = std.enums.EnumSet(@This());
-    pub const empty = Bitset.initEmpty();
+    pub const empty = Bitset.empty;
 };
 
 const string = []const u8;

@@ -437,7 +437,7 @@ const Pollable = struct {
 };
 
 pub const Poll = struct {
-    flags: Flags.Set = Flags.Set.initEmpty(),
+    flags: Flags.Set = .empty,
     generation_number: GenerationNumberInt = 0,
 
     const GenerationNumberInt = if (Environment.isMac and Environment.allow_assert) u64 else u0;
@@ -486,7 +486,7 @@ pub const Poll = struct {
         cancelled,
         registered,
 
-        pub const Set = std.EnumSet(Flags);
+        pub const Set = std.enums.EnumSet(Flags);
         pub const Struct = std.enums.EnumFieldStruct(Flags, bool, false);
 
         pub fn fromKQueueEvent(kqueue_event: KEvent) Flags.Set {

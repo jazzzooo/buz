@@ -619,7 +619,7 @@ pub fn constructInto(globalThis: *jsc.JSGlobalObject, arguments: []const jsc.JSV
 
     const url_or_object = arguments[0];
     const url_or_object_type = url_or_object.jsType();
-    var fields = std.EnumSet(Fields).initEmpty();
+    var fields: std.enums.EnumSet(Fields) = .empty;
 
     const is_first_argument_a_url =
         // fastest path:

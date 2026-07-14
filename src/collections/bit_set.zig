@@ -1179,7 +1179,7 @@ pub const DynamicBitSetUnmanaged = struct {
 };
 
 pub const AutoBitSet = union(enum) {
-    pub const Static = ArrayBitSet(usize, (@bitSizeOf(DynamicBitSetUnmanaged) - 1));
+    pub const Static = ArrayBitSet(usize, @sizeOf(DynamicBitSetUnmanaged) * std.mem.byte_size_in_bits - 1);
 
     static: Static,
     dynamic: DynamicBitSetUnmanaged,

@@ -618,7 +618,7 @@ pub fn fromJS(
                                     .callback = .create(function.withAsyncContextIfNeeded(global), global),
                                 }) catch |err| bun.handleOom(err);
                             } else if (try AnyRoute.fromJS(global, path, function, init_ctx)) |html_route| {
-                                var method_set = bun.http.Method.Set.initEmpty();
+                                var method_set = bun.http.Method.Set.empty;
                                 method_set.insert(method);
 
                                 args.static_routes.append(.{

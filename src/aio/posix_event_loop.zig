@@ -504,7 +504,7 @@ pub const FilePoll = struct {
             };
         }
 
-        pub const Set = std.EnumSet(Flags);
+        pub const Set = std.enums.EnumSet(Flags);
         pub const Struct = std.enums.EnumFieldStruct(Flags, bool, false);
 
         pub const Formatter = std.fmt.Alt(Flags.Set, Flags.format);

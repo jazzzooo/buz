@@ -955,7 +955,7 @@ pub const Archive = opaque {
 
     pub const Iterator = struct {
         archive: *Archive,
-        filter: std.EnumSet(std.fs.File.Kind),
+        filter: std.enums.EnumSet(std.fs.File.Kind),
 
         fn Result(comptime T: type) type {
             return union(enum) {
@@ -1015,7 +1015,7 @@ pub const Archive = opaque {
 
             return Return.initRes(.{
                 .archive = archive,
-                .filter = std.EnumSet(std.fs.File.Kind).initEmpty(),
+                .filter = .empty,
             });
         }
 
