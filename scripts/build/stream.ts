@@ -301,7 +301,7 @@ function main(): void {
 // ───────────────────────────────────────────────────────────────────────────
 // ZIG_PROGRESS protocol decoder
 //
-// Wire format (vendor/zig/lib/std/Progress.zig writeIpc, all LE):
+// Wire format (Zig's std.Progress.writeIpc, all LE):
 //   1 byte:  N (node count, u8)
 //   N * 48:  Storage[] — per node: u32 completed, u32 total, [40]u8 name
 //   N * 1:   Parent[] — per node: u8 (254=unused 255=root else=index)

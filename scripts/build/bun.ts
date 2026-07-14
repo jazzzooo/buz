@@ -587,9 +587,8 @@ function emitLinkOnly(n: Ninja, cfg: Config): BunOutput {
   // prefix/suffix, e.g. libbun-profile.a).
   const archive = resolve(cfg.buildDir, `${cfg.libPrefix}${exeName}${cfg.libSuffix}`);
 
-  // bun-zig*.o from zig-only: same paths emitZig writes to. Shared
-  // helper so both sides of the CI split agree (single file at cg<=1,
-  // N shards for asan at cg=CI_ASAN_CODEGEN_THREADS).
+  // bun-zig.o from zig-only: same path emitZig writes to. Shared
+  // helper so both sides of the CI split agree.
   const zigObjects = zigObjectPaths(cfg);
 
   // Only need ldflags + stripflags (no cflags/cxxflags — no compile).

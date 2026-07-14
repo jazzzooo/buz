@@ -50,7 +50,6 @@ const BunBuildOptions = struct {
 
     /// `./build/codegen` or equivalent
     codegen_path: []const u8,
-    no_llvm: bool,
     lto: bool,
     override_no_export_cpp_apis: bool,
     android_ndk_sysroot: ?[]const u8 = null,
@@ -58,7 +57,6 @@ const BunBuildOptions = struct {
 
     cached_options_module: ?*Module = null,
     windows_shim: ?WindowsShim = null,
-    llvm_codegen_threads: ?u32 = null,
 
     pub fn isBaseline(this: *const BunBuildOptions) bool {
         return this.arch.isX86() and
@@ -75,14 +73,18 @@ const BunBuildOptions = struct {
         }
 
         var opts = b.addOptions();
-        opts.addOption([]const u8, "base_path", b.pathFromRoot("."));
-        opts.addOption([]const u8, "codegen_path", std.fs.path.resolve(b.graph.arena, &.{ b.build_root.path.?, this.codegen_path }) catch @panic("OOM"));
+        const root_path = b.root.toString(b.allocator) catch @panic("OOM");
+        opts.addOption([]const u8, "base_path", root_path);
+        opts.addOption([]const u8, "codegen_path", if (std.fs.path.isAbsolute(this.codegen_path))
+            this.codegen_path
+        else
+            std.fs.path.resolve(b.graph.arena, &.{ root_path, this.codegen_path }) catch @panic("OOM"));
 
         opts.addOption(bool, "codegen_embed", this.shouldEmbedCode());
         opts.addOption(u32, "canary_revision", this.canary_revision orelse 0);
         opts.addOption(bool, "is_canary", this.canary_revision != null);
         opts.addOption(Version, "version", this.version);
-        opts.addOption([:0]const u8, "sha", b.allocator.dupeZ(u8, this.sha) catch @panic("OOM"));
+        opts.addOption([:0]const u8, "sha", b.allocator.dupeSentinel(u8, this.sha, 0) catch @panic("OOM"));
         opts.addOption(bool, "baseline", this.isBaseline());
         opts.addOption(bool, "enable_logs", this.enable_logs);
         opts.addOption(bool, "enable_asan", this.enable_asan);
@@ -91,7 +93,6 @@ const BunBuildOptions = struct {
         opts.addOption(bool, "enable_tinycc", this.enable_tinycc);
         opts.addOption(bool, "use_mimalloc", this.use_mimalloc);
         opts.addOption([]const u8, "reported_nodejs_version", b.fmt("{f}", .{this.reported_nodejs_version}));
-        opts.addOption(bool, "zig_self_hosted_backend", this.no_llvm);
         opts.addOption(bool, "override_no_export_cpp_apis", this.override_no_export_cpp_apis);
 
         const mod = opts.createModule();
@@ -194,23 +195,17 @@ pub fn build(b: *Build) !void {
 
     const target = b.resolveTargetQuery(target_query);
 
-    const codegen_path = b.pathFromRoot(
-        b.option([]const u8, "codegen_path", "Set the generated code directory") orelse
-            "build/debug/codegen",
-    );
-    const codegen_embed = b.option(bool, "codegen_embed", "If codegen files should be embedded in the binary") orelse switch (b.release_mode) {
+    const codegen_path = b.option([]const u8, "codegen_path", "Set the generated code directory") orelse
+        "build/debug/codegen";
+    const codegen_embed = b.option(bool, "codegen_embed", "If codegen files should be embedded in the binary") orelse switch (b.graph.release_mode) {
         .off => false,
         else => true,
     };
 
     const bun_version = b.option([]const u8, "version", "Value of `Bun.version`") orelse "0.0.0";
 
-    // Lower the default reference trace for incremental
-    b.reference_trace = b.reference_trace orelse if (b.graph.incremental == true) 8 else 16;
-
     const obj_format = b.option(ObjectFormat, "obj_format", "Output file for object files") orelse .obj;
 
-    const no_llvm = b.option(bool, "no_llvm", "Experiment with Zig self hosted backends. No stability guaranteed") orelse false;
     const lto = b.option(bool, "lto", "Emit LLVM bitcode for full LTO instead of a native object") orelse false;
     const override_no_export_cpp_apis = b.option(bool, "override-no-export-cpp-apis", "Override the default export_cpp_apis logic to disable exports") orelse false;
     // Zig does not bundle bionic headers, so translate-c needs the NDK
@@ -238,7 +233,6 @@ pub fn build(b: *Build) !void {
         .arch = arch,
         .codegen_path = codegen_path,
         .codegen_embed = codegen_embed,
-        .no_llvm = no_llvm,
         .lto = lto,
         .override_no_export_cpp_apis = override_no_export_cpp_apis,
         .version = try Version.parse(bun_version),
@@ -251,27 +245,7 @@ pub fn build(b: *Build) !void {
                 "0.0.0-unset",
         ),
         .sha = sha: {
-            const sha_buildoption = b.option([]const u8, "sha", "Force the git sha");
-            const sha_github = b.graph.env_map.get("GITHUB_SHA");
-            const sha_env = b.graph.env_map.get("GIT_SHA");
-            const sha = sha_buildoption orelse sha_github orelse sha_env orelse fetch_sha: {
-                const result = std.process.Child.run(.{
-                    .allocator = b.allocator,
-                    .argv = &.{
-                        "git",
-                        "rev-parse",
-                        "HEAD",
-                    },
-                    .cwd = b.pathFromRoot("."),
-                    .expand_arg0 = .expand,
-                }) catch |err| {
-                    std.log.warn("Failed to execute 'git rev-parse HEAD': {s}", .{@errorName(err)});
-                    std.log.warn("Falling back to zero sha", .{});
-                    break :sha zero_sha;
-                };
-
-                break :fetch_sha b.dupe(std.mem.trim(u8, result.stdout, "\n \t"));
-            };
+            const sha = b.option([]const u8, "sha", "Force the git sha") orelse zero_sha;
 
             if (sha.len == 0) {
                 std.log.warn("No git sha found, falling back to zero sha", .{});
@@ -292,7 +266,6 @@ pub fn build(b: *Build) !void {
         .enable_valgrind = b.option(bool, "enable_valgrind", "Enable valgrind") orelse false,
         .enable_tinycc = b.option(bool, "enable_tinycc", "Enable TinyCC for FFI JIT compilation") orelse true,
         .use_mimalloc = b.option(bool, "use_mimalloc", "Use mimalloc as default allocator") orelse false,
-        .llvm_codegen_threads = b.option(u32, "llvm_codegen_threads", "Number of threads to use for LLVM codegen") orelse 1,
         .android_ndk_sysroot = android_ndk_sysroot,
         .freebsd_sysroot = freebsd_sysroot,
     };
@@ -319,8 +292,6 @@ pub fn build(b: *Build) !void {
                 .omit_frame_pointer = false,
                 .strip = false,
             }),
-            .use_llvm = !build_options.no_llvm,
-            .use_lld = if (build_options.os == .mac) false else !build_options.no_llvm,
         });
         configureObj(b, &o, unit_tests);
         // Setting `linker_allow_shlib_undefined` causes the linker to ignore
@@ -353,7 +324,7 @@ pub fn build(b: *Build) !void {
     {
         var step = b.step("check", "Check for semantic analysis errors");
         var bun_check_obj = addBunObject(b, &build_options);
-        bun_check_obj.generated_bin = null;
+        bun_check_obj.generated_bin = .none;
         // bun_check_obj.use_llvm = false;
         step.dependOn(&bun_check_obj.step);
 
@@ -367,7 +338,7 @@ pub fn build(b: *Build) !void {
 
     // zig build watch
     // const enable_watch_step = b.option(bool, "watch_step", "Enable the watch step. This reads more files so it is off by default") orelse false;
-    // if (no_llvm or enable_watch_step) {
+    // if (enable_watch_step) {
     //     self_hosted_watch.selfHostedExeBuild(b, &build_options) catch @panic("OOM");
     // }
 
@@ -665,7 +636,7 @@ pub fn build(b: *Build) !void {
         });
 
         const run_gen = b.addRunArtifact(gen_exe);
-        const gen_output = run_gen.captureStdOut();
+        const gen_output = run_gen.captureStdOut(.{});
 
         const install = b.addInstallFile(gen_output, "../src/string/immutable/grapheme_tables.zig");
         step.dependOn(&install.step);
@@ -712,7 +683,6 @@ fn addMultiCheck(
                 .version = root_build_options.version,
                 .reported_nodejs_version = root_build_options.reported_nodejs_version,
                 .codegen_path = root_build_options.codegen_path,
-                .no_llvm = root_build_options.no_llvm,
                 .lto = false,
                 .enable_asan = root_build_options.enable_asan,
                 .enable_valgrind = root_build_options.enable_valgrind,
@@ -725,7 +695,7 @@ fn addMultiCheck(
             };
 
             var obj = addBunObject(b, &options);
-            obj.generated_bin = null;
+            obj.generated_bin = .none;
             parent_step.dependOn(&obj.step);
         }
     }
@@ -832,7 +802,7 @@ pub fn addBunObject(b: *Build, opts: *BunBuildOptions) *Compile {
 }
 
 fn enableFastBuild(b: *Build) bool {
-    const val = b.graph.env_map.get("BUN_BUILD_FAST") orelse return false;
+    const val = b.graph.environ_map.get("BUN_BUILD_FAST") orelse return false;
     return std.mem.eql(u8, val, "1");
 }
 
@@ -843,27 +813,14 @@ fn configureObj(b: *Build, opts: *BunBuildOptions, obj: *Compile) void {
     // https://github.com/ziglang/zig/issues/17430
     obj.root_module.pic = true;
 
-    // Object options
-    obj.use_llvm = !opts.no_llvm;
-    obj.use_lld = if (opts.os == .mac or opts.os == .linux) false else !opts.no_llvm;
+    // Use Zig's default backend and linker for the selected target and
+    // optimization mode. Debug builds use the self-hosted backend where it is
+    // supported.
+    obj.incremental = true;
     if (opts.lto) {
         obj.lto = .full;
         obj.use_lld = true;
     }
-
-    if (@hasField(std.meta.Child(@TypeOf(obj)), "llvm_codegen_threads"))
-        obj.llvm_codegen_threads = opts.llvm_codegen_threads orelse 0;
-    // Skip zig's relocatable -r merge of the codegen shards: it's
-    // single-threaded and dominated wall time at high shard counts
-    // (~9min for 64 × ~8MB shards). With this set, shards are emitted
-    // directly as `{out}.{i}.o`; addInstallObjectFile installs them
-    // all and the bun link step (lld, parallel) consumes them. Only
-    // for the main object — `zig build test` reuses configureObj and
-    // its install path expects a single artifact.
-    if (@hasField(std.meta.Child(@TypeOf(obj)), "llvm_no_merge_shards"))
-        obj.llvm_no_merge_shards = obj.kind == .obj and (opts.llvm_codegen_threads orelse 0) > 1;
-
-    obj.no_link_obj = opts.os != .windows and !opts.no_llvm;
 
     if (opts.enable_asan and !enableFastBuild(b)) {
         if (@hasField(Build.Module, "sanitize_address")) {
@@ -871,9 +828,6 @@ fn configureObj(b: *Build, opts: *BunBuildOptions, obj: *Compile) void {
                 obj.sanitize_coverage_trace_pc_guard = true;
             }
             obj.root_module.sanitize_address = true;
-        } else {
-            const fail_step = b.addFail("asan is not supported on this platform");
-            obj.step.dependOn(&fail_step.step);
         }
     } else if (opts.enable_fuzzilli) {
         const fail_step = b.addFail("fuzzilli requires asan");
@@ -884,8 +838,8 @@ fn configureObj(b: *Build, opts: *BunBuildOptions, obj: *Compile) void {
 
     // Link libc
     if (opts.os != .wasm) {
-        obj.linkLibC();
-        obj.linkLibCpp();
+        obj.root_module.link_libc = true;
+        obj.root_module.link_libcpp = true;
     }
 
     // Disable stack probing on x86 so we don't need to include compiler_rt
@@ -926,36 +880,7 @@ pub fn addInstallObjectFile(
     name: []const u8,
     out_mode: ObjectFormat,
 ) *Step {
-    // bin always needed to be computed or else the compilation will do nothing. zig build system bug?
     const bin = compile.getEmittedBin();
-    if (out_mode == .obj and
-        @hasField(Compile, "llvm_no_merge_shards") and
-        @hasField(Compile, "llvm_codegen_threads") and
-        compile.llvm_no_merge_shards and
-        compile.llvm_codegen_threads > 1)
-    {
-        // Install every shard as `{name}.{i}.o`; scripts/build/zig.ts
-        // declares the matching outputs and the bun link step (lld)
-        // consumes them all. The merged `{name}.o` does not exist in
-        // this configuration. Shard `i` is at `{out_filename - ".o"}.{i}.o`
-        // in the emitted-bin directory (see Compilation.zig:3475).
-        const dir = compile.getEmittedBinDirectory();
-        const stem = if (std.mem.endsWith(u8, compile.out_filename, ".o"))
-            compile.out_filename[0 .. compile.out_filename.len - 2]
-        else
-            compile.out_filename;
-        // Group via shard 0's install step so we don't register a
-        // user-visible top-level `b.step()` for what is an internal
-        // fan-out. Ninja still parallelises the dependents.
-        var first: ?*Step = null;
-        var i: u32 = 0;
-        while (i < compile.llvm_codegen_threads) : (i += 1) {
-            const shard = dir.path(b, b.fmt("{s}.{d}.o", .{ stem, i }));
-            const inst = &b.addInstallFile(shard, b.fmt("{s}.{d}.o", .{ name, i })).step;
-            if (first) |f| f.dependOn(inst) else first = inst;
-        }
-        return first.?;
-    }
     return &b.addInstallFile(switch (out_mode) {
         .obj => bin,
         .bc => compile.getEmittedLlvmBc(),
@@ -963,14 +888,14 @@ pub fn addInstallObjectFile(
 }
 
 var checked_file_exists: std.AutoHashMap(u64, void) = undefined;
-fn exists(path: []const u8) bool {
+fn exists(b: *Build, path: []const u8) bool {
     const entry = checked_file_exists.getOrPut(std.hash.Wyhash.hash(0, path)) catch unreachable;
     if (entry.found_existing) {
         // It would've panicked.
         return true;
     }
 
-    std.fs.accessAbsolute(path, .{ .mode = .read_only }) catch return false;
+    std.Io.Dir.accessAbsolute(b.graph.io, path, .{ .read = true }) catch return false;
     return true;
 }
 
@@ -1043,7 +968,7 @@ fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions) void {
     }) |entry| {
         if (!@hasField(@TypeOf(entry), "enable") or entry.enable) {
             const path = b.pathJoin(&.{ opts.codegen_path, entry.file });
-            validateGeneratedPath(path);
+            validateGeneratedPath(b, path);
             const import_path = if (@hasField(@TypeOf(entry), "import"))
                 entry.import
             else
@@ -1105,8 +1030,8 @@ fn propagateImports(source_mod: *Module) !void {
     }
 }
 
-fn validateGeneratedPath(path: []const u8) void {
-    if (!exists(path)) {
+fn validateGeneratedPath(b: *Build, path: []const u8) void {
+    if (!exists(b, path)) {
         std.debug.panic(
             \\Generated file '{s}' is missing!
             \\

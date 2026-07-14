@@ -49,7 +49,7 @@ export function registerAllRules(n: Ninja, cfg: Config): void {
   // codegen, esbuild, bun_install + codegen/stamps dir stamps
   registerCodegenRules(n, cfg);
 
-  // zig_fetch, zig_build
+  // zig_build
   registerZigRules(n, cfg);
 
   // shim_dylib (darwin+asan only)

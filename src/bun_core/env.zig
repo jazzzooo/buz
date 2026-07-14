@@ -40,9 +40,7 @@ pub const enableAllocScopes = isDebug or enable_asan;
 
 pub const build_options = @import("build_options");
 
-/// Set if compiling with `-Dno_llvm`
-/// All places this is used is working around a Zig bug.
-pub const zig_self_hosted_backend = build_options.zig_self_hosted_backend;
+pub const zig_self_hosted_backend = builtin.zig_backend != .stage2_llvm;
 
 pub const reported_nodejs_version = build_options.reported_nodejs_version;
 pub const baseline = build_options.baseline;

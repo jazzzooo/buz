@@ -52,9 +52,16 @@ export function resolveToolchain(): Toolchain {
   // stamp, so this path will exist by the time esbuild rules fire).
   const esbuild = resolve(repoRoot, "node_modules", ".bin", host.os === "windows" ? "esbuild.exe" : "esbuild");
 
-  // zig — lives at vendor/zig/, downloaded by the zig_fetch rule.
-  // Same deal: path is deterministic, download happens at build time.
-  const zig = resolve(repoRoot, "vendor", "zig", host.os === "windows" ? "zig.exe" : "zig");
+  // Zig is built from the upstream checkout in vendor/zig-upstream.
+  const zig = resolve(
+    repoRoot,
+    "vendor",
+    "zig-upstream",
+    "build",
+    "stage3",
+    "bin",
+    host.os === "windows" ? "zig.exe" : "zig",
+  );
 
   const bun = findBun(host.os);
 
