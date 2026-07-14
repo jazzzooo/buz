@@ -241,8 +241,9 @@ pub fn next(this: *Expansion) Yield {
                 comptime {
                     assert(@sizeOf([]std.array_list.Managed(u8)) * stack_max <= 256);
                 }
-                var maybe_stack_alloc = std.heap.stackFallback(@sizeOf([]std.array_list.Managed(u8)) * stack_max, arena_allocator);
-                const stack_alloc = maybe_stack_alloc.get();
+                var maybe_stack_alloc_buffer: [stack_max][]std.array_list.Managed(u8) = undefined;
+                var maybe_stack_alloc: std.heap.BufferFirstAllocator = .init(@ptrCast(&maybe_stack_alloc_buffer), arena_allocator);
+                const stack_alloc = maybe_stack_alloc.allocator();
                 const expanded_strings = bun.handleOom(stack_alloc.alloc(std.array_list.Managed(u8), expansion_count));
 
                 for (0..expansion_count) |i| {

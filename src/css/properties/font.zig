@@ -938,8 +938,9 @@ pub const FontHandler = struct {
         if (family) |*f| {
             if (f.len > 1) {
                 // Dedupe
-                var sfb = std.heap.stackFallback(664, bun.default_allocator);
-                const alloc = sfb.get();
+                var sfb_buffer: [664]u8 = undefined;
+                var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, bun.default_allocator);
+                const alloc = sfb.allocator();
                 var seen = FontFamily.HashMap(void){};
                 defer seen.deinit(alloc);
 

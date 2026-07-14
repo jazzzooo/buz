@@ -143,8 +143,9 @@ fn createParsedShellScriptImpl(globalThis: *jsc.JSGlobalObject, callframe: *jsc.
     const template_args_js = arguments[1];
     var template_args = try template_args_js.arrayIterator(globalThis);
 
-    var stack_alloc = std.heap.stackFallback(@sizeOf(bun.String) * 4, shargs.arena_allocator());
-    var jsstrings = try std.array_list.Managed(bun.String).initCapacity(stack_alloc.get(), 4);
+    var stack_alloc_buffer: [4]bun.String = undefined;
+    var stack_alloc: std.heap.BufferFirstAllocator = .init(@ptrCast(&stack_alloc_buffer), shargs.arena_allocator());
+    var jsstrings = try std.array_list.Managed(bun.String).initCapacity(stack_alloc.allocator(), 4);
     defer {
         for (jsstrings.items[0..]) |bunstr| {
             bunstr.deref();

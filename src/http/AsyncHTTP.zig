@@ -215,8 +215,9 @@ pub fn init(
     if (options.http_proxy) |proxy| {
         if (proxy.username.len > 0) {
             // Use stack fallback allocator - stack for small credentials, heap for large ones
-            var username_sfb = std.heap.stackFallback(4096, allocator);
-            const username_alloc = username_sfb.get();
+            var username_sfb_buffer: [4096]u8 = undefined;
+            var username_sfb: std.heap.BufferFirstAllocator = .init(&username_sfb_buffer, allocator);
+            const username_alloc = username_sfb.allocator();
             const username = PercentEncoding.decodeAlloc(username_alloc, proxy.username) catch |err| {
                 log("failed to decode proxy username: {}", .{err});
                 return this;
@@ -224,8 +225,9 @@ pub fn init(
             defer username_alloc.free(username);
 
             if (proxy.password.len > 0) {
-                var password_sfb = std.heap.stackFallback(4096, allocator);
-                const password_alloc = password_sfb.get();
+                var password_sfb_buffer: [4096]u8 = undefined;
+                var password_sfb: std.heap.BufferFirstAllocator = .init(&password_sfb_buffer, allocator);
+                const password_alloc = password_sfb.allocator();
                 const password = PercentEncoding.decodeAlloc(password_alloc, proxy.password) catch |err| {
                     log("failed to decode proxy password: {}", .{err});
                     return this;
@@ -292,8 +294,9 @@ fn reset(this: *AsyncHTTP) !void {
         this.client.flags.disable_keepalive = this.url.isHTTPS();
         if (proxy.username.len > 0) {
             // Use stack fallback allocator - stack for small credentials, heap for large ones
-            var username_sfb = std.heap.stackFallback(4096, this.allocator);
-            const username_alloc = username_sfb.get();
+            var username_sfb_buffer: [4096]u8 = undefined;
+            var username_sfb: std.heap.BufferFirstAllocator = .init(&username_sfb_buffer, this.allocator);
+            const username_alloc = username_sfb.allocator();
             const username = PercentEncoding.decodeAlloc(username_alloc, proxy.username) catch |err| {
                 log("failed to decode proxy username: {}", .{err});
                 return;
@@ -301,8 +304,9 @@ fn reset(this: *AsyncHTTP) !void {
             defer username_alloc.free(username);
 
             if (proxy.password.len > 0) {
-                var password_sfb = std.heap.stackFallback(4096, this.allocator);
-                const password_alloc = password_sfb.get();
+                var password_sfb_buffer: [4096]u8 = undefined;
+                var password_sfb: std.heap.BufferFirstAllocator = .init(&password_sfb_buffer, this.allocator);
+                const password_alloc = password_sfb.allocator();
                 const password = PercentEncoding.decodeAlloc(password_alloc, proxy.password) catch |err| {
                     log("failed to decode proxy password: {}", .{err});
                     return;

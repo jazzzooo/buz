@@ -96,8 +96,9 @@ fn writeEntryItem(
 
 // Extremely unfortunate, but necessary due to E.String not accepting pre-rescaped input and this happening at the very end.
 pub fn writeEscapedJSON(index: u32, graph: *const Graph, linker_graph: *const LinkerGraph, chunks: []const Chunk, writer: anytype) !void {
-    var stack = std.heap.stackFallback(4096, bun.default_allocator);
-    const allocator = stack.get();
+    var stack_buffer: [4096]u8 = undefined;
+    var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, bun.default_allocator);
+    const allocator = stack.allocator();
     var bytes = std.array_list.Managed(u8).init(allocator);
     defer bytes.deinit();
     try write(index, graph, linker_graph, chunks, bytes.writer());

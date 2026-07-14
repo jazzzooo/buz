@@ -59,8 +59,9 @@ pub const ZigString = extern struct {
 
     /// This function is not optimized!
     pub fn eqlCaseInsensitive(this: ZigString, other: ZigString) bool {
-        var fallback = std.heap.stackFallback(1024, bun.default_allocator);
-        const fallback_allocator = fallback.get();
+        var fallback_buffer: [1024]u8 = undefined;
+        var fallback: std.heap.BufferFirstAllocator = .init(&fallback_buffer, bun.default_allocator);
+        const fallback_allocator = fallback.allocator();
 
         var utf16_slice = this.toSliceLowercase(fallback_allocator);
         var latin1_slice = other.toSliceLowercase(fallback_allocator);
@@ -72,8 +73,9 @@ pub const ZigString = extern struct {
     pub fn toSliceLowercase(this: ZigString, allocator: std.mem.Allocator) Slice {
         if (this.len == 0)
             return Slice.empty;
-        var fallback = std.heap.stackFallback(512, allocator);
-        const fallback_allocator = fallback.get();
+        var fallback_buffer: [512]u8 = undefined;
+        var fallback: std.heap.BufferFirstAllocator = .init(&fallback_buffer, allocator);
+        const fallback_allocator = fallback.allocator();
 
         const uppercase_buffer = this.toOwnedSlice(fallback_allocator) catch unreachable;
         const buffer = allocator.alloc(u8, uppercase_buffer.len) catch unreachable;

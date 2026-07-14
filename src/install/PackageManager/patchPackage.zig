@@ -631,8 +631,9 @@ pub fn preparePatch(manager: *PackageManager) !void {
             };
 
             const existing_patchfile_hash = existing_patchfile_hash: {
-                var __sfb = std.heap.stackFallback(1024, manager.allocator);
-                const allocator = __sfb.get();
+                var sfb_buffer: [1024]u8 = undefined;
+                var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, manager.allocator);
+                const allocator = sfb.allocator();
                 const name_and_version = std.fmt.allocPrint(allocator, "{s}@{f}", .{ name, actual_package.resolution.fmt(strbuf, .posix) }) catch unreachable;
                 defer allocator.free(name_and_version);
                 const name_and_version_hash = String.Builder.stringHash(name_and_version);
@@ -669,10 +670,11 @@ pub fn preparePatch(manager: *PackageManager) !void {
             const pkg_name = pkg.name.slice(strbuf);
 
             const existing_patchfile_hash = existing_patchfile_hash: {
-                var __sfb = std.heap.stackFallback(1024, manager.allocator);
-                const sfballoc = __sfb.get();
-                const name_and_version = std.fmt.allocPrint(sfballoc, "{s}@{f}", .{ name, pkg.resolution.fmt(strbuf, .posix) }) catch unreachable;
-                defer sfballoc.free(name_and_version);
+                var sfb_buffer: [1024]u8 = undefined;
+                var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, manager.allocator);
+                const allocator = sfb.allocator();
+                const name_and_version = std.fmt.allocPrint(allocator, "{s}@{f}", .{ name, pkg.resolution.fmt(strbuf, .posix) }) catch unreachable;
+                defer allocator.free(name_and_version);
                 const name_and_version_hash = String.Builder.stringHash(name_and_version);
                 if (manager.lockfile.patched_dependencies.get(name_and_version_hash)) |patched_dep| {
                     if (patched_dep.patchfileHash()) |hash| break :existing_patchfile_hash hash;
@@ -870,8 +872,9 @@ fn pkgInfoForNameAndVersion(
     name: []const u8,
     version: ?[]const u8,
 ) struct { PackageID, Lockfile.Tree.Iterator(.node_modules).Next } {
-    var sfb = std.heap.stackFallback(@sizeOf(IdPair) * 4, lockfile.allocator);
-    var pairs = bun.handleOom(std.array_list.Managed(IdPair).initCapacity(sfb.get(), 8));
+    var sfb_buffer: [4]IdPair = undefined;
+    var sfb: std.heap.BufferFirstAllocator = .init(@ptrCast(&sfb_buffer), lockfile.allocator);
+    var pairs = bun.handleOom(std.array_list.Managed(IdPair).initCapacity(sfb.allocator(), 8));
     defer pairs.deinit();
 
     const name_hash = String.Builder.stringHash(name);

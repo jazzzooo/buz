@@ -36,8 +36,9 @@ pub fn order(
 ) bun.JSError!jsc.JSValue {
     var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
     defer arena.deinit();
-    var stack_fallback = std.heap.stackFallback(512, arena.allocator());
-    const allocator = stack_fallback.get();
+    var stack_fallback_buffer: [512]u8 = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, arena.allocator());
+    const allocator = stack_fallback.allocator();
 
     const arguments = callFrame.arguments_old(2).slice();
     if (arguments.len < 2) {
@@ -82,8 +83,9 @@ pub fn order(
 pub fn satisfies(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
     var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
     defer arena.deinit();
-    var stack_fallback = std.heap.stackFallback(512, arena.allocator());
-    const allocator = stack_fallback.get();
+    var stack_fallback_buffer: [512]u8 = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, arena.allocator());
+    const allocator = stack_fallback.allocator();
 
     const arguments = callFrame.arguments_old(2).slice();
     if (arguments.len < 2) {

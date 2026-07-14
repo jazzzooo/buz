@@ -72,9 +72,14 @@ pub const HeapRequestBodyBuffer = struct {
     }
 };
 
+const StackRequestBodyBuffer = struct {
+    buffer: [request_body_send_stack_buffer_size]u8 = undefined,
+    allocator_state: std.heap.BufferFirstAllocator = undefined,
+};
+
 pub const RequestBodyBuffer = union(enum) {
     heap: *HeapRequestBodyBuffer,
-    stack: std.heap.StackFallbackAllocator(request_body_send_stack_buffer_size),
+    stack: StackRequestBodyBuffer,
 
     pub fn deinit(this: *@This()) void {
         switch (this.*) {
@@ -83,24 +88,21 @@ pub const RequestBodyBuffer = union(enum) {
         }
     }
 
-    pub fn allocatedSlice(this: *@This()) []u8 {
-        return switch (this.*) {
-            .heap => |heap| &heap.buffer,
-            .stack => |*stack| &stack.buffer,
-        };
-    }
-
-    pub fn allocator(this: *@This()) std.mem.Allocator {
-        return switch (this.*) {
-            .heap => |heap| heap.fixed_buffer_allocator.allocator(),
-            .stack => |*stack| stack.get(),
-        };
-    }
-
     pub fn toArrayList(this: *@This()) std.array_list.Managed(u8) {
-        var arraylist = std.array_list.Managed(u8).fromOwnedSlice(this.allocator(), this.allocatedSlice());
-        arraylist.items.len = 0;
-        return arraylist;
+        return switch (this.*) {
+            .heap => |heap| brk: {
+                var arraylist = std.array_list.Managed(u8).fromOwnedSlice(heap.fixed_buffer_allocator.allocator(), &heap.buffer);
+                arraylist.items.len = 0;
+                break :brk arraylist;
+            },
+            .stack => |*stack| brk: {
+                stack.allocator_state = .init(&stack.buffer, bun.default_allocator);
+                break :brk std.array_list.Managed(u8).initCapacity(
+                    stack.allocator_state.allocator(),
+                    stack.buffer.len,
+                ) catch unreachable;
+            },
+        };
     }
 };
 
@@ -147,7 +149,7 @@ pub inline fn getRequestBodySendBuffer(this: *@This(), estimated_size: usize) Re
         return .{ .heap = bun.take(&this.lazy_request_body_buffer).? };
     }
     return .{
-        .stack = std.heap.stackFallback(request_body_send_stack_buffer_size, bun.default_allocator),
+        .stack = .{},
     };
 }
 

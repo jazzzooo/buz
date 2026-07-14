@@ -77,8 +77,9 @@ pub fn dependencyFromJS(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFra
     }
     var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
     defer arena.deinit();
-    var stack = std.heap.stackFallback(1024, arena.allocator());
-    const allocator = stack.get();
+    var stack_buffer: [1024]u8 = undefined;
+    var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, arena.allocator());
+    const allocator = stack.allocator();
 
     const alias_value: jsc.JSValue = if (arguments.len > 0) arguments[0] else .js_undefined;
 

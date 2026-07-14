@@ -90,9 +90,10 @@ pub fn determinePreinstallState(
 
             const patch_hash: ?u64 = brk: {
                 if (manager.lockfile.patched_dependencies.entries.len == 0) break :brk null;
-                var sfb = std.heap.stackFallback(1024, manager.lockfile.allocator);
+                var sfb_buffer: [1024]u8 = undefined;
+                var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, manager.lockfile.allocator);
                 const name_and_version = std.fmt.allocPrint(
-                    sfb.get(),
+                    sfb.allocator(),
                     "{s}@{f}",
                     .{
                         pkg.name.slice(manager.lockfile.buffers.string_bytes.items),

@@ -187,8 +187,9 @@ pub fn run(first: *HotReloadEvent) void {
         return;
     }
 
-    var sfb = std.heap.stackFallback(4096, dev.allocator());
-    const temp_alloc = sfb.get();
+    var sfb_buffer: [4096]u8 = undefined;
+    var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, dev.allocator());
+    const temp_alloc = sfb.allocator();
     var entry_points: EntryPointList = .empty;
     defer entry_points.deinit(temp_alloc);
 

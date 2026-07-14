@@ -850,8 +850,9 @@ fn doResolveWithArgs(ctx: *jsc.JSGlobalObject, specifier: bun.String, from: bun.
     defer errorable.result.value.deref();
 
     if (!query_string.isEmpty()) {
-        var stack = std.heap.stackFallback(1024, ctx.allocator());
-        const allocator = stack.get();
+        var stack_buffer: [1024]u8 = undefined;
+        var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, ctx.allocator());
+        const allocator = stack.allocator();
         var arraylist = std.array_list.Managed(u8).initCapacity(allocator, 1024) catch unreachable;
         defer arraylist.deinit();
         try arraylist.writer().print("{f}{f}", .{
@@ -1129,8 +1130,9 @@ pub export fn Bun__escapeHTML8(globalObject: *jsc.JSGlobalObject, input_value: J
     assert(len > 0);
 
     const input_slice = ptr[0..len];
-    var stack_allocator = std.heap.stackFallback(256, globalObject.bunVM().allocator);
-    const allocator = if (input_slice.len <= 32) stack_allocator.get() else stack_allocator.fallback_allocator;
+    var stack_allocator_buffer: [256]u8 = undefined;
+    var stack_allocator: std.heap.BufferFirstAllocator = .init(&stack_allocator_buffer, globalObject.bunVM().allocator);
+    const allocator = if (input_slice.len <= 32) stack_allocator.allocator() else stack_allocator.fallback_allocator;
 
     const escaped = strings.escapeHTMLForLatin1Input(allocator, input_slice) catch {
         return globalObject.throwValue(ZigString.init("Out of memory").toErrorInstance(globalObject)) catch return .zero;

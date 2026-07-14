@@ -125,8 +125,9 @@ pub fn NewSocket(comptime ssl: bool) type {
 
             switch (connection) {
                 .host => |host| {
-                    var sf = std.heap.stackFallback(1024, bun.default_allocator);
-                    const alloc = sf.get();
+                    var sf_buffer: [1024]u8 = undefined;
+                    var sf: std.heap.BufferFirstAllocator = .init(&sf_buffer, bun.default_allocator);
+                    const alloc = sf.allocator();
                     // getaddrinfo doesn't accept bracketed IPv6.
                     const raw = host.host;
                     const clean = if (raw.len > 1 and raw[0] == '[' and raw[raw.len - 1] == ']') raw[1 .. raw.len - 1] else raw;
@@ -146,8 +147,9 @@ pub fn NewSocket(comptime ssl: bool) type {
                     };
                 },
                 .unix => |u| {
-                    var sf = std.heap.stackFallback(1024, bun.default_allocator);
-                    const alloc = sf.get();
+                    var sf_buffer: [1024]u8 = undefined;
+                    var sf: std.heap.BufferFirstAllocator = .init(&sf_buffer, bun.default_allocator);
+                    const alloc = sf.allocator();
                     const pathz = bun.handleOom(alloc.dupeZ(u8, u));
                     defer alloc.free(pathz);
 
@@ -1018,12 +1020,13 @@ pub fn NewSocket(comptime ssl: bool) type {
                 return this.writeOrEnd(globalObject, &values, true, is_end);
             }
 
-            var stack_fallback = std.heap.stackFallback(16 * 1024, bun.default_allocator);
+            var stack_fallback_buffer: [16 * 1024]u8 = undefined;
+            var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
             const allow_string_object = true;
             const buffer: jsc.Node.StringOrBuffer = if (data_value.isUndefined())
                 jsc.Node.StringOrBuffer.empty
             else
-                jsc.Node.StringOrBuffer.fromJSWithEncodingValueAllowStringObject(globalObject, stack_fallback.get(), data_value, encoding_value, allow_string_object) catch {
+                jsc.Node.StringOrBuffer.fromJSWithEncodingValueAllowStringObject(globalObject, stack_fallback.allocator(), data_value, encoding_value, allow_string_object) catch {
                     return .fail;
                 } orelse {
                     if (!globalObject.hasException()) {
@@ -1161,11 +1164,12 @@ pub fn NewSocket(comptime ssl: bool) type {
                 return globalObject.throwTODO("Support encoding with offset and length altogether. Only either encoding or offset, length is supported, but not both combinations yet.") catch .fail;
             }
 
-            var stack_fallback = std.heap.stackFallback(16 * 1024, bun.default_allocator);
+            var stack_fallback_buffer: [16 * 1024]u8 = undefined;
+            var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
             const buffer: jsc.Node.BlobOrStringOrBuffer = if (args[0].isUndefined())
                 jsc.Node.BlobOrStringOrBuffer{ .string_or_buffer = jsc.Node.StringOrBuffer.empty }
             else
-                jsc.Node.BlobOrStringOrBuffer.fromJSWithEncodingValueAllowRequestResponse(globalObject, stack_fallback.get(), args[0], encoding_value, true) catch {
+                jsc.Node.BlobOrStringOrBuffer.fromJSWithEncodingValueAllowRequestResponse(globalObject, stack_fallback.allocator(), args[0], encoding_value, true) catch {
                     return .fail;
                 } orelse {
                     if (!globalObject.hasException()) {

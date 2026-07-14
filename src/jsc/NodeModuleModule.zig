@@ -6,8 +6,9 @@ fn findPath(
     request_bun_str: bun.String,
     paths_maybe: ?*jsc.JSArray,
 ) bun.JSError!JSValue {
-    var stack_buf = std.heap.stackFallback(8192, bun.default_allocator);
-    const alloc = stack_buf.get();
+    var stack_buf_buffer: [8192]u8 = undefined;
+    var stack_buf: std.heap.BufferFirstAllocator = .init(&stack_buf_buffer, bun.default_allocator);
+    const alloc = stack_buf.allocator();
 
     const request_slice = request_bun_str.toUTF8(alloc);
     defer request_slice.deinit();
@@ -160,8 +161,9 @@ fn onRequireExtensionModifyBinding(
     loader: bun.schema.api.Loader,
     value: jsc.JSValue,
 ) callconv(.c) void {
-    var sfa_state = std.heap.stackFallback(8192, bun.default_allocator);
-    const alloc = sfa_state.get();
+    var sfa_state_buffer: [8192]u8 = undefined;
+    var sfa_state: std.heap.BufferFirstAllocator = .init(&sfa_state_buffer, bun.default_allocator);
+    const alloc = sfa_state.allocator();
     const str_slice = str.toUTF8(alloc);
     defer str_slice.deinit();
     onRequireExtensionModify(global, str_slice.slice(), loader, value) catch |err| switch (err) {
@@ -173,8 +175,9 @@ fn onRequireExtensionModifyNonFunctionBinding(
     global: *jsc.JSGlobalObject,
     str: *const bun.String,
 ) callconv(.c) void {
-    var sfa_state = std.heap.stackFallback(8192, bun.default_allocator);
-    const alloc = sfa_state.get();
+    var sfa_state_buffer: [8192]u8 = undefined;
+    var sfa_state: std.heap.BufferFirstAllocator = .init(&sfa_state_buffer, bun.default_allocator);
+    const alloc = sfa_state.allocator();
     const str_slice = str.toUTF8(alloc);
     defer str_slice.deinit();
     onRequireExtensionModifyNonFunction(global, str_slice.slice()) catch |err| switch (err) {

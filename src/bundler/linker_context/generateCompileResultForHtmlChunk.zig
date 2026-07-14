@@ -147,8 +147,9 @@ fn generateCompileResultForHTMLChunkImpl(worker: *ThreadPool.Worker, c: *LinkerC
             if (this.added_head_tags) return;
             this.added_head_tags = true;
 
-            var html_appender = std.heap.stackFallback(256, bun.default_allocator);
-            const allocator = html_appender.get();
+            var html_appender_buffer: [256]u8 = undefined;
+            var html_appender: std.heap.BufferFirstAllocator = .init(&html_appender_buffer, bun.default_allocator);
+            const allocator = html_appender.allocator();
             const slices = this.getHeadTags(allocator);
             defer for (slices.slice()) |slice|
                 allocator.free(slice);
@@ -161,8 +162,9 @@ fn generateCompileResultForHTMLChunkImpl(worker: *ThreadPool.Worker, c: *LinkerC
             if (this.added_body_script) return;
             this.added_body_script = true;
 
-            var html_appender = std.heap.stackFallback(256, bun.default_allocator);
-            const allocator = html_appender.get();
+            var html_appender_buffer: [256]u8 = undefined;
+            var html_appender: std.heap.BufferFirstAllocator = .init(&html_appender_buffer, bun.default_allocator);
+            const allocator = html_appender.allocator();
             if (this.chunk.getJSChunkForHTML(this.chunks)) |js_chunk| {
                 const script = bun.handleOom(std.fmt.allocPrintSentinel(allocator, "<script type=\"module\">{s}</script>", .{js_chunk.unique_key}, 0));
                 defer allocator.free(script);
@@ -284,8 +286,9 @@ fn generateCompileResultForHTMLChunkImpl(worker: *ThreadPool.Worker, c: *LinkerC
     } else brk: {
         if (!html_loader.added_head_tags or !html_loader.added_body_script) {
             @branchHint(.cold); // this is if the document is missing all head, body, and html elements.
-            var html_appender = std.heap.stackFallback(256, bun.default_allocator);
-            const allocator = html_appender.get();
+            var html_appender_buffer: [256]u8 = undefined;
+            var html_appender: std.heap.BufferFirstAllocator = .init(&html_appender_buffer, bun.default_allocator);
+            const allocator = html_appender.allocator();
             if (!html_loader.added_head_tags) {
                 const slices = html_loader.getHeadTags(allocator);
                 for (slices.slice()) |slice| {

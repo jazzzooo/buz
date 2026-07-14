@@ -721,8 +721,9 @@ pub fn fromDOMFormData(
 ) Blob {
     var arena = bun.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    var stack_allocator = std.heap.stackFallback(1024, arena.allocator());
-    const stack_mem_all = stack_allocator.get();
+    var stack_allocator_buffer: [1024]u8 = undefined;
+    var stack_allocator: std.heap.BufferFirstAllocator = .init(&stack_allocator_buffer, arena.allocator());
+    const stack_mem_all = stack_allocator.allocator();
 
     var hex_buf: [70]u8 = undefined;
     const boundary = brk: {
@@ -3901,8 +3902,9 @@ pub fn toJSONWithBytes(this: *Blob, global: *JSGlobalObject, raw_bytes: []const 
     defer if (comptime lifetime == .temporary) bun.default_allocator.free(raw_bytes);
 
     if (could_be_all_ascii == null or !could_be_all_ascii.?) {
-        var stack_fallback = std.heap.stackFallback(4096, bun.default_allocator);
-        const allocator = stack_fallback.get();
+        var stack_fallback_buffer: [4096]u8 = undefined;
+        var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+        const allocator = stack_fallback.allocator();
         // if toUTF16Alloc returns null, it means there are no non-ASCII characters
         if (strings.toUTF16Alloc(allocator, buf, false, false) catch null) |external| {
             if (comptime lifetime != .temporary) this.setIsASCIIFlag(false);
@@ -4214,8 +4216,9 @@ fn fromJSWithoutDeferGC(
         }
     }
 
-    var stack_allocator = std.heap.stackFallback(1024, bun.default_allocator);
-    const stack_mem_all = stack_allocator.get();
+    var stack_allocator_buffer: [1024]u8 = undefined;
+    var stack_allocator: std.heap.BufferFirstAllocator = .init(&stack_allocator_buffer, bun.default_allocator);
+    const stack_mem_all = stack_allocator.allocator();
     var stack: std.array_list.Managed(JSValue) = std.array_list.Managed(JSValue).init(stack_mem_all);
     var joiner = StringJoiner{ .allocator = stack_mem_all };
     var could_have_non_ascii = false;

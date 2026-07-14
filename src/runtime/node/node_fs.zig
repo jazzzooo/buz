@@ -1098,10 +1098,11 @@ pub const AsyncReaddirRecursiveTask = struct {
                     .with_file_types => bun.jsc.Node.Dirent,
                     .buffers => Buffer,
                 };
-                var stack = std.heap.stackFallback(8192, bun.default_allocator);
+                var stack_buffer: [8192]u8 = undefined;
+                var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, bun.default_allocator);
 
                 // This is a stack-local copy to avoid resizing heap-allocated arrays in the common case of a small directory
-                var entries = std.array_list.Managed(ResultType).init(stack.get());
+                var entries = std.array_list.Managed(ResultType).init(stack.allocator());
 
                 defer entries.deinit();
 
@@ -4833,10 +4834,12 @@ pub const NodeFS = struct {
         comptime ExpectedType: type,
         entries: *std.array_list.Managed(ExpectedType),
     ) Maybe(void) {
-        var iterator_stack = std.heap.stackFallback(128, bun.default_allocator);
-        var stack = bun.LinearFifo([:0]const u8, .{ .Dynamic = {} }).init(iterator_stack.get());
-        var basename_stack = std.heap.stackFallback(8192 * 2, bun.default_allocator);
-        const basename_allocator = basename_stack.get();
+        var iterator_stack_buffer: [128]u8 = undefined;
+        var iterator_stack: std.heap.BufferFirstAllocator = .init(&iterator_stack_buffer, bun.default_allocator);
+        var stack = bun.LinearFifo([:0]const u8, .{ .Dynamic = {} }).init(iterator_stack.allocator());
+        var basename_stack_buffer: [8192 * 2]u8 = undefined;
+        var basename_stack: std.heap.BufferFirstAllocator = .init(&basename_stack_buffer, bun.default_allocator);
+        const basename_allocator = basename_stack.allocator();
         defer {
             while (stack.readItem()) |name| {
                 basename_allocator.free(name);

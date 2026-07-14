@@ -1412,8 +1412,9 @@ pub fn spawnProcessPosix(
     var spawned = PosixSpawnResult{};
     var extra_fds = std.array_list.Managed(PosixSpawnResult.ExtraPipe).init(bun.default_allocator);
     errdefer extra_fds.deinit();
-    var stack_fallback = std.heap.stackFallback(2048, bun.default_allocator);
-    const allocator = stack_fallback.get();
+    var stack_fallback_buffer: [2048]u8 = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+    const allocator = stack_fallback.allocator();
     var to_close_at_end = std.array_list.Managed(bun.FD).init(allocator);
     var to_set_cloexec = std.array_list.Managed(bun.FD).init(allocator);
     defer {
@@ -1682,8 +1683,9 @@ pub fn spawnProcessWindows(
     uv_process_options.env = envp;
     uv_process_options.file = options.argv0 orelse argv[0].?;
     uv_process_options.exit_cb = &Process.onExitUV;
-    var stack_allocator = std.heap.stackFallback(8192, bun.default_allocator);
-    const allocator = stack_allocator.get();
+    var stack_allocator_buffer: [8192]u8 = undefined;
+    var stack_allocator: std.heap.BufferFirstAllocator = .init(&stack_allocator_buffer, bun.default_allocator);
+    const allocator = stack_allocator.allocator();
     const loop = options.windows.loop.platformEventLoop().uv_loop;
 
     var cwd_buf: bun.PathBuffer = undefined;

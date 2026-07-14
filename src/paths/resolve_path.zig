@@ -1314,13 +1314,14 @@ pub fn joinStringBufT(comptime T: type, buf: []T, parts: anytype, comptime platf
 /// for arbitrarily long inputs while preserving zero-alloc behaviour for the
 /// common case.
 const JoinScratch = struct {
-    sfa: std.heap.StackFallbackAllocator(bun.MAX_PATH_BYTES * 2),
+    buffer: [bun.MAX_PATH_BYTES * 2]u8 = undefined,
+    sfa: std.heap.BufferFirstAllocator = undefined,
     alloc: std.mem.Allocator,
     buf: []u8,
 
     pub fn init(self: *JoinScratch, base: usize, parts: []const []const u8) []u8 {
-        self.sfa = std.heap.stackFallback(bun.MAX_PATH_BYTES * 2, bun.default_allocator);
-        self.alloc = self.sfa.get();
+        self.sfa = .init(&self.buffer, bun.default_allocator);
+        self.alloc = self.sfa.allocator();
         var total = base + 2;
         for (parts) |p| total += p.len + 1;
         self.buf = bun.handleOom(self.alloc.alloc(u8, total));
@@ -1352,8 +1353,9 @@ pub fn joinAbsStringBufChecked(cwd: []const u8, buf: []u8, parts: []const []cons
     // Slow path: allocate a large scratch for the result. The inner
     // joinAbsStringBuf will heap-allocate its own temp buffer for the concat
     // since `total > MAX_PATH_BYTES * 2 > sfa inline size` is likely here.
-    var sfa = std.heap.stackFallback(bun.MAX_PATH_BYTES, bun.default_allocator);
-    const alloc = sfa.get();
+    var sfa_buffer: [bun.MAX_PATH_BYTES]u8 = undefined;
+    var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, bun.default_allocator);
+    const alloc = sfa.allocator();
     const scratch = bun.handleOom(alloc.alloc(u8, total));
     defer alloc.free(scratch);
     const joined = joinAbsStringBuf(cwd, scratch, parts, platform);

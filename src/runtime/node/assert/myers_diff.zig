@@ -122,12 +122,14 @@ pub fn DifferWithEql(comptime Line: type, comptime opts: Options, comptime areLi
         pub fn diff(bun_allocator: Allocator, actual: []const Line, expected: []const Line) Error!DiffList(Line) {
 
             // Edit graph's allocator
-            var graph_stack_alloc = stackFallback(graph_initial_size, bun_allocator);
-            const graph_alloc = graph_stack_alloc.get();
+            var graph_buffer: [graph_initial_size]u8 = undefined;
+            var graph_stack_alloc: std.heap.BufferFirstAllocator = .init(&graph_buffer, bun_allocator);
+            const graph_alloc = graph_stack_alloc.allocator();
 
             // Match point trace's allocator
-            var trace_stack_alloc = stackFallback(opts.initial_trace_capacity, bun_allocator);
-            const trace_alloc = trace_stack_alloc.get();
+            var trace_buffer: [opts.initial_trace_capacity]u8 = undefined;
+            var trace_stack_alloc: std.heap.BufferFirstAllocator = .init(&trace_buffer, bun_allocator);
+            const trace_alloc = trace_stack_alloc.allocator();
 
             // const MAX \in [0, M+N]
             // let V: int array = [-MAX..MAX]. V is a flattened representation of the edit graph.
@@ -623,7 +625,5 @@ const builtin = @import("builtin");
 const std = @import("std");
 const t = std.testing;
 const assert = std.debug.assert;
-const stackFallback = std.heap.stackFallback;
-
 const mem = std.mem;
 const Allocator = mem.Allocator;

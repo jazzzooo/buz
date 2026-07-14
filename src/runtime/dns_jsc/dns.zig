@@ -68,8 +68,9 @@ const LibInfo = struct {
             return dns_lookup.promise.value();
         }
 
-        var stack_fallback = std.heap.stackFallback(1024, bun.default_allocator);
-        const name_allocator = stack_fallback.get();
+        var stack_fallback_buffer: [1024]u8 = undefined;
+        var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+        const name_allocator = stack_fallback.allocator();
         const name_z = bun.handleOom(name_allocator.dupeZ(u8, query.name));
         defer name_allocator.free(name_z);
 

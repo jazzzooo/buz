@@ -664,8 +664,9 @@ pub fn onQueryResult(this: *@This(), request: *JSMySQLQuery, result: MySQLQueryR
 }
 pub fn onResultRow(this: *@This(), request: *JSMySQLQuery, statement: *MySQLStatement, Context: type, reader: NewReader(Context)) (error{ ShortRead, JSError })!void {
     const result_mode = request.getResultMode();
-    var stack_fallback = std.heap.stackFallback(4096, bun.default_allocator);
-    const allocator = stack_fallback.get();
+    var stack_fallback_buffer: [4096]u8 = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+    const allocator = stack_fallback.allocator();
     var row = ResultSet.Row{
         .globalObject = this.globalObject,
         .columns = statement.columns,

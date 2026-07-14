@@ -524,8 +524,9 @@ pub const S3Credentials = struct {
 
                 // Build query parameters in alphabetical order for AWS Signature V4 canonical request
                 const canonical = brk_canonical: {
-                    var stack_fallback = std.heap.stackFallback(512, bun.default_allocator);
-                    const allocator = stack_fallback.get();
+                    var stack_fallback_buffer: [512]u8 = undefined;
+                    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+                    const allocator = stack_fallback.allocator();
                     var query_parts: bun.BoundedArray([]const u8, 13) = .{};
 
                     // Add parameters in alphabetical order: Content-MD5, X-Amz-Acl, X-Amz-Algorithm, X-Amz-Credential, X-Amz-Date, X-Amz-Expires, X-Amz-Security-Token, X-Amz-SignedHeaders, response-content-disposition, response-content-type, x-amz-request-payer, x-amz-storage-class
@@ -587,8 +588,9 @@ pub const S3Credentials = struct {
                 const signature = bun.hmac.generate(sigDateRegionServiceReq, signValue, .sha256, &hmac_sig_service) orelse return error.FailedToGenerateSignature;
 
                 // Build final URL with query parameters in alphabetical order to match canonical request
-                var url_stack_fallback = std.heap.stackFallback(512, bun.default_allocator);
-                const url_allocator = url_stack_fallback.get();
+                var url_stack_fallback_buffer: [512]u8 = undefined;
+                var url_stack_fallback: std.heap.BufferFirstAllocator = .init(&url_stack_fallback_buffer, bun.default_allocator);
+                const url_allocator = url_stack_fallback.allocator();
                 var url_query_parts: bun.BoundedArray([]const u8, 14) = .{};
 
                 // Add parameters in alphabetical order: Content-MD5, X-Amz-Acl, X-Amz-Algorithm, X-Amz-Credential, X-Amz-Date, X-Amz-Expires, X-Amz-Security-Token, X-Amz-Signature, X-Amz-SignedHeaders, response-content-disposition, response-content-type, x-amz-request-payer, x-amz-storage-class

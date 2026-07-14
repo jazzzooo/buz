@@ -472,8 +472,9 @@ pub const Style = union(enum) {
     pub fn fromJS(value: JSValue, global: *jsc.JSGlobalObject) !Style {
         if (value.isString()) {
             const bun_string = try value.toBunString(global);
-            var sfa = std.heap.stackFallback(4096, bun.default_allocator);
-            const utf8 = bun_string.toUTF8(sfa.get());
+            var sfa_buffer: [4096]u8 = undefined;
+            var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, bun.default_allocator);
+            const utf8 = bun_string.toUTF8(sfa.allocator());
             defer utf8.deinit();
             if (map.get(utf8.slice())) |style| {
                 return style;
@@ -1238,8 +1239,9 @@ pub const JSFrameworkRouter = struct {
 
         var params_out: MatchedParams = undefined;
         if (jsfr.router.matchSlow(path.slice(), &params_out)) |index| {
-            var sfb = std.heap.stackFallback(4096, bun.default_allocator);
-            const alloc = sfb.get();
+            var sfb_buffer: [4096]u8 = undefined;
+            var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, bun.default_allocator);
+            const alloc = sfb.allocator();
 
             return (try jsc.JSObject.create(.{
                 .params = if (params_out.params.len > 0) params: {
@@ -1261,8 +1263,9 @@ pub const JSFrameworkRouter = struct {
     pub fn toJSON(jsfr: *JSFrameworkRouter, global: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
         _ = callframe;
 
-        var sfb = std.heap.stackFallback(4096, bun.default_allocator);
-        const alloc = sfb.get();
+        var sfb_buffer: [4096]u8 = undefined;
+        var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, bun.default_allocator);
+        const alloc = sfb.allocator();
 
         return jsfr.routeToJson(global, Route.Index.init(0), alloc);
     }

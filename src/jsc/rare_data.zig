@@ -87,7 +87,7 @@ path_buf: PathBuf = .{},
 
 /// Reusable heap buffer for path.resolve, path.relative, and path.toNamespacedPath.
 /// Three fixed-size tiers, lazily allocated on first use. Safe because JS is single-threaded.
-/// The buffer is used via a FixedBufferAllocator as the backing for a stackFallback.
+/// The buffer backs a BufferFirstAllocator, which falls back when it is exhausted.
 pub const PathBuf = struct {
     const S = bun.MAX_PATH_BYTES;
     const SmallBuf = [2 * S]u8;
@@ -98,9 +98,9 @@ pub const PathBuf = struct {
     medium: ?*MediumBuf = null,
     large: ?*LargeBuf = null,
 
-    /// Returns a StackFallbackAllocator backed by the smallest tier that
+    /// Returns a BufferFirstAllocator backed by the smallest tier that
     /// fits `min_len`, falling back to `fallback` when the buffer is exhausted.
-    pub fn get(self: *PathBuf, min_len: usize, fallback: std.mem.Allocator) bun.StackFallbackAllocator {
+    pub fn get(self: *PathBuf, min_len: usize, fallback: std.mem.Allocator) std.heap.BufferFirstAllocator {
         const buf: []u8 = if (min_len <= 2 * S)
             (self.small orelse blk: {
                 self.small = bun.handleOom(bun.default_allocator.create(SmallBuf));
@@ -116,7 +116,7 @@ pub const PathBuf = struct {
                 self.large = bun.handleOom(bun.default_allocator.create(LargeBuf));
                 break :blk self.large.?;
             });
-        return bun.StackFallbackAllocator.init(buf, fallback);
+        return .init(buf, fallback);
     }
 
     pub fn deinit(self: *PathBuf) void {

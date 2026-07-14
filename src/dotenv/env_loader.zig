@@ -607,8 +607,9 @@ pub const Loader = struct {
         const start = std.time.nanoTimestamp();
 
         // Create a reusable buffer with stack fallback for parsing multiple files
-        var stack_fallback = std.heap.stackFallback(4096, this.allocator);
-        var value_buffer = std.array_list.Managed(u8).init(stack_fallback.get());
+        var stack_fallback_buffer: [4096]u8 = undefined;
+        var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, this.allocator);
+        var value_buffer = std.array_list.Managed(u8).init(stack_fallback.allocator());
         defer value_buffer.deinit();
 
         if (env_files.len > 0) {

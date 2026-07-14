@@ -1718,8 +1718,9 @@ pub const RunCommand = struct {
             log("Executing from stdin", .{});
 
             // read from stdin
-            var stack_fallback = std.heap.stackFallback(2048, bun.default_allocator);
-            var list = std.Io.Writer.Allocating.init(stack_fallback.get());
+            var stack_fallback_buffer: [2048]u8 = undefined;
+            var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+            var list = std.Io.Writer.Allocating.init(stack_fallback.allocator());
             errdefer list.deinit();
 
             var file_reader = std.fs.File.stdin().readerStreaming(&.{});

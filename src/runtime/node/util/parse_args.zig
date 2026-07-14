@@ -678,8 +678,9 @@ pub fn parseArgs(globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSE
 
     // Phase 0.C: Parse the options definitions
 
-    var options_defs_allocator = std.heap.stackFallback(2048, globalThis.allocator());
-    var option_defs = std.array_list.Managed(OptionDefinition).init(options_defs_allocator.get());
+    var options_defs_allocator_buffer: [2048]u8 = undefined;
+    var options_defs_allocator: std.heap.BufferFirstAllocator = .init(&options_defs_allocator_buffer, globalThis.allocator());
+    var option_defs = std.array_list.Managed(OptionDefinition).init(options_defs_allocator.allocator());
     defer option_defs.deinit();
 
     if (!config_options.isUndefinedOrNull()) {

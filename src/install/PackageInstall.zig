@@ -142,8 +142,9 @@ pub const PackageInstall = struct {
         this.destination_dir_subpath_buf[this.destination_dir_subpath.len + std.fs.path.sep_str.len + ".bun-tag".len] = 0;
         const bun_tag_path: [:0]u8 = this.destination_dir_subpath_buf[0 .. this.destination_dir_subpath.len + std.fs.path.sep_str.len + ".bun-tag".len :0];
         defer this.destination_dir_subpath_buf[this.destination_dir_subpath.len] = 0;
-        var git_tag_stack_fallback = std.heap.stackFallback(2048, bun.default_allocator);
-        const allocator = git_tag_stack_fallback.get();
+        var git_tag_stack_fallback_buffer: [2048]u8 = undefined;
+        var git_tag_stack_fallback: std.heap.BufferFirstAllocator = .init(&git_tag_stack_fallback_buffer, bun.default_allocator);
+        const allocator = git_tag_stack_fallback.allocator();
 
         var bun_tag_file = this.node_modules.readSmallFile(
             root_node_modules_dir,

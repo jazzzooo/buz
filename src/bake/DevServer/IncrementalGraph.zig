@@ -874,8 +874,9 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
             bun.assert(bundler_index.isValid());
             bun.assert(ctx.loaders[bundler_index.get()].isCSS());
 
-            var sfb = std.heap.stackFallback(@sizeOf(bun.ast.Index) * 64, temp_alloc);
-            const queue_alloc = sfb.get();
+            var sfb_buffer: [64]bun.ast.Index = undefined;
+            var sfb: std.heap.BufferFirstAllocator = .init(@ptrCast(&sfb_buffer), temp_alloc);
+            const queue_alloc = sfb.allocator();
 
             // This queue avoids stack overflow.
             // Infinite loop is prevented by the tracing bits in `processEdgeAttachment`.
@@ -1729,8 +1730,9 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
             // to inform the HMR runtime some crucial entry-point info. The
             // exact upper bound of this can be calculated, but is not to
             // avoid worrying about windows paths.
-            var end_sfa = std.heap.stackFallback(65536, g.allocator());
-            var end_list = std.array_list.Managed(u8).initCapacity(end_sfa.get(), 65536) catch unreachable;
+            var end_sfa_buffer: [65536]u8 = undefined;
+            var end_sfa: std.heap.BufferFirstAllocator = .init(&end_sfa_buffer, g.allocator());
+            var end_list = std.array_list.Managed(u8).initCapacity(end_sfa.allocator(), 65536) catch unreachable;
             defer end_list.deinit();
             const end = end: {
                 const w = end_list.writer();

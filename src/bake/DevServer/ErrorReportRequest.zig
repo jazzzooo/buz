@@ -41,12 +41,14 @@ pub fn runWithBody(ctx: *ErrorReportRequest, body: []const u8, r: AnyResponse) !
     var s = std.io.fixedBufferStream(body);
     const reader = s.reader();
 
-    var sfa_general = std.heap.stackFallback(65536, ctx.dev.allocator());
-    var sfa_sourcemap = std.heap.stackFallback(65536, ctx.dev.allocator());
-    const temp_alloc = sfa_general.get();
+    var sfa_general_buffer: [65536]u8 = undefined;
+    var sfa_general: std.heap.BufferFirstAllocator = .init(&sfa_general_buffer, ctx.dev.allocator());
+    var sfa_sourcemap_buffer: [65536]u8 = undefined;
+    var sfa_sourcemap: std.heap.BufferFirstAllocator = .init(&sfa_sourcemap_buffer, ctx.dev.allocator());
+    const temp_alloc = sfa_general.allocator();
     var arena = std.heap.ArenaAllocator.init(temp_alloc);
     defer arena.deinit();
-    var source_map_arena = std.heap.ArenaAllocator.init(sfa_sourcemap.get());
+    var source_map_arena = std.heap.ArenaAllocator.init(sfa_sourcemap.allocator());
     defer source_map_arena.deinit();
 
     // Read payload, assemble ZigException

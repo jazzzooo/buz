@@ -444,8 +444,9 @@ pub const Version = struct {
             }
 
             // Allocator necessary for slow paths.
-            var stackFallback = std.heap.stackFallback(1024, bun.default_allocator);
-            const allocator = stackFallback.get();
+            var stack_fallback_buffer: [1024]u8 = undefined;
+            var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+            const allocator = stack_fallback.allocator();
 
             switch (dependency[0]) {
                 // =1

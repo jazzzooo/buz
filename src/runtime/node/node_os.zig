@@ -59,8 +59,9 @@ fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
     const values = try jsc.JSValue.createEmptyArray(globalThis, 0);
     var num_cpus: u32 = 0;
 
-    var stack_fallback = std.heap.stackFallback(1024 * 8, bun.default_allocator);
-    var file_buf = std.array_list.Managed(u8).init(stack_fallback.get());
+    var stack_fallback_buffer: [1024 * 8]u8 = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+    var file_buf = std.array_list.Managed(u8).init(stack_fallback.allocator());
     defer file_buf.deinit();
 
     // Read /proc/stat to get number of CPUs and times

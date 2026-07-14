@@ -114,8 +114,9 @@ pub fn initFromLog(
     assert(messages.len > 0);
 
     // Avoid small re-allocations without requesting so much from the heap
-    var sfb = std.heap.stackFallback(65536, dev.allocator());
-    var payload = std.array_list.Managed(u8).initCapacity(sfb.get(), 65536) catch
+    var sfb_buffer: [65536]u8 = undefined;
+    var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, dev.allocator());
+    var payload = std.array_list.Managed(u8).initCapacity(sfb.allocator(), 65536) catch
         unreachable; // enough space
     const w = payload.writer();
 
@@ -129,8 +130,8 @@ pub fn initFromLog(
         try writeLogMsg(msg, w);
     }
 
-    // Avoid-recloning if it is was moved to the hap
-    const data = if (payload.items.ptr == &sfb.buffer)
+    // Avoid re-cloning if it was moved to the heap.
+    const data = if (payload.items.ptr == sfb_buffer[0..].ptr)
         try dev.allocator().dupe(u8, payload.items)
     else
         payload.items;

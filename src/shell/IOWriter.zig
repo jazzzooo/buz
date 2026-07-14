@@ -467,8 +467,9 @@ pub fn onError(this: *IOWriter, err__: bun.sys.Error) void {
         this.flags.broken_pipe = true;
     }
     log("IOWriter(0x{x}, fd={f}) onError errno={s} errmsg={f} errsyscall={f}", .{ @intFromPtr(this), this.fd, @tagName(ee.getErrno()), ee.message, ee.syscall });
-    var seen_alloc = std.heap.stackFallback(@sizeOf(usize) * 64, bun.default_allocator);
-    var seen = bun.handleOom(std.array_list.Managed(usize).initCapacity(seen_alloc.get(), 64));
+    var seen_alloc_buffer: [64]usize = undefined;
+    var seen_alloc: std.heap.BufferFirstAllocator = .init(@ptrCast(&seen_alloc_buffer), bun.default_allocator);
+    var seen = bun.handleOom(std.array_list.Managed(usize).initCapacity(seen_alloc.allocator(), 64));
     defer seen.deinit();
     // Writers before writer_idx have already had their onIOWriterChunk callback fired and may
     // have been freed; only notify the still-pending ones.

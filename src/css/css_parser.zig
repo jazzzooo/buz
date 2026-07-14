@@ -3996,8 +3996,9 @@ pub const Parser = struct {
         // TODO(zack): might be faster to use stack fallback here
         // in the common case we may have just 1, but I feel like it is also very common to have >1
         // which means every time we have >1 items we will always incur 1 more additional allocation
-        var sfb = std.heap.stackFallback(@sizeOf(T), this.allocator());
-        const alloc = sfb.get();
+        var sfb_buffer: [1]T = undefined;
+        var sfb: std.heap.BufferFirstAllocator = .init(@ptrCast(&sfb_buffer), this.allocator());
+        const alloc = sfb.allocator();
         var values = ArrayList(T).initCapacity(alloc, 1) catch unreachable;
 
         while (true) {

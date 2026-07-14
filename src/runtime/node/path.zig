@@ -419,8 +419,9 @@ pub fn basename(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*
     const pathZStr = try path_ptr.getZigString(globalObject);
     if (pathZStr.len == 0) return path_ptr;
 
-    var stack_fallback = std.heap.stackFallback(stack_fallback_size_small, bun.default_allocator);
-    const allocator = stack_fallback.get();
+    var stack_fallback_buffer: [stack_fallback_size_small]u8 = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+    const allocator = stack_fallback.allocator();
 
     const pathZSlice = pathZStr.toSlice(allocator);
     defer pathZSlice.deinit();
@@ -608,8 +609,9 @@ pub fn dirname(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]
     const pathZStr = try path_ptr.getZigString(globalObject);
     if (pathZStr.len == 0) return bun.String.createUTF8ForJS(globalObject, CHAR_STR_DOT);
 
-    var stack_fallback = std.heap.stackFallback(stack_fallback_size_small, bun.default_allocator);
-    const allocator = stack_fallback.get();
+    var stack_fallback_buffer: [stack_fallback_size_small]u8 = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+    const allocator = stack_fallback.allocator();
 
     const pathZSlice = pathZStr.toSlice(allocator);
     defer pathZSlice.deinit();
@@ -804,8 +806,9 @@ pub fn extname(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]
     const pathZStr = try path_ptr.getZigString(globalObject);
     if (pathZStr.len == 0) return path_ptr;
 
-    var stack_fallback = std.heap.stackFallback(stack_fallback_size_small, bun.default_allocator);
-    const allocator = stack_fallback.get();
+    var stack_fallback_buffer: [stack_fallback_size_small]u8 = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+    const allocator = stack_fallback.allocator();
 
     const pathZSlice = pathZStr.toSlice(allocator);
     defer pathZSlice.deinit();
@@ -912,8 +915,9 @@ pub fn format(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]j
     // Supress exeption in zig. It does globalThis.vm().throwError() in JS land.
     try validateObject(globalObject, pathObject_ptr, "pathObject", .{}, .{});
 
-    var stack_fallback = std.heap.stackFallback(stack_fallback_size_small, bun.default_allocator);
-    const allocator = stack_fallback.get();
+    var stack_fallback_buffer: [stack_fallback_size_small]u8 = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+    const allocator = stack_fallback.allocator();
 
     var root: []const u8 = "";
     var root_slice: ?jsc.ZigString.Slice = null;
@@ -1214,8 +1218,9 @@ pub fn join(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]jsc
     var arena = bun.ArenaAllocator.init(bun.default_allocator);
     defer arena.deinit();
 
-    var stack_fallback = std.heap.stackFallback(stack_fallback_size_large, arena.allocator());
-    const allocator = stack_fallback.get();
+    var stack_fallback_buffer: [stack_fallback_size_large]u8 = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, arena.allocator());
+    const allocator = stack_fallback.allocator();
 
     var paths = bun.handleOom(allocator.alloc(string, args_len));
     defer allocator.free(paths);
@@ -1624,8 +1629,9 @@ pub fn normalize(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [
     const len = pathZStr.len;
     if (len == 0) return bun.String.createUTF8ForJS(globalObject, CHAR_STR_DOT);
 
-    var stack_fallback = std.heap.stackFallback(stack_fallback_size_small, bun.default_allocator);
-    const allocator = stack_fallback.get();
+    var stack_fallback_buffer: [stack_fallback_size_small]u8 = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+    const allocator = stack_fallback.allocator();
 
     const pathZSlice = pathZStr.toSlice(allocator);
     defer pathZSlice.deinit();
@@ -1944,8 +1950,9 @@ pub fn parse(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]js
     const pathZStr = try path_ptr.getZigString(globalObject);
     if (pathZStr.len == 0) return (PathParsed(u8){}).toJSObject(globalObject);
 
-    var stack_fallback = std.heap.stackFallback(stack_fallback_size_small, bun.default_allocator);
-    const allocator = stack_fallback.get();
+    var stack_fallback_buffer: [stack_fallback_size_small]u8 = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
+    const allocator = stack_fallback.allocator();
 
     const pathZSlice = pathZStr.toSlice(allocator);
     defer pathZSlice.deinit();
@@ -2312,7 +2319,7 @@ pub fn relative(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*
         @max((fromZigStr.len + MAX_PATH_SIZE(u8) + 1) * 2 + toZigStr.len + MAX_PATH_SIZE(u8) + 1, PATH_SIZE(u8)) * 3 + 3,
         bun.default_allocator,
     );
-    const allocator = sfa.get();
+    const allocator = sfa.allocator();
 
     const fromZigSlice = fromZigStr.toSlice(allocator);
     defer fromZigSlice.deinit();
@@ -2779,7 +2786,7 @@ pub fn resolve(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]
     defer arena.deinit();
 
     var sfa = globalObject.bunVM().rareData().path_buf.get(stack_fallback_size_large, arena.allocator());
-    const allocator = sfa.get();
+    const allocator = sfa.allocator();
 
     var paths_buf = try allocator.alloc(string, args_len);
     defer allocator.free(paths_buf);
@@ -2946,7 +2953,7 @@ pub fn toNamespacedPath(globalObject: *jsc.JSGlobalObject, isWindows: bool, args
         @max(len + MAX_PATH_SIZE(u8) + 1, PATH_SIZE(u8)) * 2 + 18,
         bun.default_allocator,
     );
-    const allocator = sfa.get();
+    const allocator = sfa.allocator();
 
     const pathZSlice = pathZStr.toSlice(allocator);
     defer pathZSlice.deinit();

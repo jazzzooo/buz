@@ -542,12 +542,13 @@ pub const UrlProtocolPair = struct {
         // statistical distribution of URL lengths and found nothing.
         const long_url_thresh = 2048;
 
-        var alloc = std.heap.stackFallback(long_url_thresh, allocator);
+        var alloc_buffer: [long_url_thresh]u8 = undefined;
+        var alloc: std.heap.BufferFirstAllocator = .init(&alloc_buffer, allocator);
 
         var protocol_buf: WellDefinedProtocol.StringWithColonBuffer = undefined;
 
         return concatPartsToUrl(
-            alloc.get(),
+            alloc.allocator(),
             switch (self.protocol) {
                 // If we have no protocol, we can assume it is git+ssh.
                 .unknown => &.{ "git+ssh://", self.urlSlice() },

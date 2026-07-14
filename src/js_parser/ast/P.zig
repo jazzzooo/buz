@@ -3658,8 +3658,9 @@ pub fn NewParser_(
             // Insert any relocated variable statements now
             if (p.relocated_top_level_vars.items.len > 0) {
                 var already_declared = RefMap{};
-                var already_declared_allocator_stack = std.heap.stackFallback(1024, allocator);
-                const already_declared_allocator = already_declared_allocator_stack.get();
+                var already_declared_allocator_stack_buffer: [1024]u8 = undefined;
+                var already_declared_allocator_stack: std.heap.BufferFirstAllocator = .init(&already_declared_allocator_stack_buffer, allocator);
+                const already_declared_allocator = already_declared_allocator_stack.allocator();
                 defer if (already_declared_allocator_stack.fixed_buffer_allocator.end_index >= 1023) already_declared.deinit(already_declared_allocator);
 
                 for (p.relocated_top_level_vars.items) |*local| {

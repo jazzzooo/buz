@@ -1212,8 +1212,9 @@ fn validateComposesFromProperties(
             }
         }
     };
-    var sfb = std.heap.stackFallback(1024, this.graph.allocator);
-    const temp_allocator = sfb.get();
+    var sfb_buffer: [1024]u8 = undefined;
+    var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, this.graph.allocator);
+    const temp_allocator = sfb.allocator();
     var visitor = Visitor{
         .visited = std.AutoArrayHashMap(Ref, void).init(temp_allocator),
         .properties = bun.StringArrayHashMap(PropertyInFile).init(temp_allocator),

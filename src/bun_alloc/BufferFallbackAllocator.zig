@@ -1,6 +1,6 @@
 /// An allocator that attempts to allocate from a provided buffer first,
 /// falling back to another allocator when the buffer is exhausted.
-/// Unlike `std.heap.StackFallbackAllocator`, this does not own the buffer.
+/// Like `std.heap.BufferFirstAllocator`, this does not own the buffer.
 const BufferFallbackAllocator = @This();
 
 fallback_allocator: Allocator,

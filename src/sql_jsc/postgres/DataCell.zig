@@ -583,10 +583,10 @@ pub fn fromBytes(binary: bool, bigint: bool, oid: types.Tag, bytes: []const u8, 
         .numeric => {
             if (binary) {
                 // this is probrably good enough for most cases
-                var stack_buffer = std.heap.stackFallback(1024, bun.default_allocator);
-                const allocator = stack_buffer.get();
-                var numeric_buffer = std.array_list.Managed(u8).fromOwnedSlice(allocator, &stack_buffer.buffer);
-                numeric_buffer.items.len = 0;
+                var stack_buffer_storage: [1024]u8 = undefined;
+                var stack_buffer: std.heap.BufferFirstAllocator = .init(&stack_buffer_storage, bun.default_allocator);
+                const allocator = stack_buffer.allocator();
+                var numeric_buffer = std.array_list.Managed(u8).initCapacity(allocator, stack_buffer_storage.len) catch unreachable;
                 defer numeric_buffer.deinit();
 
                 // if is binary format lets display as a string because JS cant handle it in a safe way

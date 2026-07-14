@@ -50,8 +50,9 @@ pub const PatchFile = struct {
 
     pub fn apply(this: *const PatchFile, allocator: Allocator, patch_dir: bun.FD) ?bun.sys.Error {
         var state: ApplyState = .{};
-        var sfb = std.heap.stackFallback(1024, allocator);
-        var arena = bun.ArenaAllocator.init(sfb.get());
+        var sfb_buffer: [1024]u8 = undefined;
+        var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, allocator);
+        var arena = bun.ArenaAllocator.init(sfb.allocator());
         defer arena.deinit();
 
         for (this.parts.items) |*part| {

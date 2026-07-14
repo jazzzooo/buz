@@ -252,8 +252,9 @@ pub fn addressToString(address: *const std.net.Address) bun.OOM!bun.String {
             });
         },
         std.posix.AF.INET6 => {
-            var stack = std.heap.stackFallback(512, default_allocator);
-            const allocator = stack.get();
+            var stack_buffer: [512]u8 = undefined;
+            var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, default_allocator);
+            const allocator = stack.allocator();
             var out = try std.fmt.allocPrint(allocator, "{f}", .{address.*});
             defer allocator.free(out);
             // TODO: this is a hack, fix it

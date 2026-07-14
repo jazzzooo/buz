@@ -57,11 +57,12 @@ export fn us_socket_buffered_js_write(
         buffer.wrote(total_written);
     }
 
-    var stack_fallback = std.heap.stackFallback(16 * 1024, bun.default_allocator);
+    var stack_fallback_buffer: [16 * 1024]u8 = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
     const node_buffer: jsc.Node.BlobOrStringOrBuffer = if (data.isUndefined())
         jsc.Node.BlobOrStringOrBuffer{ .string_or_buffer = jsc.Node.StringOrBuffer.empty }
     else
-        jsc.Node.BlobOrStringOrBuffer.fromJSWithEncodingValueAllowRequestResponse(globalObject, stack_fallback.get(), data, encoding, true) catch {
+        jsc.Node.BlobOrStringOrBuffer.fromJSWithEncodingValueAllowRequestResponse(globalObject, stack_fallback.allocator(), data, encoding, true) catch {
             return .zero;
         } orelse {
             if (!globalObject.hasException()) {

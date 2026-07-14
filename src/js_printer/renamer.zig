@@ -456,7 +456,8 @@ pub const NumberRenamer = struct {
     number_scope_pool: bun.HiveArray(NumberScope, 128).Fallback,
     arena: bun.ArenaAllocator,
     root: NumberScope = .{},
-    name_stack_fallback: std.heap.StackFallbackAllocator(512) = undefined,
+    name_temp_buffer: [512]u8 = undefined,
+    name_temp_allocator_state: std.heap.BufferFirstAllocator = undefined,
     name_temp_allocator: std.mem.Allocator = undefined,
 
     pub fn deinit(self: *NumberRenamer) void {
@@ -493,7 +494,7 @@ pub const NumberRenamer = struct {
             return;
         }
 
-        r.name_stack_fallback.fixed_buffer_allocator.end_index = 0;
+        r.name_temp_allocator_state.fixed_buffer_allocator.reset();
         const name = switch (scope.findUnusedName(r.allocator, r.name_temp_allocator, symbol.original_name)) {
             .renamed => |name| name,
             .no_collision => symbol.original_name,
@@ -524,12 +525,8 @@ pub const NumberRenamer = struct {
             .number_scope_pool = undefined,
             .arena = bun.ArenaAllocator.init(temp_allocator),
         };
-        renamer.name_stack_fallback = .{
-            .buffer = undefined,
-            .fallback_allocator = renamer.arena.allocator(),
-            .fixed_buffer_allocator = undefined,
-        };
-        renamer.name_temp_allocator = renamer.name_stack_fallback.get();
+        renamer.name_temp_allocator_state = .init(&renamer.name_temp_buffer, renamer.arena.allocator());
+        renamer.name_temp_allocator = renamer.name_temp_allocator_state.allocator();
         renamer.number_scope_pool = .init(renamer.arena.allocator());
         renamer.root.name_counts = root_names;
         if (comptime Environment.allow_assert and !Environment.isWindows) {

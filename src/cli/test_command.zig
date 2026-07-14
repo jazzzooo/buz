@@ -177,8 +177,9 @@ pub const JunitReporter = struct {
         };
         var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
         defer arena.deinit();
-        var stack = std.heap.stackFallback(1024, arena.allocator());
-        const allocator = stack.get();
+        var stack_buffer: [1024]u8 = undefined;
+        var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, arena.allocator());
+        const allocator = stack.allocator();
 
         const properties: PropertiesList = .{
             .ci = brk: {
@@ -337,8 +338,9 @@ pub const JunitReporter = struct {
 
         var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
         defer arena.deinit();
-        var stack_fallback_allocator = std.heap.stackFallback(4096, arena.allocator());
-        const allocator = stack_fallback_allocator.get();
+        var stack_fallback_allocator_buffer: [4096]u8 = undefined;
+        var stack_fallback_allocator: std.heap.BufferFirstAllocator = .init(&stack_fallback_allocator_buffer, arena.allocator());
+        const allocator = stack_fallback_allocator.allocator();
 
         const elapsed_time_ms = suite_info.metrics.elapsed_time;
         const elapsed_time_ms_f64: f64 = @floatFromInt(elapsed_time_ms);
@@ -527,8 +529,9 @@ pub const JunitReporter = struct {
         {
             var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
             defer arena.deinit();
-            var stack_fallback_allocator = std.heap.stackFallback(4096, arena.allocator());
-            const allocator = stack_fallback_allocator.get();
+            var stack_fallback_allocator_buffer: [4096]u8 = undefined;
+            var stack_fallback_allocator: std.heap.BufferFirstAllocator = .init(&stack_fallback_allocator_buffer, arena.allocator());
+            const allocator = stack_fallback_allocator.allocator();
             const metrics = this.total_metrics;
             const elapsed_time = @as(f64, @floatFromInt(std.time.nanoTimestamp() - bun.start_time)) / std.time.ns_per_s;
             const summary = try std.fmt.allocPrint(allocator,
@@ -843,8 +846,9 @@ pub const CommandLineReporter = struct {
 
                     var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
                     defer arena.deinit();
-                    var stack_fallback = std.heap.stackFallback(4096, arena.allocator());
-                    const allocator = stack_fallback.get();
+                    var stack_fallback_buffer: [4096]u8 = undefined;
+                    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, arena.allocator());
+                    const allocator = stack_fallback.allocator();
                     var concatenated_describe_scopes = std.array_list.Managed(u8).init(allocator);
 
                     {

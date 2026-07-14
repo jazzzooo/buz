@@ -795,8 +795,9 @@ pub export fn BakeToWindowsPath(input: bun.String) callconv(.c) bun.String {
     if (comptime bun.Environment.isPosix) {
         @panic("This code should not be called on POSIX systems.");
     }
-    var sfa = std.heap.stackFallback(1024, bun.default_allocator);
-    const alloc = sfa.get();
+    var sfa_buffer: [1024]u8 = undefined;
+    var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, bun.default_allocator);
+    const alloc = sfa.allocator();
     const input_utf8 = input.toUTF8(alloc);
     defer input_utf8.deinit();
     const input_slice = input_utf8.slice();
@@ -807,8 +808,9 @@ pub export fn BakeToWindowsPath(input: bun.String) callconv(.c) bun.String {
 }
 
 pub export fn BakeProdResolve(global: *jsc.JSGlobalObject, a_str: bun.String, specifier_str: bun.String) callconv(.c) bun.String {
-    var sfa = std.heap.stackFallback(@sizeOf(bun.PathBuffer) * 2, bun.default_allocator);
-    const alloc = sfa.get();
+    var sfa_buffer: [2]bun.PathBuffer = undefined;
+    var sfa: std.heap.BufferFirstAllocator = .init(@ptrCast(&sfa_buffer), bun.default_allocator);
+    const alloc = sfa.allocator();
 
     const specifier = specifier_str.toUTF8(alloc);
     defer specifier.deinit();
@@ -1020,8 +1022,9 @@ pub const PerThread = struct {
 
 /// Given a key, returns the source code to load.
 pub export fn BakeProdLoad(pt: *PerThread, key: bun.String) bun.String {
-    var sfa = std.heap.stackFallback(4096, bun.default_allocator);
-    const allocator = sfa.get();
+    var sfa_buffer: [4096]u8 = undefined;
+    var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, bun.default_allocator);
+    const allocator = sfa.allocator();
     const utf8 = key.toUTF8(allocator);
     defer utf8.deinit();
     log("BakeProdLoad: {s}\n", .{utf8.slice()});
@@ -1033,8 +1036,9 @@ pub export fn BakeProdLoad(pt: *PerThread, key: bun.String) bun.String {
 }
 
 pub export fn BakeProdSourceMap(pt: *PerThread, key: bun.String) bun.String {
-    var sfa = std.heap.stackFallback(4096, bun.default_allocator);
-    const allocator = sfa.get();
+    var sfa_buffer: [4096]u8 = undefined;
+    var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, bun.default_allocator);
+    const allocator = sfa.allocator();
     const utf8 = key.toUTF8(allocator);
     defer utf8.deinit();
     if (pt.source_maps.get(utf8.slice())) |value| {

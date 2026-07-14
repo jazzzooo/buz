@@ -1751,8 +1751,9 @@ pub fn dumpStackTrace(trace: std.builtin.StackTrace, limits: WriteStackTraceLimi
     for (programs) |program| {
         var arena = bun.ArenaAllocator.init(bun.default_allocator);
         defer arena.deinit();
-        var sfa = std.heap.stackFallback(16384, arena.allocator());
-        spawnSymbolizer(program, sfa.get(), &trace) catch |err| switch (err) {
+        var sfa_buffer: [16384]u8 = undefined;
+        var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, arena.allocator());
+        spawnSymbolizer(program, sfa.allocator(), &trace) catch |err| switch (err) {
             // try next program if this one wasn't found
             error.FileNotFound => continue,
             else => {},

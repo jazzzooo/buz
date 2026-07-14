@@ -12,8 +12,9 @@ pub fn writeRequest(session: *ClientSession, stream: *Stream, qs: *quic.Stream) 
         HTTPClient.printRequest(.http3, request, client.url.href, !client.flags.reject_unauthorized, client.state.request_body, client.verbose == .curl);
     }
 
-    var sfa = std.heap.stackFallback(2048, bun.default_allocator);
-    const alloc = sfa.get();
+    var sfa_buffer: [2048]u8 = undefined;
+    var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, bun.default_allocator);
+    const alloc = sfa.allocator();
     var headers: std.ArrayListUnmanaged(quic.Header) = .empty;
     defer headers.deinit(alloc);
     try headers.ensureTotalCapacityPrecise(alloc, request.headers.len + 4);

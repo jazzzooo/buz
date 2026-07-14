@@ -50,8 +50,9 @@ pub fn getExecPath(globalObject: *jsc.JSGlobalObject) callconv(.c) jsc.JSValue {
 }
 
 fn createExecArgv(globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-    var sfb = std.heap.stackFallback(4096, globalObject.allocator());
-    const temp_alloc = sfb.get();
+    var sfb_buffer: [4096]u8 = undefined;
+    var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, globalObject.allocator());
+    const temp_alloc = sfb.allocator();
     const vm = globalObject.bunVM();
 
     if (vm.worker) |worker| {
@@ -162,11 +163,9 @@ fn createArgv(globalObject: *jsc.JSGlobalObject) callconv(.c) jsc.JSValue {
     const vm = globalObject.bunVM();
 
     // Allocate up to 32 strings in stack
-    var stack_fallback_allocator = std.heap.stackFallback(
-        32 * @sizeOf(jsc.ZigString) + (bun.MAX_PATH_BYTES + 1) + 32,
-        bun.default_allocator,
-    );
-    const allocator = stack_fallback_allocator.get();
+    var stack_fallback_allocator_buffer: [32 * @sizeOf(jsc.ZigString) + (bun.MAX_PATH_BYTES + 1) + 32]u8 = undefined;
+    var stack_fallback_allocator: std.heap.BufferFirstAllocator = .init(&stack_fallback_allocator_buffer, bun.default_allocator);
+    const allocator = stack_fallback_allocator.allocator();
 
     var args_count: usize = vm.argv.len;
     if (vm.worker) |worker| {
@@ -314,8 +313,9 @@ pub fn Bun__Process__editWindowsEnvVar(k: bun.String, v: bun.String) callconv(.c
     comptime bun.assert(bun.Environment.isWindows);
     if (k.tag == .Empty) return;
     const wtf1 = k.value.WTFStringImpl;
-    var fixed_stack_allocator = std.heap.stackFallback(1025, bun.default_allocator);
-    const allocator = fixed_stack_allocator.get();
+    var fixed_stack_allocator_buffer: [1025]u8 = undefined;
+    var fixed_stack_allocator: std.heap.BufferFirstAllocator = .init(&fixed_stack_allocator_buffer, bun.default_allocator);
+    const allocator = fixed_stack_allocator.allocator();
     var buf1 = bun.handleOom(allocator.alloc(u16, k.utf16ByteLength() + 1));
     defer allocator.free(buf1);
     var buf2 = bun.handleOom(allocator.alloc(u16, v.utf16ByteLength() + 1));
