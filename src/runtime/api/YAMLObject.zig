@@ -315,8 +315,6 @@ const Stringifier = struct {
             const num = unwrapped.asNumber();
             if (std.math.isNegativeInf(num)) {
                 this.builder.append(.latin1, "-.inf");
-                // } else if (std.math.isPositiveInf(num)) {
-                //     builder.append(.latin1, "+.inf");
             } else if (std.math.isInf(num)) {
                 this.builder.append(.latin1, ".inf");
             } else if (std.math.isNan(num)) {
@@ -446,8 +444,6 @@ const Stringifier = struct {
                         first = false;
 
                         this.builder.append(.latin1, "- ");
-
-                        // don't need to print a newline here for any value
 
                         this.indent += 1;
                         try this.stringify(global, item);

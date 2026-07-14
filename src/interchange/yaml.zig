@@ -34,7 +34,6 @@ pub const YAML = struct {
 pub const Context = enum {
     block_out,
     block_in,
-    // block_key,
     flow_in,
     flow_key,
 
@@ -91,16 +90,8 @@ pub const Indent = enum(usize) {
         indent.* = @enumFromInt(@intFromEnum(indent.*) + n);
     }
 
-    pub fn dec(indent: *Indent, n: usize) void {
-        indent.* = @enumFromInt(@intFromEnum(indent.*) - n);
-    }
-
     pub fn add(indent: Indent, n: usize) Indent {
         return @enumFromInt(@intFromEnum(indent) + n);
-    }
-
-    pub fn sub(indent: Indent, n: usize) Indent {
-        return @enumFromInt(@intFromEnum(indent) - n);
     }
 
     pub fn isLessThan(indent: Indent, other: Indent) bool {
@@ -176,14 +167,6 @@ pub const Pos = enum(usize) {
         return .{ .start = @intCast(@intFromEnum(pos)) };
     }
 
-    pub fn inc(pos: *Pos, n: usize) void {
-        pos.* = @enumFromInt(@intFromEnum(pos.*) + n);
-    }
-
-    pub fn dec(pos: *Pos, n: usize) void {
-        pos.* = @enumFromInt(@intFromEnum(pos.*) - n);
-    }
-
     pub fn add(pos: Pos, n: usize) Pos {
         return @enumFromInt(@intFromEnum(pos) + n);
     }
@@ -195,12 +178,6 @@ pub const Pos = enum(usize) {
     pub fn isLessThan(pos: Pos, other: usize) bool {
         return pos.cast() < other;
     }
-
-    pub fn cmp(l: Pos, r: usize) std.math.Order {
-        if (l.cast() < r) return .lt;
-        if (l.cast() > r) return .gt;
-        return .eq;
-    }
 };
 
 pub const Line = enum(usize) {
@@ -210,34 +187,15 @@ pub const Line = enum(usize) {
         return @enumFromInt(line);
     }
 
-    pub fn cast(line: Line) usize {
-        return @intFromEnum(line);
-    }
-
     pub fn inc(line: *Line, n: usize) void {
         line.* = @enumFromInt(@intFromEnum(line.*) + n);
-    }
-
-    pub fn dec(line: *Line, n: usize) void {
-        line.* = @enumFromInt(@intFromEnum(line.*) - n);
-    }
-
-    pub fn add(line: Line, n: usize) Line {
-        return @enumFromInt(@intFromEnum(line) + n);
-    }
-
-    pub fn sub(line: Line, n: usize) Line {
-        return @enumFromInt(@intFromEnum(line) - n);
     }
 };
 
 comptime {
     bun.assert(Pos != Indent);
     bun.assert(Pos != Line);
-    bun.assert(Pos == Pos);
     bun.assert(Indent != Line);
-    bun.assert(Indent == Indent);
-    bun.assert(Line == Line);
 }
 
 pub fn Parser(comptime enc: Encoding) type {
@@ -259,22 +217,9 @@ pub fn Parser(comptime enc: Encoding) type {
 
         explicit_document_start_line: ?Line,
 
-        // anchors: Anchors,
         anchors: bun.StringHashMap(Expr),
-        // aliases: PendingAliases,
 
         tag_handles: bun.StringHashMap(void),
-
-        // const PendingAliases = struct {
-        //     list: std.array_list.Managed(State),
-
-        //     const State = struct {
-        //         name: String.Range,
-        //         index: usize,
-        //         prop: enum { key, value },
-        //         collection_node: *Node,
-        //     };
-        // };
 
         whitespace_buf: std.array_list.Managed(Whitespace),
 
@@ -300,14 +245,10 @@ pub fn Parser(comptime enc: Encoding) type {
                 .tab_after_indent = false,
                 .line = .from(1),
                 .token = .eof(.{ .start = start, .indent = .none, .line = .from(1) }),
-                // .key = null,
-                // .literal = null,
                 .context = .init(allocator),
                 .block_indents = .init(allocator),
                 .explicit_document_start_line = null,
-                // .anchors = .{ .map = .init(allocator) },
                 .anchors = .init(allocator),
-                // .aliases = .{ .list = .init(allocator) },
                 .tag_handles = .init(allocator),
                 .whitespace_buf = .init(allocator),
                 .stack_check = .init(),
@@ -323,10 +264,9 @@ pub fn Parser(comptime enc: Encoding) type {
             self.tag_handles.deinit();
             self.whitespace_buf.deinit();
             self.alias_expansion.deinit();
-            // std.debug.assert(self.future == null);
         }
 
-        const Error = union(enum) {
+        const Diagnostic = union(enum) {
             oom,
             stack_overflow,
             unexpected_eof: struct {
@@ -347,9 +287,6 @@ pub fn Parser(comptime enc: Encoding) type {
             unresolved_alias: struct {
                 pos: Pos,
             },
-            // scalar_type_mismatch: struct {
-            //     pos: Pos,
-            // },
             multiline_implicit_key: struct {
                 pos: Pos,
             },
@@ -375,7 +312,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 pos: Pos,
             },
 
-            pub fn addToLog(this: *const Error, source: *const logger.Source, log: *logger.Log) (OOM || error{StackOverflow})!void {
+            pub fn addToLog(this: *const Diagnostic, source: *const logger.Source, log: *logger.Log) (OOM || error{StackOverflow})!void {
                 switch (this.*) {
                     .oom => return error.OutOfMemory,
                     .stack_overflow => return error.StackOverflow,
@@ -425,14 +362,10 @@ pub fn Parser(comptime enc: Encoding) type {
             }
         };
 
-        fn errorDetails(self: *const @This(), err: ParseError) Error {
+        fn errorDetails(self: *const @This(), err: ParseError) Diagnostic {
             return switch (err) {
                 error.OutOfMemory => .oom,
                 error.StackOverflow => .stack_overflow,
-                // error.UnexpectedToken => if (self.token.data == .eof)
-                //     .{ .unexpected_eof = .{ .pos = self.token.start } }
-                // else
-                //     .{ .unexpected_token = .{ .pos = self.token.start } },
                 error.UnexpectedToken => .{ .unexpected_token = .{ .pos = self.token.start } },
                 error.UnexpectedEof => .{ .unexpected_eof = .{ .pos = self.token.start } },
                 error.InvalidDirective => .{ .invalid_directive = .{ .pos = self.token.start } },
@@ -442,7 +375,6 @@ pub fn Parser(comptime enc: Encoding) type {
                     .{ .unexpected_character = .{ .pos = self.pos } },
                 error.UnresolvedTagHandle => .{ .unresolved_tag_handle = .{ .pos = self.pos } },
                 error.UnresolvedAlias => .{ .unresolved_alias = .{ .pos = self.token.start } },
-                // error.ScalarTypeMismatch => .{ .scalar_type_mismatch = .{ .pos = self.token.start } },
                 error.MultilineImplicitKey => .{ .multiline_implicit_key = .{ .pos = self.token.start } },
                 error.MultipleAnchors => .{ .multiple_anchors = .{ .pos = self.token.start } },
                 error.MultipleTags => .{ .multiple_tags = .{ .pos = self.token.start } },
@@ -480,10 +412,6 @@ pub fn Parser(comptime enc: Encoding) type {
             InvalidIndentation,
             ExcessiveAliasing,
             StackOverflow,
-            // ScalarTypeMismatch,
-
-            // InvalidSyntax,
-            // UnexpectedDirective,
         };
 
         pub fn parseStream(self: *@This()) ParseError!Stream {
@@ -499,7 +427,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 try docs.append(doc);
             }
 
-            return .{ .docs = docs, .input = self.input };
+            return .{ .docs = docs };
         }
 
         fn peek(self: *const @This(), comptime n: usize) enc.unit() {
@@ -531,20 +459,6 @@ pub fn Parser(comptime enc: Encoding) type {
 
         fn remainStartsWith(self: *const @This(), cs: []const enc.unit()) bool {
             return std.mem.startsWith(enc.unit(), self.remain(), cs);
-        }
-
-        fn remainStartsWithChar(self: *const @This(), char: enc.unit()) bool {
-            const r = self.remain();
-            return r.len != 0 and r[0] == char;
-        }
-
-        fn remainStartsWithAny(self: *const @This(), cs: []const enc.unit()) bool {
-            const r = self.remain();
-            if (r.len == 0) {
-                return false;
-            }
-
-            return std.mem.indexOfScalar(enc.unit(), cs, r[0]) != null;
         }
 
         // this looks different from node parsing code because directives
@@ -582,18 +496,18 @@ pub fn Parser(comptime enc: Encoding) type {
                 // primary tag handle
                 if (self.isSWhite()) {
                     self.skipSWhite();
-                    const prefix = try self.parseDirectiveTagPrefix();
+                    try self.parseDirectiveTagPrefix();
                     try self.trySkipToNewLine();
-                    return .{ .tag = .{ .handle = .primary, .prefix = prefix } };
+                    return .other;
                 }
 
                 // secondary tag handle
                 if (self.isChar('!')) {
                     self.inc(1);
                     try self.trySkipSWhite();
-                    const prefix = try self.parseDirectiveTagPrefix();
+                    try self.parseDirectiveTagPrefix();
                     try self.trySkipToNewLine();
-                    return .{ .tag = .{ .handle = .secondary, .prefix = prefix } };
+                    return .other;
                 }
 
                 // named tag handle
@@ -605,15 +519,13 @@ pub fn Parser(comptime enc: Encoding) type {
 
                 try self.tag_handles.put(handle.slice(self.input), {});
 
-                const prefix = try self.parseDirectiveTagPrefix();
+                try self.parseDirectiveTagPrefix();
                 try self.trySkipToNewLine();
-                return .{ .tag = .{ .handle = .{ .named = handle }, .prefix = prefix } };
+                return .other;
             }
 
             // reserved directive
-            var range = self.stringRange();
             try self.trySkipNsChars();
-            const reserved = range.end();
 
             self.skipSWhite();
 
@@ -624,38 +536,36 @@ pub fn Parser(comptime enc: Encoding) type {
 
             try self.trySkipToNewLine();
 
-            return .{ .reserved = reserved };
+            return .other;
         }
 
-        pub fn parseDirectiveTagPrefix(self: *@This()) ParseError!Directive.Tag.Prefix {
+        fn parseDirectiveTagPrefix(self: *@This()) ParseError!void {
             // local tag prefix
             if (self.isChar('!')) {
                 self.inc(1);
-                var range = self.stringRange();
                 self.skipNsUriChars();
-                return .{ .local = range.end() };
+                return;
             }
 
             // global tag prefix
             if (self.isNsTagChar()) |char_len| {
-                var range = self.stringRange();
                 self.inc(char_len);
                 self.skipNsUriChars();
-                return .{ .global = range.end() };
+                return;
             }
 
             return error.InvalidDirective;
         }
 
         pub fn parseDocument(self: *@This()) ParseError!Document {
-            var directives: std.array_list.Managed(Directive) = .init(self.allocator);
-
             self.anchors.clearRetainingCapacity();
             self.tag_handles.clearRetainingCapacity();
 
+            var has_directives = false;
             var has_yaml_directive = false;
 
             while (self.token.data == .directive) {
+                has_directives = true;
                 const directive = try self.parseDirective();
                 if (directive == .yaml) {
                     if (has_yaml_directive) {
@@ -663,7 +573,6 @@ pub fn Parser(comptime enc: Encoding) type {
                     }
                     has_yaml_directive = true;
                 }
-                try directives.append(directive);
                 try self.scan(.{});
             }
 
@@ -672,7 +581,7 @@ pub fn Parser(comptime enc: Encoding) type {
             if (self.token.data == .document_start) {
                 self.explicit_document_start_line = self.token.line;
                 try self.scan(.{});
-            } else if (directives.items.len > 0) {
+            } else if (has_directives) {
                 // if there's directives they must end with '---'
                 return unexpectedToken();
             }
@@ -703,7 +612,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
             }
 
-            return .{ .root = root, .directives = directives };
+            return .{ .root = root };
         }
 
         fn parseFlowSequence(self: *@This()) ParseError!Expr {
@@ -1058,9 +967,6 @@ pub fn Parser(comptime enc: Encoding) type {
             defer props.deinit();
 
             {
-                // try self.context.set(.block_in);
-                // defer self.context.unset(.block_in);
-
                 // get the first value
 
                 const mapping_value_start = self.token.start;
@@ -1619,13 +1525,6 @@ pub fn Parser(comptime enc: Encoding) type {
                     }
 
                     var copy = self.anchors.get(alias.slice(self.input)) orelse {
-                        // we failed to find the alias, but it might be cyclic and
-                        // and available later. to resolve this we need to check
-                        // nodes for parent collection types. this alias is added
-                        // to a list with a pointer to *Mapping or *Sequence, an
-                        // index (and whether is key/value), and the alias name.
-                        // then, when we actually have Node for the parent we
-                        // fill in the data pointer at the index with the node.
                         return error.UnresolvedAlias;
                     };
 
@@ -1959,10 +1858,6 @@ pub fn Parser(comptime enc: Encoding) type {
                                 // 1
                                 break :node scalar.data.toExpr(scalar_start, self.input);
                             },
-                            // => {
-                            //     // 2
-                            //     // can be multiline
-                            // },
                             .flow_in,
                             .block_out,
                             .block_in,
@@ -1970,13 +1865,6 @@ pub fn Parser(comptime enc: Encoding) type {
                                 if (scalar_line != self.token.line and !opts.explicit_mapping_key) {
                                     return error.MultilineImplicitKey;
                                 }
-                                // if (scalar.multiline) {
-                                //     // TODO: maybe get rid of multiline and just check
-                                //     // `scalar_line != self.token.line`. this will depend
-                                //     // on how we decide scalar_line. if that's including
-                                //     // whitespace for plain scalars it might not work
-                                //     return error.MultilineImplicitKey;
-                                // }
                             },
                         }
 
@@ -2068,7 +1956,6 @@ pub fn Parser(comptime enc: Encoding) type {
 
         const ScanPlainScalarError = OOM || error{
             UnexpectedCharacter,
-            // ScalarTypeMismatch,
         };
 
         fn scanPlainScalar(self: *@This(), opts: ScanOptions) ScanPlainScalarError!Token(enc) {
@@ -2219,9 +2106,7 @@ pub fn Parser(comptime enc: Encoding) type {
                     OFF,
                 };
 
-                const ResolveError = OOM || error{
-                    // ScalarTypeMismatch,
-                    };
+                const ResolveError = OOM;
 
                 pub fn resolve(
                     ctx: *@This(),
@@ -2246,28 +2131,24 @@ pub fn Parser(comptime enc: Encoding) type {
                                 ctx.resolved_scalar_len = ctx.str_builder.len();
                                 ctx.scalar = scalar;
                             }
-                            // return error.ScalarTypeMismatch;
                         },
                         .int => {
                             if (scalar == .number) {
                                 ctx.resolved_scalar_len = ctx.str_builder.len();
                                 ctx.scalar = scalar;
                             }
-                            // return error.ScalarTypeMismatch;
                         },
                         .float => {
                             if (scalar == .number) {
                                 ctx.resolved_scalar_len = ctx.str_builder.len();
                                 ctx.scalar = scalar;
                             }
-                            // return error.ScalarTypeMismatch;
                         },
                         .null => {
                             if (scalar == .null) {
                                 ctx.resolved_scalar_len = ctx.str_builder.len();
                                 ctx.scalar = scalar;
                             }
-                            // return error.ScalarTypeMismatch;
                         },
                         .str => {
                             // always becomes string
@@ -3823,8 +3704,6 @@ pub fn Parser(comptime enc: Encoding) type {
             }
         }
 
-        // fn scanIndentation(self: *@This()) void {}
-
         const ScanError = OOM || error{
             UnexpectedToken,
             UnexpectedCharacter,
@@ -3832,7 +3711,6 @@ pub fn Parser(comptime enc: Encoding) type {
             UnexpectedDocumentStart,
             UnexpectedDocumentEnd,
             InvalidIndentation,
-            // ScalarTypeMismatch,
         };
 
         const ScanOptions = struct {
@@ -4270,9 +4148,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             switch (self.context.get()) {
                                 .block_in,
                                 .block_out,
-                                => {
-                                    // error.UnexpectedCharacter
-                                },
+                                => {},
                                 .flow_key,
                                 .flow_in,
                                 => {
@@ -4320,9 +4196,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             switch (self.context.get()) {
                                 .block_in,
                                 .block_out,
-                                => {
-                                    // error.UnexpectedCharacter
-                                },
+                                => {},
                                 .flow_key,
                                 .flow_in,
                                 => {
@@ -4576,20 +4450,8 @@ pub fn Parser(comptime enc: Encoding) type {
             return true;
         }
 
-        fn isAnyAt(self: *const @This(), values: []const enc.unit(), n: usize) bool {
-            const pos = self.pos.add(n);
-            if (pos.isLessThan(self.input.len)) {
-                return std.mem.indexOfScalar(enc.unit(), values, self.input[pos.cast()]) != null;
-            }
-            return false;
-        }
-
         fn isEof(self: *const @This()) bool {
             return !self.pos.isLessThan(self.input.len);
-        }
-
-        fn isEofAt(self: *const @This(), n: usize) bool {
-            return !self.pos.add(n).isLessThan(self.input.len);
         }
 
         fn isBChar(self: *@This()) bool {
@@ -4604,15 +4466,6 @@ pub fn Parser(comptime enc: Encoding) type {
             const pos = self.pos;
             if (pos.isLessThan(self.input.len)) {
                 return chars.isBChar(self.input[pos.cast()]);
-            }
-            return true;
-        }
-
-        fn isSWhiteOrBCharOrEof(self: *@This()) bool {
-            const pos = self.pos;
-            if (pos.isLessThan(self.input.len)) {
-                const c = self.input[pos.cast()];
-                return chars.isSWhite(c) or chars.isBChar(c);
             }
             return true;
         }
@@ -4691,21 +4544,13 @@ pub fn Parser(comptime enc: Encoding) type {
         }
 
         fn isNsUriChar(self: *@This()) bool {
-            const r = self.remain();
-            return chars.isNsUriChar(r);
+            return chars.isNsUriChar(self.remain());
         }
 
         fn skipNsUriChars(self: *@This()) void {
             while (self.isNsUriChar()) {
                 self.inc(1);
             }
-        }
-
-        fn trySkipNsUriChars(self: *@This()) error{UnexpectedCharacter}!void {
-            if (!self.isNsUriChar()) {
-                return error.UnexpectedCharacter;
-            }
-            self.skipNsUriChars();
         }
 
         fn stringRange(self: *const @This()) String.Range.Start {
@@ -5057,175 +4902,19 @@ pub fn Parser(comptime enc: Encoding) type {
             }
         };
 
-        // pub const Node = struct {
-        //     start: Pos,
-        //     data: Data,
-
-        //     pub const Data = union(enum) {
-        //         scalar: Scalar,
-        //         sequence: *Sequence,
-        //         mapping: *Mapping,
-
-        //         // TODO: we will probably need an alias
-        //         // node that is resolved later. problem:
-        //         // ```
-        //         // &map
-        //         // hi:
-        //         //  hello: *map
-        //         // ```
-        //         // map needs to be put in the map before
-        //         // we finish parsing the map node, because
-        //         // 'hello' value needs to be able to find it.
-        //         //
-        //         // alias: Alias,
-        //     };
-
-        //     pub const Sequence = struct {
-        //         list: std.array_list.Managed(Node),
-
-        //         pub fn init(allocator: std.mem.Allocator) Sequence {
-        //             return .{ .list = .init(allocator) };
-        //         }
-
-        //         pub fn count(this: *const Sequence) usize {
-        //             return this.list.items.len;
-        //         }
-
-        //         pub fn slice(this: *const Sequence) []const Node {
-        //             return this.list.items;
-        //         }
-        //     };
-
-        //     pub const Mapping = struct {
-        //         keys: std.array_list.Managed(Node),
-        //         values: std.array_list.Managed(Node),
-
-        //         pub fn init(allocator: std.mem.Allocator) Mapping {
-        //             return .{ .keys = .init(allocator), .values = .init(allocator) };
-        //         }
-
-        //         pub fn append(this: *Mapping, key: Node, value: Node) OOM!void {
-        //             try this.keys.append(key);
-        //             try this.values.append(value);
-        //         }
-
-        //         pub fn count(this: *const Mapping) usize {
-        //             return this.keys.items.len;
-        //         }
-        //     };
-
-        //     // pub const Alias = struct {
-        //     //     anchor_id: Anchors.Id,
-        //     // };
-
-        //     pub fn isNull(this: *const Node) bool {
-        //         return switch (this.data) {
-        //             .scalar => |s| s == .null,
-        //             else => false,
-        //         };
-        //     }
-
-        //     pub fn @"null"(start: Pos) Node {
-        //         return .{
-        //             .start = start,
-        //             .data = .{ .scalar = .null },
-        //         };
-        //     }
-
-        //     pub fn boolean(start: Pos, value: bool) Node {
-        //         return .{
-        //             .start = start,
-        //             .data = .{ .scalar = .{ .boolean = value } },
-        //         };
-        //     }
-
-        //     pub fn number(start: Pos, value: f64) Node {
-        //         return .{
-        //             .start = start,
-        //             .data = .{ .scalar = .{ .number = value } },
-        //         };
-        //     }
-
-        //     pub fn string(start: Pos, str: String) Node {
-        //         return .{
-        //             .start = start,
-        //             .data = .{ .scalar = .{ .string = .{ .text = str } } },
-        //         };
-        //     }
-
-        //     // pub fn alias(start: Pos, anchor_id: Anchors.Id) Node {
-        //     //     return .{
-        //     //         .start = start,
-        //     //         .data = .{ .alias = .{ .anchor_id = anchor_id } },
-        //     //     };
-        //     // }
-
-        //     pub fn init(allocator: std.mem.Allocator, start: Pos, data: anytype) OOM!Node {
-        //         return .{
-        //             .start = start,
-        //             .data = switch (@TypeOf(data)) {
-        //                 Scalar => .{ .scalar = data },
-        //                 Sequence => sequence: {
-        //                     const seq = try allocator.create(Sequence);
-        //                     seq.* = data;
-        //                     break :sequence .{ .sequence = seq };
-        //                 },
-        //                 Mapping => mapping: {
-        //                     const map = try allocator.create(Mapping);
-        //                     map.* = data;
-        //                     break :mapping .{ .mapping = map };
-        //                 },
-        //                 // Alias => .{ .alias = data },
-        //                 else => @compileError("unexpected data type"),
-        //             },
-        //         };
-        //     }
-        // };
-
-        const Directive = union(enum) {
+        const Directive = enum {
             yaml,
-            tag: Directive.Tag,
-            reserved: String.Range,
-
-            /// '%TAG <handle> <prefix>'
-            pub const Tag = struct {
-                handle: Handle,
-                prefix: Prefix,
-
-                pub const Handle = union(enum) {
-                    /// '!name!'
-                    named: String.Range,
-                    /// '!!'
-                    secondary,
-                    /// '!'
-                    primary,
-                };
-
-                pub const Prefix = union(enum) {
-                    /// c-ns-local-tag-prefix
-                    /// '!my-prefix'
-                    local: String.Range,
-                    /// ns-global-tag-prefix
-                    /// 'tag:example.com,2000:app/'
-                    global: String.Range,
-                };
-            };
+            other,
         };
 
         pub const Document = struct {
-            directives: std.array_list.Managed(Directive),
             root: Expr,
-
-            pub fn deinit(this: *Document) void {
-                this.directives.deinit();
-            }
         };
 
         pub const Stream = struct {
             docs: std.array_list.Managed(Document),
-            input: []const enc.unit(),
         };
-
+    };
 }
 
 pub const Encoding = enum {
@@ -5240,13 +4929,6 @@ pub const Encoding = enum {
             .utf16 => u16,
         };
     }
-
-    // fn Unit(comptime T: type) type {
-    //     return enum(T) {
-
-    //         _,
-    //     };
-    // }
 
     pub fn literal(comptime encoding: Encoding, comptime str: []const u8) []const encoding.unit() {
         return switch (encoding) {
@@ -5383,38 +5065,6 @@ pub const Encoding = enum {
             pub fn isSWhite(c: encoding.unit()) bool {
                 return c == ' ' or c == '\t';
             }
-            pub fn isNsPlainSafeOut(c: encoding.unit()) bool {
-                return isNsChar(c);
-            }
-            pub fn isNsPlainSafeIn(c: encoding.unit()) bool {
-                // TODO: inline isCFlowIndicator
-                return isNsChar(c) and !isCFlowIndicator(c);
-            }
-            pub fn isCIndicator(c: encoding.unit()) bool {
-                return switch (c) {
-                    '-',
-                    '?',
-                    ':',
-                    ',',
-                    '[',
-                    ']',
-                    '{',
-                    '}',
-                    '#',
-                    '&',
-                    '*',
-                    '!',
-                    '|',
-                    '>',
-                    '\'',
-                    '"',
-                    '%',
-                    '@',
-                    '`',
-                    => true,
-                    else => false,
-                };
-            }
             pub fn isCFlowIndicator(c: encoding.unit()) bool {
                 return switch (c) {
                     ',',
@@ -5455,10 +5105,8 @@ pub const Encoding = enum {
                     => true,
 
                     else => |c| {
-                        if (c == '%') {
-                            if (cs.len > 2 and isNsHexDigit(cs[1]) and isNsHexDigit(cs[2])) {
-                                return true;
-                            }
+                        if (c == '%' and cs.len > 2 and isNsHexDigit(cs[1]) and isNsHexDigit(cs[2])) {
+                            return true;
                         }
 
                         return isNsWordChar(c);
