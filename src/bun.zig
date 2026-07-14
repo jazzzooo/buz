@@ -908,8 +908,10 @@ pub fn openDirAbsoluteNotForDeletingOrRenaming(path_: []const u8) !std.fs.Dir {
 /// This wrapper exists to avoid the call to sliceTo(0)
 /// Zig's sliceTo(0) is scalar
 pub fn getenvZAnyCase(key: [:0]const u8) ?[]const u8 {
-    for (std.os.environ) |lineZ| {
-        const line = std.mem.sliceTo(lineZ, 0);
+    if (comptime Environment.isWindows) return getenvZ(key);
+
+    for (std.mem.span(std.c.environ)) |lineZ| {
+        const line = std.mem.sliceTo(lineZ.?, 0);
         const key_end = strings.indexOfCharUsize(line, '=') orelse line.len;
         if (strings.eqlCaseInsensitiveASCII(line[0..key_end], key, true)) {
             return line[@min(key_end + 1, line.len)..];
@@ -2017,11 +2019,11 @@ pub fn appendOptionsEnv(env: []const u8, comptime ArgType: type, args: *std.arra
     }
 }
 
-pub fn initArgv() !void {
+pub fn initArgv(args: std.process.Args) !void {
     if (comptime Environment.isPosix) {
-        argv = try bun.default_allocator.alloc([:0]const u8, std.os.argv.len);
+        argv = try bun.default_allocator.alloc([:0]const u8, args.vector.len);
         for (0..argv.len) |i| {
-            argv[i] = std.mem.sliceTo(std.os.argv[i], 0);
+            argv[i] = std.mem.sliceTo(args.vector[i], 0);
         }
     } else if (comptime Environment.isWindows) {
         // Zig's implementation of `std.process.argsAlloc()`on Windows platforms
@@ -2819,36 +2821,33 @@ pub fn linuxKernelVersion() Semver.Version {
     return analytics.GenerateHeader.GeneratePlatform.kernelVersion();
 }
 
+const SelfExePath = struct {
+    var set = false;
+    // This deliberately stays small; the previous implementation used the same
+    // POSIX-sized buffer and reported an error for unusually long paths.
+    var value: [4096 + 1]u8 = undefined;
+    var len: usize = 0;
+    var lock: Mutex = .{};
+
+    fn load(io_: std.Io) ![:0]u8 {
+        len = try std.process.executablePath(io_, &value);
+        value[len] = 0;
+        set = true;
+        return value[0..len :0];
+    }
+};
+
 pub fn selfExePath() ![:0]u8 {
-    const memo = struct {
-        var set = false;
-        // TODO open zig issue to make 'std.fs.selfExePath' return [:0]u8 directly
-        // note: this doesn't use MAX_PATH_BYTES because on windows that's 32767*3+1 yet normal paths are 255.
-        // should this fail it will still do so gracefully. 4096 is MAX_PATH_BYTES on posix.
-        var value: [
-            4096 + 1 // + 1 for the null terminator
-        ]u8 = undefined;
-        var len: usize = 0;
-        var lock: Mutex = .{};
+    if (SelfExePath.set) return SelfExePath.value[0..SelfExePath.len :0];
+    return error.SelfExePathNotInitialized;
+}
 
-        pub fn load() ![:0]u8 {
-            const init = try std.fs.selfExePath(&value);
-            @This().len = init.len;
-            value[@This().len] = 0;
-            set = true;
-            return value[0..@This().len :0];
-        }
-    };
-
-    // try without a lock
-    if (memo.set) return memo.value[0..memo.len :0];
-
-    // make it thread-safe
-    memo.lock.lock();
-    defer memo.lock.unlock();
-    // two calls could happen concurrently, so we must check again
-    if (memo.set) return memo.value[0..memo.len :0];
-    return memo.load();
+pub fn initSelfExePath(io_: std.Io) !void {
+    if (SelfExePath.set) return;
+    SelfExePath.lock.lock();
+    defer SelfExePath.lock.unlock();
+    if (SelfExePath.set) return;
+    _ = try SelfExePath.load(io_);
 }
 pub const exe_suffix = if (Environment.isWindows) ".exe" else "";
 

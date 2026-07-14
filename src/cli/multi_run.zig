@@ -326,7 +326,7 @@ const State = struct {
         for (this.handles) |*handle| {
             if (handle.process) |*proc| {
                 if (proc.status == .running) {
-                    _ = proc.ptr.kill(std.posix.SIG.INT);
+                    _ = proc.ptr.kill(@intCast(@intFromEnum(std.posix.SIG.INT)));
                 }
             }
         }

@@ -1247,7 +1247,7 @@ fn NewPrinter(
                     {
                         // Reset the temporary bindings array early on
                         var temp_bindings = p.temporary_bindings;
-                        p.temporary_bindings = .{};
+                        p.temporary_bindings = .empty;
                         defer {
                             if (p.temporary_bindings.capacity > 0) {
                                 temp_bindings.deinit(bun.default_allocator);

@@ -1281,12 +1281,12 @@ const StackLine = struct {
                         if (context.address < info.addr) return;
                         const phdrs = info.phdr[0..info.phnum];
                         for (phdrs) |*phdr| {
-                            if (phdr.p_type != std.elf.PT_LOAD) continue;
+                            if (phdr.type != .LOAD) continue;
 
                             // Overflowing addition is used to handle the case of VSDOs
                             // having a p_vaddr = 0xffffffffff700000
-                            const seg_start = info.addr +% phdr.p_vaddr;
-                            const seg_end = seg_start + phdr.p_memsz;
+                            const seg_start = info.addr +% phdr.vaddr;
+                            const seg_end = seg_start + phdr.memsz;
                             if (context.address >= seg_start and context.address < seg_end) {
                                 // const name = std.mem.sliceTo(info.name, 0) orelse "";
                                 context.result = .{

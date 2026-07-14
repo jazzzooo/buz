@@ -46,7 +46,10 @@ pub fn main(init: std.process.Init) void {
     }
 
     _bun.start_time = @intCast(std.Io.Clock.awake.now(init.io).nanoseconds);
-    _bun.initArgv() catch |err| {
+    _bun.initSelfExePath(init.io) catch |err| {
+        Output.panic("Failed to resolve the executable path: {s}\n", .{@errorName(err)});
+    };
+    _bun.initArgv(init.minimal.args) catch |err| {
         Output.panic("Failed to initialize argv: {s}\n", .{@errorName(err)});
     };
 

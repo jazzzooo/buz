@@ -1401,7 +1401,7 @@ pub fn spawnProcessPosix(
         attr.linux_pdeathsig = if (options.linux_pdeathsig) |sig|
             @intCast(sig)
         else if (bun.ParentDeathWatchdog.shouldDefaultSpawnPdeathsig())
-            std.posix.SIG.KILL
+            @intCast(@intFromEnum(std.posix.SIG.KILL))
         else
             0;
     }

@@ -103,7 +103,7 @@ pub const ArrayBuffer = extern struct {
         const result = bun.sys.mmap(
             null,
             @intCast(@max(size, 0)),
-            std.posix.PROT.READ | std.posix.PROT.WRITE,
+            @as(u32, @bitCast(std.posix.PROT{ .READ = true, .WRITE = true })),
             .{ .TYPE = .SHARED },
             fd,
             0,

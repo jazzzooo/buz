@@ -111,7 +111,7 @@ pub fn onShellTouchTaskDone(this: *Touch, task: *ShellTouchTask) void {
     if (err) |e| {
         const output_task: *ShellTouchOutputTask = bun.new(ShellTouchOutputTask, .{
             .parent = this,
-            .output = .{ .arrlist = .{} },
+            .output = .{ .arrlist = .empty },
             .state = .waiting_write_err,
         });
         const error_string = this.bltn().taskErrorToString(.touch, e);

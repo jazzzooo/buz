@@ -6654,10 +6654,10 @@ pub const NodeFS = struct {
 
             var size: usize = @intCast(@max(stat_.size, 0));
 
-            if (posix.S.ISREG(stat_.mode) and bun.can_use_ioctl_ficlone()) {
+            if (posix.S.ISREG(@intCast(stat_.mode)) and bun.can_use_ioctl_ficlone()) {
                 const rc = bun.linux.ioctl_ficlone(dest_fd, src_fd);
                 if (rc == 0) {
-                    _ = Syscall.fchmod(dest_fd, stat_.mode);
+                    _ = Syscall.fchmod(dest_fd, @intCast(stat_.mode));
                     dest_fd.close();
                     return ret.success;
                 }

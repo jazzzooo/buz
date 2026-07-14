@@ -307,6 +307,7 @@ pub const Tag = enum(u8) {
     setsockopt,
     statx,
     eventfd,
+    epoll_create1,
     rm,
 
     uv_spawn,
@@ -538,6 +539,13 @@ pub fn eventfd(initial_value: u32, flags: u32) Maybe(bun.FD) {
         return .{ .result = .fromNative(rc) };
     }
     @compileError("eventfd is only available on Linux and FreeBSD");
+}
+
+pub fn epoll_create1(flags: u32) Maybe(bun.FD) {
+    if (comptime !Environment.isLinux) @compileError("epoll is only available on Linux");
+    const rc = linux.epoll_create1(flags);
+    if (Maybe(bun.FD).errnoSys(rc, .epoll_create1)) |err| return err;
+    return .{ .result = .fromNative(@intCast(rc)) };
 }
 
 pub fn isatty(fd: bun.FD) bool {
@@ -3208,7 +3216,7 @@ pub fn mmapFile(path: [:0]const u8, flags: std.c.MAP, wanted_size: ?usize, offse
 
     if (wanted_size) |size_| size = @min(size, size_);
 
-    const map = switch (mmap(null, size, posix.PROT.READ | posix.PROT.WRITE, flags, fd, offset)) {
+    const map = switch (mmap(null, size, @as(u32, @bitCast(posix.PROT{ .READ = true, .WRITE = true })), flags, fd, offset)) {
         .result => |map| map,
 
         .err => |err| {
