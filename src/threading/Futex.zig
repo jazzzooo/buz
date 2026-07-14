@@ -231,7 +231,7 @@ const LinuxImpl = struct {
             if (timeout != null) &ts else null,
         );
 
-        switch (linux.E.init(rc)) {
+        switch (linux.errno(rc)) {
             .SUCCESS => {}, // notified by `wake()`
             .INTR => {}, // spurious wakeup
             .AGAIN => {}, // ptr.* != expect
@@ -248,7 +248,7 @@ const LinuxImpl = struct {
     fn wake(ptr: *const atomic.Value(u32), max_waiters: u32) void {
         const rc = linux.futex_3arg(&ptr.raw, .{ .cmd = .WAKE, .private = true }, @bitCast(std.math.cast(i32, max_waiters) orelse std.math.maxInt(i32)));
 
-        switch (linux.E.init(rc)) {
+        switch (linux.errno(rc)) {
             .SUCCESS => {}, // successful wake up
             .INVAL => {}, // invalid futex_wait() on ptr done elsewhere
             .FAULT => @panic("futex_wake() returned EFAULT unexpectedly"), // pointer became invalid while doing the wake

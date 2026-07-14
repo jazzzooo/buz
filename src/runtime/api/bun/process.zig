@@ -2782,7 +2782,7 @@ pub const sync = struct {
             var kmask = linux.sigemptyset();
             linux.sigaddset(&kmask, std.posix.SIG.CHLD);
             const rc = linux.signalfd(-1, &kmask, linux.SFD.CLOEXEC | linux.SFD.NONBLOCK);
-            switch (linux.E.init(rc)) {
+            switch (linux.errno(rc)) {
                 .SUCCESS => break :blk bun.FD.fromNative(@intCast(rc)),
                 else => break :blk bun.invalid_fd,
             }
