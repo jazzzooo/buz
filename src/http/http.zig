@@ -66,7 +66,7 @@ fn getTlsHostname(client: *const HTTPClient, allowProxyUrl: bool) []const u8 {
     // Prefer the explicit TLS server_name (e.g. from Node.js servername option)
     if (client.tls_props) |props| {
         if (props.get().server_name) |sn| {
-            const sn_slice = bun.sliceTo(sn, 0);
+            const sn_slice = std.mem.sliceTo(sn, 0);
             if (sn_slice.len > 0) return sn_slice;
         }
     }

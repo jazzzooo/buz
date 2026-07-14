@@ -627,7 +627,7 @@ pub const Archiver = struct {
                                         },
                                         else => {
                                             if (options.log) {
-                                                const archive_error = bun.sliceTo(lib.Archive.errorString(@ptrCast(archive)), 0);
+                                                const archive_error = std.mem.sliceTo(lib.Archive.errorString(@ptrCast(archive)), 0);
                                                 Output.err("libarchive error", "extracting {f}: {s}", .{
                                                     bun.fmt.fmtOSPath(path_slice, .{}),
                                                     archive_error,

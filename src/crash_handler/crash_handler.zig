@@ -1004,9 +1004,9 @@ pub fn printMetadata(writer: anytype) !void {
             const version = gnu_get_libc_version() orelse "";
             const kernel_version = bun.analytics.GenerateHeader.GeneratePlatform.kernelVersion();
             if (platform.os == .wsl) {
-                try writer.print("WSL Kernel v{d}.{d}.{d} | glibc v{s}\n", .{ kernel_version.major, kernel_version.minor, kernel_version.patch, bun.sliceTo(version, 0) });
+                try writer.print("WSL Kernel v{d}.{d}.{d} | glibc v{s}\n", .{ kernel_version.major, kernel_version.minor, kernel_version.patch, std.mem.sliceTo(version, 0) });
             } else {
-                try writer.print("Linux Kernel v{d}.{d}.{d} | glibc v{s}\n", .{ kernel_version.major, kernel_version.minor, kernel_version.patch, bun.sliceTo(version, 0) });
+                try writer.print("Linux Kernel v{d}.{d}.{d} | glibc v{s}\n", .{ kernel_version.major, kernel_version.minor, kernel_version.patch, std.mem.sliceTo(version, 0) });
             }
         } else if (bun.Environment.isLinux and bun.Environment.isMusl) {
             const kernel_version = bun.analytics.GenerateHeader.GeneratePlatform.kernelVersion();
@@ -1290,7 +1290,7 @@ const StackLine = struct {
                             const seg_start = info.addr +% phdr.p_vaddr;
                             const seg_end = seg_start + phdr.p_memsz;
                             if (context.address >= seg_start and context.address < seg_end) {
-                                // const name = bun.sliceTo(info.name, 0) orelse "";
+                                // const name = std.mem.sliceTo(info.name, 0) orelse "";
                                 context.result = .{
                                     .address = @intCast(context.address - info.addr),
                                     .object = null,
@@ -2229,7 +2229,7 @@ export fn Bun__crashHandler(message_ptr: [*]u8, message_len: usize) noreturn {
 export fn CrashHandler__setDlOpenAction(action: ?[*:0]const u8) void {
     if (action) |str| {
         bun.debugAssert(current_action == null);
-        current_action = .{ .dlopen = bun.sliceTo(str, 0) };
+        current_action = .{ .dlopen = std.mem.sliceTo(str, 0) };
     } else {
         bun.debugAssert(current_action != null and current_action.? == .dlopen);
         current_action = null;

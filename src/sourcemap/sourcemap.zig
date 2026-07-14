@@ -68,7 +68,7 @@ pub fn parseUrl(
             debug("parse (data url, {d} bytes)", .{source.len});
             switch (source[data_prefix.len]) {
                 ';' => {
-                    const encoding = bun.sliceTo(source[data_prefix.len + 1 ..], ',');
+                    const encoding = std.mem.sliceTo(source[data_prefix.len + 1 ..], ',');
                     if (!bun.strings.eqlComptime(encoding, "base64")) break :try_data_url;
                     const base64_data = source[data_prefix.len + ";base64,".len ..];
 

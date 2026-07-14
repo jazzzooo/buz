@@ -29,7 +29,7 @@ fn getArgv0(globalThis: *jsc.JSGlobalObject, PATH: []const u8, cwd: []const u8, 
         PATH
     else if (comptime Environment.isPosix)
         // If the user explicitly passed an empty $PATH, we fallback to the OS-specific default (which libuv also does)
-        bun.sliceTo(BUN_DEFAULT_PATH_FOR_SPAWN, 0)
+        std.mem.sliceTo(BUN_DEFAULT_PATH_FOR_SPAWN, 0)
     else
         "";
 
@@ -44,7 +44,7 @@ fn getArgv0(globalThis: *jsc.JSGlobalObject, PATH: []const u8, cwd: []const u8, 
 
     return .{
         .argv0 = actual_argv0,
-        .arg0 = if (pretend_argv0) |p| try allocator.dupeZ(u8, bun.sliceTo(p, 0)) else try allocator.dupeZ(u8, arg0.slice()),
+        .arg0 = if (pretend_argv0) |p| try allocator.dupeZ(u8, std.mem.sliceTo(p, 0)) else try allocator.dupeZ(u8, arg0.slice()),
     };
 }
 

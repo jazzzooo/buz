@@ -8,7 +8,7 @@ pub fn start(this: *@This()) Yield {
     if (args.len == 0) return this.fail(Builtin.Kind.usageString(.dirname));
 
     while (iter.next()) |item| {
-        const arg = bun.sliceTo(item, 0);
+        const arg = std.mem.sliceTo(item, 0);
         _ = this.print(bun.path.dirname(arg, .posix));
         _ = this.print("\n");
     }

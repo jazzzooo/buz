@@ -1478,7 +1478,7 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
                     };
                     break :blk bun.fmt.URLFormatter{
                         .proto = if (comptime ssl_enabled) .https else .http,
-                        .hostname = if (tcp.hostname) |hostname| bun.sliceTo(@constCast(hostname), 0) else null,
+                        .hostname = if (tcp.hostname) |hostname| std.mem.sliceTo(@constCast(hostname), 0) else null,
                         .port = port,
                     };
                 },
@@ -1516,7 +1516,7 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
                     switch (this.config.address) {
                         .tcp => |tcp| {
                             if (tcp.hostname) |hostname| {
-                                return bun.String.createUTF8ForJS(globalThis, bun.sliceTo(hostname, 0));
+                                return bun.String.createUTF8ForJS(globalThis, std.mem.sliceTo(hostname, 0));
                             } else {
                                 return bun.String.static("localhost").toJS(globalThis);
                             }

@@ -241,7 +241,7 @@ pub const GenerateHeader = struct {
             // That is less useful than "kern.osproductversion", which is the macOS version
             if (std.c.sysctlbyname("kern.osproductversion", &osversion_name, &len, null, 0) == -1) return platform;
 
-            platform.version = bun.sliceTo(&osversion_name, 0);
+            platform.version = std.mem.sliceTo(&osversion_name, 0);
             return platform;
         }
 
@@ -256,7 +256,7 @@ pub const GenerateHeader = struct {
                 } else if (comptime Environment.isLinux) {
                     platform_ = forLinux();
 
-                    const release = bun.sliceTo(&linux_os_name.release, 0);
+                    const release = std.mem.sliceTo(&linux_os_name.release, 0);
                     const sliced_string = Semver.SlicedString.init(release, release);
                     const result = Semver.Version.parse(sliced_string);
                     linux_kernel_version = result.version.min();
@@ -328,7 +328,7 @@ pub const GenerateHeader = struct {
             _ = std.c.uname(&linux_os_name);
 
             // Confusingly, the "release" tends to contain the kernel version much more frequently than the "version" field.
-            const release = bun.sliceTo(&linux_os_name.release, 0);
+            const release = std.mem.sliceTo(&linux_os_name.release, 0);
 
             if (comptime Environment.isAndroid) {
                 return analytics.Platform{ .os = analytics.OperatingSystem.android, .version = release, .arch = platform_arch };
@@ -349,7 +349,7 @@ pub const GenerateHeader = struct {
             _ = bun.c.uname(&freebsd_os_name);
             return analytics.Platform{
                 .os = analytics.OperatingSystem.freebsd,
-                .version = bun.sliceTo(&freebsd_os_name.release, 0),
+                .version = std.mem.sliceTo(&freebsd_os_name.release, 0),
                 .arch = platform_arch,
             };
         }

@@ -50,7 +50,7 @@ pub const BunSocketContextOptions = extern struct {
                 // the trailing 0. In practice "" usually fails createSSLContext
                 // and never caches, but injectivity is cheap to guarantee.
                 hp.update(&.{@intFromBool(s != null)});
-                if (s) |p| hp.update(bun.sliceTo(p, 0));
+                if (s) |p| hp.update(std.mem.sliceTo(p, 0));
                 hp.update(&.{0}); // terminator so {a:"xy"} ≠ {a:"x",b:"y"}
             }
         }.f;
@@ -60,7 +60,7 @@ pub const BunSocketContextOptions = extern struct {
                 hp.update(std.mem.asBytes(&n));
                 if (arr) |a| for (a[0..n]) |s| {
                     hp.update(&.{@intFromBool(s != null)});
-                    if (s) |p| hp.update(bun.sliceTo(p, 0));
+                    if (s) |p| hp.update(std.mem.sliceTo(p, 0));
                     hp.update(&.{0});
                 };
                 hp.update(&.{0});
@@ -115,13 +115,13 @@ pub const BunSocketContextOptions = extern struct {
     pub fn approxCertBytes(self: BunSocketContextOptions) usize {
         var n: usize = 0;
         if (self.key) |arr| for (arr[0..self.key_count]) |k| {
-            if (k) |s| n += bun.sliceTo(s, 0).len;
+            if (k) |s| n += std.mem.sliceTo(s, 0).len;
         };
         if (self.cert) |arr| for (arr[0..self.cert_count]) |k| {
-            if (k) |s| n += bun.sliceTo(s, 0).len;
+            if (k) |s| n += std.mem.sliceTo(s, 0).len;
         };
         if (self.ca) |arr| for (arr[0..self.ca_count]) |k| {
-            if (k) |s| n += bun.sliceTo(s, 0).len;
+            if (k) |s| n += std.mem.sliceTo(s, 0).len;
         };
         return n;
     }

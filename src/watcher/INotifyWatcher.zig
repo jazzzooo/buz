@@ -54,7 +54,7 @@ pub const Event = extern struct {
     pub fn name(event: *align(1) Event) [:0]u8 {
         if (comptime Environment.allow_assert) bun.assertf(event.name_len > 0, "INotifyWatcher.Event.name() called with name_len == 0, you should check it before calling this function.", .{});
         const name_first_char_ptr = std.mem.asBytes(&event.name_len).ptr + @sizeOf(u32);
-        return bun.sliceTo(@as([*:0]u8, @ptrCast(name_first_char_ptr)), 0);
+        return std.mem.sliceTo(@as([*:0]u8, @ptrCast(name_first_char_ptr)), 0);
     }
 
     pub fn size(event: *align(1) Event) u32 {

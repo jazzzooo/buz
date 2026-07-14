@@ -254,7 +254,7 @@ pub const FFI = struct {
                     .stdin = .ignore,
                     .stderr = .ignore,
                     .argv = &.{
-                        bun.which(&which_buf, bun.sliceTo(std.c.getenv("PATH") orelse "", 0), Fs.FileSystem.instance.top_level_dir, "xcrun") orelse "/usr/bin/xcrun",
+                        bun.which(&which_buf, std.mem.sliceTo(std.c.getenv("PATH") orelse "", 0), Fs.FileSystem.instance.top_level_dir, "xcrun") orelse "/usr/bin/xcrun",
                         "-sdk",
                         "macosx",
                         "-show-sdk-path",

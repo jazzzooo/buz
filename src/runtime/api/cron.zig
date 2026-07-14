@@ -1172,8 +1172,8 @@ fn spawnCmdGeneric(comptime Self: type, this: *Self, argv: anytype, stdin_opt: b
         // Resolve the executable via bun.which, matching Bun.spawn's behavior.
         var path_buf: bun.PathBuffer = undefined;
         const PATH = jsc.VirtualMachine.get().transpiler.env.map.get("PATH") orelse "";
-        resolved_argv0 = bun.which(&path_buf, PATH, "", bun.sliceTo(argv[0].?, 0)) orelse {
-            this.setErr("Could not find '{s}' in PATH", .{bun.sliceTo(argv[0].?, 0)});
+        resolved_argv0 = bun.which(&path_buf, PATH, "", std.mem.sliceTo(argv[0].?, 0)) orelse {
+            this.setErr("Could not find '{s}' in PATH", .{std.mem.sliceTo(argv[0].?, 0)});
             this.finish();
             return;
         };

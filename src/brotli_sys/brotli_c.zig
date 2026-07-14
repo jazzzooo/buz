@@ -78,7 +78,7 @@ pub const BrotliDecoder = opaque {
     }
 
     pub fn errorString(c: BrotliDecoderErrorCode) callconv(.c) [:0]const u8 {
-        return bun.sliceTo(BrotliDecoderErrorString(c) orelse "", 0);
+        return std.mem.sliceTo(BrotliDecoderErrorString(c) orelse "", 0);
     }
 
     pub fn version() callconv(.c) u32 {

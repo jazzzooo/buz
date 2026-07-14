@@ -430,7 +430,7 @@ fn initSubproc(this: *Cmd) Yield {
         if (bun.Environment.isDebug) {
             for (this.args.items) |maybe_arg| {
                 if (maybe_arg) |arg| {
-                    if (bun.sliceTo(arg, 0).len > 80) {
+                    if (std.mem.sliceTo(arg, 0).len > 80) {
                         log("ARG: {s}...\n", .{arg[0..80]});
                     } else {
                         log("ARG: {s}\n", .{arg});
@@ -732,7 +732,7 @@ pub fn deinit(this: *Cmd) void {
     {
         for (this.args.items) |maybe_arg| {
             if (maybe_arg) |arg| {
-                this.base.allocator().free(bun.sliceTo(arg, 0));
+                this.base.allocator().free(std.mem.sliceTo(arg, 0));
             }
         }
         this.args.deinit();

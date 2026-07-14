@@ -282,38 +282,38 @@ pub const Archive = opaque {
     }
     extern fn archive_version_string() [*c]const u8;
     pub fn versionString() []const u8 {
-        return bun.sliceTo(archive_version_string(), 0);
+        return std.mem.sliceTo(archive_version_string(), 0);
     }
     extern fn archive_version_details() [*c]const u8;
     pub fn versionDetails() []const u8 {
-        return bun.sliceTo(archive_version_details(), 0);
+        return std.mem.sliceTo(archive_version_details(), 0);
     }
     extern fn archive_zlib_version() [*c]const u8;
     pub fn zlibVersion() []const u8 {
-        return bun.sliceTo(archive_zlib_version(), 0);
+        return std.mem.sliceTo(archive_zlib_version(), 0);
     }
     extern fn archive_liblzma_version() [*c]const u8;
     pub fn liblzmaVersion() []const u8 {
-        return bun.sliceTo(archive_liblzma_version(), 0);
+        return std.mem.sliceTo(archive_liblzma_version(), 0);
     }
     extern fn archive_bzlib_version() [*c]const u8;
     pub fn bzlibVersion() []const u8 {
-        return bun.sliceTo(archive_bzlib_version(), 0);
+        return std.mem.sliceTo(archive_bzlib_version(), 0);
     }
     extern fn archive_liblz4_version() [*c]const u8;
     pub fn liblz4Version() []const u8 {
-        return bun.sliceTo(archive_liblz4_version(), 0);
+        return std.mem.sliceTo(archive_liblz4_version(), 0);
     }
     extern fn archive_libzstd_version() [*c]const u8;
     pub fn libzstdVersion() []const u8 {
-        return bun.sliceTo(archive_libzstd_version(), 0);
+        return std.mem.sliceTo(archive_libzstd_version(), 0);
     }
 
     extern fn archive_error_string(*Archive) [*c]const u8;
     pub fn errorString(archive: *Archive) []const u8 {
         const err_str = archive_error_string(archive);
         if (err_str == null) return "";
-        return bun.sliceTo(err_str, 0);
+        return std.mem.sliceTo(err_str, 0);
     }
 
     extern fn archive_write_new() *Archive;
@@ -910,15 +910,15 @@ pub const Archive = opaque {
 
         extern fn archive_entry_pathname(*Entry) [*c]const u8;
         pub fn pathname(entry: *Entry) [:0]const u8 {
-            return bun.sliceTo(archive_entry_pathname(entry), 0);
+            return std.mem.sliceTo(archive_entry_pathname(entry), 0);
         }
         extern fn archive_entry_pathname_utf8(*Entry) [*c]const u8;
         pub fn pathnameUtf8(entry: *Entry) [:0]const u8 {
-            return bun.sliceTo(archive_entry_pathname_utf8(entry), 0);
+            return std.mem.sliceTo(archive_entry_pathname_utf8(entry), 0);
         }
         extern fn archive_entry_pathname_w(*Entry) [*c]const u16;
         pub fn pathnameW(entry: *Entry) [:0]const u16 {
-            return bun.sliceTo(archive_entry_pathname_w(entry), 0);
+            return std.mem.sliceTo(archive_entry_pathname_w(entry), 0);
         }
         extern fn archive_entry_filetype(*Entry) bun.Mode;
         pub fn filetype(entry: *Entry) bun.Mode {
@@ -937,11 +937,11 @@ pub const Archive = opaque {
         }
         extern fn archive_entry_symlink(*Entry) [*c]const u8;
         pub fn symlink(entry: *Entry) [:0]const u8 {
-            return bun.sliceTo(archive_entry_symlink(entry), 0);
+            return std.mem.sliceTo(archive_entry_symlink(entry), 0);
         }
         pub extern fn archive_entry_symlink_utf8(*Entry) [*c]const u8;
         pub fn symlinkUtf8(entry: *Entry) [:0]const u8 {
-            return bun.sliceTo(archive_entry_symlink_utf8(entry), 0);
+            return std.mem.sliceTo(archive_entry_symlink_utf8(entry), 0);
         }
         pub extern fn archive_entry_symlink_type(*Entry) SymlinkType;
         pub fn symlinkType(entry: *Entry) SymlinkType {
@@ -949,7 +949,7 @@ pub const Archive = opaque {
         }
         pub extern fn archive_entry_symlink_w(*Entry) [*c]const u16;
         pub fn symlinkW(entry: *Entry) [:0]const u16 {
-            return bun.sliceTo(archive_entry_symlink_w(entry), 0);
+            return std.mem.sliceTo(archive_entry_symlink_w(entry), 0);
         }
     };
 

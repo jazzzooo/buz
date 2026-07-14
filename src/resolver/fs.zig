@@ -676,7 +676,7 @@ pub const FileSystem = struct {
                 bun.assert(this.fd != bun.invalid_fd);
                 bun.assert(this.dir_fd != bun.invalid_fd);
 
-                try bun.sys.moveFileZWithHandle(this.fd, this.dir_fd, bun.sliceTo(from_name, 0), bun.FD.cwd(), bun.sliceTo(name, 0));
+                try bun.sys.moveFileZWithHandle(this.fd, this.dir_fd, std.mem.sliceTo(from_name, 0), bun.FD.cwd(), std.mem.sliceTo(name, 0));
                 this.close();
             }
 

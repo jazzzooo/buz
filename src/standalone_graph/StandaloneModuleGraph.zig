@@ -1246,9 +1246,9 @@ pub const StandaloneModuleGraph = struct {
         bun.sys.moveFileZWithHandle(
             fd,
             bun.FD.cwd(),
-            bun.sliceTo(&temp_posix, 0),
+            std.mem.sliceTo(&temp_posix, 0),
             .fromStdDir(root_dir),
-            bun.sliceTo(&outfile_posix, 0),
+            std.mem.sliceTo(&outfile_posix, 0),
         ) catch |err| {
             fd.close();
             fd = bun.invalid_fd;

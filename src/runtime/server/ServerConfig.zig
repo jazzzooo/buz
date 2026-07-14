@@ -11,7 +11,7 @@ address: union(enum) {
         switch (this.*) {
             .tcp => |tcp| {
                 if (tcp.hostname) |host| {
-                    allocator.free(bun.sliceTo(host, 0));
+                    allocator.free(std.mem.sliceTo(host, 0));
                 }
             },
             .unix => |addr| {
@@ -313,7 +313,7 @@ pub fn computeID(this: *const ServerConfig, allocator: std.mem.Allocator) []cons
         .tcp => {
             if (this.address.tcp.hostname) |host| {
                 writer.print("tcp:{s}:{d}", .{
-                    bun.sliceTo(host, 0),
+                    std.mem.sliceTo(host, 0),
                     this.address.tcp.port,
                 }) catch {};
             } else {
@@ -324,7 +324,7 @@ pub fn computeID(this: *const ServerConfig, allocator: std.mem.Allocator) []cons
         },
         .unix => {
             writer.print("unix:{s}", .{
-                bun.sliceTo(this.address.unix, 0),
+                std.mem.sliceTo(this.address.unix, 0),
             }) catch {};
         },
     }

@@ -701,7 +701,7 @@ pub const ShellSubprocess = struct {
                 .PATH = if (event_loop.env().get("PATH")) |p|
                     p
                 else if (bun.Environment.isPosix)
-                    bun.sliceTo(BUN_DEFAULT_PATH_FOR_SPAWN, 0)
+                    std.mem.sliceTo(BUN_DEFAULT_PATH_FOR_SPAWN, 0)
                 else
                     "",
                 .detached = false,

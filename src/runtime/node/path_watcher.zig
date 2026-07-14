@@ -618,7 +618,7 @@ const Linux = struct {
 
                 const name: []const u8 = if (ev.name_len > 0) blk: {
                     const name_ptr: [*:0]const u8 = @ptrCast(buf[i - ev.name_len ..].ptr);
-                    break :blk bun.sliceTo(name_ptr, 0);
+                    break :blk std.mem.sliceTo(name_ptr, 0);
                 } else "";
 
                 const is_dir_child = ev.mask & IN.ISDIR != 0;

@@ -15,10 +15,10 @@ pub fn start(this: *@This()) Yield {
         return this.fail(Builtin.Kind.usageString(.seq));
     }
     while (iter.next()) |item| {
-        const arg = bun.sliceTo(item, 0);
+        const arg = std.mem.sliceTo(item, 0);
 
         if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--separator")) {
-            this.separator = bun.sliceTo(iter.next() orelse return this.fail("seq: option requires an argument -- s\n"), 0);
+            this.separator = std.mem.sliceTo(iter.next() orelse return this.fail("seq: option requires an argument -- s\n"), 0);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "-s")) {
@@ -27,7 +27,7 @@ pub fn start(this: *@This()) Yield {
         }
 
         if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--terminator")) {
-            this.terminator = bun.sliceTo(iter.next() orelse return this.fail("seq: option requires an argument -- t\n"), 0);
+            this.terminator = std.mem.sliceTo(iter.next() orelse return this.fail("seq: option requires an argument -- t\n"), 0);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "-t")) {
@@ -45,14 +45,14 @@ pub fn start(this: *@This()) Yield {
     }
 
     const maybe1 = iter.next() orelse return this.fail(Builtin.Kind.usageString(.seq));
-    const int1 = std.fmt.parseFloat(f32, bun.sliceTo(maybe1, 0)) catch return this.fail("seq: invalid argument\n");
+    const int1 = std.fmt.parseFloat(f32, std.mem.sliceTo(maybe1, 0)) catch return this.fail("seq: invalid argument\n");
     if (!std.math.isFinite(int1)) return this.fail("seq: invalid argument\n");
     this._end = int1;
     if (this._start > this._end) this.increment = -1;
 
     const maybe2 = iter.next();
     if (maybe2 == null) return this.do();
-    const int2 = std.fmt.parseFloat(f32, bun.sliceTo(maybe2.?, 0)) catch return this.fail("seq: invalid argument\n");
+    const int2 = std.fmt.parseFloat(f32, std.mem.sliceTo(maybe2.?, 0)) catch return this.fail("seq: invalid argument\n");
     if (!std.math.isFinite(int2)) return this.fail("seq: invalid argument\n");
     this._start = int1;
     this._end = int2;
@@ -61,7 +61,7 @@ pub fn start(this: *@This()) Yield {
 
     const maybe3 = iter.next();
     if (maybe3 == null) return this.do();
-    const int3 = std.fmt.parseFloat(f32, bun.sliceTo(maybe3.?, 0)) catch return this.fail("seq: invalid argument\n");
+    const int3 = std.fmt.parseFloat(f32, std.mem.sliceTo(maybe3.?, 0)) catch return this.fail("seq: invalid argument\n");
     if (!std.math.isFinite(int3)) return this.fail("seq: invalid argument\n");
     this._start = int1;
     this.increment = int2;

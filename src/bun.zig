@@ -398,7 +398,7 @@ pub fn len(value: anytype) usize {
             .one => switch (@typeInfo(info.child)) {
                 .array => |array| brk: {
                     if (array.sentinel_ptr != null) {
-                        @compileError("use bun.sliceTo");
+                        @compileError("use std.mem.sliceTo");
                     }
 
                     break :brk array.len;
@@ -909,7 +909,7 @@ pub fn openDirAbsoluteNotForDeletingOrRenaming(path_: []const u8) !std.fs.Dir {
 /// Zig's sliceTo(0) is scalar
 pub fn getenvZAnyCase(key: [:0]const u8) ?[]const u8 {
     for (std.os.environ) |lineZ| {
-        const line = sliceTo(lineZ, 0);
+        const line = std.mem.sliceTo(lineZ, 0);
         const key_end = strings.indexOfCharUsize(line, '=') orelse line.len;
         if (strings.eqlCaseInsensitiveASCII(line[0..key_end], key, true)) {
             return line[@min(key_end + 1, line.len)..];
@@ -934,7 +934,7 @@ pub fn getenvZ(key: [:0]const u8) ?[]const u8 {
     }
 
     const pointer = std.c.getenv(key.ptr) orelse return null;
-    return sliceTo(pointer, 0);
+    return std.mem.sliceTo(pointer, 0);
 }
 
 /// Note: You likely do not need this function. See the pattern in env_var.zig for adding
@@ -1312,93 +1312,6 @@ pub fn getFdPathW(fd: FD, buf: *WPathBuffer) ![]u16 {
     @panic("TODO unsupported platform for getFdPathW");
 }
 
-fn lenSliceTo(pointer: anytype, comptime end: std.meta.Elem(@TypeOf(pointer))) usize {
-    switch (@typeInfo(@TypeOf(pointer))) {
-        .pointer => |ptr_info| switch (ptr_info.size) {
-            .one => switch (@typeInfo(ptr_info.child)) {
-                .array => |array_info| {
-                    if (array_info.sentinel_ptr) |sentinel_ptr| {
-                        const sentinel = @as(*align(1) const array_info.child, @ptrCast(sentinel_ptr)).*;
-                        if (sentinel == end) {
-                            return std.mem.indexOfSentinel(array_info.child, end, pointer);
-                        }
-                    }
-                    return std.mem.indexOfScalar(array_info.child, pointer, end) orelse array_info.len;
-                },
-                else => {},
-            },
-            .many => if (ptr_info.sentinel_ptr) |sentinel_ptr| {
-                const sentinel = @as(*align(1) const ptr_info.child, @ptrCast(sentinel_ptr)).*;
-                // We may be looking for something other than the sentinel,
-                // but iterating past the sentinel would be a bug so we need
-                // to check for both.
-                var i: usize = 0;
-                while (pointer[i] != end and pointer[i] != sentinel) i += 1;
-                return i;
-            },
-            .c => {
-                assert(pointer != null);
-                return std.mem.indexOfSentinel(ptr_info.child, end, pointer);
-            },
-            .slice => {
-                if (ptr_info.sentinel_ptr) |sentinel_ptr| {
-                    const sentinel = @as(*align(1) const ptr_info.child, @ptrCast(sentinel_ptr)).*;
-                    if (sentinel == end) {
-                        return std.mem.indexOfSentinel(ptr_info.child, sentinel, pointer);
-                    }
-                }
-                return std.mem.indexOfScalar(ptr_info.child, pointer, end) orelse pointer.len;
-            },
-        },
-        else => {},
-    }
-    @compileError("invalid type given to std.mem.sliceTo: " ++ @typeName(@TypeOf(pointer)));
-}
-
-/// Helper for the return type of sliceTo()
-fn SliceTo(comptime T: type, comptime end: std.meta.Elem(T)) type {
-    switch (@typeInfo(T)) {
-        .optional => |optional_info| {
-            return ?SliceTo(optional_info.child, end);
-        },
-        .pointer => |ptr_info| {
-            const Elem = std.meta.Elem(T);
-            const have_sentinel = switch (ptr_info.size) {
-                .one, .slice => if (std.meta.sentinel(T)) |sentinel| sentinel == end else false,
-                .many => if (std.meta.sentinel(T)) |sentinel| sentinel == end else true,
-                .c => true,
-            };
-            var attrs = ptr_info.attrs;
-            attrs.@"allowzero" = attrs.@"allowzero" and ptr_info.size != .c;
-            return @Pointer(.slice, attrs, Elem, if (have_sentinel) end else null);
-        },
-        else => {},
-    }
-    @compileError("invalid type given to std.mem.sliceTo: " ++ @typeName(T));
-}
-
-/// Takes an array, a pointer to an array, a sentinel-terminated pointer, or a slice and
-/// iterates searching for the first occurrence of `end`, returning the scanned slice.
-/// If `end` is not found, the full length of the array/slice/sentinel terminated pointer is returned.
-/// If the pointer type is sentinel terminated and `end` matches that terminator, the
-/// resulting slice is also sentinel terminated.
-/// Pointer properties such as mutability and alignment are preserved.
-/// C pointers are assumed to be non-null.
-pub fn sliceTo(pointer: anytype, comptime end: std.meta.Elem(@TypeOf(pointer))) SliceTo(@TypeOf(pointer), end) {
-    if (@typeInfo(@TypeOf(pointer)) == .optional) {
-        const non_null = pointer orelse return null;
-        return sliceTo(non_null, end);
-    }
-    const Result = SliceTo(@TypeOf(pointer), end);
-    const length = lenSliceTo(pointer, end);
-    const ptr_info = @typeInfo(Result).pointer;
-    if (ptr_info.sentinel()) |s| {
-        return pointer[0..length :s];
-    } else {
-        return pointer[0..length];
-    }
-}
-
 pub const Semver = @import("./semver/semver.zig");
 pub const ImportRecord = @import("./options_types/import_record.zig").ImportRecord;
 pub const ImportKind = @import("./options_types/import_record.zig").ImportKind;
@@ -1582,7 +1495,7 @@ pub fn reloadProcess(
         if (src == null) {
             dest.* = null;
         } else {
-            dest.* = (allocator.dupeZ(u8, sliceTo(src.?, 0)) catch unreachable).ptr;
+            dest.* = (allocator.dupeZ(u8, std.mem.sliceTo(src.?, 0)) catch unreachable).ptr;
         }
     }
 

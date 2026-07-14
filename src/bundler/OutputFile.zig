@@ -293,7 +293,7 @@ pub fn writeToDisk(f: OutputFile, root_dir: std.fs.Dir, root_dir_path: []const u
 }
 
 pub fn moveTo(file: *const OutputFile, _: string, rel_path: []const u8, dir: FileDescriptorType) !void {
-    try bun.sys.moveFileZ(file.value.move.dir, bun.sliceTo(&(try std.posix.toPosixPath(file.value.move.getPathname())), 0), dir, bun.sliceTo(&(try std.posix.toPosixPath(rel_path)), 0));
+    try bun.sys.moveFileZ(file.value.move.dir, std.mem.sliceTo(&(try std.posix.toPosixPath(file.value.move.getPathname())), 0), dir, std.mem.sliceTo(&(try std.posix.toPosixPath(rel_path)), 0));
 }
 
 pub fn copyTo(file: *const OutputFile, _: string, rel_path: []const u8, dir: FileDescriptorType) !void {

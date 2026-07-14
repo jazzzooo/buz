@@ -4276,12 +4276,12 @@ pub const NodeFS = struct {
                     .path = prefix_buf[0 .. len + 6],
                 } };
             }
-            return .initResult(bun.handleOom(jsc.ZigString.dupeForJS(bun.sliceTo(req.path, 0), bun.default_allocator)));
+            return .initResult(bun.handleOom(jsc.ZigString.dupeForJS(std.mem.sliceTo(req.path, 0), bun.default_allocator)));
         }
 
         const rc = c.mkdtemp(prefix_buf);
         if (rc) |ptr| {
-            return .initResult(bun.handleOom(jsc.ZigString.dupeForJS(bun.sliceTo(ptr, 0), bun.default_allocator)));
+            return .initResult(bun.handleOom(jsc.ZigString.dupeForJS(std.mem.sliceTo(ptr, 0), bun.default_allocator)));
         }
 
         // c.getErrno(rc) returns SUCCESS if rc is -1 so we call std.c._errno() directly

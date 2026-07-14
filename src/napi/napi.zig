@@ -393,7 +393,7 @@ pub export fn napi_create_string_latin1(env_: napi_env, str: ?[*]const u8, lengt
     const slice: []const u8 = brk: {
         if (str) |ptr| {
             if (NAPI_AUTO_LENGTH == length) {
-                break :brk bun.sliceTo(@as([*:0]const u8, @ptrCast(ptr)), 0);
+                break :brk std.mem.sliceTo(@as([*:0]const u8, @ptrCast(ptr)), 0);
             } else if (length > std.math.maxInt(i32)) {
                 return env.invalidArg();
             } else {
@@ -434,7 +434,7 @@ pub export fn napi_create_string_utf8(env_: napi_env, str: ?[*]const u8, length:
     const slice: []const u8 = brk: {
         if (str) |ptr| {
             if (NAPI_AUTO_LENGTH == length) {
-                break :brk bun.sliceTo(@as([*:0]const u8, @ptrCast(ptr)), 0);
+                break :brk std.mem.sliceTo(@as([*:0]const u8, @ptrCast(ptr)), 0);
             } else if (length > std.math.maxInt(i32)) {
                 return env.invalidArg();
             } else {
@@ -467,7 +467,7 @@ pub export fn napi_create_string_utf16(env_: napi_env, str: ?[*]const char16_t, 
     const slice: []const u16 = brk: {
         if (str) |ptr| {
             if (NAPI_AUTO_LENGTH == length) {
-                break :brk bun.sliceTo(@as([*:0]const u16, @ptrCast(ptr)), 0);
+                break :brk std.mem.sliceTo(@as([*:0]const u16, @ptrCast(ptr)), 0);
             } else if (length > std.math.maxInt(i32)) {
                 return env.invalidArg();
             } else {
@@ -1171,7 +1171,7 @@ fn napiSpan(ptr: anytype, len: usize) []const u8 {
         return &[_]u8{};
 
     if (len == NAPI_AUTO_LENGTH) {
-        return bun.sliceTo(ptr.?, 0);
+        return std.mem.sliceTo(ptr.?, 0);
     }
 
     return ptr.?[0..len];

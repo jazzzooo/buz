@@ -454,7 +454,7 @@ pub fn hostname(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
     if (Environment.isWindows) {
         var name_buffer: [129:0]u16 = undefined;
         if (bun.windows.GetHostNameW(&name_buffer, name_buffer.len) == 0) {
-            const str = bun.String.cloneUTF16(bun.sliceTo(&name_buffer, 0));
+            const str = bun.String.cloneUTF16(std.mem.sliceTo(&name_buffer, 0));
             defer str.deref();
             return str.toJS(global);
         }
@@ -462,7 +462,7 @@ pub fn hostname(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
         var result: std.os.windows.ws2_32.WSADATA = undefined;
         if (std.os.windows.ws2_32.WSAStartup(0x202, &result) == 0) {
             if (bun.windows.GetHostNameW(&name_buffer, name_buffer.len) == 0) {
-                var y = bun.String.cloneUTF16(bun.sliceTo(&name_buffer, 0));
+                var y = bun.String.cloneUTF16(std.mem.sliceTo(&name_buffer, 0));
                 defer y.deref();
                 return y.toJS(global);
             }
@@ -660,7 +660,7 @@ fn networkInterfacesPosix(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSVal
             const maybe_ll_addr = while (ll_it) |ll_iface| : (ll_it = ll_iface.ifa_next) {
                 if (helpers.skip(ll_iface) or !helpers.isLinkLayer(ll_iface)) continue;
 
-                const ll_name = bun.sliceTo(ll_iface.ifa_name, 0);
+                const ll_name = std.mem.sliceTo(ll_iface.ifa_name, 0);
                 if (!strings.hasPrefix(ll_name, interface_name)) continue;
                 if (ll_name.len > interface_name.len and ll_name[interface_name.len] != ':') continue;
 
@@ -841,7 +841,7 @@ pub fn release() bun.String {
     const value = switch (Environment.os) {
         .linux => slice: {
             const uts = std.posix.uname();
-            const result = bun.sliceTo(&uts.release, 0);
+            const result = std.mem.sliceTo(&uts.release, 0);
             bun.copy(u8, &name_buffer, result);
 
             break :slice name_buffer[0..result.len];
@@ -859,7 +859,7 @@ pub fn release() bun.String {
                 0,
             ) == -1) break :slice "unknown";
 
-            break :slice bun.sliceTo(&name_buffer, 0);
+            break :slice std.mem.sliceTo(&name_buffer, 0);
         },
         .windows => slice: {
             var info: bun.windows.libuv.uv_utsname_s = undefined;
@@ -867,7 +867,7 @@ pub fn release() bun.String {
             if (err != 0) {
                 break :slice "unknown";
             }
-            const value = bun.sliceTo(&info.release, 0);
+            const value = std.mem.sliceTo(&info.release, 0);
             @memcpy(name_buffer[0..value.len], value);
             break :slice name_buffer[0..value.len];
         },
@@ -1061,11 +1061,11 @@ pub fn version() bun.JSError!bun.String {
                 0,
             ) == -1) break :slice "unknown";
 
-            break :slice bun.sliceTo(&name_buffer, 0);
+            break :slice std.mem.sliceTo(&name_buffer, 0);
         },
         .linux => slice: {
             const uts = std.posix.uname();
-            const result = bun.sliceTo(&uts.version, 0);
+            const result = std.mem.sliceTo(&uts.version, 0);
             bun.copy(u8, &name_buffer, result);
 
             break :slice name_buffer[0..result.len];
@@ -1076,7 +1076,7 @@ pub fn version() bun.JSError!bun.String {
             if (err != 0) {
                 break :slice "unknown";
             }
-            const slice = bun.sliceTo(&info.version, 0);
+            const slice = std.mem.sliceTo(&info.version, 0);
             @memcpy(name_buffer[0..slice.len], slice);
             break :slice name_buffer[0..slice.len];
         },

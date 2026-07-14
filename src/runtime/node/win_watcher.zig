@@ -241,7 +241,7 @@ pub const PathWatcher = struct {
         if (this.manager) |manager| {
             this.manager = null;
             if (this.handle.path) |path| {
-                manager.unregisterWatcher(this, bun.sliceTo(path, 0));
+                manager.unregisterWatcher(this, std.mem.sliceTo(path, 0));
             } else {
                 manager.unregisterWatcher(this, "");
             }

@@ -1707,7 +1707,7 @@ pub fn openatOSPath(dirfd: bun.FD, file_path: bun.OSPathSliceZ, flags: i32, perm
         // https://opensource.apple.com/source/xnu/xnu-7195.81.3/libsyscall/wrappers/open-base.c
         const rc = darwin_nocancel.@"openat$NOCANCEL"(dirfd.cast(), file_path.ptr, @bitCast(bun.O.toPacked(flags)), perm);
         if (comptime Environment.allow_assert)
-            log("openat({f}, {s}, {d}) = {d}", .{ dirfd, bun.sliceTo(file_path, 0), flags, rc });
+            log("openat({f}, {s}, {d}) = {d}", .{ dirfd, std.mem.sliceTo(file_path, 0), flags, rc });
 
         return Maybe(bun.FD).errnoSysFP(rc, .open, dirfd, file_path) orelse .{ .result = .fromNative(rc) };
     } else if (comptime Environment.isWindows) {
@@ -1716,7 +1716,7 @@ pub fn openatOSPath(dirfd: bun.FD, file_path: bun.OSPathSliceZ, flags: i32, perm
         while (true) {
             const rc = std.c.openat(dirfd.cast(), file_path, @bitCast(bun.O.toPacked(flags)), perm);
             if (comptime Environment.allow_assert)
-                log("openat({f}, {s}, {d}) = {d}", .{ dirfd, bun.sliceTo(file_path, 0), flags, rc });
+                log("openat({f}, {s}, {d}) = {d}", .{ dirfd, std.mem.sliceTo(file_path, 0), flags, rc });
             return switch (sys.getErrno(rc)) {
                 .SUCCESS => .{ .result = .fromNative(@intCast(rc)) },
                 .INTR => continue,
@@ -1728,7 +1728,7 @@ pub fn openatOSPath(dirfd: bun.FD, file_path: bun.OSPathSliceZ, flags: i32, perm
     while (true) {
         const rc = syscall.openat(dirfd.cast(), file_path, bun.O.toPacked(flags), perm);
         if (comptime Environment.allow_assert)
-            log("openat({f}, {s}, {d}) = {d}", .{ dirfd, bun.sliceTo(file_path, 0), flags, rc });
+            log("openat({f}, {s}, {d}) = {d}", .{ dirfd, std.mem.sliceTo(file_path, 0), flags, rc });
 
         return switch (sys.getErrno(rc)) {
             .SUCCESS => .{ .result = .fromNative(@intCast(rc)) },
@@ -2967,11 +2967,11 @@ pub fn unlinkatWithFlags(dirfd: bun.FD, to: anytype, flags: c_uint) Maybe(void) 
         if (Maybe(void).errnoSysFP(syscall.unlinkat(dirfd.cast(), to, flags), .unlink, dirfd, to)) |err| {
             if (err.getErrno() == .INTR) continue;
             if (comptime Environment.allow_assert)
-                log("unlinkat({f}, {s}) = {s}", .{ dirfd, bun.sliceTo(to, 0), @tagName(err.getErrno()) });
+                log("unlinkat({f}, {s}) = {s}", .{ dirfd, std.mem.sliceTo(to, 0), @tagName(err.getErrno()) });
             return err;
         }
         if (comptime Environment.allow_assert)
-            log("unlinkat({f}, {s}) = 0", .{ dirfd, bun.sliceTo(to, 0) });
+            log("unlinkat({f}, {s}) = 0", .{ dirfd, std.mem.sliceTo(to, 0) });
         return .success;
     }
     unreachable;
@@ -2985,11 +2985,11 @@ pub fn unlinkat(dirfd: bun.FD, to: anytype) Maybe(void) {
         if (Maybe(void).errnoSysFP(syscall.unlinkat(dirfd.cast(), to, 0), .unlink, dirfd, to)) |err| {
             if (err.getErrno() == .INTR) continue;
             if (comptime Environment.allow_assert)
-                log("unlinkat({f}, {s}) = {s}", .{ dirfd, bun.sliceTo(to, 0), @tagName(err.getErrno()) });
+                log("unlinkat({f}, {s}) = {s}", .{ dirfd, std.mem.sliceTo(to, 0), @tagName(err.getErrno()) });
             return err;
         }
         if (comptime Environment.allow_assert)
-            log("unlinkat({f}, {s}) = 0", .{ dirfd, bun.sliceTo(to, 0) });
+            log("unlinkat({f}, {s}) = 0", .{ dirfd, std.mem.sliceTo(to, 0) });
         return .success;
     }
 }
@@ -3025,7 +3025,7 @@ pub fn getFdPath(fd: bun.FD, out_buffer: *bun.PathBuffer) Maybe([]u8) {
                 .result => {},
             }
 
-            return .{ .result = bun.sliceTo(out_buffer, 0) };
+            return .{ .result = std.mem.sliceTo(out_buffer, 0) };
         },
         .linux => {
             // Fast path: a previous call already proved this is FreeBSD's Linuxulator.
@@ -3060,7 +3060,7 @@ pub fn getFdPath(fd: bun.FD, out_buffer: *bun.PathBuffer) Maybe([]u8) {
                 .err => |err| return .{ .err = err },
                 .result => {},
             }
-            const path = bun.sliceTo(&info.kf_path, 0);
+            const path = std.mem.sliceTo(&info.kf_path, 0);
             @memcpy(out_buffer[0..path.len], path);
             return .{ .result = out_buffer[0..path.len] };
         },

@@ -602,7 +602,7 @@ pub fn Bun__canonicalizeIP_(globalThis: *jsc.JSGlobalObject, callframe: *jsc.Cal
         return .js_undefined;
     }
     // use the null-terminated size to return the string
-    const slice = bun.sliceTo(ip_addr[0..], 0);
+    const slice = std.mem.sliceTo(ip_addr[0..], 0);
     if (bun.strings.eql(addr_str, slice)) {
         return arguments[0];
     }

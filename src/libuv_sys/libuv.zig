@@ -1750,7 +1750,7 @@ pub const struct_uv_fs_event_s = extern struct {
     pub fn hash(this: *const uv_fs_event_t, filename: []const u8, events: c_int, status: ReturnCode) u64 {
         var hasher = std.hash.Wyhash.init(0);
         if (this.path) |path| {
-            hasher.update(bun.sliceTo(path, 0));
+            hasher.update(std.mem.sliceTo(path, 0));
         } else {
             hasher.update("null");
         }
