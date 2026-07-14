@@ -7,10 +7,10 @@ const NodeFSFunctionEnum = std.meta.DeclEnum(node.fs.NodeFS);
 fn Bindings(comptime function_name: NodeFSFunctionEnum) type {
     const function = @field(jsc.Node.fs.NodeFS, @tagName(function_name));
     const fn_info = @typeInfo(@TypeOf(function)).@"fn";
-    if (fn_info.params.len != 3) {
+    if (fn_info.param_types.len != 3) {
         @compileError("Expected fn(NodeFS, Arguments) Return for NodeFS." ++ @tagName(function_name));
     }
-    const Arguments = fn_info.params[1].type.?;
+    const Arguments = fn_info.param_types[1].?;
 
     return struct {
         pub fn runSync(this: *Binding, globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {

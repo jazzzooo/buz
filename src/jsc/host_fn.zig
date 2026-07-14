@@ -183,11 +183,11 @@ pub fn voidFromJSError(err: bun.JSError, globalThis: *jsc.JSGlobalObject) void {
 
 pub fn wrap1(comptime func: anytype) @"return": {
     const p = checkWrapParams(func, 1);
-    break :@"return" fn (p[0].type.?) callconv(.c) JSValue;
+    break :@"return" fn (p[0].?) callconv(.c) JSValue;
 } {
-    const p = @typeInfo(@TypeOf(func)).@"fn".params;
+    const p = checkWrapParams(func, 1);
     return struct {
-        pub fn wrapped(arg0: p[0].type.?) callconv(.c) JSValue {
+        pub fn wrapped(arg0: p[0].?) callconv(.c) JSValue {
             return toJSHostCall(arg0, @src(), func, .{arg0});
         }
     }.wrapped;
@@ -195,11 +195,11 @@ pub fn wrap1(comptime func: anytype) @"return": {
 
 pub fn wrap2(comptime func: anytype) @"return": {
     const p = checkWrapParams(func, 2);
-    break :@"return" fn (p[0].type.?, p[1].type.?) callconv(.c) JSValue;
+    break :@"return" fn (p[0].?, p[1].?) callconv(.c) JSValue;
 } {
-    const p = @typeInfo(@TypeOf(func)).@"fn".params;
+    const p = checkWrapParams(func, 2);
     return struct {
-        pub fn wrapped(arg0: p[0].type.?, arg1: p[1].type.?) callconv(.c) JSValue {
+        pub fn wrapped(arg0: p[0].?, arg1: p[1].?) callconv(.c) JSValue {
             return toJSHostCall(arg0, @src(), func, .{ arg0, arg1 });
         }
     }.wrapped;
@@ -207,11 +207,11 @@ pub fn wrap2(comptime func: anytype) @"return": {
 
 pub fn wrap3(comptime func: anytype) @"return": {
     const p = checkWrapParams(func, 3);
-    break :@"return" fn (p[0].type.?, p[1].type.?, p[2].type.?) callconv(.c) JSValue;
+    break :@"return" fn (p[0].?, p[1].?, p[2].?) callconv(.c) JSValue;
 } {
-    const p = @typeInfo(@TypeOf(func)).@"fn".params;
+    const p = checkWrapParams(func, 3);
     return struct {
-        pub fn wrapped(arg0: p[0].type.?, arg1: p[1].type.?, arg2: p[2].type.?) callconv(.c) JSValue {
+        pub fn wrapped(arg0: p[0].?, arg1: p[1].?, arg2: p[2].?) callconv(.c) JSValue {
             return toJSHostCall(arg0, @src(), func, .{ arg0, arg1, arg2 });
         }
     }.wrapped;
@@ -219,11 +219,11 @@ pub fn wrap3(comptime func: anytype) @"return": {
 
 pub fn wrap4(comptime func: anytype) @"return": {
     const p = checkWrapParams(func, 4);
-    break :@"return" fn (p[0].type.?, p[1].type.?, p[2].type.?, p[3].type.?) callconv(.c) JSValue;
+    break :@"return" fn (p[0].?, p[1].?, p[2].?, p[3].?) callconv(.c) JSValue;
 } {
-    const p = @typeInfo(@TypeOf(func)).@"fn".params;
+    const p = checkWrapParams(func, 4);
     return struct {
-        pub fn wrapped(arg0: p[0].type.?, arg1: p[1].type.?, arg2: p[2].type.?, arg3: p[3].type.?) callconv(.c) JSValue {
+        pub fn wrapped(arg0: p[0].?, arg1: p[1].?, arg2: p[2].?, arg3: p[3].?) callconv(.c) JSValue {
             return toJSHostCall(arg0, @src(), func, .{ arg0, arg1, arg2, arg3 });
         }
     }.wrapped;
@@ -231,35 +231,35 @@ pub fn wrap4(comptime func: anytype) @"return": {
 
 pub fn wrap5(comptime func: anytype) @"return": {
     const p = checkWrapParams(func, 5);
-    break :@"return" fn (p[0].type.?, p[1].type.?, p[2].type.?, p[3].type.?, p[4].type.?) callconv(.c) JSValue;
+    break :@"return" fn (p[0].?, p[1].?, p[2].?, p[3].?, p[4].?) callconv(.c) JSValue;
 } {
-    const p = @typeInfo(@TypeOf(func)).@"fn".params;
+    const p = checkWrapParams(func, 5);
     return struct {
-        pub fn wrapped(arg0: p[0].type.?, arg1: p[1].type.?, arg2: p[2].type.?, arg3: p[3].type.?, arg4: p[4].type.?) callconv(.c) JSValue {
+        pub fn wrapped(arg0: p[0].?, arg1: p[1].?, arg2: p[2].?, arg3: p[3].?, arg4: p[4].?) callconv(.c) JSValue {
             return toJSHostCall(arg0, @src(), func, .{ arg0, arg1, arg2, arg3, arg4 });
         }
     }.wrapped;
 }
 
-fn checkWrapParams(comptime func: anytype, comptime N: u8) []const std.builtin.Type.Fn.Param {
-    const params = @typeInfo(@TypeOf(func)).@"fn".params;
-    if (params.len != N) {
-        @compileError(std.fmt.comptimePrint("arg length mismatch: {d} != {d}", .{ N, params.len }));
-    } else if (params[0].type.? != *JSGlobalObject) {
+fn checkWrapParams(comptime func: anytype, comptime expected_count: usize) []const ?type {
+    const param_types = @typeInfo(@TypeOf(func)).@"fn".param_types;
+    if (param_types.len != expected_count) {
+        @compileError(std.fmt.comptimePrint("arg length mismatch: {d} != {d}", .{ expected_count, param_types.len }));
+    } else if (param_types[0].? != *JSGlobalObject) {
         @compileError("first arg must be *JSGlobalObject");
     }
-    return params;
+    return param_types;
 }
 
 /// Uses .SysV callconv on Windows. Use to satisfy SYSV_ABI requirement in JSC APIs.
 /// Otherwise (when the C++ counterpart has no explicit calling convention) use wrap4.
 pub fn wrap4v(comptime func: anytype) @"return": {
     const p = checkWrapParams(func, 4);
-    break :@"return" fn (p[0].type.?, p[1].type.?, p[2].type.?, p[3].type.?) callconv(jsc.conv) JSValue;
+    break :@"return" fn (p[0].?, p[1].?, p[2].?, p[3].?) callconv(jsc.conv) JSValue;
 } {
-    const p = @typeInfo(@TypeOf(func)).@"fn".params;
+    const p = checkWrapParams(func, 4);
     return struct {
-        pub fn wrapped(arg0: p[0].type.?, arg1: p[1].type.?, arg2: p[2].type.?, arg3: p[3].type.?) callconv(jsc.conv) JSValue {
+        pub fn wrapped(arg0: p[0].?, arg1: p[1].?, arg2: p[2].?, arg3: p[3].?) callconv(jsc.conv) JSValue {
             return toJSHostCall(arg0, @src(), func, .{ arg0, arg1, arg2, arg3 });
         }
     }.wrapped;
@@ -506,13 +506,13 @@ pub fn wrapInstanceMethod(
             globalThis: *jsc.JSGlobalObject,
             callframe: *jsc.CallFrame,
         ) bun.JSError!jsc.JSValue {
-            const arguments = callframe.arguments_old(FunctionTypeInfo.params.len);
+            const arguments = callframe.arguments_old(FunctionTypeInfo.param_types.len);
             var iter = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments.slice());
             var args: Args = undefined;
 
             const has_exception_ref: bool = comptime brk: {
-                for (FunctionTypeInfo.params) |param| {
-                    if (param.type.? == jsc.C.ExceptionRef) {
+                for (FunctionTypeInfo.param_types) |param_type| {
+                    if (param_type.? == jsc.C.ExceptionRef) {
                         break :brk true;
                     }
                 }
@@ -522,8 +522,8 @@ pub fn wrapInstanceMethod(
             var exception_value = [_]jsc.C.JSValueRef{null};
             const exception: jsc.C.ExceptionRef = if (comptime has_exception_ref) &exception_value else undefined;
 
-            inline for (FunctionTypeInfo.params, 0..) |param, i| {
-                const ArgType = param.type.?;
+            inline for (FunctionTypeInfo.param_types, 0..) |param_type, i| {
+                const ArgType = param_type.?;
                 switch (ArgType) {
                     *Container => {
                         args[i] = this;
@@ -666,13 +666,13 @@ pub fn wrapStaticMethod(
             globalThis: *jsc.JSGlobalObject,
             callframe: *jsc.CallFrame,
         ) bun.JSError!jsc.JSValue {
-            const arguments = callframe.arguments_old(FunctionTypeInfo.params.len);
+            const arguments = callframe.arguments_old(FunctionTypeInfo.param_types.len);
             var iter = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments.slice());
             var args: Args = undefined;
 
-            inline for (FunctionTypeInfo.params, 0..) |param, i| {
-                const ArgType = param.type.?;
-                switch (param.type.?) {
+            inline for (FunctionTypeInfo.param_types, 0..) |param_type, i| {
+                const ArgType = param_type.?;
+                switch (ArgType) {
                     *jsc.JSGlobalObject => {
                         args[i] = globalThis;
                     },

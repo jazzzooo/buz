@@ -2417,11 +2417,11 @@ pub const JSValue = enum(i64) {
                     return array;
                 }
 
-                if (comptime @hasDecl(Type, "toJSNewlyCreated") and @typeInfo(@TypeOf(@field(Type, "toJSNewlyCreated"))).@"fn".params.len == 2) {
+                if (comptime @hasDecl(Type, "toJSNewlyCreated") and @typeInfo(@TypeOf(@field(Type, "toJSNewlyCreated"))).@"fn".param_types.len == 2) {
                     return value.toJSNewlyCreated(globalObject);
                 }
 
-                if (comptime @hasDecl(Type, "toJS") and @typeInfo(@TypeOf(@field(Type, "toJS"))).@"fn".params.len == 2) {
+                if (comptime @hasDecl(Type, "toJS") and @typeInfo(@TypeOf(@field(Type, "toJS"))).@"fn".param_types.len == 2) {
                     return value.toJS(globalObject);
                 }
 

@@ -687,7 +687,7 @@ fn StaticCryptoHasher(comptime Hasher: type, comptime name: [:0]const u8) type {
                 return globalThis.throw("Bun.file() is not supported here yet (it needs an async version)", .{});
             }
 
-            if (comptime @typeInfo(@TypeOf(Hasher.hash)).@"fn".params.len == 3) {
+            if (comptime @typeInfo(@TypeOf(Hasher.hash)).@"fn".param_types.len == 3) {
                 Hasher.hash(input.slice(), &output_digest_buf, jsc.VirtualMachine.get().rareData().boringEngine());
             } else {
                 Hasher.hash(input.slice(), &output_digest_buf);
@@ -707,7 +707,7 @@ fn StaticCryptoHasher(comptime Hasher: type, comptime name: [:0]const u8) type {
                 output_digest_slice = bytes[0..Hasher.digest];
             }
 
-            if (comptime @typeInfo(@TypeOf(Hasher.hash)).@"fn".params.len == 3) {
+            if (comptime @typeInfo(@TypeOf(Hasher.hash)).@"fn".param_types.len == 3) {
                 Hasher.hash(input.slice(), output_digest_slice, jsc.VirtualMachine.get().rareData().boringEngine());
             } else {
                 Hasher.hash(input.slice(), output_digest_slice);

@@ -973,8 +973,8 @@ inline fn wrapGenericRequestHandler(
     resp: *uws.NewApp(is_ssl).Response,
 ) void {
     const fn_info = @typeInfo(@TypeOf(handler)).@"fn";
-    assert(fn_info.params.len == 3);
-    const uses_any_response = if (fn_info.params[2].type) |t| t == AnyResponse else false;
+    assert(fn_info.param_types.len == 3);
+    const uses_any_response = if (fn_info.param_types[2]) |t| t == AnyResponse else false;
     return struct {
         fn handle(dev: *DevServer, req: *Request, resp: *uws.NewApp(is_ssl).Response) void {
             assert(dev.magic == .valid);

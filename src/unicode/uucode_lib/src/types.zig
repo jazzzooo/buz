@@ -1461,7 +1461,7 @@ pub fn fieldInit(
     }
     const Tracking = @typeInfo(@TypeOf(tracking)).pointer.child;
     if (@hasField(Tracking, field)) {
-        if (@typeInfo(@TypeOf(@FieldType(Tracking, field).track)).@"fn".params.len == 3) {
+        if (@typeInfo(@TypeOf(@FieldType(Tracking, field).track)).@"fn".param_types.len == 3) {
             @field(tracking, field).track(cp, d);
         } else {
             @field(tracking, field).track(d);
