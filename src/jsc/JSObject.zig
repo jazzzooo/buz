@@ -55,18 +55,18 @@ pub const JSObject = opaque {
             const val = if (comptime null_prototype)
                 JSValue.createEmptyObjectWithNullPrototype(global)
             else
-                JSValue.createEmptyObject(global, comptime info.fields.len);
+                JSValue.createEmptyObject(global, comptime info.field_names.len);
             if (bun.Environment.isDebug)
                 bun.assert(val.isObject());
             break :obj val.uncheckedPtrCast(JSObject);
         };
 
         const cell = toJS(obj);
-        inline for (info.fields) |field| {
-            const property = @field(pojo, field.name);
+        inline for (info.field_names) |field_name| {
+            const property = @field(pojo, field_name);
             cell.put(
                 global,
-                field.name,
+                field_name,
                 try .fromAny(global, @TypeOf(property), property),
             );
         }

@@ -742,7 +742,7 @@ noinline fn writeBytes(dest: Destination, bytes: []const u8) void {
 }
 
 inline fn hasNoArgs(comptime Args: type) bool {
-    return @typeInfo(Args).@"struct".fields.len == 0;
+    return @typeInfo(Args).@"struct".field_names.len == 0;
 }
 
 inline fn printTo(dest: Destination, comptime fmt: string, args: anytype) void {

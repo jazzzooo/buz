@@ -1529,6 +1529,7 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
         ptr: Ptr,
 
         const Ptr = TaggedPointerUnion(TypesValue);
+        const tag_values = @typeInfo(Ptr.Tag).@"enum".field_values;
 
         pub fn getChildPtrType(comptime Type: type) type {
             if (Type == Interpreter)
@@ -1542,10 +1543,9 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
         pub fn scopedAllocator(this: @This()) if (bun.Environment.enableAllocScopes) *bun.AllocationScope else void {
             if (comptime !bun.Environment.enableAllocScopes) return;
 
-            const tags = comptime std.meta.fields(Ptr.Tag);
-            inline for (tags) |tag| {
-                if (this.tagInt() == tag.value) {
-                    const Ty = comptime Ptr.typeFromTag(tag.value);
+            inline for (tag_values) |tag_value| {
+                if (this.tagInt() == tag_value) {
+                    const Ty = comptime Ptr.typeFromTag(tag_value);
                     Ptr.assert_type(Ty);
                     var casted = this.as(Ty);
                     if (comptime Ty == Interpreter) {
@@ -1558,10 +1558,9 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
         }
 
         pub fn allocator(this: @This()) std.mem.Allocator {
-            const tags = comptime std.meta.fields(Ptr.Tag);
-            inline for (tags) |tag| {
-                if (this.tagInt() == tag.value) {
-                    const Ty = comptime Ptr.typeFromTag(tag.value);
+            inline for (tag_values) |tag_value| {
+                if (this.tagInt() == tag_value) {
+                    const Ty = comptime Ptr.typeFromTag(tag_value);
                     Ptr.assert_type(Ty);
                     var casted = this.as(Ty);
                     if (comptime Ty == Interpreter) {
@@ -1591,10 +1590,9 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
 
         /// Starts the state node.
         pub fn start(this: @This()) Yield {
-            const tags = comptime std.meta.fields(Ptr.Tag);
-            inline for (tags) |tag| {
-                if (this.tagInt() == tag.value) {
-                    const Ty = comptime Ptr.typeFromTag(tag.value);
+            inline for (tag_values) |tag_value| {
+                if (this.tagInt() == tag_value) {
+                    const Ty = comptime Ptr.typeFromTag(tag_value);
                     Ptr.assert_type(Ty);
                     var casted = this.as(Ty);
                     return casted.start();
@@ -1605,10 +1603,9 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
 
         /// Deinitializes the state node
         pub fn deinit(this: @This()) void {
-            const tags = comptime std.meta.fields(Ptr.Tag);
-            inline for (tags) |tag| {
-                if (this.tagInt() == tag.value) {
-                    const Ty = comptime Ptr.typeFromTag(tag.value);
+            inline for (tag_values) |tag_value| {
+                if (this.tagInt() == tag_value) {
+                    const Ty = comptime Ptr.typeFromTag(tag_value);
                     Ptr.assert_type(Ty);
                     var casted = this.as(Ty);
 
@@ -1622,10 +1619,9 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
         /// Signals to the state node that one of its children completed with the
         /// given exit code
         pub fn childDone(this: @This(), child: anytype, exit_code: ExitCode) Yield {
-            const tags = comptime std.meta.fields(Ptr.Tag);
-            inline for (tags) |tag| {
-                if (this.tagInt() == tag.value) {
-                    const Ty = comptime Ptr.typeFromTag(tag.value);
+            inline for (tag_values) |tag_value| {
+                if (this.tagInt() == tag_value) {
+                    const Ty = comptime Ptr.typeFromTag(tag_value);
                     Ptr.assert_type(Ty);
                     const child_ptr = brk: {
                         const ChildPtr = getChildPtrType(Ty);

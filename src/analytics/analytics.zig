@@ -110,15 +110,15 @@ pub const Features = struct {
         pub fn format(_: Formatter, writer: *std.Io.Writer) !void {
             const fields = comptime brk: {
                 const info: std.builtin.Type = @typeInfo(Features);
-                var buffer: [info.@"struct".decls.len][]const u8 = @splat("");
+                var buffer: [info.@"struct".decl_names.len][]const u8 = @splat("");
                 var count: usize = 0;
-                for (info.@"struct".decls) |decl| {
-                    var f = &@field(Features, decl.name);
+                for (info.@"struct".decl_names) |decl_name| {
+                    var f = &@field(Features, decl_name);
                     _ = &f;
                     const Field = @TypeOf(f);
                     const FieldT: std.builtin.Type = @typeInfo(Field);
                     if (FieldT.pointer.child != usize) continue;
-                    buffer[count] = decl.name;
+                    buffer[count] = decl_name;
                     count += 1;
                 }
 

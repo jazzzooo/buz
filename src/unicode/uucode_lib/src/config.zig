@@ -717,10 +717,10 @@ pub fn _resolveFields(
     @setEvalBranchQuota(100_000);
     var result: [field_names.len]Field = undefined;
     for (field_names, 0..) |field_name, i| {
-        result[i] = extensions_loop: inline for (@typeInfo(config_x).@"struct".decls) |decl| {
+        result[i] = extensions_loop: inline for (@typeInfo(config_x).@"struct".decl_names) |decl_name| {
             for (extension_names) |ext_name| {
-                if (std.mem.eql(u8, decl.name, ext_name)) {
-                    const extension = @field(config_x, decl.name);
+                if (std.mem.eql(u8, decl_name, ext_name)) {
+                    const extension = @field(config_x, decl_name);
                     if (extension.hasField(field_name)) {
                         break :extensions_loop extension.field(field_name);
                     }

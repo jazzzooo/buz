@@ -111,7 +111,7 @@ pub const DeferredDerefTask = struct {
         // Low 3 bits hold the tag; verify both capacity and alignment
         // slack so adding a tag or a packed field can't silently break
         // the packing.
-        bun.assert(@typeInfo(Tag).@"enum".fields.len <= tag_mask + 1);
+        bun.assert(@typeInfo(Tag).@"enum".field_names.len <= tag_mask + 1);
         bun.assert(@alignOf(server.HTTPServer.RequestContext) > tag_mask);
         bun.assert(@alignOf(server.HTTPSServer.RequestContext) > tag_mask);
         bun.assert(@alignOf(server.DebugHTTPServer.RequestContext) > tag_mask);

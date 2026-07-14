@@ -132,11 +132,11 @@ pub fn forClientVerification(this: SSLConfig) SSLConfig {
 }
 
 pub fn isSame(this: *const SSLConfig, other: *const SSLConfig) bool {
-    inline for (comptime std.meta.fields(SSLConfig)) |field| {
-        if (comptime std.mem.eql(u8, field.name, "cached_hash")) continue;
-        const first = @field(this, field.name);
-        const second = @field(other, field.name);
-        switch (field.type) {
+    inline for (comptime std.meta.fieldNames(SSLConfig), comptime std.meta.fieldTypes(SSLConfig)) |field_name, FieldType| {
+        if (comptime std.mem.eql(u8, field_name, "cached_hash")) continue;
+        const first = @field(this, field_name);
+        const second = @field(other, field_name);
+        switch (FieldType) {
             ?[*:0]const u8 => {
                 // Compare optional single strings
                 if (first) |a| {
@@ -259,10 +259,10 @@ pub fn clone(this: *const SSLConfig) SSLConfig {
 pub fn contentHash(this: *SSLConfig) u64 {
     if (this.cached_hash != 0) return this.cached_hash;
     var hasher = std.hash.Wyhash.init(0);
-    inline for (comptime std.meta.fields(SSLConfig)) |field| {
-        if (comptime std.mem.eql(u8, field.name, "cached_hash")) continue;
-        const value = @field(this, field.name);
-        switch (field.type) {
+    inline for (comptime std.meta.fieldNames(SSLConfig), comptime std.meta.fieldTypes(SSLConfig)) |field_name, FieldType| {
+        if (comptime std.mem.eql(u8, field_name, "cached_hash")) continue;
+        const value = @field(this, field_name);
+        switch (FieldType) {
             ?[*:0]const u8 => {
                 if (value) |s| {
                     hasher.update(bun.asByteSlice(s));

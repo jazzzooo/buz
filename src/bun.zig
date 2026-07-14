@@ -419,7 +419,7 @@ pub fn len(value: anytype) usize {
             .slice => value.len,
         },
         .@"struct" => |info| if (info.is_tuple) {
-            return info.fields.len;
+            return info.field_names.len;
         } else @compileError("invalid type given to std.mem.len"),
         else => @compileError("invalid type given to std.mem.len"),
     };
@@ -3454,8 +3454,9 @@ pub const bake = @import("./bake/bake.zig");
 
 /// like std.enums.tagName, except it doesn't lose the sentinel value.
 pub fn tagName(comptime Enum: type, value: Enum) ?[:0]const u8 {
-    return inline for (@typeInfo(Enum).@"enum".fields) |f| {
-        if (@intFromEnum(value) == f.value) break f.name;
+    const enum_info = @typeInfo(Enum).@"enum";
+    return inline for (enum_info.field_names, enum_info.field_values) |name, field_value| {
+        if (@intFromEnum(value) == field_value) break name;
     } else null;
 }
 
