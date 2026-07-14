@@ -221,7 +221,7 @@ pub const TOML = struct {
                         const loc = rope.head.loc;
                         assert(loc.start > 0);
                         const start: u32 = @intCast(loc.start);
-                        const key_name = std.mem.trimRight(u8, p.source().contents[start..rope_end], &std.ascii.whitespace);
+                        const key_name = std.mem.trimEnd(u8, p.source().contents[start..rope_end], &std.ascii.whitespace);
                         p.lexer.addError(start, "Cannot redefine key '{s}'", .{key_name});
                         return error.SyntaxError;
                     },

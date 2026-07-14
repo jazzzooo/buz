@@ -579,7 +579,7 @@ pub const Channel = opaque {
                 break :brk null;
             }
 
-            break :brk (std.fmt.bufPrintZ(&port_buf, "{d}", .{port}) catch unreachable).ptr;
+            break :brk (std.mem.printSentinel(&port_buf, "{d}", .{port}, 0) catch unreachable).ptr;
         };
 
         var hints_buf: [3]AddrInfo_hints = bun.zero([3]AddrInfo_hints);

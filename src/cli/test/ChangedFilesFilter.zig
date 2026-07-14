@@ -265,7 +265,7 @@ pub fn initWatchTrigger(allocator: std.mem.Allocator) void {
     }
 
     const path: [:0]const u8 = if (bun.getenvZ(trigger_file_env_var)) |existing|
-        bun.handleOom(allocator.dupeZ(u8, existing))
+        bun.handleOom(allocator.dupeSentinel(u8, existing, 0))
     else brk: {
         var rng = std.Random.DefaultPrng.init(@as(u64, @bitCast(std.time.milliTimestamp())) ^
             @as(u64, @intCast(std.c.getpid())));
@@ -302,7 +302,7 @@ fn consumeWatchTrigger(allocator: std.mem.Allocator) ?bun.StringSet {
 
     const trigger_path_raw = bun.getenvZ(trigger_file_env_var) orelse return null;
     if (trigger_path_raw.len == 0) return null;
-    const trigger_path = bun.handleOom(allocator.dupeZ(u8, trigger_path_raw));
+    const trigger_path = bun.handleOom(allocator.dupeSentinel(u8, trigger_path_raw, 0));
     defer allocator.free(trigger_path);
 
     const contents = switch (bun.sys.File.readFrom(bun.FD.cwd(), trigger_path, allocator)) {

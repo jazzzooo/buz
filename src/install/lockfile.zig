@@ -1276,9 +1276,9 @@ pub fn saveToDisk(this: *Lockfile, load_result: *const LoadResult, options: *con
     var base64_bytes: [8]u8 = undefined;
     bun.csprng(&base64_bytes);
     const tmpname = if (save_format == .text)
-        std.fmt.bufPrintZ(&tmpname_buf, ".lock-{x}.tmp", .{&base64_bytes}) catch unreachable
+        std.mem.printSentinel(&tmpname_buf, ".lock-{x}.tmp", .{&base64_bytes}, 0) catch unreachable
     else
-        std.fmt.bufPrintZ(&tmpname_buf, ".lockb-{x}.tmp", .{&base64_bytes}) catch unreachable;
+        std.mem.printSentinel(&tmpname_buf, ".lockb-{x}.tmp", .{&base64_bytes}, 0) catch unreachable;
 
     const file = switch (File.openat(.cwd(), tmpname, bun.O.CREAT | bun.O.WRONLY, 0o777)) {
         .err => |err| {

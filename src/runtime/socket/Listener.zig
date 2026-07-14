@@ -242,14 +242,14 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
     const listen_socket: *uws.ListenSocket = brk: {
         switch (connection) {
             .host => |host| {
-                const hostz = bun.handleOom(bun.default_allocator.dupeZ(u8, host.host));
+                const hostz = bun.handleOom(bun.default_allocator.dupeSentinel(u8, host.host, 0));
                 defer bun.default_allocator.free(hostz);
                 const ls = this.group.listen(kind, this.secure_ctx, hostz.ptr, host.port, socket_flags, @sizeOf(?*anyopaque), &errno);
                 if (ls) |s| connection.host.port = @intCast(s.getLocalPort());
                 break :brk ls;
             },
             .unix => |u| {
-                const pathz = bun.handleOom(bun.default_allocator.dupeZ(u8, u));
+                const pathz = bun.handleOom(bun.default_allocator.dupeSentinel(u8, u, 0));
                 defer bun.default_allocator.free(pathz);
                 break :brk this.group.listenUnix(kind, this.secure_ctx, pathz.ptr, pathz.len, socket_flags, @sizeOf(?*anyopaque), &errno);
             },
@@ -374,7 +374,7 @@ pub fn addServerName(this: *Listener, global: *jsc.JSGlobalObject, hostname: JSV
         bun.default_allocator,
     );
     defer host_str.deinit();
-    const server_name = bun.handleOom(bun.default_allocator.dupeZ(u8, host_str.slice()));
+    const server_name = bun.handleOom(bun.default_allocator.dupeSentinel(u8, host_str.slice(), 0));
     defer bun.default_allocator.free(server_name);
     if (server_name.len == 0) {
         return global.throwInvalidArguments("hostname pattern cannot be empty", .{});

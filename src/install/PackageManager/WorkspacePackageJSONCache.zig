@@ -54,7 +54,7 @@ pub fn getWithPath(
         return .{ .entry = entry.value_ptr };
     }
 
-    const key = bun.handleOom(allocator.dupeZ(u8, path));
+    const key = bun.handleOom(allocator.dupeSentinel(u8, path, 0));
     entry.key_ptr.* = key;
 
     const source = &(bun.sys.File.toSource(key, allocator, .{}).unwrap() catch |err| {

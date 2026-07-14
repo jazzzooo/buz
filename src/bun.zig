@@ -1253,7 +1253,7 @@ pub const getcwd = std.posix.getcwd;
 pub fn getcwdAlloc(allocator: std.mem.Allocator) ![:0]u8 {
     var temp: PathBuffer = undefined;
     const temp_slice = try getcwd(&temp);
-    return allocator.dupeZ(u8, temp_slice);
+    return allocator.dupeSentinel(u8, temp_slice, 0);
 }
 
 /// TODO: move to bun.sys and add a method onto FD
@@ -1486,7 +1486,7 @@ pub fn reloadProcess(
 
     const dupe_argv = allocator.allocSentinel(?[*:0]const u8, bun.argv.len, null) catch unreachable;
     for (bun.argv, dupe_argv) |src, *dest| {
-        dest.* = (allocator.dupeZ(u8, src) catch unreachable).ptr;
+        dest.* = (allocator.dupeSentinel(u8, src, 0) catch unreachable).ptr;
     }
 
     const environ_slice = std.mem.span(std.c.environ);
@@ -1495,7 +1495,7 @@ pub fn reloadProcess(
         if (src == null) {
             dest.* = null;
         } else {
-            dest.* = (allocator.dupeZ(u8, std.mem.sliceTo(src.?, 0)) catch unreachable).ptr;
+            dest.* = (allocator.dupeSentinel(u8, std.mem.sliceTo(src.?, 0), 0) catch unreachable).ptr;
         }
     }
 

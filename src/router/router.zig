@@ -199,7 +199,7 @@ pub const Routes = struct {
     }
 
     fn match(this: *Routes, allocator: std.mem.Allocator, pathname_: string, comptime MatchContext: type, ctx: MatchContext) ?*Route {
-        const pathname = std.mem.trimLeft(u8, pathname_, "/");
+        const pathname = std.mem.trimStart(u8, pathname_, "/");
 
         if (pathname.len == 0) {
             return this.index;
@@ -690,7 +690,7 @@ pub const Route = struct {
             name = name[0 .. name.len - 6];
         }
 
-        name = std.mem.trimRight(u8, name, "/");
+        name = std.mem.trimEnd(u8, name, "/");
 
         var match_name: string = name;
 
@@ -877,7 +877,7 @@ pub const Match = struct {
     }
 
     pub fn pathnameWithoutLeadingSlash(this: *const Match) string {
-        return std.mem.trimLeft(u8, this.pathname, "/");
+        return std.mem.trimStart(u8, this.pathname, "/");
     }
 };
 

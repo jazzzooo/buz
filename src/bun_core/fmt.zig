@@ -1571,7 +1571,7 @@ fn TrimmedPrecisionFormatter(comptime precision: usize) type {
                 var buf: [2 + precision]u8 = undefined;
                 var formatted = std.fmt.bufPrint(&buf, "{d:." ++ std.fmt.comptimePrint("{d}", .{precision}) ++ "}", .{rem}) catch unreachable;
                 formatted = formatted[2..];
-                const trimmed = std.mem.trimRight(u8, formatted, "0");
+                const trimmed = std.mem.trimEnd(u8, formatted, "0");
                 try writer.print(".{s}", .{trimmed});
             }
         }

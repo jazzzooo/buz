@@ -558,7 +558,7 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
         }
 
         pub fn getOrPut(self: *Self, denormalized_key: []const u8) !Result {
-            const key = if (comptime remove_trailing_slashes) std.mem.trimRight(u8, denormalized_key, std.fs.path.sep_str) else denormalized_key;
+            const key = if (comptime remove_trailing_slashes) std.mem.trimEnd(u8, denormalized_key, std.fs.path.sep_str) else denormalized_key;
             const _key = bun.hash(key);
 
             self.mutex.lock();
@@ -586,7 +586,7 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
         }
 
         pub fn get(self: *Self, denormalized_key: []const u8) ?*ValueType {
-            const key = if (comptime remove_trailing_slashes) std.mem.trimRight(u8, denormalized_key, std.fs.path.sep_str) else denormalized_key;
+            const key = if (comptime remove_trailing_slashes) std.mem.trimEnd(u8, denormalized_key, std.fs.path.sep_str) else denormalized_key;
             const _key = bun.hash(key);
             self.mutex.lock();
             defer self.mutex.unlock();
@@ -648,7 +648,7 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
             defer self.mutex.unlock();
 
             const key = if (comptime remove_trailing_slashes)
-                std.mem.trimRight(u8, denormalized_key, std.fs.path.sep_str)
+                std.mem.trimEnd(u8, denormalized_key, std.fs.path.sep_str)
             else
                 denormalized_key;
 
@@ -778,7 +778,7 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
             }
 
             if (comptime remove_trailing_slashes) {
-                slice = std.mem.trimRight(u8, slice, "/");
+                slice = std.mem.trimEnd(u8, slice, "/");
             }
 
             if (!result.index.is_overflow) {

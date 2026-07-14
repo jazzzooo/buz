@@ -3169,7 +3169,7 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
 
                         if (hostname.len > 2 and hostname[0] == '[') {
                             // remove "[" and "]" from hostname
-                            host = std.fmt.bufPrintZ(&host_buff, "{s}", .{hostname[1 .. hostname.len - 1]}) catch unreachable;
+                            host = std.mem.printSentinel(&host_buff, "{s}", .{hostname[1 .. hostname.len - 1]}, 0) catch unreachable;
                         } else {
                             host = tcp.hostname;
                         }

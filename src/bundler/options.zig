@@ -2436,19 +2436,19 @@ pub const RouteConfig = struct {
     pub fn fromApi(router_: api.RouteConfig, allocator: std.mem.Allocator) !RouteConfig {
         var router = zero();
 
-        const static_dir: string = std.mem.trimRight(u8, router_.static_dir orelse "", "/\\");
-        const asset_prefix: string = std.mem.trimRight(u8, router_.asset_prefix orelse "", "/\\");
+        const static_dir: string = std.mem.trimEnd(u8, router_.static_dir orelse "", "/\\");
+        const asset_prefix: string = std.mem.trimEnd(u8, router_.asset_prefix orelse "", "/\\");
 
         switch (router_.dir.len) {
             0 => {},
             1 => {
-                router.dir = std.mem.trimRight(u8, router_.dir[0], "/\\");
+                router.dir = std.mem.trimEnd(u8, router_.dir[0], "/\\");
                 router.routes_enabled = router.dir.len > 0;
             },
             else => {
                 router.possible_dirs = router_.dir;
                 for (router_.dir) |dir| {
-                    const trimmed = std.mem.trimRight(u8, dir, "/\\");
+                    const trimmed = std.mem.trimEnd(u8, dir, "/\\");
                     if (trimmed.len > 0) {
                         router.dir = trimmed;
                     }
@@ -2469,7 +2469,7 @@ pub const RouteConfig = struct {
         if (router_.extensions.len > 0) {
             var count: usize = 0;
             for (router_.extensions) |_ext| {
-                const ext = std.mem.trimLeft(u8, _ext, ".");
+                const ext = std.mem.trimStart(u8, _ext, ".");
 
                 if (ext.len == 0) {
                     continue;
@@ -2482,7 +2482,7 @@ pub const RouteConfig = struct {
             var remainder = extensions;
 
             for (router_.extensions) |_ext| {
-                const ext = std.mem.trimLeft(u8, _ext, ".");
+                const ext = std.mem.trimStart(u8, _ext, ".");
 
                 if (ext.len == 0) {
                     continue;

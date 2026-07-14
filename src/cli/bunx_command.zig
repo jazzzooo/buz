@@ -140,7 +140,7 @@ pub const BunxCommand = struct {
     pub fn addCreatePrefix(allocator: std.mem.Allocator, input: []const u8) ![:0]const u8 {
         const prefixLength = "create-".len;
 
-        if (input.len == 0) return try allocator.dupeZ(u8, input);
+        if (input.len == 0) return try allocator.dupeSentinel(u8, input, 0);
 
         var new_str = try allocator.allocSentinel(u8, input.len + prefixLength, 0);
         if (input[0] == '@') {
@@ -252,18 +252,14 @@ pub const BunxCommand = struct {
 
     fn getBinNameFromProjectDirectory(transpiler: *bun.Transpiler, dir_fd: bun.FD, package_name: []const u8) ![]const u8 {
         var subpath: bun.PathBuffer = undefined;
-        const subpath_z = std.fmt.bufPrintZ(&subpath, bun.pathLiteral("node_modules/{s}/package.json"), .{package_name}) catch unreachable;
+        const subpath_z = std.mem.printSentinel(&subpath, bun.pathLiteral("node_modules/{s}/package.json"), .{package_name}, 0) catch unreachable;
         return try getBinNameFromSubpath(transpiler, dir_fd, subpath_z);
     }
 
     fn getBinNameFromTempDirectory(transpiler: *bun.Transpiler, tempdir_name: []const u8, package_name: []const u8, with_stale_check: bool) ![]const u8 {
         var subpath: bun.PathBuffer = undefined;
         if (with_stale_check) {
-            const subpath_z = std.fmt.bufPrintZ(
-                &subpath,
-                bun.pathLiteral("{s}/package.json"),
-                .{tempdir_name},
-            ) catch unreachable;
+            const subpath_z = std.mem.printSentinel(&subpath, bun.pathLiteral("{s}/package.json"), .{tempdir_name}, 0) catch unreachable;
             const target_package_json_fd = bun.sys.openat(bun.FD.cwd(), subpath_z, bun.O.RDONLY, 0).unwrap() catch return error.NeedToInstall;
             const target_package_json = bun.sys.File{ .handle = target_package_json_fd };
 
@@ -296,11 +292,7 @@ pub const BunxCommand = struct {
             _ = target_package_json.close();
         }
 
-        const subpath_z = std.fmt.bufPrintZ(
-            &subpath,
-            bun.pathLiteral("{s}/node_modules/{s}/package.json"),
-            .{ tempdir_name, package_name },
-        ) catch unreachable;
+        const subpath_z = std.mem.printSentinel(&subpath, bun.pathLiteral("{s}/node_modules/{s}/package.json"), .{ tempdir_name, package_name }, 0) catch unreachable;
 
         return try getBinNameFromSubpath(transpiler, bun.FD.cwd(), subpath_z);
     }

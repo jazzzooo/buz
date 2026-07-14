@@ -75,7 +75,7 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
         /// Create a new Cow that copies `data` into a new allocation.
         pub fn initDupe(data: Slice, allocator: Allocator) !Self {
             const bytes: Slice = if (comptime sentinel) |_|
-                try allocator.dupeZ(T, data)
+                try allocator.dupeSentinel(T, data, 0)
             else
                 try allocator.dupe(T, data);
 
@@ -199,7 +199,7 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
         fn intoOwned(str: *Self, allocator: Allocator) callconv(bun.callconv_inline) Allocator.Error!void {
             bun.assert(!str.isOwned());
 
-            const bytes = try if (comptime sentinel) |_| allocator.dupeZ(T, str.slice()) else allocator.dupe(T, str.slice());
+            const bytes = try if (comptime sentinel) |_| allocator.dupeSentinel(T, str.slice(), 0) else allocator.dupe(T, str.slice());
             str.ptr = bytes.ptr;
             str.flags.is_owned = true;
 

@@ -495,7 +495,7 @@ fn addScriptConfigs(
             // interpreted as escape characters by `bun exec` (Bun's shell).
             const cmd_str = try std.fmt.allocPrint(allocator, "\"{s}\" {s}" ++ "\x00", .{ bun_path, raw_name });
             break :brk cmd_str[0 .. cmd_str.len - 1 :0];
-        } else try allocator.dupeZ(u8, raw_name);
+        } else try allocator.dupeSentinel(u8, raw_name, 0);
         try configs.append(.{
             .label = label,
             .command = command_z,

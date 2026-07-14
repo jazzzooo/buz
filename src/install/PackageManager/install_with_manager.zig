@@ -14,7 +14,7 @@ pub fn installWithManager(
             var hostname_stack_buffer: [512]u8 = undefined;
             var hostname_stack: std.heap.BufferFirstAllocator = .init(&hostname_stack_buffer, ctx.allocator);
             const allocator = hostname_stack.allocator();
-            const hostname = try allocator.dupeZ(u8, manager.options.scope.url.hostname);
+            const hostname = try allocator.dupeSentinel(u8, manager.options.scope.url.hostname, 0);
             defer allocator.free(hostname);
             bun.dns.internal.prefetch(manager.event_loop.loop(), hostname, manager.options.scope.url.getPortAuto());
         }

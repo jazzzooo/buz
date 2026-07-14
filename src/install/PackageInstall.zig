@@ -1111,7 +1111,7 @@ pub const PackageInstall = struct {
 
     pub fn uninstallBeforeInstall(this: *@This(), destination_dir: std.fs.Dir) void {
         var rand_path_buf: [48]u8 = undefined;
-        const temp_path = std.fmt.bufPrintZ(&rand_path_buf, ".old-{X}", .{std.mem.asBytes(&bun.fastRandom())}) catch unreachable;
+        const temp_path = std.mem.printSentinel(&rand_path_buf, ".old-{X}", .{std.mem.asBytes(&bun.fastRandom())}, 0) catch unreachable;
         switch (bun.sys.renameat(
             .fromStdDir(destination_dir),
             this.destination_dir_subpath,
@@ -1192,7 +1192,7 @@ pub const PackageInstall = struct {
                     }
                 };
                 var task = UninstallTask.new(.{
-                    .absolute_path = bun.handleOom(bun.default_allocator.dupeZ(u8, bun.path.joinAbsString(FileSystem.instance.top_level_dir, &.{ this.node_modules.path.items, temp_path }, .auto))),
+                    .absolute_path = bun.handleOom(bun.default_allocator.dupeSentinel(u8, bun.path.joinAbsString(FileSystem.instance.top_level_dir, &.{ this.node_modules.path.items, temp_path }, .auto), 0)),
                 });
                 PackageManager.get().incrementPendingTasks(1);
                 PackageManager.get().thread_pool.schedule(bun.ThreadPool.Batch.from(&task.task));

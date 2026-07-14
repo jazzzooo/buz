@@ -637,7 +637,7 @@ pub const RunCommand = struct {
 
         target_path_buffer[converted.len + file_name.len] = 0;
 
-        return try allocator.dupeZ(u8, target_path_buffer[0 .. converted.len + file_name.len :0]);
+        return try allocator.dupeSentinel(u8, target_path_buffer[0 .. converted.len + file_name.len :0], 0);
     }
 
     pub fn createFakeTemporaryNodeExecutable(

@@ -396,7 +396,7 @@ fn appendFileAssumeCapacity(
     const watchlist_id = this.watchlist.len;
 
     const file_path_: string = if (comptime clone_file_path)
-        bun.asByteSlice(bun.handleOom(this.allocator.dupeZ(u8, file_path)))
+        bun.asByteSlice(bun.handleOom(this.allocator.dupeSentinel(u8, file_path, 0)))
     else
         file_path;
 
@@ -414,7 +414,7 @@ fn appendFileAssumeCapacity(
     if (comptime Environment.isKqueue) {
         this.addFileDescriptorToKQueueWithoutChecks(fd, watchlist_id);
     } else if (comptime Environment.isLinux) {
-        // var file_path_to_use_ = std.mem.trimRight(u8, file_path_, "/");
+        // var file_path_to_use_ = std.mem.trimEnd(u8, file_path_, "/");
         // var buf: [bun.MAX_PATH_BYTES+1]u8 = undefined;
         // bun.copy(u8, &buf, file_path_to_use_);
         // buf[file_path_to_use_.len] = 0;
@@ -454,7 +454,7 @@ fn appendDirectoryAssumeCapacity(
     };
 
     const file_path_: string = if (comptime clone_file_path)
-        bun.asByteSlice(bun.handleOom(this.allocator.dupeZ(u8, file_path)))
+        bun.asByteSlice(bun.handleOom(this.allocator.dupeSentinel(u8, file_path, 0)))
     else
         file_path;
 
@@ -516,7 +516,7 @@ fn appendDirectoryAssumeCapacity(
         const path: [:0]const u8 = if (clone_file_path and file_path_.len > 0 and file_path_[file_path_.len - 1] == 0)
             file_path_[0 .. file_path_.len - 1 :0]
         else brk: {
-            const trailing_slash = if (file_path_.len > 1) std.mem.trimRight(u8, file_path_, &.{ 0, '/' }) else file_path_;
+            const trailing_slash = if (file_path_.len > 1) std.mem.trimEnd(u8, file_path_, &.{ 0, '/' }) else file_path_;
             @memcpy(buf[0..trailing_slash.len], trailing_slash);
             buf[trailing_slash.len] = 0;
             break :brk buf[0..trailing_slash.len :0];

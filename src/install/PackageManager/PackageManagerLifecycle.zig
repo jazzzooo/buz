@@ -140,7 +140,7 @@ pub fn determinePreinstallState(
             // 4. rename temp dir to `folder_path`
             if (patch_hash != null) {
                 const non_patched_path_ = folder_path[0 .. std.mem.indexOf(u8, folder_path, "_patch_hash=") orelse @panic("Expected folder path to contain `patch_hash=`, this is a bug in Bun. Please file a GitHub issue.")];
-                const non_patched_path = bun.handleOom(manager.lockfile.allocator.dupeZ(u8, non_patched_path_));
+                const non_patched_path = bun.handleOom(manager.lockfile.allocator.dupeSentinel(u8, non_patched_path_, 0));
                 defer manager.lockfile.allocator.free(non_patched_path);
                 if (manager.isFolderInCache(non_patched_path)) {
                     manager.setPreinstallState(pkg.meta.id, manager.lockfile, .apply_patch);

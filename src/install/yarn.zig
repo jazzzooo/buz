@@ -275,7 +275,7 @@ pub const YarnLock = struct {
         var current_dep_type: ?DependencyType = null;
 
         while (lines.next()) |line_| {
-            const line = std.mem.trimRight(u8, line_, " \r\t");
+            const line = std.mem.trimEnd(u8, line_, " \r\t");
             if (line.len == 0 or line[0] == '#') continue;
 
             var indent: usize = 0;

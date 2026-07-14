@@ -59,15 +59,15 @@ pub const PatchFile = struct {
             defer _ = arena.reset(.retain_capacity);
             switch (part.*) {
                 .file_deletion => {
-                    const pathz = bun.handleOom(arena.allocator().dupeZ(u8, part.file_deletion.path));
+                    const pathz = bun.handleOom(arena.allocator().dupeSentinel(u8, part.file_deletion.path, 0));
 
                     if (bun.sys.unlinkat(patch_dir, pathz).asErr()) |e| {
                         return e.withoutPath();
                     }
                 },
                 .file_rename => {
-                    const from_path = bun.handleOom(arena.allocator().dupeZ(u8, part.file_rename.from_path));
-                    const to_path = bun.handleOom(arena.allocator().dupeZ(u8, part.file_rename.to_path));
+                    const from_path = bun.handleOom(arena.allocator().dupeSentinel(u8, part.file_rename.from_path, 0));
+                    const to_path = bun.handleOom(arena.allocator().dupeSentinel(u8, part.file_rename.to_path, 0));
 
                     if (std.fs.path.dirname(to_path)) |todir| {
                         const abs_patch_dir = switch (state.patchDirAbsPath(patch_dir)) {
@@ -91,7 +91,7 @@ pub const PatchFile = struct {
                     }
                 },
                 .file_creation => {
-                    const filepath = bun.PathString.init(bun.handleOom(arena.allocator().dupeZ(u8, part.file_creation.path)));
+                    const filepath = bun.PathString.init(bun.handleOom(arena.allocator().dupeSentinel(u8, part.file_creation.path, 0)));
                     const filedir = bun.path.dirname(filepath.slice(), .auto);
                     const mode = part.file_creation.mode;
 
@@ -167,7 +167,7 @@ pub const PatchFile = struct {
                 },
                 .file_mode_change => {
                     const newmode = part.file_mode_change.new_mode;
-                    const filepath = bun.handleOom(arena.allocator().dupeZ(u8, part.file_mode_change.path));
+                    const filepath = bun.handleOom(arena.allocator().dupeSentinel(u8, part.file_mode_change.path, 0));
                     if (comptime bun.Environment.isPosix) {
                         if (bun.sys.fchmodat(patch_dir, filepath, newmode.toBunMode(), 0).asErr()) |e| {
                             return e.withoutPath();
@@ -211,7 +211,7 @@ pub const PatchFile = struct {
         patch_dir: bun.FD,
         state: *ApplyState,
     ) bun.sys.Maybe(void) {
-        const file_path: [:0]const u8 = bun.handleOom(arena.allocator().dupeZ(u8, patch.path));
+        const file_path: [:0]const u8 = bun.handleOom(arena.allocator().dupeSentinel(u8, patch.path, 0));
 
         // Need to get the mode of the original file
         // And also get the size to read file into memory
@@ -1087,7 +1087,7 @@ const PatchLinesParser = struct {
         }
 
         const a_path = rest[a_path_start_index..a_path_end_index];
-        const b_path = std.mem.trimRight(u8, rest[b_path_start_index..], " \n\r\t");
+        const b_path = std.mem.trimEnd(u8, rest[b_path_start_index..], " \n\r\t");
         return .{ a_path, b_path };
     }
 };
@@ -1210,8 +1210,8 @@ pub fn gitDiffPreprocessPaths(
 
     if (bun.Environment.isPosix and sentinel) {
         return .{
-            bun.handleOom(allocator.dupeZ(u8, old_folder)),
-            bun.handleOom(allocator.dupeZ(u8, new_folder)),
+            bun.handleOom(allocator.dupeSentinel(u8, old_folder, 0)),
+            bun.handleOom(allocator.dupeSentinel(u8, new_folder, 0)),
         };
     }
 

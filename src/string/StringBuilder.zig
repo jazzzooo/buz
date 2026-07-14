@@ -203,7 +203,7 @@ pub fn fmtAppendCountZ(this: *StringBuilder, comptime str: []const u8, args: any
     }
 
     const buf = this.ptr.?[this.len..this.cap];
-    const out = std.fmt.bufPrintZ(buf, str, args) catch unreachable;
+    const out = std.mem.printSentinel(buf, str, args, 0) catch unreachable;
     const off = this.len;
     this.len += out.len;
     this.len += 1;

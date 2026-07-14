@@ -1041,7 +1041,7 @@ pub const StandaloneModuleGraph = struct {
     pub fn download(allocator: std.mem.Allocator, target: *const CompileTarget, env: *bun.DotEnv.Loader) ![:0]const u8 {
         var exe_path_buf: bun.PathBuffer = undefined;
         var version_str_buf: [1024]u8 = undefined;
-        const version_str = try std.fmt.bufPrintZ(&version_str_buf, "{}", .{target});
+        const version_str = try std.mem.printSentinel(&version_str_buf, "{}", .{target}, 0);
         var needs_download: bool = true;
         const dest_z = target.exePath(&exe_path_buf, version_str, env, &needs_download);
         if (needs_download) {
@@ -1084,7 +1084,7 @@ pub const StandaloneModuleGraph = struct {
             };
         }
 
-        return try allocator.dupeZ(u8, dest_z);
+        return try allocator.dupeSentinel(u8, dest_z, 0);
     }
 
     pub fn toExecutable(
@@ -1110,7 +1110,7 @@ pub const StandaloneModuleGraph = struct {
         var free_self_exe = false;
         const self_exe = if (self_exe_path) |path| brk: {
             free_self_exe = true;
-            break :brk bun.handleOom(allocator.dupeZ(u8, path));
+            break :brk bun.handleOom(allocator.dupeSentinel(u8, path, 0));
         } else if (target.isDefault())
             bun.selfExePath() catch |err| {
                 return CompileResult.failFmt("failed to get self executable path: {s}", .{@errorName(err)});
@@ -1137,7 +1137,7 @@ pub const StandaloneModuleGraph = struct {
             }
 
             free_self_exe = true;
-            break :blk bun.handleOom(allocator.dupeZ(u8, dest_z));
+            break :blk bun.handleOom(allocator.dupeSentinel(u8, dest_z, 0));
         };
 
         defer if (free_self_exe) {

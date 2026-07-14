@@ -1198,9 +1198,9 @@ pub const PackageManifest = struct {
         fn manifestFileName(buf: []u8, file_id: u64, scope: *const Registry.Scope) ![:0]const u8 {
             const file_id_hex_fmt = bun.fmt.hexIntLower(file_id);
             return if (scope.url_hash == Registry.default_url_hash)
-                try std.fmt.bufPrintZ(buf, "{f}.npm", .{file_id_hex_fmt})
+                try std.mem.printSentinel(buf, "{f}.npm", .{file_id_hex_fmt}, 0)
             else
-                try std.fmt.bufPrintZ(buf, "{f}-{f}.npm", .{ file_id_hex_fmt, bun.fmt.hexIntLower(scope.url_hash) });
+                try std.mem.printSentinel(buf, "{f}-{f}.npm", .{ file_id_hex_fmt, bun.fmt.hexIntLower(scope.url_hash) }, 0);
         }
 
         pub fn save(this: *const PackageManifest, scope: *const Registry.Scope, tmpdir: std.fs.Dir, cache_dir: std.fs.Dir) !void {

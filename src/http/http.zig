@@ -124,8 +124,8 @@ pub fn checkServerIdentity(
                         .hostname = bun.handleOom(bun.default_allocator.dupe(u8, hostname)),
                         .cert_error = .{
                             .error_no = certError.error_no,
-                            .code = bun.handleOom(bun.default_allocator.dupeZ(u8, certError.code)),
-                            .reason = bun.handleOom(bun.default_allocator.dupeZ(u8, certError.reason)),
+                            .code = bun.handleOom(bun.default_allocator.dupeSentinel(u8, certError.code, 0)),
+                            .reason = bun.handleOom(bun.default_allocator.dupeSentinel(u8, certError.reason, 0)),
                         },
                     };
 
@@ -238,7 +238,7 @@ pub fn onOpen(
                     temp_hostname[_hostname.len] = 0;
                     hostname = temp_hostname[0.._hostname.len :0];
                 } else {
-                    hostname = bun.default_allocator.dupeZ(u8, _hostname) catch unreachable;
+                    hostname = bun.default_allocator.dupeSentinel(u8, _hostname, 0) catch unreachable;
                     hostname_needs_free = true;
                 }
             }

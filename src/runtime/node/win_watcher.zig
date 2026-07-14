@@ -140,7 +140,7 @@ pub const PathWatcher = struct {
                 const ctx: *FSWatcher = @ptrCast(@alignCast(this.handlers.keys()[i]));
                 onPathUpdateFn(ctx, event_type.toEvent(switch (ctx.encoding) {
                     .utf8 => .{ .string = bun.String.cloneUTF8(path) },
-                    else => .{ .bytes_to_free = bun.handleOom(bun.default_allocator.dupeZ(u8, path)) },
+                    else => .{ .bytes_to_free = bun.handleOom(bun.default_allocator.dupeSentinel(u8, path, 0)) },
                 }), is_file);
                 if (comptime bun.Environment.isDebug)
                     debug_count += 1;
@@ -210,7 +210,7 @@ pub const PathWatcher = struct {
         uv.uv_unref(@ptrCast(&this.handle));
 
         watchers_entry.value_ptr.* = this;
-        watchers_entry.key_ptr.* = bun.handleOom(bun.default_allocator.dupeZ(u8, event_path));
+        watchers_entry.key_ptr.* = bun.handleOom(bun.default_allocator.dupeSentinel(u8, event_path, 0));
 
         return .{ .result = this };
     }

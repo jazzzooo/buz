@@ -478,8 +478,8 @@ pub const CronRegisterJob = struct {
             .global = globalObject,
             .bun_exe = bun_exe,
             .abs_path = abs_path,
-            .schedule = bun.handleOom(bun.default_allocator.dupeZ(u8, normalized_schedule)),
-            .title = bun.handleOom(bun.default_allocator.dupeZ(u8, title_slice.slice())),
+            .schedule = bun.handleOom(bun.default_allocator.dupeSentinel(u8, normalized_schedule, 0)),
+            .title = bun.handleOom(bun.default_allocator.dupeSentinel(u8, title_slice.slice(), 0)),
             .parsed_cron = parsed,
             .promise = jsc.JSPromise.Strong.init(globalObject),
         };
@@ -774,7 +774,7 @@ pub const CronRemoveJob = struct {
         const job = bun.handleOom(bun.default_allocator.create(CronRemoveJob));
         job.* = .{
             .global = globalObject,
-            .title = bun.handleOom(bun.default_allocator.dupeZ(u8, title_slice.slice())),
+            .title = bun.handleOom(bun.default_allocator.dupeSentinel(u8, title_slice.slice(), 0)),
             .promise = jsc.JSPromise.Strong.init(globalObject),
         };
 
@@ -1315,7 +1315,7 @@ fn resolvePath(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, pat
     const source_dir = if (raw_dir.len == 0) "." else raw_dir;
     var resolved = vm.transpiler.resolver.resolve(source_dir, path, .entry_point_run) catch return error.ModuleNotFound;
     const entry_path = resolved.path() orelse return error.ModuleNotFound;
-    return bun.default_allocator.dupeZ(u8, entry_path.text);
+    return bun.default_allocator.dupeSentinel(u8, entry_path.text, 0);
 }
 
 /// XML-escape a string for safe embedding in plist XML.
@@ -1757,7 +1757,7 @@ fn allocPrintZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: any
 fn makeTempPath(comptime prefix: []const u8) ![:0]const u8 {
     var name_buf: bun.PathBuffer = undefined;
     const name = bun.fs.FileSystem.tmpname(prefix ++ "tmp", &name_buf, bun.fastRandom()) catch return error.OutOfMemory;
-    return bun.default_allocator.dupeZ(u8, bun.path.joinAbsString(bun.fs.FileSystem.RealFS.platformTempDir(), &.{name}, .auto));
+    return bun.default_allocator.dupeSentinel(u8, bun.path.joinAbsString(bun.fs.FileSystem.RealFS.platformTempDir(), &.{name}, .auto), 0);
 }
 
 const std = @import("std");

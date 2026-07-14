@@ -50,11 +50,11 @@ pub const FileSystem = struct {
     pub fn tmpname(extname: string, buf: []u8, hash: u64) std.fmt.BufPrintError![:0]u8 {
         const hex_value = @as(u64, @truncate(@as(u128, @intCast(hash)) | @as(u128, @intCast(std.time.nanoTimestamp()))));
 
-        return try std.fmt.bufPrintZ(buf, ".{f}-{f}.{s}", .{
+        return try std.mem.printSentinel(buf, ".{f}-{f}.{s}", .{
             bun.fmt.hexIntLower(hex_value),
             bun.fmt.hexIntUpper(tmpname_id_number.fetchAdd(1, .monotonic)),
             extname,
-        });
+        }, 0);
     }
 
     pub var max_fd: std.posix.fd_t = 0;
@@ -482,7 +482,7 @@ pub const FileSystem = struct {
             parts,
             .loose,
         );
-        return try allocator.dupeZ(u8, joined);
+        return try allocator.dupeSentinel(u8, joined, 0);
     }
 
     pub fn abs(f: *@This(), parts: anytype) string {
@@ -1259,7 +1259,7 @@ pub const FileSystem = struct {
                         return err;
                     };
                     if (read_count + 1 < buf.len) {
-                        const allocation = try allocator.dupeZ(u8, buf[0..read_count]);
+                        const allocation = try allocator.dupeSentinel(u8, buf[0..read_count], 0);
                         file_contents = allocation[0..read_count];
 
                         if (strings.BOM.detect(file_contents)) |bom| {

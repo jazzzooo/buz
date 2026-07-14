@@ -299,7 +299,7 @@ fn findSourceMappingURL(comptime T: type, source: []const T, alloc: std.mem.Allo
     const needle = comptime bun.strings.literal(T, "\n//# sourceMappingURL=");
     const found = std.mem.lastIndexOf(T, source, needle) orelse return null;
     const end = std.mem.indexOfScalarPos(T, source, found + needle.len, '\n') orelse source.len;
-    const url = std.mem.trimRight(T, source[found + needle.len .. end], &.{ ' ', '\r' });
+    const url = std.mem.trimEnd(T, source[found + needle.len .. end], &.{ ' ', '\r' });
     return switch (T) {
         u8 => bun.jsc.ZigString.Slice.fromUTF8NeverFree(url),
         u16 => bun.jsc.ZigString.Slice.init(

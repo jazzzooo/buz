@@ -3148,7 +3148,7 @@ pub const Resolver = struct {
                 var matched_text_with_suffix = bufs(.tsconfig_match_full_buf3);
                 var matched_text_with_suffix_len: usize = 0;
                 if (total_length != null) {
-                    const suffix = std.mem.trimLeft(u8, original_path[total_length orelse original_path.len ..], "*");
+                    const suffix = std.mem.trimStart(u8, original_path[total_length orelse original_path.len ..], "*");
                     matched_text_with_suffix_len = matched_text.len + suffix.len;
                     if (matched_text_with_suffix_len > matched_text_with_suffix.len) continue;
                     bun.concat(u8, matched_text_with_suffix, &.{ matched_text, suffix });
@@ -3162,8 +3162,8 @@ pub const Resolver = struct {
                 // so that "/Users/foo/components/", "/foo/bar" => /Users/foo/components/foo/bar
                 var parts = [_]string{
                     prefix,
-                    if (matched_text_with_suffix_len > 0) std.mem.trimLeft(u8, matched_text_with_suffix[0..matched_text_with_suffix_len], "/") else "",
-                    std.mem.trimLeft(u8, longest_match.suffix, "/"),
+                    if (matched_text_with_suffix_len > 0) std.mem.trimStart(u8, matched_text_with_suffix[0..matched_text_with_suffix_len], "/") else "",
+                    std.mem.trimStart(u8, longest_match.suffix, "/"),
                 };
                 const absolute_original_path = r.fs.absBufChecked(
                     &parts,
@@ -3300,7 +3300,7 @@ pub const Resolver = struct {
 
             var index_path: string = "";
             {
-                var parts = [_]string{ std.mem.trimRight(u8, path_to_check, std.fs.path.sep_str), std.fs.path.sep_str ++ "index" };
+                var parts = [_]string{ std.mem.trimEnd(u8, path_to_check, std.fs.path.sep_str), std.fs.path.sep_str ++ "index" };
                 index_path = ResolvePath.joinStringBuf(bufs(.tsconfig_base_url), &parts, .auto);
             }
 

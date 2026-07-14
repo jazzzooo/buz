@@ -363,7 +363,7 @@ pub fn NewSocketHandler(comptime is_ssl: bool) type {
                 @memcpy(stack[0..host.len], host);
                 stack[host.len] = 0;
                 break :blk stack[0..host.len :0];
-            } else bun.handleOom(bun.default_allocator.dupeZ(u8, host));
+            } else bun.handleOom(bun.default_allocator.dupeSentinel(u8, host, 0));
             defer if (hostZ.ptr != &stack) bun.default_allocator.free(hostZ);
 
             return switch (g.connect(kind, ssl_ctx, hostZ, @intCast(port), opts, @sizeOf(?*Owner))) {

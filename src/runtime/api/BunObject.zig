@@ -741,7 +741,7 @@ pub fn getPublicPathWithAssetPrefix(
             ) catch return;
         }
     } else {
-        writer.writeAll(std.mem.trimLeft(u8, relative_path, "/")) catch unreachable;
+        writer.writeAll(std.mem.trimStart(u8, relative_path, "/")) catch unreachable;
     }
 }
 

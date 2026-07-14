@@ -1641,7 +1641,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
                     }
 
                     var mechanism_buf: [128]u8 = undefined;
-                    const mechanism = std.fmt.bufPrintZ(&mechanism_buf, "n,,n=*,r={s}", .{this.authentication_state.SASL.nonce()}) catch unreachable;
+                    const mechanism = std.mem.printSentinel(&mechanism_buf, "n,,n=*,r={s}", .{this.authentication_state.SASL.nonce()}, 0) catch unreachable;
                     var response = protocol.SASLInitialResponse{
                         .mechanism = .{
                             .temporary = "SCRAM-SHA-256",
@@ -1799,7 +1799,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
                     const final_hash_str_output = std.fmt.bufPrint(&final_hash_str, "{x}", .{&final_hash_buf}) catch unreachable;
 
                     // Format final password as "md5" + final_hash
-                    const final_password = std.fmt.bufPrintZ(&final_password_buf, "md5{s}", .{final_hash_str_output}) catch unreachable;
+                    const final_password = std.mem.printSentinel(&final_password_buf, "md5{s}", .{final_hash_str_output}, 0) catch unreachable;
 
                     var response = protocol.PasswordMessage{
                         .password = .{

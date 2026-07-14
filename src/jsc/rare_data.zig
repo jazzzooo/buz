@@ -821,7 +821,7 @@ pub fn setTLSDefaultCiphers(this: *RareData, ciphers: []const u8) void {
     if (this.tls_default_ciphers) |old_ciphers| {
         bun.default_allocator.free(old_ciphers);
     }
-    this.tls_default_ciphers = bun.handleOom(bun.default_allocator.dupeZ(u8, ciphers));
+    this.tls_default_ciphers = bun.handleOom(bun.default_allocator.dupeSentinel(u8, ciphers, 0));
 }
 
 pub fn defaultCSRFSecret(this: *RareData) []const u8 {

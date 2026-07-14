@@ -182,11 +182,11 @@ fn buildWorkerArgv(arena: std.mem.Allocator, ctx: Command.Context) ![:null]?[*:0
     try argv.append(arena, try printZ(arena, "--max-concurrency={d}", .{opts.max_concurrency}));
     if (opts.test_filter_pattern) |pattern| {
         try argv.append(arena, "-t");
-        try argv.append(arena, (try arena.dupeZ(u8, pattern)).ptr);
+        try argv.append(arena, (try arena.dupeSentinel(u8, pattern, 0)).ptr);
     }
     for (ctx.preloads) |preload| {
         try argv.append(arena, "--preload");
-        try argv.append(arena, (try arena.dupeZ(u8, preload)).ptr);
+        try argv.append(arena, (try arena.dupeSentinel(u8, preload, 0)).ptr);
     }
     if (ctx.args.define) |define| {
         for (define.keys, define.values) |key, value| {
@@ -202,7 +202,7 @@ fn buildWorkerArgv(arena: std.mem.Allocator, ctx: Command.Context) ![:null]?[*:0
     }
     if (ctx.args.tsconfig_override) |tsconfig| {
         try argv.append(arena, "--tsconfig-override");
-        try argv.append(arena, (try arena.dupeZ(u8, tsconfig)).ptr);
+        try argv.append(arena, (try arena.dupeSentinel(u8, tsconfig, 0)).ptr);
     }
     inline for (.{
         .{ "--conditions", ctx.args.conditions },
@@ -214,7 +214,7 @@ fn buildWorkerArgv(arena: std.mem.Allocator, ctx: Command.Context) ![:null]?[*:0
     }) |pair| {
         for (pair[1]) |value| {
             try argv.append(arena, pair[0]);
-            try argv.append(arena, (try arena.dupeZ(u8, value)).ptr);
+            try argv.append(arena, (try arena.dupeSentinel(u8, value, 0)).ptr);
         }
     }
     if (ctx.args.preserve_symlinks orelse false)

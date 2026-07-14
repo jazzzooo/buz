@@ -71,7 +71,7 @@ const LibInfo = struct {
         var stack_fallback_buffer: [1024]u8 = undefined;
         var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
         const name_allocator = stack_fallback.allocator();
-        const name_z = bun.handleOom(name_allocator.dupeZ(u8, query.name));
+        const name_z = bun.handleOom(name_allocator.dupeSentinel(u8, query.name, 0));
         defer name_allocator.free(name_z);
 
         var request = GetAddrInfoRequest.init(
@@ -1218,7 +1218,7 @@ pub const internal = struct {
 
             pub fn toOwned(this: @This()) @This() {
                 if (this.host) |host| {
-                    const host_copy = bun.handleOom(bun.default_allocator.dupeZ(u8, host));
+                    const host_copy = bun.handleOom(bun.default_allocator.dupeSentinel(u8, host, 0));
                     return .{
                         .host = host_copy,
                         .hash = this.hash,
@@ -1577,7 +1577,7 @@ pub const internal = struct {
     fn workPoolCallback(req: *Request) void {
         var service_buf: [bun.fmt.fastDigitCount(std.math.maxInt(u16)) + 2]u8 = undefined;
         const service: ?[*:0]const u8 = if (req.key.port > 0)
-            (std.fmt.bufPrintZ(&service_buf, "{d}", .{req.key.port}) catch unreachable).ptr
+            (std.mem.printSentinel(&service_buf, "{d}", .{req.key.port}, 0) catch unreachable).ptr
         else
             null;
 
@@ -1634,7 +1634,7 @@ pub const internal = struct {
         var machport: bun.mach_port = 0;
         var service_buf: [bun.fmt.fastDigitCount(std.math.maxInt(u16)) + 2]u8 = undefined;
         const service: ?[*:0]const u8 = if (req.key.port > 0)
-            (std.fmt.bufPrintZ(&service_buf, "{d}", .{req.key.port}) catch unreachable).ptr
+            (std.mem.printSentinel(&service_buf, "{d}", .{req.key.port}, 0) catch unreachable).ptr
         else
             null;
 
@@ -1680,7 +1680,7 @@ pub const internal = struct {
             req.can_retry_for_addrconfig = false;
             var service_buf: [bun.fmt.fastDigitCount(std.math.maxInt(u16)) + 2]u8 = undefined;
             const service: ?[*:0]const u8 = if (req.key.port > 0)
-                (std.fmt.bufPrintZ(&service_buf, "{d}", .{req.key.port}) catch unreachable).ptr
+                (std.mem.printSentinel(&service_buf, "{d}", .{req.key.port}, 0) catch unreachable).ptr
             else
                 null;
             const getaddrinfo_async_start_ = LibInfo.getaddrinfo_async_start() orelse break :retry;
@@ -1826,7 +1826,7 @@ pub const internal = struct {
             return globalThis.throwInvalidArguments("hostname must be a string", .{});
         }
 
-        const hostname_z = try bun.default_allocator.dupeZ(u8, hostname_slice.slice());
+        const hostname_z = try bun.default_allocator.dupeSentinel(u8, hostname_slice.slice(), 0);
         defer bun.default_allocator.free(hostname_z);
 
         const port: u16 = brk: {

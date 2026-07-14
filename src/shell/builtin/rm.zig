@@ -561,7 +561,7 @@ pub const ShellRmTask = struct {
                 if (this.parent_task == null) {
                     var buf: bun.PathBuffer = undefined;
                     const cwd_path = switch (Syscall.getFdPath(this.task_manager.cwd, &buf)) {
-                        .result => |p| bun.handleOom(bun.default_allocator.dupeZ(u8, p)),
+                        .result => |p| bun.handleOom(bun.default_allocator.dupeSentinel(u8, p, 0)),
                         .err => |err| {
                             debug("[runFromThreadPoolImpl:getcwd] DirTask({x}) failed: {s}: {s}", .{ @intFromPtr(this), @tagName(err.getErrno()), err.path });
                             this.task_manager.err_mutex.lock();
@@ -862,7 +862,7 @@ pub const ShellRmTask = struct {
         }
 
         if (!this.opts.recursive) {
-            return Maybe(void).initErr(Syscall.Error.fromCode(bun.sys.E.ISDIR, .TODO).withPath(bun.handleOom(bun.default_allocator.dupeZ(u8, dir_task.path))));
+            return Maybe(void).initErr(Syscall.Error.fromCode(bun.sys.E.ISDIR, .TODO).withPath(bun.handleOom(bun.default_allocator.dupeSentinel(u8, dir_task.path, 0))));
         }
 
         const flags = bun.O.DIRECTORY | bun.O.RDONLY;
@@ -1013,14 +1013,14 @@ pub const ShellRmTask = struct {
 
         pub fn onIsDir(this: *@This(), parent_dir_task: *DirTask, path: [:0]const u8, is_absolute: bool, buf: *bun.PathBuffer) Maybe(void) {
             if (this.child_of_dir) {
-                this.task.enqueueNoJoin(parent_dir_task, bun.handleOom(bun.default_allocator.dupeZ(u8, path)), .dir);
+                this.task.enqueueNoJoin(parent_dir_task, bun.handleOom(bun.default_allocator.dupeSentinel(u8, path, 0)), .dir);
                 return .success;
             }
             return this.task.removeEntryDir(parent_dir_task, is_absolute, buf);
         }
 
         pub fn onDirNotEmpty(this: *@This(), parent_dir_task: *DirTask, path: [:0]const u8, is_absolute: bool, buf: *bun.PathBuffer) Maybe(void) {
-            if (this.child_of_dir) return .{ .result = this.task.enqueueNoJoin(parent_dir_task, bun.handleOom(bun.default_allocator.dupeZ(u8, path)), .dir) };
+            if (this.child_of_dir) return .{ .result = this.task.enqueueNoJoin(parent_dir_task, bun.handleOom(bun.default_allocator.dupeSentinel(u8, path, 0)), .dir) };
             return this.task.removeEntryDir(parent_dir_task, is_absolute, buf);
         }
     };
@@ -1047,7 +1047,7 @@ pub const ShellRmTask = struct {
 
             this.treat_as_dir = true;
             if (this.allow_enqueue) {
-                this.task.enqueueNoJoin(parent_dir_task, bun.handleOom(bun.default_allocator.dupeZ(u8, path)), .dir);
+                this.task.enqueueNoJoin(parent_dir_task, bun.handleOom(bun.default_allocator.dupeSentinel(u8, path, 0)), .dir);
                 this.enqueued = true;
             }
             return .success;
@@ -1175,7 +1175,7 @@ pub const ShellRmTask = struct {
 
     fn errorWithPath(this: *ShellRmTask, err: Syscall.Error, path: [:0]const u8) Syscall.Error {
         _ = this;
-        return err.withPath(bun.handleOom(bun.default_allocator.dupeZ(u8, path[0..path.len])));
+        return err.withPath(bun.handleOom(bun.default_allocator.dupeSentinel(u8, path[0..path.len], 0)));
     }
 
     inline fn join(this: *ShellRmTask, alloc: Allocator, subdir_parts: []const []const u8, is_absolute: bool) [:0]const u8 {
@@ -1186,7 +1186,7 @@ pub const ShellRmTask = struct {
             return bun.handleOom(std.fs.path.joinZ(alloc, subdir_parts));
         }
 
-        const out = bun.handleOom(alloc.dupeZ(u8, bun.path.join(subdir_parts, .auto)));
+        const out = bun.handleOom(alloc.dupeSentinel(u8, bun.path.join(subdir_parts, .auto), 0));
 
         return out;
     }

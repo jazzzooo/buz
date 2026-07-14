@@ -61,7 +61,7 @@ fn next(this: *Ls) Yield {
                 if (paths) |p| {
                     const print_directory = p.len > 1;
                     for (p) |path_raw| {
-                        const path = bun.handleOom(this.alloc_scope.allocator().dupeZ(u8, path_raw[0..std.mem.len(path_raw) :0]));
+                        const path = bun.handleOom(this.alloc_scope.allocator().dupeSentinel(u8, path_raw[0..std.mem.len(path_raw) :0], 0));
                         var task = ShellLsTask.create(
                             this,
                             this.opts,
@@ -290,7 +290,7 @@ pub const ShellLsTask = struct {
             return bun.handleOom(std.fs.path.joinZ(alloc, subdir_parts));
         }
 
-        const out = bun.handleOom(alloc.dupeZ(u8, bun.path.join(subdir_parts, .auto)));
+        const out = bun.handleOom(alloc.dupeSentinel(u8, bun.path.join(subdir_parts, .auto), 0));
 
         return out;
     }
@@ -540,7 +540,7 @@ pub const ShellLsTask = struct {
 
     fn errorWithPath(this: *@This(), err: Syscall.Error, path: [:0]const u8) Syscall.Error {
         debug("Ls(0x{x}).errorWithPath({s})", .{ @intFromPtr(this), path });
-        return err.withPath(bun.handleOom(this.ls.alloc_scope.allocator().dupeZ(u8, path[0..path.len])));
+        return err.withPath(bun.handleOom(this.ls.alloc_scope.allocator().dupeSentinel(u8, path[0..path.len], 0)));
     }
 
     pub fn workPoolCallback(task: *jsc.WorkPoolTask) void {

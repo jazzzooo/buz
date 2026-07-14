@@ -508,7 +508,7 @@ pub const PatchTask = struct {
         state: ?CalcPatchHash.EnqueueAfterState,
     ) *PatchTask {
         const patchdep = manager.lockfile.patched_dependencies.get(name_and_version_hash) orelse @panic("This is a bug");
-        const patchfile_path = bun.handleOom(manager.allocator.dupeZ(u8, patchdep.path.slice(manager.lockfile.buffers.string_bytes.items)));
+        const patchfile_path = bun.handleOom(manager.allocator.dupeSentinel(u8, patchdep.path.slice(manager.lockfile.buffers.string_bytes.items), 0));
 
         const pt = bun.new(PatchTask, .{
             .tempdir = manager.getTemporaryDirectory().handle,
@@ -561,8 +561,8 @@ pub const PatchTask = struct {
                     // need to dupe this as it's calculated using
                     // `PackageManager.cached_package_folder_name_buf` which may be
                     // modified
-                    .cache_dir_subpath = bun.handleOom(pkg_manager.allocator.dupeZ(u8, stuff.cache_dir_subpath)),
-                    .cache_dir_subpath_without_patch_hash = bun.handleOom(pkg_manager.allocator.dupeZ(u8, stuff.cache_dir_subpath[0 .. std.mem.indexOf(u8, stuff.cache_dir_subpath, "_patch_hash=") orelse @panic("This is a bug in Bun.")])),
+                    .cache_dir_subpath = bun.handleOom(pkg_manager.allocator.dupeSentinel(u8, stuff.cache_dir_subpath, 0)),
+                    .cache_dir_subpath_without_patch_hash = bun.handleOom(pkg_manager.allocator.dupeSentinel(u8, stuff.cache_dir_subpath[0 .. std.mem.indexOf(u8, stuff.cache_dir_subpath, "_patch_hash=") orelse @panic("This is a bug in Bun.")], 0)),
                 },
             },
             .manager = pkg_manager,

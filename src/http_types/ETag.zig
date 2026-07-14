@@ -9,7 +9,7 @@ fn parse(tag_str: []const u8) struct { tag: []const u8, is_weak: bool } {
     if (bun.strings.hasPrefix(str, "W/")) {
         is_weak = true;
         str = str[2..];
-        str = std.mem.trimLeft(u8, str, " \t");
+        str = std.mem.trimStart(u8, str, " \t");
     }
 
     // Remove surrounding quotes

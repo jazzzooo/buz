@@ -131,7 +131,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                     // getaddrinfo doesn't accept bracketed IPv6.
                     const raw = host.host;
                     const clean = if (raw.len > 1 and raw[0] == '[' and raw[raw.len - 1] == ']') raw[1 .. raw.len - 1] else raw;
-                    const hostz = bun.handleOom(alloc.dupeZ(u8, clean));
+                    const hostz = bun.handleOom(alloc.dupeSentinel(u8, clean, 0));
                     defer alloc.free(hostz);
 
                     this.socket = switch (group.connect(kind, ssl_ctx, hostz, host.port, flags, @sizeOf(*anyopaque))) {
@@ -150,7 +150,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                     var sf_buffer: [1024]u8 = undefined;
                     var sf: std.heap.BufferFirstAllocator = .init(&sf_buffer, bun.default_allocator);
                     const alloc = sf.allocator();
-                    const pathz = bun.handleOom(alloc.dupeZ(u8, u));
+                    const pathz = bun.handleOom(alloc.dupeSentinel(u8, u, 0));
                     defer alloc.free(pathz);
 
                     const s = group.connectUnix(kind, ssl_ctx, pathz.ptr, pathz.len, flags, @sizeOf(*anyopaque)) orelse
@@ -497,7 +497,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                         if (this.server_name) |server_name| {
                             const host = server_name;
                             if (host.len > 0) {
-                                const host__ = bun.handleOom(default_allocator.dupeZ(u8, host));
+                                const host__ = bun.handleOom(default_allocator.dupeSentinel(u8, host, 0));
                                 defer default_allocator.free(host__);
                                 ssl_ptr.setHostname(host__);
                             }
@@ -505,7 +505,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                             if (connection == .host) {
                                 const host = connection.host.host;
                                 if (host.len > 0) {
-                                    const host__ = bun.handleOom(default_allocator.dupeZ(u8, host));
+                                    const host__ = bun.handleOom(default_allocator.dupeSentinel(u8, host, 0));
                                     defer default_allocator.free(host__);
                                     ssl_ptr.setHostname(host__);
                                 }

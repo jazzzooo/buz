@@ -70,7 +70,7 @@ pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *c
     bun.handleOom(contents.appendSlice(bun.default_allocator, body.items));
     bun.handleOom(contents.appendSlice(bun.default_allocator, "</testsuites>\n"));
 
-    const out_z = bun.handleOom(bun.default_allocator.dupeZ(u8, outfile));
+    const out_z = bun.handleOom(bun.default_allocator.dupeSentinel(u8, outfile, 0));
     defer bun.default_allocator.free(out_z);
     switch (bun.sys.File.openat(.cwd(), out_z, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o664)) {
         .err => |err| Output.err(error.JUnitReportFailed, "Failed to write JUnit report to {s}\n{f}", .{ outfile, err }),

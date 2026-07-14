@@ -1114,7 +1114,7 @@ pub const String = struct {
 
     pub fn stringZ(s: *const String, allocator: std.mem.Allocator) OOM![:0]const u8 {
         if (s.isUTF8()) {
-            return allocator.dupeZ(u8, s.data);
+            return allocator.dupeSentinel(u8, s.data, 0);
         } else {
             return strings.toUTF8AllocZ(allocator, s.slice16());
         }

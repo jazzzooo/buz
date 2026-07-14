@@ -268,7 +268,7 @@ pub const FFI = struct {
                     if (process.result.isOK()) {
                         const stdout = process.result.stdout.items;
                         if (stdout.len > 0) {
-                            cached_default_system_include_dir = bun.default_allocator.dupeZ(u8, strings.trim(stdout, "\n\r")) catch return;
+                            cached_default_system_include_dir = bun.default_allocator.dupeSentinel(u8, strings.trim(stdout, "\n\r"), 0) catch return;
                         }
                     }
                 }
@@ -411,7 +411,7 @@ pub const FFI = struct {
                     var include_iter = std.mem.splitScalar(u8, c_include_path, ':');
                     while (include_iter.next()) |path| {
                         if (path.len > 0) {
-                            const path_z = bun.default_allocator.dupeZ(u8, path) catch continue;
+                            const path_z = bun.default_allocator.dupeSentinel(u8, path, 0) catch continue;
                             defer bun.default_allocator.free(path_z);
                             state.addSysIncludePath(path_z) catch {
                                 debug("TinyCC failed to add C_INCLUDE_PATH: {s}", .{path});
@@ -425,7 +425,7 @@ pub const FFI = struct {
                     var library_iter = std.mem.splitScalar(u8, library_path, ':');
                     while (library_iter.next()) |path| {
                         if (path.len > 0) {
-                            const path_z = bun.default_allocator.dupeZ(u8, path) catch continue;
+                            const path_z = bun.default_allocator.dupeSentinel(u8, path, 0) catch continue;
                             defer bun.default_allocator.free(path_z);
                             state.addLibraryPath(path_z) catch {
                                 debug("TinyCC failed to add LIBRARY_PATH: {s}", .{path});
@@ -506,7 +506,7 @@ pub const FFI = struct {
             for (this.symbols.map.keys(), this.symbols.map.values()) |symbol, *function| {
                 // FIXME: why are we duping here? can we at least use a stack
                 // fallback allocator?
-                const duped = bun.handleOom(bun.default_allocator.dupeZ(u8, symbol));
+                const duped = bun.handleOom(bun.default_allocator.dupeSentinel(u8, symbol, 0));
                 defer bun.default_allocator.free(duped);
                 function.symbol_from_dynamic_library = state.getSymbol(duped) orelse {
                     return globalThis.throw("{f} is missing from {s}. Was it included in the source code?", .{ bun.fmt.quote(symbol), this.source.first() });
@@ -2349,7 +2349,7 @@ const CompilerRT = struct {
             }) catch {};
         }
         var path_buf: [bun.MAX_PATH_BYTES]u8 = undefined;
-        compiler_rt_dir = bun.handleOom(bun.default_allocator.dupeZ(u8, bun.getFdPath(.fromStdDir(bunCC), &path_buf) catch return));
+        compiler_rt_dir = bun.handleOom(bun.default_allocator.dupeSentinel(u8, bun.getFdPath(.fromStdDir(bunCC), &path_buf) catch return, 0));
     }
     var create_compiler_rt_dir_once = std.once(createCompilerRTDir);
 

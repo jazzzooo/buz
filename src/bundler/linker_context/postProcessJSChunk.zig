@@ -292,7 +292,7 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *ThreadPool.Worker, chu
             const newline_pos = strings.indexOfChar(c.options.banner, '\n') orelse c.options.banner.len;
             const banner_hashbang = c.options.banner[0..newline_pos];
 
-            break :brk .{ banner_hashbang, std.mem.trimLeft(u8, c.options.banner[newline_pos..], "\r\n") };
+            break :brk .{ banner_hashbang, std.mem.trimStart(u8, c.options.banner[newline_pos..], "\r\n") };
         }
 
         // No hashbang anywhere

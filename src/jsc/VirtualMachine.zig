@@ -3354,7 +3354,7 @@ fn printErrorInstance(
         last_pad = pad;
         try writer.splatByteAll(' ', pad);
 
-        const trimmed = std.mem.trimRight(u8, std.mem.trim(u8, source.text.slice(), "\n"), "\t ");
+        const trimmed = std.mem.trimEnd(u8, std.mem.trim(u8, source.text.slice(), "\n"), "\t ");
         const clamped = trimmed[0..@min(trimmed.len, max_line_length)];
 
         if (clamped.len != trimmed.len) {
@@ -3418,7 +3418,7 @@ fn printErrorInstance(
         if (top_frame == null or top_frame.?.position.isInvalid()) {
             defer did_print_name = true;
             defer source.text.deinit();
-            const trimmed = std.mem.trimRight(u8, std.mem.trim(u8, source.text.slice(), "\n"), "\t ");
+            const trimmed = std.mem.trimEnd(u8, std.mem.trim(u8, source.text.slice(), "\n"), "\t ");
 
             const text = trimmed[0..@min(trimmed.len, max_line_length)];
 
@@ -3450,7 +3450,7 @@ fn printErrorInstance(
             try writer.splatByteAll(' ', pad);
             defer source.text.deinit();
             const text = source.text.slice();
-            const trimmed = std.mem.trimRight(u8, std.mem.trim(u8, text, "\n"), "\t ");
+            const trimmed = std.mem.trimEnd(u8, std.mem.trim(u8, text, "\n"), "\t ");
 
             // TODO: preserve the divot position and possibly use stringWidth() to figure out where to put the divot
             const clamped = trimmed[0..@min(trimmed.len, max_line_length)];

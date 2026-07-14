@@ -2178,7 +2178,7 @@ fn resolveLocalImagePath(src: []const u8, allocator: Allocator, base_dir: ?[]con
     // for any entry, including directories — and emitKittyImageFile sets
     // q=2 so the terminal silently drops directory paths without falling
     // through to alt text.
-    const abs_z = allocator.dupeZ(u8, abs) catch {
+    const abs_z = allocator.dupeSentinel(u8, abs, 0) catch {
         allocator.free(abs);
         return null;
     };

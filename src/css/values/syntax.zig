@@ -70,7 +70,7 @@ pub const SyntaxString = union(enum) {
     /// Parses a syntax string.
     pub fn parseString(allocator: std.mem.Allocator, input: []const u8) css.Maybe(SyntaxString, void) {
         // https://drafts.css-houdini.org/css-properties-values-api/#parsing-syntax
-        var trimmed_input = std.mem.trimLeft(u8, input, SPACE_CHARACTERS);
+        var trimmed_input = std.mem.trimStart(u8, input, SPACE_CHARACTERS);
         if (trimmed_input.len == 0) {
             return .{ .err = {} };
         }
@@ -92,7 +92,7 @@ pub const SyntaxString = union(enum) {
                 component,
             ) catch |err| bun.handleOom(err);
 
-            trimmed_input = std.mem.trimLeft(u8, trimmed_input, SPACE_CHARACTERS);
+            trimmed_input = std.mem.trimStart(u8, trimmed_input, SPACE_CHARACTERS);
             if (trimmed_input.len == 0) {
                 break;
             }
@@ -330,7 +330,7 @@ pub const SyntaxComponentKind = union(enum) {
 
     pub fn parseString(input: *[]const u8) css.Maybe(SyntaxComponentKind, void) {
         // https://drafts.css-houdini.org/css-properties-values-api/#consume-syntax-component
-        input.* = std.mem.trimLeft(u8, input.*, SPACE_CHARACTERS);
+        input.* = std.mem.trimStart(u8, input.*, SPACE_CHARACTERS);
         if (bun.strings.startsWithChar(input.*, '<')) {
             // https://drafts.css-houdini.org/css-properties-values-api/#consume-data-type-name
             const end_idx = std.mem.indexOfScalar(u8, input.*, '>') orelse return .{ .err = {} };

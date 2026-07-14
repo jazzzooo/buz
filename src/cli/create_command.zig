@@ -1222,7 +1222,7 @@ pub const CreateCommand = struct {
                 //             "./{s}",
 
                 //             .{
-                //                 std.mem.trimLeft(
+                //                 std.mem.trimStart(
                 //                     u8,
                 //                     entry_point_path[destination.len..],
                 //                     "/",

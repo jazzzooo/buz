@@ -48,7 +48,7 @@ pub fn connect(this: *ClientContext, client: *HTTPClient, hostname: []const u8, 
         }
     }
 
-    const host_z = bun.handleOom(bun.default_allocator.dupeZ(u8, hostname));
+    const host_z = bun.handleOom(bun.default_allocator.dupeSentinel(u8, hostname, 0));
     const session = ClientSession.new(.{
         .qsocket = null,
         .hostname = host_z,

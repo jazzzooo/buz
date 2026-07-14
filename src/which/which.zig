@@ -45,7 +45,7 @@ pub fn which(buf: *bun.PathBuffer, path: []const u8, cwd: []const u8, bin: []con
         if (cwd.len > 0) {
             if (isValid(
                 buf,
-                std.mem.trimRight(u8, cwd, std.fs.path.sep_str),
+                std.mem.trimEnd(u8, cwd, std.fs.path.sep_str),
                 bun.strings.withoutPrefixComptime(bin, "./"),
             )) |len| {
                 return buf[0..len :0];

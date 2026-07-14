@@ -556,7 +556,7 @@ pub const Thread = struct {
         {
             var counter_buf: [100]u8 = undefined;
             const int = counter.fetchAdd(1, .seq_cst);
-            const named = std.fmt.bufPrintZ(&counter_buf, "Bun Pool {d}", .{int}) catch "Bun Pool";
+            const named = std.mem.printSentinel(&counter_buf, "Bun Pool {d}", .{int}, 0) catch "Bun Pool";
             Output.Source.configureNamedThread(named);
         }
 

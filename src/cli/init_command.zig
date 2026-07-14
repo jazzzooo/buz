@@ -1083,7 +1083,7 @@ const Template = enum {
             if (bun.getenvZAnyCase("USER")) |user| {
                 const pathbuf = bun.path_buffer_pool.get();
                 defer bun.path_buffer_pool.put(pathbuf);
-                const path = std.fmt.bufPrintZ(pathbuf, "C:\\Users\\{s}\\AppData\\Local\\Programs\\Cursor\\Cursor.exe", .{user}) catch {
+                const path = std.mem.printSentinel(pathbuf, "C:\\Users\\{s}\\AppData\\Local\\Programs\\Cursor\\Cursor.exe", .{user}, 0) catch {
                     return false;
                 };
 

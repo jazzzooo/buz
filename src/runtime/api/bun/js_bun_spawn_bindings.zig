@@ -34,17 +34,17 @@ fn getArgv0(globalThis: *jsc.JSGlobalObject, PATH: []const u8, cwd: []const u8, 
         "";
 
     if (PATH_to_use.len == 0) {
-        actual_argv0 = try allocator.dupeZ(u8, argv0_to_use);
+        actual_argv0 = try allocator.dupeSentinel(u8, argv0_to_use, 0);
     } else {
         const resolved = which(path_buf, PATH_to_use, cwd, argv0_to_use) orelse {
             return throwCommandNotFound(globalThis, argv0_to_use);
         };
-        actual_argv0 = try allocator.dupeZ(u8, resolved);
+        actual_argv0 = try allocator.dupeSentinel(u8, resolved, 0);
     }
 
     return .{
         .argv0 = actual_argv0,
-        .arg0 = if (pretend_argv0) |p| try allocator.dupeZ(u8, std.mem.sliceTo(p, 0)) else try allocator.dupeZ(u8, arg0.slice()),
+        .arg0 = if (pretend_argv0) |p| try allocator.dupeSentinel(u8, std.mem.sliceTo(p, 0), 0) else try allocator.dupeSentinel(u8, arg0.slice(), 0),
     };
 }
 
@@ -513,11 +513,7 @@ pub fn spawnMaybeSync(
             }
         };
 
-        const pipe_env = std.fmt.bufPrintZ(
-            &ipc_env_buf,
-            "NODE_CHANNEL_FD={d}",
-            .{ipc_fd},
-        ) catch {
+        const pipe_env = std.mem.printSentinel(&ipc_env_buf, "NODE_CHANNEL_FD={d}", .{ipc_fd}, 0) catch {
             return globalThis.throwOutOfMemory();
         };
         env_array.appendAssumeCapacity(pipe_env);

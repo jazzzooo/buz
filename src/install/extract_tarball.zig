@@ -77,7 +77,7 @@ pub fn buildURLWithPrinter(
     printer: PrinterContext,
     comptime print: fn (ctx: PrinterContext, comptime str: string, args: anytype) ErrorType!ReturnType,
 ) ErrorType!ReturnType {
-    const registry = std.mem.trimRight(u8, registry_, "/");
+    const registry = std.mem.trimEnd(u8, registry_, "/");
     const full_name = full_name_.slice();
 
     var name = full_name;

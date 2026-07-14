@@ -953,7 +953,7 @@ pub const ValkeyClient = struct {
         // If using a specific database, send SELECT command
         if (this.database > 0) {
             var int_buf: [64]u8 = undefined;
-            const db_str = std.fmt.bufPrintZ(&int_buf, "{d}", .{this.database}) catch unreachable;
+            const db_str = std.mem.printSentinel(&int_buf, "{d}", .{this.database}, 0) catch unreachable;
             var select_cmd = Command{
                 .command = "SELECT",
                 .args = .{ .raw = &[_][]const u8{db_str} },

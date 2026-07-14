@@ -29,7 +29,7 @@ pub const UseDirective = enum(u2) {
     }
 
     pub fn parse(contents: []const u8) ?UseDirective {
-        const truncated = std.mem.trimLeft(u8, contents, " \t\n\r;");
+        const truncated = std.mem.trimStart(u8, contents, " \t\n\r;");
 
         if (truncated.len < "'use client';".len)
             return .none;

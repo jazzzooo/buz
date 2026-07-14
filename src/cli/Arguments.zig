@@ -379,7 +379,7 @@ pub fn loadConfig(allocator: std.mem.Allocator, user_config_path_: ?string, ctx:
             var secondbuf: bun.PathBuffer = undefined;
             const cwd = bun.getcwd(&secondbuf) catch return;
 
-            ctx.args.absolute_working_dir = try allocator.dupeZ(u8, cwd);
+            ctx.args.absolute_working_dir = try allocator.dupeSentinel(u8, cwd, 0);
         }
 
         var parts = [_]string{ ctx.args.absolute_working_dir.?, config_path_ };
@@ -463,7 +463,7 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
                 Output.err(err, "Could not change directory to \"{s}\"\n", .{cwd_arg});
                 Global.exit(1);
             };
-            break :brk try allocator.dupeZ(u8, out);
+            break :brk try allocator.dupeSentinel(u8, out, 0);
         };
     } else {
         cwd = try bun.getcwdAlloc(allocator);
@@ -1429,7 +1429,7 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
         if (args.option("--metafile")) |metafile| {
             // If --metafile is passed without a value, default to "meta.json"
             ctx.bundler_options.metafile = if (metafile.len > 0)
-                bun.handleOom(allocator.dupeZ(u8, metafile))
+                bun.handleOom(allocator.dupeSentinel(u8, metafile, 0))
             else
                 "meta.json";
         }
@@ -1437,7 +1437,7 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
         if (args.option("--metafile-md")) |metafile_md| {
             // If --metafile-md is passed without a value, default to "meta.md"
             ctx.bundler_options.metafile_md = if (metafile_md.len > 0)
-                bun.handleOom(allocator.dupeZ(u8, metafile_md))
+                bun.handleOom(allocator.dupeSentinel(u8, metafile_md, 0))
             else
                 "meta.md";
         }

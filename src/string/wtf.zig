@@ -160,7 +160,7 @@ pub const WTFStringImplStruct = extern struct {
                 return utf8.items[0 .. utf8.items.len - 1 :0];
             }
 
-            return bun.handleOom(allocator.dupeZ(u8, this.latin1Slice()));
+            return bun.handleOom(allocator.dupeSentinel(u8, this.latin1Slice(), 0));
         }
         return bun.handleOom(bun.strings.toUTF8AllocZ(allocator, this.utf16Slice()));
     }

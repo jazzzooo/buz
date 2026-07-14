@@ -124,7 +124,7 @@ pub const ShellMvBatchedTask = struct {
                     ResolvePath.basename(src),
                 }, .auto);
 
-                this.err = e.withPath(bun.handleOom(bun.default_allocator.dupeZ(u8, target_path[0..])));
+                this.err = e.withPath(bun.handleOom(bun.default_allocator.dupeSentinel(u8, target_path[0..], 0)));
                 this.err_path_owned = true;
                 return false;
             },

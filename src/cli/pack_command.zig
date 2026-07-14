@@ -985,7 +985,7 @@ pub const PackCommand = struct {
             if (bin.expr.asString(allocator)) |bin_str| {
                 const normalized = bun.path.normalizeBuf(bin_str, &path_buf, .posix);
                 try bins.append(allocator, .{
-                    .path = try allocator.dupeZ(u8, normalized),
+                    .path = try allocator.dupeSentinel(u8, normalized, 0),
                     .type = .file,
                 });
                 return bins.items;
@@ -1000,7 +1000,7 @@ pub const PackCommand = struct {
                             if (bin_prop_value.asString(allocator)) |bin_str| {
                                 const normalized = bun.path.normalizeBuf(bin_str, &path_buf, .posix);
                                 try bins.append(allocator, .{
-                                    .path = try allocator.dupeZ(u8, normalized),
+                                    .path = try allocator.dupeSentinel(u8, normalized, 0),
                                     .type = .file,
                                 });
                             }
@@ -1020,7 +1020,7 @@ pub const PackCommand = struct {
                         if (bin.expr.asString(allocator)) |bin_str| {
                             const normalized = bun.path.normalizeBuf(bin_str, &path_buf, .posix);
                             try bins.append(allocator, .{
-                                .path = try allocator.dupeZ(u8, normalized),
+                                .path = try allocator.dupeSentinel(u8, normalized, 0),
                                 .type = .dir,
                             });
                         }
@@ -1591,7 +1591,7 @@ pub const PackCommand = struct {
                     .manager = manager,
                     .package_name = package_name,
                     .package_version = package_version,
-                    .abs_tarball_path = try ctx.allocator.dupeZ(u8, abs_tarball_dest),
+                    .abs_tarball_path = try ctx.allocator.dupeSentinel(u8, abs_tarball_dest, 0),
                     .tarball_bytes = "",
                     .shasum = undefined,
                     .integrity = undefined,
@@ -1926,7 +1926,7 @@ pub const PackCommand = struct {
                 .manager = manager,
                 .package_name = package_name,
                 .package_version = package_version,
-                .abs_tarball_path = try ctx.allocator.dupeZ(u8, abs_tarball_dest),
+                .abs_tarball_path = try ctx.allocator.dupeSentinel(u8, abs_tarball_dest, 0),
                 .tarball_bytes = tarball_bytes,
                 .shasum = shasum,
                 .integrity = integrity,

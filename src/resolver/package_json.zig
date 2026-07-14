@@ -390,7 +390,7 @@ pub const PackageJSON = struct {
 
         if (framework_object.expr.asProperty("assetPrefix")) |asset_prefix| {
             if (asset_prefix.expr.asString(allocator)) |_str| {
-                const str = std.mem.trimRight(u8, _str, " ");
+                const str = std.mem.trimEnd(u8, _str, " ");
                 if (str.len > 0) {
                     pair.router.asset_prefix_path = str;
                 }
@@ -2058,7 +2058,7 @@ pub const ESModule = struct {
                         }
                     },
                     .pattern => {
-                        const key_without_trailing_star = std.mem.trimRight(u8, key, "*");
+                        const key_without_trailing_star = std.mem.trimEnd(u8, key, "*");
 
                         const star = strings.indexOfChar(str, '*') orelse {
                             // Handle the case of no "*"

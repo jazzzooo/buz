@@ -225,7 +225,7 @@ fn sourceFromJS(global: *jsc.JSGlobalObject, value: jsc.JSValue, this_value: jsc
             }
             return .{ .owned = out[0..r.count] };
         }
-        return .{ .path = try bun.default_allocator.dupeZ(u8, s) };
+        return .{ .path = try bun.default_allocator.dupeSentinel(u8, s, 0) };
     }
     if (value.asArrayBuffer(global)) |ab| {
         // A resizable/growable buffer can shrink or reallocate underneath any
@@ -686,7 +686,7 @@ pub fn encodeForBody(this: *Image, global: *jsc.JSGlobalObject, this_value: jsc.
         // unreachable, but this path should throw, not abort, when it isn't.)
         if (blob.store) |store| {
             if (store.data == .file and store.data.file.pathlike == .path) {
-                const p = try bun.default_allocator.dupeZ(u8, store.data.file.pathlike.path.slice());
+                const p = try bun.default_allocator.dupeSentinel(u8, store.data.file.pathlike.path.slice(), 0);
                 this.source.deinit();
                 this.source = .{ .path = p };
             } else return global.throw(refuse, .{});

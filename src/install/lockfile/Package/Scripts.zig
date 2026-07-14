@@ -214,7 +214,7 @@ pub const Scripts = extern struct {
                 .items = scripts,
                 .first_index = @intCast(first_index),
                 .total = total,
-                .cwd = bun.handleOom(allocator.dupeZ(u8, cwd)),
+                .cwd = bun.handleOom(allocator.dupeSentinel(u8, cwd, 0)),
                 .package_name = bun.handleOom(lockfile.allocator.dupe(u8, package_name)),
             };
         }

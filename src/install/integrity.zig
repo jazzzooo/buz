@@ -83,7 +83,7 @@ pub const Integrity = extern struct {
             };
         }
 
-        const input = std.mem.trimRight(u8, buf[offset..], "=");
+        const input = std.mem.trimEnd(u8, buf[offset..], "=");
 
         // Check if the base64 input would decode to more bytes than we can handle
         const decoded_size = Base64.Decoder.calcSizeForSlice(input) catch {

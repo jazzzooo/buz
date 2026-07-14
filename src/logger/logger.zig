@@ -185,7 +185,7 @@ pub const Location = struct {
                 .line = usize2Loc(data.line_count).start,
                 .column = usize2Loc(data.column_count).start,
                 .length = if (r.len > -1) @as(u32, @intCast(r.len)) else 1,
-                .line_text = std.mem.trimLeft(u8, full_line, "\n\r"),
+                .line_text = std.mem.trimStart(u8, full_line, "\n\r"),
                 .offset = @as(usize, @intCast(@max(r.loc.start, 0))),
             };
         }
@@ -276,8 +276,8 @@ pub const Data = struct {
 
         if (this.location) |*location| {
             if (location.line_text) |line_text_| {
-                const line_text_right_trimmed = std.mem.trimRight(u8, line_text_, " \r\n\t");
-                const line_text = std.mem.trimLeft(u8, line_text_right_trimmed, "\n\r");
+                const line_text_right_trimmed = std.mem.trimEnd(u8, line_text_, " \r\n\t");
+                const line_text = std.mem.trimStart(u8, line_text_right_trimmed, "\n\r");
                 if (location.column > 0 and line_text.len > 0) {
                     var line_offset_for_second_line: usize = @intCast(location.column - 1);
 
