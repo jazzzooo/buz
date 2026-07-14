@@ -59,13 +59,17 @@ pub fn stringify(global: *JSGlobalObject, callFrame: *jsc.CallFrame) JSError!JSV
 }
 
 const Stringifier = struct {
+    allocator: std.mem.Allocator,
     stack_check: bun.StackCheck,
     builder: wtf.StringBuilder,
     indent: usize,
 
     known_collections: std.AutoHashMap(JSValue, AnchorAlias),
     array_item_counter: usize,
+    value_counter: usize,
     prop_names: bun.StringHashMap(usize),
+    used_anchor_names: bun.StringHashMap(void),
+    allocated_anchor_names: std.array_list.Managed([]u8),
 
     space: Space,
 
@@ -130,10 +134,11 @@ const Stringifier = struct {
             };
         }
 
-        pub const Name = union(AnchorOrigin) {
+        pub const Name = union(enum) {
             // only one root anchor is possible
             root,
             array_item: usize,
+            generated_value: usize,
             prop_value: struct {
                 prop_name: String,
                 // added after the name
@@ -148,13 +153,20 @@ const Stringifier = struct {
         // root anchor/alias
         try prop_names.put("root", 0);
 
+        var used_anchor_names: bun.StringHashMap(void) = .init(allocator);
+        try used_anchor_names.put("root", {});
+
         return .{
+            .allocator = allocator,
             .stack_check = .init(),
             .builder = .init(),
             .indent = 0,
             .known_collections = .init(allocator),
             .array_item_counter = 0,
+            .value_counter = 0,
             .prop_names = prop_names,
+            .used_anchor_names = used_anchor_names,
+            .allocated_anchor_names = .init(allocator),
             .space = try .init(global, space_value),
         };
     }
@@ -163,6 +175,9 @@ const Stringifier = struct {
         this.builder.deinit();
         this.known_collections.deinit();
         this.prop_names.deinit();
+        this.used_anchor_names.deinit();
+        for (this.allocated_anchor_names.items) |name| this.allocator.free(name);
+        this.allocated_anchor_names.deinit();
         this.space.deinit();
     }
 
@@ -219,10 +234,16 @@ const Stringifier = struct {
                     // only one possible
                 },
                 .array_item => |*counter| {
-                    counter.* = this.array_item_counter;
-                    this.array_item_counter += 1;
+                    counter.* = try this.nextGeneratedAnchor("item", &this.array_item_counter);
                 },
                 .prop_value => |*prop_value| {
+                    if (!isSafeAnchorName(prop_value.prop_name)) {
+                        object_entry.value_ptr.name = .{
+                            .generated_value = try this.nextGeneratedAnchor("value", &this.value_counter),
+                        };
+                        return;
+                    }
+
                     const name_entry = try this.prop_names.getOrPut(prop_value.prop_name.byteSlice());
                     if (name_entry.found_existing) {
                         name_entry.value_ptr.* += 1;
@@ -230,8 +251,15 @@ const Stringifier = struct {
                         name_entry.value_ptr.* = 0;
                     }
 
-                    prop_value.counter = name_entry.value_ptr.*;
+                    var counter = name_entry.value_ptr.*;
+                    while (try this.anchorNameInUse(prop_value.prop_name.byteSlice(), counter)) {
+                        counter += 1;
+                    }
+                    name_entry.value_ptr.* = counter;
+                    prop_value.counter = counter;
+                    try this.markAnchorNameUsed(prop_value.prop_name.byteSlice(), counter);
                 },
+                .generated_value => unreachable,
             }
             return;
         }
@@ -351,15 +379,14 @@ const Stringifier = struct {
                     this.builder.append(.latin1, "item");
                     this.builder.append(.usize, anchor.name.array_item);
                 },
+                .generated_value => {
+                    this.builder.append(.latin1, "value");
+                    this.builder.append(.usize, anchor.name.generated_value);
+                },
                 .prop_value => |prop_value| {
-                    if (prop_value.prop_name.length() == 0) {
-                        this.builder.append(.latin1, "value");
+                    this.builder.append(.string, prop_value.prop_name);
+                    if (prop_value.counter != 0) {
                         this.builder.append(.usize, prop_value.counter);
-                    } else {
-                        this.builder.append(.string, anchor.name.prop_value.prop_name);
-                        if (anchor.name.prop_value.counter != 0) {
-                            this.builder.append(.usize, anchor.name.prop_value.counter);
-                        }
                     }
                 },
             }
@@ -530,6 +557,66 @@ const Stringifier = struct {
         }
     }
 
+    fn nextGeneratedAnchor(this: *Stringifier, prefix: []const u8, counter: *usize) !usize {
+        while (true) {
+            const current = counter.*;
+            counter.* += 1;
+            const name = try std.fmt.allocPrint(this.allocator, "{s}{d}", .{ prefix, current });
+            if (this.used_anchor_names.contains(name)) {
+                this.allocator.free(name);
+                continue;
+            }
+            this.allocated_anchor_names.append(name) catch |err| {
+                this.allocator.free(name);
+                return err;
+            };
+            try this.used_anchor_names.put(name, {});
+            return current;
+        }
+    }
+
+    fn anchorNameInUse(this: *Stringifier, base: []const u8, counter: usize) !bool {
+        if (counter == 0) return this.used_anchor_names.contains(base);
+        const name = try std.fmt.allocPrint(this.allocator, "{s}{d}", .{ base, counter });
+        defer this.allocator.free(name);
+        return this.used_anchor_names.contains(name);
+    }
+
+    fn markAnchorNameUsed(this: *Stringifier, base: []const u8, counter: usize) !void {
+        const name = if (counter == 0)
+            base
+        else name: {
+            const allocated = try std.fmt.allocPrint(this.allocator, "{s}{d}", .{ base, counter });
+            this.allocated_anchor_names.append(allocated) catch |err| {
+                this.allocator.free(allocated);
+                return err;
+            };
+            break :name allocated;
+        };
+        try this.used_anchor_names.put(name, {});
+    }
+
+    fn isSafeAnchorName(name: String) bool {
+        if (name.isEmpty() or name.isUTF16()) return false;
+
+        for (name.byteSlice()) |c| {
+            switch (c) {
+                0...0x20,
+                0x7f,
+                0x85,
+                0xa0,
+                ',',
+                '[',
+                ']',
+                '{',
+                '}',
+                => return false,
+                else => {},
+            }
+        }
+        return true;
+    }
+
     fn appendDoubleQuotedString(this: *Stringifier, str: String) void {
         this.builder.append(.lchar, '"');
 
@@ -574,16 +661,16 @@ const Stringifier = struct {
                 0x7f => this.builder.append(.latin1, "\\x7f"), // delete
                 0x85 => this.builder.append(.latin1, "\\N"), // next line
                 0xa0 => this.builder.append(.latin1, "\\_"), // non-breaking space
-                0xa8 => this.builder.append(.latin1, "\\L"), // line separator
-                0xa9 => this.builder.append(.latin1, "\\P"), // paragraph separator
+                0x2028 => this.builder.append(.latin1, "\\L"), // line separator
+                0x2029 => this.builder.append(.latin1, "\\P"), // paragraph separator
 
                 0x20...0x21,
                 0x23...0x5b,
                 0x5d...0x7e,
                 0x80...0x84,
                 0x86...0x9f,
-                0xa1...0xa7,
-                0xaa...std.math.maxInt(u16),
+                0xa1...0x2027,
+                0x202a...std.math.maxInt(u16),
                 => this.builder.append(.uchar, c),
             }
         }
@@ -792,8 +879,8 @@ const Stringifier = struct {
                 0x7f,
                 0x85,
                 0xa0,
-                0xa8,
-                0xa9,
+                0x2028,
+                0x2029,
                 => return true,
 
                 else => {
@@ -926,6 +1013,16 @@ pub fn parse(
         break :input .{ .string_or_buffer = .{ .string = str.toSlice(arena.allocator()) } };
     };
     defer input.deinit();
+
+    const input_len = input.byteLength();
+    if (input_len > std.math.maxInt(i32)) {
+        const err = global.createRangeErrorInstance(
+            "The value of \"input.byteLength\" is out of range. It must be <= {d}. Received {d}",
+            .{ std.math.maxInt(i32), input_len },
+        );
+        err.put(global, ZigString.static("code"), ZigString.static("ERR_OUT_OF_RANGE").toJS(global));
+        return global.throwValue(err);
+    }
 
     var log = logger.Log.init(bun.default_allocator);
     defer log.deinit();

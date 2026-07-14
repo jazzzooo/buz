@@ -757,10 +757,6 @@ pub fn Parser(comptime enc: Encoding) type {
 
         fn parseFlowSequence(self: *@This()) ParseError!Expr {
             const sequence_start = self.token.start;
-            const sequence_indent = self.token.indent;
-            _ = sequence_indent;
-            const sequence_line = self.line;
-            _ = sequence_line;
 
             var seq: std.array_list.Managed(Expr) = .init(self.allocator);
 
@@ -770,7 +766,20 @@ pub fn Parser(comptime enc: Encoding) type {
 
                 try self.scan(.{});
                 while (self.token.data != .sequence_end) {
-                    const item = try self.parseNode(.{});
+                    const item = if (self.token.data == .mapping_key)
+                        try self.flowPairExpr(try self.parseFlowExplicitPair())
+                    else item: {
+                        const key_line = self.token.line;
+                        const key = key: {
+                            try self.context.set(.flow_key);
+                            defer self.context.unset(.flow_key);
+                            break :key try self.parseNode(.{ .flow_pair_allowed = false });
+                        };
+
+                        if (self.token.data != .mapping_value) break :item key;
+                        if (self.token.line != key_line) return error.MultilineImplicitKey;
+                        break :item try self.flowPairExpr(try self.parseFlowPairValue(key, Pos.from(key.loc.i())));
+                    };
                     try seq.append(item);
 
                     if (self.token.data == .sequence_end) {
@@ -790,12 +799,59 @@ pub fn Parser(comptime enc: Encoding) type {
             return .init(E.Array, .{ .items = .moveFromList(&seq) }, sequence_start.loc());
         }
 
+        const FlowPair = struct {
+            key: Expr,
+            value: Expr,
+            start: Pos,
+        };
+
+        fn parseFlowExplicitPair(self: *@This()) ParseError!FlowPair {
+            const pair_start = self.token.start;
+            try self.scan(.{});
+
+            const key: Expr = switch (self.token.data) {
+                .mapping_value,
+                .collect_entry,
+                .sequence_end,
+                .mapping_end,
+                => .init(E.Null, .{}, self.token.start.loc()),
+                .mapping_key => return unexpectedToken(),
+                .anchor, .tag => try self.parseNode(.{ .flow_pair_allowed = false }),
+                else => key: {
+                    try self.context.set(.flow_key);
+                    defer self.context.unset(.flow_key);
+                    break :key try self.parseNode(.{ .flow_pair_allowed = false });
+                },
+            };
+
+            if (self.token.data == .mapping_value) {
+                return self.parseFlowPairValue(key, pair_start);
+            }
+
+            const value: Expr = .init(E.Null, .{}, self.token.start.loc());
+            return .{ .key = key, .value = value, .start = pair_start };
+        }
+
+        fn parseFlowPairValue(self: *@This(), key: Expr, pair_start: Pos) ParseError!FlowPair {
+            try self.scan(.{});
+
+            const value: Expr = switch (self.token.data) {
+                .collect_entry, .sequence_end, .mapping_end => .init(E.Null, .{}, self.token.start.loc()),
+                .mapping_key => return unexpectedToken(),
+                else => try self.parseNode(.{ .flow_pair_allowed = false }),
+            };
+            return .{ .key = key, .value = value, .start = pair_start };
+        }
+
+        fn flowPairExpr(self: *@This(), pair: FlowPair) ParseError!Expr {
+            var props: MappingProps = .init(self.allocator);
+            defer props.deinit();
+            try props.appendMaybeMerge(pair.key, pair.value, &self.merge_props_budget);
+            return .init(E.Object, .{ .properties = props.moveList() }, pair.start.loc());
+        }
+
         fn parseFlowMapping(self: *@This()) ParseError!Expr {
             const mapping_start = self.token.start;
-            const mapping_indent = self.token.indent;
-            _ = mapping_indent;
-            const mapping_line = self.token.line;
-            _ = mapping_line;
 
             var props: MappingProps = .init(self.allocator);
             defer props.deinit();
@@ -811,62 +867,33 @@ pub fn Parser(comptime enc: Encoding) type {
                 }
 
                 while (self.token.data != .mapping_end) {
-                    const key = if (self.token.data == .mapping_key) key: {
-                        try self.context.set(.flow_key);
-                        defer self.context.unset(.flow_key);
-                        try self.scan(.{});
-                        break :key try self.parseNode(.{ .explicit_mapping_key = true });
-                    } else if (self.token.data == .mapping_value)
-                        Expr.init(E.Null, .{}, self.token.start.loc())
-                    else key: {
-                        try self.context.set(.flow_key);
-                        defer self.context.unset(.flow_key);
-                        break :key try self.parseNode(.{});
-                    };
+                    if (self.token.data == .collect_entry) return unexpectedToken();
 
-                    switch (self.token.data) {
-                        .collect_entry => {
-                            const value: Expr = .init(E.Null, .{}, self.token.start.loc());
-                            try props.append(.{
-                                .key = key,
-                                .value = value,
-                            });
-
+                    const pair: FlowPair = if (self.token.data == .mapping_key)
+                        try self.parseFlowExplicitPair()
+                    else pair: {
+                        const key: Expr = if (self.token.data == .mapping_value)
+                            .init(E.Null, .{}, self.token.start.loc())
+                        else key: {
                             try self.context.set(.flow_key);
                             defer self.context.unset(.flow_key);
-                            try self.scan(.{});
-                            continue;
-                        },
-                        .mapping_end => {
-                            const value: Expr = .init(E.Null, .{}, self.token.start.loc());
-                            try props.append(.{
-                                .key = key,
-                                .value = value,
-                            });
-                            continue;
-                        },
-                        .mapping_value => {},
-                        else => {
-                            return unexpectedToken();
-                        },
-                    }
+                            break :key try self.parseNode(.{ .flow_pair_allowed = false });
+                        };
 
-                    try self.scan(.{});
+                        if (self.token.data == .mapping_value) {
+                            break :pair try self.parseFlowPairValue(key, Pos.from(key.loc.i()));
+                        }
 
-                    if (self.token.data == .mapping_end or
-                        self.token.data == .collect_entry)
-                    {
                         const value: Expr = .init(E.Null, .{}, self.token.start.loc());
-                        try props.append(.{
-                            .key = key,
-                            .value = value,
-                        });
-                    } else {
-                        const value = try self.parseNode(.{});
-                        try props.appendMaybeMerge(key, value, &self.merge_props_budget);
-                    }
+                        break :pair .{ .key = key, .value = value, .start = Pos.from(key.loc.i()) };
+                    };
 
-                    if (self.token.data == .collect_entry) {
+                    try props.appendMaybeMerge(pair.key, pair.value, &self.merge_props_budget);
+
+                    if (self.token.data == .mapping_end) break;
+                    if (self.token.data != .collect_entry) return unexpectedToken();
+
+                    {
                         try self.context.set(.flow_key);
                         defer self.context.unset(.flow_key);
                         try self.scan(.{});
@@ -1062,6 +1089,7 @@ pub fn Parser(comptime enc: Encoding) type {
             mapping_indent: Indent,
             mapping_line: Line,
             tab_after_indent: bool,
+            explicit_entry: bool,
         ) ParseError!Expr {
             try self.rejectTabAsIndentation(tab_after_indent);
 
@@ -1087,7 +1115,19 @@ pub fn Parser(comptime enc: Encoding) type {
                 const mapping_value_start = self.token.start;
                 const mapping_value_line = self.token.line;
 
-                const value: Expr = switch (self.token.data) {
+                if (explicit_entry and self.token.data == .mapping_value) {
+                    switch (self.token.indent.cmp(mapping_indent)) {
+                        .lt => {},
+                        .eq => {},
+                        .gt => return unexpectedToken(),
+                    }
+                }
+
+                const value: Expr = if (explicit_entry and
+                    self.token.data == .mapping_value and
+                    self.token.indent.isLessThan(mapping_indent))
+                    .init(E.Null, .{}, mapping_value_start.loc())
+                else switch (self.token.data) {
                     // it's a !!set entry
                     .mapping_key => value: {
                         if (self.token.line == mapping_line) {
@@ -1103,7 +1143,10 @@ pub fn Parser(comptime enc: Encoding) type {
                             mapping_indent,
                             mapping_value_line,
                             mapping_value_start,
-                            .{ .mapping_value = .{ .flow_pair_allowed = false } },
+                            .{ .mapping_value = .{
+                                .flow_pair_allowed = false,
+                                .compact_mapping_allowed = mapping_value_line != mapping_line,
+                            } },
                         );
                     },
                     else => .init(E.Null, .{}, mapping_value_start.loc()),
@@ -1136,10 +1179,17 @@ pub fn Parser(comptime enc: Encoding) type {
 
                 const key = try self.parseNode(.{ .current_mapping_indent = mapping_indent });
 
-                if (explicit_key and self.token.data != .mapping_value) {
-                    const value: Expr = .init(E.Null, .{}, self.token.start.loc());
-                    try props.appendMaybeMerge(key, value, &self.merge_props_budget);
-                    continue;
+                if (explicit_key) {
+                    const has_value = self.token.data == .mapping_value and switch (self.token.indent.cmp(mapping_indent)) {
+                        .lt => false,
+                        .eq => true,
+                        .gt => return unexpectedToken(),
+                    };
+                    if (!has_value) {
+                        const value: Expr = .init(E.Null, .{}, self.token.start.loc());
+                        try props.appendMaybeMerge(key, value, &self.merge_props_budget);
+                        continue;
+                    }
                 }
 
                 switch (self.token.data) {
@@ -1185,7 +1235,10 @@ pub fn Parser(comptime enc: Encoding) type {
                             mapping_indent,
                             mapping_value_line,
                             mapping_value_start,
-                            .{ .mapping_value = .{ .flow_pair_allowed = false } },
+                            .{ .mapping_value = .{
+                                .flow_pair_allowed = false,
+                                .compact_mapping_allowed = mapping_value_line != key_line,
+                            } },
                         );
                     },
                 };
@@ -1301,6 +1354,7 @@ pub fn Parser(comptime enc: Encoding) type {
         const ParseNodeOptions = struct {
             current_mapping_indent: ?Indent = null,
             explicit_mapping_key: bool = false,
+            flow_pair_allowed: bool = true,
             scanned_tag: ?Token(enc) = null,
             scanned_anchor: ?Token(enc) = null,
         };
@@ -1310,6 +1364,7 @@ pub fn Parser(comptime enc: Encoding) type {
             explicit_mapping_key,
             mapping_value: struct {
                 flow_pair_allowed: bool,
+                compact_mapping_allowed: bool,
             },
 
             pub fn isBlockOut(this: @This()) bool {
@@ -1387,6 +1442,17 @@ pub fn Parser(comptime enc: Encoding) type {
                         const empty_node: Expr = .init(E.Null, .{}, indicator_start.loc());
                         return self.finishNodeProperties(node_props, empty_node);
                     }
+                }
+
+                if (self.token.data == .mapping_key and
+                    self.token.line == indicator_line and
+                    self.token.indent.isLessThanOrEqual(n) and
+                    switch (kind) {
+                        .mapping_value => |opts| !opts.compact_mapping_allowed,
+                        else => false,
+                    })
+                {
+                    return unexpectedToken();
                 }
 
                 switch (self.token.data) {
@@ -1534,10 +1600,13 @@ pub fn Parser(comptime enc: Encoding) type {
         };
 
         fn isExplicitMappingValue(self: *const @This(), opts: ParseNodeOptions, node_line: Line) bool {
-            const mapping_indent = opts.current_mapping_indent orelse return false;
+            switch (self.context.get()) {
+                .block_out, .block_in => {},
+                .flow_in, .flow_key => return false,
+            }
+            _ = opts.current_mapping_indent orelse return false;
             return opts.explicit_mapping_key and
-                self.token.line != node_line and
-                self.token.indent == mapping_indent;
+                self.token.line != node_line;
         }
 
         fn parseNode(self: *@This(), opts: ParseNodeOptions) ParseError!Expr {
@@ -1619,12 +1688,16 @@ pub fn Parser(comptime enc: Encoding) type {
                     if (self.token.data == .mapping_value) {
                         if (self.isExplicitMappingValue(opts, alias_line)) break :node copy;
 
-                        if (alias_line != self.token.line and !opts.explicit_mapping_key) {
-                            return error.MultilineImplicitKey;
+                        if (!opts.flow_pair_allowed and self.context.get() == .flow_in) {
+                            break :node copy;
                         }
 
                         if (self.context.get() == .flow_key) {
                             return copy;
+                        }
+
+                        if (alias_line != self.token.line and !opts.explicit_mapping_key) {
+                            return error.MultilineImplicitKey;
                         }
 
                         if (opts.current_mapping_indent) |current_mapping_indent| {
@@ -1639,6 +1712,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             alias_indent,
                             alias_line,
                             alias_tab_after_indent,
+                            false,
                         );
 
                         return map;
@@ -1657,12 +1731,16 @@ pub fn Parser(comptime enc: Encoding) type {
                     if (self.token.data == .mapping_value) {
                         if (self.isExplicitMappingValue(opts, sequence_line)) break :node seq;
 
-                        if (sequence_line != self.token.line and !opts.explicit_mapping_key) {
-                            return error.MultilineImplicitKey;
+                        if (!opts.flow_pair_allowed and self.context.get() == .flow_in) {
+                            break :node seq;
                         }
 
                         if (self.context.get() == .flow_key) {
                             break :node seq;
+                        }
+
+                        if (sequence_line != self.token.line and !opts.explicit_mapping_key) {
+                            return error.MultilineImplicitKey;
                         }
 
                         if (opts.current_mapping_indent) |current_mapping_indent| {
@@ -1683,6 +1761,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             sequence_indent,
                             sequence_line,
                             sequence_tab_after_indent,
+                            false,
                         );
 
                         if (implicit_key_anchors.mapping_anchor) |mapping_anchor| {
@@ -1732,12 +1811,16 @@ pub fn Parser(comptime enc: Encoding) type {
                     if (self.token.data == .mapping_value) {
                         if (self.isExplicitMappingValue(opts, mapping_line)) break :node map;
 
-                        if (mapping_line != self.token.line and !opts.explicit_mapping_key) {
-                            return error.MultilineImplicitKey;
+                        if (!opts.flow_pair_allowed and self.context.get() == .flow_in) {
+                            break :node map;
                         }
 
                         if (self.context.get() == .flow_key) {
                             break :node map;
+                        }
+
+                        if (mapping_line != self.token.line and !opts.explicit_mapping_key) {
+                            return error.MultilineImplicitKey;
                         }
 
                         if (opts.current_mapping_indent) |current_mapping_indent| {
@@ -1758,6 +1841,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             mapping_indent,
                             mapping_line,
                             mapping_tab_after_indent,
+                            false,
                         );
 
                         if (implicit_key_anchors.mapping_anchor) |mapping_anchor| {
@@ -1770,6 +1854,13 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
 
                 .mapping_key => {
+                    if (!opts.flow_pair_allowed) {
+                        switch (self.context.get()) {
+                            .flow_in, .flow_key => return unexpectedToken(),
+                            .block_out, .block_in => {},
+                        }
+                    }
+
                     const mapping_start = self.token.start;
                     const mapping_indent = self.token.indent;
                     const mapping_line = self.token.line;
@@ -1805,10 +1896,14 @@ pub fn Parser(comptime enc: Encoding) type {
                         mapping_indent,
                         mapping_line,
                         mapping_tab_after_indent,
+                        true,
                     );
                 },
                 .mapping_value => {
                     if (self.context.get() == .flow_key) {
+                        break :node .init(E.Null, .{}, self.token.start.loc());
+                    }
+                    if (!opts.flow_pair_allowed and self.context.get() == .flow_in) {
                         break :node .init(E.Null, .{}, self.token.start.loc());
                     }
                     if (opts.current_mapping_indent) |current_mapping_indent| {
@@ -1861,6 +1956,7 @@ pub fn Parser(comptime enc: Encoding) type {
                         self.token.indent,
                         self.token.line,
                         mapping_tab_after_indent,
+                        false,
                     );
                 },
                 .scalar => |scalar| {
@@ -1873,6 +1969,10 @@ pub fn Parser(comptime enc: Encoding) type {
 
                     if (self.token.data == .mapping_value) {
                         if (self.isExplicitMappingValue(opts, scalar_line)) {
+                            break :node scalar.data.toExpr(scalar_start, self.input);
+                        }
+
+                        if (!opts.flow_pair_allowed and self.context.get() == .flow_in) {
                             break :node scalar.data.toExpr(scalar_start, self.input);
                         }
 
@@ -1897,6 +1997,7 @@ pub fn Parser(comptime enc: Encoding) type {
                         // ```
                         if (opts.current_mapping_indent) |current_mapping_indent| {
                             if (current_mapping_indent == scalar_indent) {
+                                try self.rejectTabAsIndentation(scalar_tab_after_indent);
                                 // 3
                                 break :node scalar.data.toExpr(scalar_start, self.input);
                             }
@@ -1942,6 +2043,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             scalar_indent,
                             scalar_line,
                             scalar_tab_after_indent,
+                            false,
                         );
 
                         if (implicit_key_anchors.mapping_anchor) |mapping_anchor| {
@@ -2569,8 +2671,8 @@ pub fn Parser(comptime enc: Encoding) type {
                     switch (self.context.get()) {
                         .block_out,
                         .block_in,
-                        .flow_in,
                         => {},
+                        .flow_in,
                         .flow_key => {
                             switch (self.peek(1)) {
                                 ',',
@@ -3191,6 +3293,7 @@ pub fn Parser(comptime enc: Encoding) type {
 
                     if (self.block_indents.get()) |block_indent| {
                         if (self.line_indent.isLessThanOrEqual(block_indent)) {
+                            if (c == '\t') return error.InvalidIndentation;
                             return ctx.done(false);
                         }
                     }
@@ -3516,9 +3619,33 @@ pub fn Parser(comptime enc: Encoding) type {
                 value = value * 16 + num;
             }
 
-            const cp = std.math.cast(u21, value) orelse {
+            var scalar_value: u32 = @intCast(value);
+            if (escape == .u and scalar_value >= 0xd800 and scalar_value <= 0xdbff) {
+                if (self.peek(1) != '\\' or self.peek(2) != 'u') {
+                    return error.UnexpectedCharacter;
+                }
+
+                self.inc(2);
+                var low: u16 = 0;
+                for (0..Escape.u.characters()) |_| {
+                    self.inc(1);
+                    low = low * 16 + switch (self.next()) {
+                        '0'...'9' => |digit| @as(u16, @intCast(digit - '0')),
+                        'a'...'f' => |digit| @as(u16, @intCast(digit - 'a' + 10)),
+                        'A'...'F' => |digit| @as(u16, @intCast(digit - 'A' + 10)),
+                        else => return error.UnexpectedCharacter,
+                    };
+                }
+                if (low < 0xdc00 or low > 0xdfff) return error.UnexpectedCharacter;
+
+                scalar_value = 0x10000 +
+                    ((scalar_value - 0xd800) << 10) +
+                    (@as(u32, low) - 0xdc00);
+            } else if (scalar_value >= 0xd800 and scalar_value <= 0xdfff) {
                 return error.UnexpectedCharacter;
-            };
+            }
+
+            const cp = std.math.cast(u21, scalar_value) orelse return error.UnexpectedCharacter;
 
             switch (enc) {
                 .utf8 => {
@@ -4351,7 +4478,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
             }
 
-            self.token.tab_after_indent = ctx.tab_after_indent;
+            self.token.tab_after_indent = ctx.tab_after_indent or self.tab_after_indent;
         }
 
         fn isChar(self: *@This(), char: enc.unit()) bool {
