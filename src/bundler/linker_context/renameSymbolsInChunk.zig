@@ -65,7 +65,7 @@ pub fn renameSymbolsInChunk(
 
         const stable_source_indices = c.graph.stable_source_indices;
         var freq = js_ast.CharFreq{
-            .freqs = [_]i32{0} ** 64,
+            .freqs = @splat(0),
         };
         const ast_flags_list = c.graph.ast.items(.flags);
 

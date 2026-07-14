@@ -119,7 +119,7 @@ pub const Scripts = extern struct {
         const allocator = lockfile.allocator;
         var script_index: u8 = 0;
         var first_script_index: i8 = -1;
-        var scripts: [6]?string = .{null} ** 6;
+        var scripts: [6]?string = @splat(null);
         var counter: u8 = 0;
 
         if (add_node_gyp_rebuild_script) {

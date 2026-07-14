@@ -52,7 +52,7 @@ pub fn init(dev: *DevServer) Self {
 ///
 /// Called from watcher thread.
 pub fn watcherAcquireEvent(self: *Self) *HotReloadEvent {
-    var available = [_]bool{true} ** 3;
+    var available: [3]bool = @splat(true);
     if (self.current_event) |i| available[i] = false;
     if (self.pending_event) |i| available[i] = false;
 

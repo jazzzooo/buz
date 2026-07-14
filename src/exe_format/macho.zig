@@ -562,7 +562,7 @@ pub const MachoFile = struct {
             }
 
             if (remaining.len > 0) {
-                var last_page = [_]u8{0} ** PAGE_SIZE;
+                var last_page: [PAGE_SIZE]u8 = @splat(0);
                 @memcpy(last_page[0..remaining.len], remaining);
                 var digest: bun.sha.SHA256.Digest = undefined;
                 bun.sha.SHA256.hash(&last_page, &digest, null);

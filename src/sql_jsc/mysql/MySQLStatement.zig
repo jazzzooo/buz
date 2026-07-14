@@ -116,7 +116,7 @@ pub fn structure(this: *MySQLStatement, owner: JSValue, globalObject: *jsc.JSGlo
     this.checkForDuplicateFields();
 
     // lets avoid most allocations
-    var stack_ids: [70]jsc.JSObject.ExternColumnIdentifier = [_]jsc.JSObject.ExternColumnIdentifier{.{ .tag = 0, .value = .{ .index = 0 } }} ** 70;
+    var stack_ids: [70]jsc.JSObject.ExternColumnIdentifier = @splat(.{ .tag = 0, .value = .{ .index = 0 } });
     // lets de duplicate the fields early
     var nonDuplicatedCount = this.columns.len;
     for (this.columns) |*column| {

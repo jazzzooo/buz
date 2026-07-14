@@ -42,7 +42,7 @@ fn onConnClose(qs: *quic.Socket) callconv(.c) void {
     const session = qs.ext(ClientSession).* orelse return;
     session.closed = true;
     session.qsocket = null;
-    var buf: [256]u8 = [_]u8{0} ** 256;
+    var buf: [256]u8 = @splat(0);
     const st = qs.status(&buf);
     log("conn_close status={d} '{s}'", .{ st, std.mem.sliceTo(&buf, 0) });
     if (ClientContext.get()) |ctx| ctx.unregister(session);

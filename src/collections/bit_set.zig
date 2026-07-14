@@ -390,16 +390,14 @@ pub fn ArrayBitSet(comptime MaskIntType: type, comptime size: usize) type {
 
         /// Creates a bit set with no elements present.
         pub fn initEmpty() Self {
-            return .{ .masks = [_]MaskInt{0} ** num_masks };
+            return .{ .masks = @splat(0) };
         }
 
         /// Creates a bit set with all elements present.
         pub fn initFull() Self {
-            if (num_masks == 0) {
-                return .{ .masks = .{} };
-            } else {
-                return .{ .masks = [_]MaskInt{~@as(MaskInt, 0)} ** (num_masks - 1) ++ [_]MaskInt{last_item_mask} };
-            }
+            var masks: [num_masks]MaskInt = @splat(~@as(MaskInt, 0));
+            if (num_masks > 0) masks[num_masks - 1] = last_item_mask;
+            return .{ .masks = masks };
         }
 
         /// Returns the number of bits in this bit set

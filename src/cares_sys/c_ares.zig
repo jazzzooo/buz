@@ -266,7 +266,7 @@ pub const struct_hostent = extern struct {
 
 pub const hostent_with_ttls = struct {
     hostent: *struct_hostent,
-    ttls: [256]c_int = [_]c_int{-1} ** 256,
+    ttls: [256]c_int = @splat(-1),
 
     pub const toJSResponse = @import("../runtime/dns_jsc/cares_jsc.zig").hostentWithTtlsToJSResponse;
 

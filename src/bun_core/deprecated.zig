@@ -571,7 +571,8 @@ pub const RapidHash = struct {
     }
 
     test "RapidHash.hash" {
-        const bytes: []const u8 = "abcdefgh" ** 128;
+        const bytes_buf: [128][8]u8 = @splat("abcdefgh".*);
+        const bytes: []const u8 = @ptrCast(&bytes_buf);
 
         const sizes: [13]u64 = .{ 0, 1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1024 };
 

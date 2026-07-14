@@ -630,7 +630,7 @@ pub const JestPrettyFormat = struct {
             writer: Writer,
         ) !void {
             const indent = @min(this.indent, 32);
-            var buf = [_]u8{' '} ** 64;
+            var buf: [64]u8 = @splat(' ');
             var total_remain: usize = indent;
             while (total_remain > 0) {
                 const written: usize = @min(32, total_remain);

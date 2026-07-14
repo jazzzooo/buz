@@ -2140,7 +2140,7 @@ pub const PatchedDependenciesMap = std.ArrayHashMapUnmanaged(PackageNameAndVersi
 pub const PatchedDep = extern struct {
     /// e.g. "patches/is-even@1.0.0.patch"
     path: String,
-    _padding: [7]u8 = [_]u8{0} ** 7,
+    _padding: [7]u8 = @splat(0),
     patchfile_hash_is_null: bool = true,
     /// the hash of the patch file contents
     __patchfile_hash: u64 = 0,

@@ -960,7 +960,7 @@ pub const UDPSocket = struct {
 
     pub fn getAddress(this: *This, globalThis: *JSGlobalObject) JSValue {
         if (this.closed) return .js_undefined;
-        var buf: [64]u8 = [_]u8{0} ** 64;
+        var buf: [64]u8 = @splat(0);
         var length: i32 = 64;
         this.socket.?.boundIp(&buf, &length);
 
@@ -972,7 +972,7 @@ pub const UDPSocket = struct {
     pub fn getRemoteAddress(this: *This, globalThis: *jsc.JSGlobalObject) jsc.JSValue {
         if (this.closed) return .js_undefined;
         const connect_info = this.connect_info orelse return .js_undefined;
-        var buf: [64]u8 = [_]u8{0} ** 64;
+        var buf: [64]u8 = @splat(0);
         var length: i32 = 64;
         this.socket.?.remoteIp(&buf, &length);
 

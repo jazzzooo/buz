@@ -5,7 +5,7 @@
 /// - map where keys are names of the binaries and values are file paths to the binaries
 pub const Bin = extern struct {
     tag: Tag = Tag.none,
-    _padding_tag: [3]u8 = .{0} ** 3,
+    _padding_tag: [3]u8 = @splat(0),
 
     // Largest member must be zero initialized
     value: Value = Value{ .map = ExternalStringList{} },

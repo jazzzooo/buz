@@ -4,10 +4,10 @@ const Auth = @This();
 pub const mysql_native_password = struct {
     pub fn scramble(password: []const u8, nonce: []const u8) ![20]u8 {
         // SHA1( password ) XOR SHA1( nonce + SHA1( SHA1( password ) ) ) )
-        var stage1 = [_]u8{0} ** 20;
-        var stage2 = [_]u8{0} ** 20;
-        var stage3 = [_]u8{0} ** 20;
-        var result: [20]u8 = [_]u8{0} ** 20;
+        var stage1: [20]u8 = @splat(0);
+        var stage2: [20]u8 = @splat(0);
+        var stage3: [20]u8 = @splat(0);
+        var result: [20]u8 = @splat(0);
         if (password.len == 0) {
             return result;
         }
@@ -44,10 +44,10 @@ pub const mysql_native_password = struct {
 pub const caching_sha2_password = struct {
     pub fn scramble(password: []const u8, nonce: []const u8) ![32]u8 {
         // XOR(SHA256(password), SHA256(SHA256(SHA256(password)), nonce))
-        var digest1 = [_]u8{0} ** 32;
-        var digest2 = [_]u8{0} ** 32;
-        var digest3 = [_]u8{0} ** 32;
-        var result: [32]u8 = [_]u8{0} ** 32;
+        var digest1: [32]u8 = @splat(0);
+        var digest2: [32]u8 = @splat(0);
+        var digest3: [32]u8 = @splat(0);
+        var result: [32]u8 = @splat(0);
 
         // SHA256(password)
         bun.sha.SHA256.hash(password, &digest1, jsc.VirtualMachine.get().rareData().boringEngine());

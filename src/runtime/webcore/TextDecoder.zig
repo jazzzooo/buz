@@ -2,7 +2,7 @@ const TextDecoder = @This();
 
 // used for utf8 decoding
 buffered: struct {
-    buf: [3]u8 = .{0} ** 3,
+    buf: [3]u8 = @splat(0),
     len: u2 = 0,
 
     pub fn slice(this: *@This()) []const u8 {

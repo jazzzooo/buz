@@ -257,7 +257,7 @@ pub fn crashHandler(
                     Output.flush();
                     Output.Source.Stdio.restore();
 
-                    writer.writeAll("=" ** 60 ++ "\n") catch std.posix.abort();
+                    writer.writeAll(@as([60]u8, @splat('=')) ++ "\n") catch std.posix.abort();
                     printMetadata(writer) catch std.posix.abort();
 
                     if (inside_native_plugin) |name| {
@@ -1846,7 +1846,7 @@ pub const StoredTrace = struct {
     index: usize,
 
     pub const empty: StoredTrace = .{
-        .data = .{0} ** 31,
+        .data = @splat(0),
         .index = 0,
     };
 

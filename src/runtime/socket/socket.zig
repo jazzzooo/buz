@@ -881,7 +881,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                 return .js_undefined;
             }
 
-            var buf: [64]u8 = [_]u8{0} ** 64;
+            var buf: [64]u8 = @splat(0);
             const address_bytes: []const u8 = this.socket.localAddress(&buf) orelse return .js_undefined;
             return switch (address_bytes.len) {
                 4 => globalThis.commonStrings().IPv4(),
@@ -895,7 +895,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                 return .js_undefined;
             }
 
-            var buf: [64]u8 = [_]u8{0} ** 64;
+            var buf: [64]u8 = @splat(0);
             var text_buf: [512]u8 = undefined;
 
             const address_bytes: []const u8 = this.socket.localAddress(&buf) orelse return .js_undefined;
@@ -922,7 +922,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                 return .js_undefined;
             }
 
-            var buf: [64]u8 = [_]u8{0} ** 64;
+            var buf: [64]u8 = @splat(0);
             const address_bytes: []const u8 = this.socket.remoteAddress(&buf) orelse return .js_undefined;
             return switch (address_bytes.len) {
                 4 => globalThis.commonStrings().IPv4(),
@@ -936,7 +936,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                 return .js_undefined;
             }
 
-            var buf: [64]u8 = [_]u8{0} ** 64;
+            var buf: [64]u8 = @splat(0);
             var text_buf: [512]u8 = undefined;
 
             const address_bytes: []const u8 = this.socket.remoteAddress(&buf) orelse return .js_undefined;

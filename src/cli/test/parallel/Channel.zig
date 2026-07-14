@@ -60,7 +60,7 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
         const WindowsBackend = struct {
             pipe: ?*uv.Pipe = null,
             /// Read scratch — libuv asks us to allocate before each read.
-            read_chunk: [16 * 1024]u8 = [_]u8{0} ** (16 * 1024),
+            read_chunk: [16 * 1024]u8 = @splat(0),
             /// Payload owned by the in-flight uv_write; must stay stable until
             /// the callback. New writes go to `out` until this completes, then
             /// the buffers swap.

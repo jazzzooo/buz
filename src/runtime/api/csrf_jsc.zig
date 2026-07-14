@@ -65,7 +65,7 @@ pub fn csrf__generate(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFra
     }
 
     // Buffer for token generation
-    var token_buffer: [512]u8 = .{0} ** 512;
+    var token_buffer: [512]u8 = @splat(0);
 
     // Generate the token
     const token_bytes = csrf.generate(.{

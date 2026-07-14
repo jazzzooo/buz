@@ -77,7 +77,7 @@ pub const Snapshots = struct {
 
         const name, const counter = try this.addCount(expect, hint);
 
-        var counter_string_buf = [_]u8{0} ** 32;
+        var counter_string_buf: [32]u8 = @splat(0);
         const counter_string = try std.fmt.bufPrint(&counter_string_buf, "{d}", .{counter});
 
         var name_with_counter = try this.allocator.alloc(u8, name.len + 1 + counter_string.len);

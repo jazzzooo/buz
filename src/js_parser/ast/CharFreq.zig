@@ -40,7 +40,7 @@ fn scanBig(out: *align(1) Buffer, text: string, delta: i32) void {
     // https://zig.godbolt.org/z/P5dPojWGK
     var freqs = out.*;
     defer out.* = freqs;
-    var deltas: [256]i32 = [_]i32{0} ** 256;
+    var deltas: [256]i32 = @splat(0);
     var remain = text;
 
     bun.assert(remain.len >= scan_big_chunk_size);

@@ -74,7 +74,7 @@ pub const SymbolSlot = struct {
     pub const List = std.EnumArray(js_ast.Symbol.SlotNamespace, std.array_list.Managed(SymbolSlot));
 
     pub const InlineString = struct {
-        bytes: [15]u8 = [_]u8{0} ** 15,
+        bytes: [15]u8 = @splat(0),
         len: u8 = 0,
 
         pub fn init(str: []const u8) InlineString {

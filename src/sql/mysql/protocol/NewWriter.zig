@@ -47,7 +47,7 @@ pub fn NewWriterWrap(
         pub fn start(this: @This(), sequence_id: u8) AnyMySQLError.Error!Packet {
             const o = offsetFn(this.wrapped);
             debug("starting packet: {d}", .{o});
-            try this.write(&[_]u8{0} ** PacketHeader.size);
+            try this.write(&@as([PacketHeader.size]u8, @splat(0)));
             return .{
                 .header = .{ .sequence_id = sequence_id, .length = 0 },
                 .offset = o,

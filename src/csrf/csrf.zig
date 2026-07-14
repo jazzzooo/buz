@@ -70,7 +70,7 @@ pub fn generate(
     out_buffer: *[512]u8,
 ) ![]u8 {
     // Generate nonce from entropy
-    var nonce: [16]u8 = .{0} ** 16;
+    var nonce: [16]u8 = @splat(0);
     bun.csprng(&nonce);
 
     // Current timestamp in milliseconds
@@ -78,18 +78,18 @@ pub fn generate(
     const timestamp_u64: u64 = @bitCast(@as(i64, timestamp));
 
     // Write timestamp to out_buffer
-    var timestamp_bytes: [8]u8 = .{0} ** 8;
+    var timestamp_bytes: [8]u8 = @splat(0);
     std.mem.writeInt(u64, &timestamp_bytes, timestamp_u64, .big);
-    var expires_in_bytes: [8]u8 = .{0} ** 8;
+    var expires_in_bytes: [8]u8 = @splat(0);
     std.mem.writeInt(u64, &expires_in_bytes, options.expires_in_ms, .big);
     // Prepare payload for signing: timestamp|nonce
-    var payload_buf: [32]u8 = .{0} ** 32; // 8 (timestamp) + 16 (nonce)
+    var payload_buf: [32]u8 = @splat(0); // 8 (timestamp) + 16 (nonce)
     @memcpy(payload_buf[0..8], &timestamp_bytes);
     @memcpy(payload_buf[8..24], &nonce);
     @memcpy(payload_buf[24..32], &expires_in_bytes);
 
     // Sign the payload
-    var digest_buf: [boring.EVP_MAX_MD_SIZE]u8 = .{0} ** boring.EVP_MAX_MD_SIZE;
+    var digest_buf: [boring.EVP_MAX_MD_SIZE]u8 = @splat(0);
     const digest = hmac.generate(options.secret, &payload_buf, options.algorithm, &digest_buf) orelse
         return Error.TokenCreationFailed;
 
@@ -114,7 +114,7 @@ pub fn verify(options: VerifyOptions) bool {
     const encoding: TokenFormat = options.encoding;
 
     // Allocate output buffer for decoded data
-    var buf: [boring.EVP_MAX_MD_SIZE + 32]u8 = .{0} ** (boring.EVP_MAX_MD_SIZE + 32);
+    var buf: [boring.EVP_MAX_MD_SIZE + 32]u8 = @splat(0);
     var token = options.token;
     // check if ends with \0
     if (token.len > 0 and token[token.len - 1] == 0) {
@@ -191,7 +191,7 @@ pub fn verify(options: VerifyOptions) bool {
     const received_signature = decoded[32..];
 
     // Verify the signature
-    var expected_signature: [boring.EVP_MAX_MD_SIZE]u8 = .{0} ** boring.EVP_MAX_MD_SIZE;
+    var expected_signature: [boring.EVP_MAX_MD_SIZE]u8 = @splat(0);
     const signature = hmac.generate(options.secret, payload, options.algorithm, &expected_signature) orelse
         return false;
 

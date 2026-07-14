@@ -200,7 +200,7 @@ pub const RuntimeTranspilerCache = struct {
                         _ = bun.sys.unlinkat(destination_dir, tmpfilename);
                     }
                 }
-                var metadata_buf = [_]u8{0} ** (Metadata.size * 2);
+                var metadata_buf: [Metadata.size * 2]u8 = @splat(0);
                 const metadata_bytes = brk: {
                     var metadata = Metadata{
                         .input_byte_length = input_byte_length,

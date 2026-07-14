@@ -1,5 +1,5 @@
 pub const Integrity = extern struct {
-    const empty_digest_buf: [Integrity.digest_buf_len]u8 = [_]u8{0} ** Integrity.digest_buf_len;
+    const empty_digest_buf: [Integrity.digest_buf_len]u8 = @splat(0);
 
     tag: Tag = Tag.unknown,
     /// Possibly a [Subresource Integrity](https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity) value initially

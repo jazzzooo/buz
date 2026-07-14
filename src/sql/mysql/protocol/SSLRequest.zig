@@ -25,7 +25,7 @@ pub fn writeInternal(this: *SSLRequest, comptime Context: type, writer: NewWrite
     try writer.int1(@intFromEnum(this.character_set));
 
     // Write 23 bytes of padding
-    try writer.write(&[_]u8{0} ** 23);
+    try writer.write(&@as([23]u8, @splat(0)));
 
     try packet.end();
 }

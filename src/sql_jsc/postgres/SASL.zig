@@ -8,13 +8,13 @@ const server_signature_base64_len = bun.base64.encodeLenFromSize(server_signatur
 
 const salted_password_byte_len = 32;
 
-nonce_base64_bytes: [nonce_base64_len]u8 = .{0} ** nonce_base64_len,
+nonce_base64_bytes: [nonce_base64_len]u8 = @splat(0),
 nonce_len: u8 = 0,
 
-server_signature_base64_bytes: [server_signature_base64_len]u8 = .{0} ** server_signature_base64_len,
+server_signature_base64_bytes: [server_signature_base64_len]u8 = @splat(0),
 server_signature_len: u8 = 0,
 
-salted_password_bytes: [salted_password_byte_len]u8 = .{0} ** salted_password_byte_len,
+salted_password_bytes: [salted_password_byte_len]u8 = @splat(0),
 salted_password_created: bool = false,
 
 status: SASLStatus = .init,
@@ -71,7 +71,7 @@ pub fn clientKeySignature(_: *const SASL, client_key: []const u8, auth_string: [
 
 pub fn nonce(this: *SASL) []const u8 {
     if (this.nonce_len == 0) {
-        var bytes: [nonce_byte_len]u8 = .{0} ** nonce_byte_len;
+        var bytes: [nonce_byte_len]u8 = @splat(0);
         bun.csprng(&bytes);
         this.nonce_len = @intCast(bun.base64.encode(&this.nonce_base64_bytes, &bytes));
     }

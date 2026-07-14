@@ -41,7 +41,7 @@ pub fn ComptimeClap(
 
         pub fn parse(iter: anytype, opt: clap.ParseOptions) !@This() {
             const allocator = opt.allocator;
-            var multis = [_]std.array_list.Managed([]const u8){undefined} ** multi_options;
+            var multis: [multi_options]std.array_list.Managed([]const u8) = @splat(undefined);
             for (&multis) |*multi| {
                 multi.* = std.array_list.Managed([]const u8).init(allocator);
             }
@@ -50,9 +50,9 @@ pub fn ComptimeClap(
             var passthrough_positionals = std.array_list.Managed([]const u8).init(allocator);
 
             var res = @This(){
-                .single_options = [_]?[]const u8{null} ** single_options,
-                .multi_options = [_][]const []const u8{undefined} ** multi_options,
-                .flags = [_]bool{false} ** flags,
+                .single_options = @splat(null),
+                .multi_options = @splat(undefined),
+                .flags = @splat(false),
                 .pos = undefined,
                 .allocator = allocator,
                 .passthrough_positionals = undefined,

@@ -22,6 +22,7 @@ const TreeDepsSortCtx = struct {
 
 pub const Stringifier = struct {
     const indent_scalar = 2;
+    const indentation: [indent_scalar]u8 = @splat(' ');
 
     // pub fn save(this: *const Lockfile) void {
     //     _ = this;
@@ -982,21 +983,21 @@ pub const Stringifier = struct {
 
     fn writeIndent(writer: *std.Io.Writer, indent: *const u32) std.Io.Writer.Error!void {
         for (0..indent.*) |_| {
-            try writer.writeAll(" " ** indent_scalar);
+            try writer.writeAll(&indentation);
         }
     }
 
     fn incIndent(writer: *std.Io.Writer, indent: *u32) std.Io.Writer.Error!void {
         indent.* += 1;
         for (0..indent.*) |_| {
-            try writer.writeAll(" " ** indent_scalar);
+            try writer.writeAll(&indentation);
         }
     }
 
     fn decIndent(writer: *std.Io.Writer, indent: *u32) std.Io.Writer.Error!void {
         indent.* -= 1;
         for (0..indent.*) |_| {
-            try writer.writeAll(" " ** indent_scalar);
+            try writer.writeAll(&indentation);
         }
     }
 };

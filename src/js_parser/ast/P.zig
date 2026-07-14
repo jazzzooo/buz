@@ -995,7 +995,7 @@ pub fn NewParser_(
 
             // Add everything in the file to the histogram
             var freq: js_ast.CharFreq = .{
-                .freqs = [_]i32{0} ** 64,
+                .freqs = @splat(0),
             };
 
             freq.scan(p.source.contents, 1);

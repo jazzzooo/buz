@@ -21,7 +21,7 @@
 /// ```zig
 /// const Demo = extern struct {
 ///     a: u8,
-///     _padding: [7]u8 = .{0} ** 7,
+///     _padding: [7]u8 = @splat(0),
 ///     b: u64, // same offset as before
 /// }
 /// ```
@@ -76,14 +76,13 @@ pub fn assertNoUninitializedPadding(comptime T: type) void {
         const offset = @offsetOf(T, field.name);
         if (offset != i) {
             @compileError(std.fmt.comptimePrint(
-                \\Expected no possibly uninitialized bytes of memory in '{s}', but found a {d} byte gap between fields '{s}' and '{s}' This can be fixed by adding a padding field to the struct like `padding: [{d}]u8 = .{{0}} ** {d},` between these fields. For more information, look at `padding_checker.zig`
+                \\Expected no possibly uninitialized bytes of memory in '{s}', but found a {d} byte gap between fields '{s}' and '{s}' This can be fixed by adding a padding field to the struct like `padding: [{d}]u8 = @splat(0),` between these fields. For more information, look at `padding_checker.zig`
             ,
                 .{
                     @typeName(T),
                     offset - i,
                     info.fields[j - 1].name,
                     field.name,
-                    offset - i,
                     offset - i,
                 },
             ));
@@ -93,11 +92,10 @@ pub fn assertNoUninitializedPadding(comptime T: type) void {
 
     if (i != @sizeOf(T)) {
         @compileError(std.fmt.comptimePrint(
-            \\Expected no possibly uninitialized bytes of memory in '{s}', but found a {d} byte gap at the end of the struct. This can be fixed by adding a padding field to the struct like `padding: [{d}]u8 = .{{0}} ** {d},` between these fields. For more information, look at `padding_checker.zig`
+            \\Expected no possibly uninitialized bytes of memory in '{s}', but found a {d} byte gap at the end of the struct. This can be fixed by adding a padding field to the struct like `padding: [{d}]u8 = @splat(0),` between these fields. For more information, look at `padding_checker.zig`
         ,
             .{
                 @typeName(T),
-                @sizeOf(T) - i,
                 @sizeOf(T) - i,
                 @sizeOf(T) - i,
             },

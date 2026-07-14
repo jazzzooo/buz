@@ -39,7 +39,7 @@ pub fn StaticHashMap(comptime K: type, comptime V: type, comptime Context: type,
 
         const Self = @This();
 
-        entries: [capacity + overflow]Entry = [_]Entry{.{}} ** (capacity + overflow),
+        entries: [capacity + overflow]Entry = @splat(.{}),
         len: usize = 0,
         shift: u6 = shift,
 
@@ -341,7 +341,7 @@ fn HashMapMixin(
 
 pub fn SortedHashMap(comptime V: type, comptime max_load_percentage: comptime_int) type {
     return struct {
-        const empty_hash: [32]u8 = [_]u8{0xFF} ** 32;
+        const empty_hash: [32]u8 = @splat(0xFF);
 
         pub const Entry = struct {
             hash: [32]u8 = empty_hash,
@@ -634,7 +634,7 @@ test "HashMap: put, get, delete, grow" {
 }
 
 test "SortedHashMap: cmp" {
-    const prefix = [_]u8{'0'} ** 8 ++ [_]u8{'1'} ** 23;
+    const prefix = @as([8]u8, @splat('0')) ++ @as([23]u8, @splat('1'));
     const a = prefix ++ [_]u8{0};
     const b = prefix ++ [_]u8{1};
 
@@ -642,8 +642,8 @@ test "SortedHashMap: cmp" {
     try testing.expect(SortedHashMap(void, 100).cmp(b, a) == .gt);
     try testing.expect(SortedHashMap(void, 100).cmp(a, a) == .eq);
     try testing.expect(SortedHashMap(void, 100).cmp(b, b) == .eq);
-    try testing.expect(SortedHashMap(void, 100).cmp([_]u8{'i'} ++ [_]u8{'0'} ** 31, [_]u8{'o'} ++ [_]u8{'0'} ** 31) == .lt);
-    try testing.expect(SortedHashMap(void, 100).cmp([_]u8{ 'h', 'i' } ++ [_]u8{'0'} ** 30, [_]u8{ 'h', 'o' } ++ [_]u8{'0'} ** 30) == .lt);
+    try testing.expect(SortedHashMap(void, 100).cmp([_]u8{'i'} ++ @as([31]u8, @splat('0')), [_]u8{'o'} ++ @as([31]u8, @splat('0'))) == .lt);
+    try testing.expect(SortedHashMap(void, 100).cmp([_]u8{ 'h', 'i' } ++ @as([30]u8, @splat('0')), [_]u8{ 'h', 'o' } ++ @as([30]u8, @splat('0'))) == .lt);
 }
 
 test "SortedHashMap: put, get, delete, grow" {
@@ -665,7 +665,7 @@ test "SortedHashMap: put, get, delete, grow" {
         try testing.expectEqual(@as(u6, 54), map.shift);
         try testing.expectEqual(keys.len, map.len);
 
-        var it = [_]u8{0} ** 32;
+        var it: [32]u8 = @splat(0);
         for (map.slice()) |entry| {
             if (!entry.isEmpty()) {
                 if (!mem.order(u8, &it, &entry.hash).compare(.lte)) {
@@ -681,7 +681,7 @@ test "SortedHashMap: put, get, delete, grow" {
 }
 
 test "SortedHashMap: collision test" {
-    const prefix = [_]u8{22} ** 8 ++ [_]u8{1} ** 23;
+    const prefix = @as([8]u8, @splat(22)) ++ @as([23]u8, @splat(1));
 
     var map = try SortedHashMap(usize, 100).initCapacity(testing.allocator, 4);
     defer map.deinit(testing.allocator);
@@ -691,7 +691,7 @@ test "SortedHashMap: collision test" {
     try map.put(testing.allocator, prefix ++ [_]u8{2}, 2);
     try map.put(testing.allocator, prefix ++ [_]u8{3}, 3);
 
-    var it = [_]u8{0} ** 32;
+    var it: [32]u8 = @splat(0);
     for (map.slice()) |entry| {
         if (!entry.isEmpty()) {
             if (!mem.order(u8, &it, &entry.hash).compare(.lte)) {
@@ -716,7 +716,7 @@ test "SortedHashMap: collision test" {
     try map.put(testing.allocator, prefix ++ [_]u8{3}, 3);
     try map.put(testing.allocator, prefix ++ [_]u8{1}, 1);
 
-    it = [_]u8{0} ** 32;
+    it = @splat(0);
     for (map.slice()) |entry| {
         if (!entry.isEmpty()) {
             if (!mem.order(u8, &it, &entry.hash).compare(.lte)) {
@@ -736,7 +736,7 @@ test "SortedHashMap: collision test" {
     try map.put(testing.allocator, prefix ++ [_]u8{1}, 1);
     try map.put(testing.allocator, prefix ++ [_]u8{3}, 3);
 
-    it = [_]u8{0} ** 32;
+    it = @splat(0);
     for (map.slice()) |entry| {
         if (!entry.isEmpty()) {
             if (!mem.order(u8, &it, &entry.hash).compare(.lte)) {
@@ -756,7 +756,7 @@ test "SortedHashMap: collision test" {
     try map.put(testing.allocator, prefix ++ [_]u8{1}, 1);
     try map.put(testing.allocator, prefix ++ [_]u8{2}, 2);
 
-    it = [_]u8{0} ** 32;
+    it = @splat(0);
     for (map.slice()) |entry| {
         if (!entry.isEmpty()) {
             if (!mem.order(u8, &it, &entry.hash).compare(.lte)) {

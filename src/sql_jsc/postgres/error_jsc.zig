@@ -74,7 +74,7 @@ pub fn postgresErrorToJS(globalObject: *jsc.JSGlobalObject, message: ?[]const u8
         },
     };
 
-    var buffer_message = [_]u8{0} ** 256;
+    var buffer_message: [256]u8 = @splat(0);
     const msg = message orelse std.fmt.bufPrint(buffer_message[0..], "Failed to bind query: {s}", .{@errorName(err)}) catch "Failed to bind query";
 
     return createPostgresError(globalObject, msg, .{ .code = code }) catch |e| globalObject.takeError(e);

@@ -57,7 +57,7 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
 
         // Expected Sec-WebSocket-Accept value for handshake validation per RFC 6455 §4.2.2.
         // This is base64(SHA-1(Sec-WebSocket-Key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")).
-        expected_accept: [28]u8 = .{0} ** 28,
+        expected_accept: [28]u8 = @splat(0),
 
         // Whether the upgrade request offered `permessage-deflate`. When this is
         // false (opt-out via `perMessageDeflate: false`) and the server responds

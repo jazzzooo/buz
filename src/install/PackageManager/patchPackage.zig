@@ -512,7 +512,7 @@ fn escapePatchFilename(allocator: std.mem.Allocator, name: []const u8) ?[]const 
         }
     };
     const ESCAPE_TABLE: [256]EscapeVal = comptime brk: {
-        var table: [256]EscapeVal = [_]EscapeVal{.other} ** 256;
+        var table: [256]EscapeVal = @splat(.other);
         const ty = @typeInfo(EscapeVal);
         for (ty.@"enum".fields) |field| {
             if (field.name.len == 1) {

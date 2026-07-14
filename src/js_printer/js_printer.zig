@@ -34,8 +34,8 @@ pub fn canPrintWithoutEscape(comptime CodePointType: type, c: CodePointType, com
     }
 }
 
-const indentation_space_buf = [_]u8{' '} ** 128;
-const indentation_tab_buf = [_]u8{'\t'} ** 128;
+const indentation_space_buf: [128]u8 = @splat(' ');
+const indentation_tab_buf: [128]u8 = @splat('\t');
 
 pub fn bestQuoteCharForString(comptime Type: type, str: []const Type, allow_backtick: bool) u8 {
     var single_cost: usize = 0;

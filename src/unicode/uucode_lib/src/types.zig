@@ -940,7 +940,7 @@ pub fn SliceTracking(comptime T: type, comptime max_len: usize) type {
         max_offset: usize = 0,
         max_len: usize = 0,
         offset_map: SliceMap(T, usize) = .empty,
-        len_counts: [max_len]usize = [_]usize{0} ** max_len,
+        len_counts: [max_len]usize = @splat(0),
         shift: ShiftTracking = .{},
 
         const Self = @This();

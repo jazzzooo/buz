@@ -405,8 +405,8 @@ pub const FindCache = struct {
     /// Parallel key array kept hot and contiguous so the associative scan is a
     /// single 256-byte sweep; the heavyweight `FindCacheSlot` payloads live in
     /// a separate array so a miss doesn't drag them through the cache.
-    keys: [slot_count]Key = [_]Key{.{}} ** slot_count,
-    slots: [slot_count]FindCacheSlot = [_]FindCacheSlot{.{}} ** slot_count,
+    keys: [slot_count]Key = @splat(.{}),
+    slots: [slot_count]FindCacheSlot = @splat(.{}),
     next_victim: u8 = 0,
 
     const Key = struct { data: ?[*]const u8 = null, sync_idx: u32 = 0 };

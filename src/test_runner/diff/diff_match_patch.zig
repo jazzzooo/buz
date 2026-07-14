@@ -2522,8 +2522,13 @@ pub fn DMP(comptime Unit: type) type {
 
             // Increase the text lengths by 1024 times to ensure a timeout.
             {
-                const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n" ** 1024;
-                const b = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n" ** 1024;
+                const a_text = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n";
+                const a_buf: [1024][a_text.len]u8 = @splat(a_text.*);
+                const a: []const u8 = @ptrCast(&a_buf);
+
+                const b_text = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n";
+                const b_buf: [1024][b_text.len]u8 = @splat(b_text.*);
+                const b: []const u8 = @ptrCast(&b_buf);
 
                 const with_timout: DiffMatchPatch = .{
                     .config = .{ .diff_timeout = 100 }, // 100ms

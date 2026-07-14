@@ -352,7 +352,7 @@ fn extractJsonEncodedSourceCode(contents: []const u8, target_line: u32, comptime
     };
     defer log.deinit();
 
-    var result: [n][]const u8 = .{""} ** n;
+    var result: [n][]const u8 = @splat("");
     for (&result) |*decoded_line| {
         var has_extra_escapes = false;
         prev = 0;

@@ -572,7 +572,7 @@ pub fn simpleHelpBunTopLevel(
     comptime params: []const Param(Help),
 ) void {
     const max_spacing = 30;
-    const space_buf: *const [max_spacing]u8 = " " ** max_spacing;
+    const space_buf: *const [max_spacing]u8 = &@splat(' ');
 
     const computed_max_spacing = comptime blk: {
         var res: usize = 2;

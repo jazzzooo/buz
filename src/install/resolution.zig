@@ -4,7 +4,7 @@ pub const OldV2Resolution = ResolutionType(u32);
 pub fn ResolutionType(comptime SemverIntType: type) type {
     return extern struct {
         tag: Tag = .uninitialized,
-        _padding: [7]u8 = .{0} ** 7,
+        _padding: [7]u8 = @splat(0),
         value: Value = .{ .uninitialized = {} },
 
         const This = @This();

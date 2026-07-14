@@ -1673,7 +1673,7 @@ pub fn GlobWalker_(
             basename_excluding_special_syntax_component_idx: ?*u32,
         ) !void {
             // in case the consumer doesn't care about some outputs.
-            const scratchpad: [3]u32 = .{0} ** 3;
+            const scratchpad: [3]u32 = @splat(0);
             return buildPatternComponents(
                 arena,
                 patternComponents,

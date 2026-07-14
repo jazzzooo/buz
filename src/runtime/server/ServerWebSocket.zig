@@ -1252,7 +1252,7 @@ pub fn getRemoteAddress(
         return .js_undefined;
     }
 
-    var buf: [64]u8 = [_]u8{0} ** 64;
+    var buf: [64]u8 = @splat(0);
     var text_buf: [512]u8 = undefined;
 
     const address_bytes = this.websocket().getRemoteAddress(&buf);

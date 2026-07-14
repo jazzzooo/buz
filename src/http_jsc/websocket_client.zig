@@ -24,7 +24,7 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
         // we need to start with final so we validate the first frame
         receiving_is_final: bool = true,
 
-        ping_frame_bytes: [128 + 6]u8 = [_]u8{0} ** (128 + 6),
+        ping_frame_bytes: [128 + 6]u8 = @splat(0),
         ping_len: u8 = 0,
         ping_received: bool = false,
         pong_received: bool = false,
@@ -43,7 +43,7 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
 
         header_fragment: ?u8 = null,
 
-        payload_length_frame_bytes: [8]u8 = [_]u8{0} ** 8,
+        payload_length_frame_bytes: [8]u8 = @splat(0),
         payload_length_frame_len: u8 = 0,
 
         initial_data_handler: ?*InitialDataHandler = null,
@@ -429,7 +429,7 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
                 }
             }
 
-            var header_bytes: [@sizeOf(usize)]u8 = [_]u8{0} ** @sizeOf(usize);
+            var header_bytes: [@sizeOf(usize)]u8 = @splat(0);
 
             // In the WebSocket specification, control frames may not be fragmented.
             // However, the frame parser should handle fragmented control frames nonetheless.

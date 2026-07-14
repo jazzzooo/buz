@@ -606,7 +606,7 @@ pub const BuildCommand = struct {
                     1000...9999 => 0,
                     else => 0,
                 };
-                const padding_buf = [_]u8{' '} ** 16;
+                const padding_buf: [16]u8 = @splat(' ');
                 const padding_ = padding_buf[0..@as(usize, @intCast(compiled_elapsed_digit_count))];
                 Output.pretty("{s}", .{padding_});
 
@@ -725,7 +725,7 @@ fn exitOrWatch(code: u8, watch: bool) noreturn {
 }
 
 fn printSummary(bundled_end: i128, minify_duration: u64, minified: bool, input_code_length: usize, reachable_file_count: usize, output_files: []const options.OutputFile) void {
-    const padding_buf = [_]u8{' '} ** 16;
+    const padding_buf: [16]u8 = @splat(' ');
 
     const bundle_until_now = @divTrunc(@as(i64, @truncate(bundled_end - bun.cli.start_time)), @as(i64, std.time.ns_per_ms));
 

@@ -54,7 +54,7 @@ pub fn generate(globalObject: *jsc.JSGlobalObject, query: []const u8, array_valu
         const tag = try types.FieldType.fromJS(globalObject, value, &unsigned);
         if (unsigned) {
             // 128 is more than enought right now
-            var tag_name_buf = [_]u8{0} ** 128;
+            var tag_name_buf: [128]u8 = @splat(0);
             try name.appendSlice(std.fmt.bufPrint(tag_name_buf[0..], "U{s}", .{@tagName(tag)}) catch @tagName(tag));
         } else {
             try name.appendSlice(@tagName(tag));

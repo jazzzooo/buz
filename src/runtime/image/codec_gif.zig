@@ -254,7 +254,7 @@ fn decodeFrame(bytes: []const u8, lzw_off: usize, w: u32, h: u32, interlace: boo
     const out = try bun.default_allocator.alloc(u8, npix * 4);
     errdefer bun.default_allocator.free(out);
 
-    var pal: [256][4]u8 = .{.{ 0, 0, 0, 255 }} ** 256;
+    var pal: [256][4]u8 = @splat(.{ 0, 0, 0, 255 });
     for (0..ct.len / 3) |c| pal[c] = .{ ct[c * 3], ct[c * 3 + 1], ct[c * 3 + 2], 255 };
     if (trns) |t| pal[t] = .{ 0, 0, 0, 0 };
 

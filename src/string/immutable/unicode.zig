@@ -1243,7 +1243,7 @@ pub fn toUTF16AllocMaybeBuffered(
         const res = bun.simdutf.convert.utf8.to.utf16.with_errors.le(bytes, out);
         if (res.status == .success) {
             log("toUTF16 {d} UTF8 -> {d} UTF16", .{ bytes.len, out_length });
-            return .{ out, .{0} ** 3, 0 };
+            return .{ out, @splat(0), 0 };
         }
 
         var list = std.ArrayListUnmanaged(u16).fromOwnedSlice(out[0..first_non_ascii]);
@@ -1315,7 +1315,7 @@ pub fn toUTF16AllocMaybeBuffered(
     }
 
     log("toUTF16 {d} UTF8 -> {d} UTF16", .{ bytes.len, output.items.len });
-    return .{ output.items, .{0} ** 3, 0 };
+    return .{ output.items, @splat(0), 0 };
 }
 
 pub fn utf16CodepointWithFFFD(input: []const u16) UTF16Replacement {

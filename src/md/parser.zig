@@ -35,7 +35,7 @@ pub const Parser = struct {
 
     // Opener stacks
     opener_stacks: [types.NUM_OPENER_STACKS]types.OpenerStack =
-        [_]types.OpenerStack{.{}} ** types.NUM_OPENER_STACKS,
+        @splat(.{}),
 
     // Linked lists through marks
     unresolved_link_head: i32 = -1,
@@ -50,7 +50,7 @@ pub const Parser = struct {
 
     // Table column alignments
     table_col_count: u32 = 0,
-    table_alignments: [types.TABLE_MAXCOLCOUNT]Align = [_]Align{.default} ** types.TABLE_MAXCOLCOUNT,
+    table_alignments: [types.TABLE_MAXCOLCOUNT]Align = @splat(.default),
 
     // Ref defs
     ref_defs: std.ArrayListUnmanaged(RefDef) = .{},

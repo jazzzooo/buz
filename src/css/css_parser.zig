@@ -4517,7 +4517,7 @@ pub const Delimiters = packed struct(u8) {
     }
 
     const TABLE: [256]Delimiters = brk: {
-        var table: [256]Delimiters = [_]Delimiters{.{}} ** 256;
+        var table: [256]Delimiters = @splat(.{});
         table[';'] = getDelimiter(.semicolon);
         table['!'] = getDelimiter(.bang);
         table[','] = getDelimiter(.comma);

@@ -1177,7 +1177,7 @@ pub const String = struct {
     }
 
     pub fn jsonStringify(s: *const String, writer: anytype) !void {
-        var buf = [_]u8{0} ** 4096;
+        var buf: [4096]u8 = @splat(0);
         var i: usize = 0;
         for (s.slice16()) |char| {
             buf[i] = @as(u8, @intCast(char));

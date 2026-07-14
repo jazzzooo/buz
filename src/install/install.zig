@@ -46,7 +46,7 @@ pub fn fmtStorePath(str: string) StorePathFormatter {
 
 // these bytes are skipped
 // so we just make it repeat bun bun bun bun bun bun bun bun bun
-pub const alignment_bytes_to_repeat_buffer = [_]u8{0} ** 144;
+pub const alignment_bytes_to_repeat_buffer: [144]u8 = @splat(0);
 
 pub fn initializeStore() void {
     if (initialized_store) {

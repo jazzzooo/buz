@@ -11,9 +11,9 @@ pub const EmphDelim = struct {
     open_count: usize = 0, // total chars consumed as opener
     close_count: usize = 0, // total chars consumed as closer
     // Individual match sizes in order (each is 1 for em, 2 for strong)
-    open_sizes: [MAX_EMPH_MATCHES]u2 = [_]u2{0} ** MAX_EMPH_MATCHES,
+    open_sizes: [MAX_EMPH_MATCHES]u2 = @splat(0),
     open_num: u4 = 0, // number of open matches
-    close_sizes: [MAX_EMPH_MATCHES]u2 = [_]u2{0} ** MAX_EMPH_MATCHES,
+    close_sizes: [MAX_EMPH_MATCHES]u2 = @splat(0),
     close_num: u4 = 0, // number of close matches
     active: bool = true, // false if deactivated between matched pairs
 };

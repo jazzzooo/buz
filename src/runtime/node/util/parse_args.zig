@@ -561,7 +561,7 @@ const ParseArgsState = struct {
     tokens: JSValue,
 
     /// To reuse JSValue for the "kind" field in the output tokens array ("positional", "option", "option-terminator")
-    kinds_jsvalues: [TokenKind.COUNT]?JSValue = [_]?JSValue{null} ** TokenKind.COUNT,
+    kinds_jsvalues: [TokenKind.COUNT]?JSValue = @splat(null),
 
     pub fn handleToken(this: *ParseArgsState, token_generic: Token) bun.JSError!void {
         var globalThis = this.globalThis;

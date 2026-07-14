@@ -20,7 +20,7 @@ pub fn encode(out: *[max_len]u8, w: u32, h: u32, rgba: []const u8) []u8 {
     bun.debugAssert(rgba.len == @as(usize, w) * h * 4);
 
     // Average colour (alpha-weighted so transparent pixels don't tug it).
-    var avg: [4]f32 = .{0} ** 4;
+    var avg: [4]f32 = @splat(0);
     var i: usize = 0;
     while (i < rgba.len) : (i += 4) {
         const a: f32 = @as(f32, @floatFromInt(rgba[i + 3])) / 255.0;
@@ -102,7 +102,7 @@ pub fn encode(out: *[max_len]u8, w: u32, h: u32, rgba: []const u8) []u8 {
 const Channel = struct {
     dc: f32 = 0,
     scale: f32 = 0,
-    ac: [7 * 7]f32 = .{0} ** 49, // upper bound on AC count
+    ac: [7 * 7]f32 = @splat(0), // upper bound on AC count
     n: usize = 0,
 };
 

@@ -118,7 +118,7 @@ pub fn parse(buf: []const u8) Error!UUID {
 }
 
 // Zero UUID
-pub const zero: UUID = .{ .bytes = .{0} ** 16 };
+pub const zero: UUID = .{ .bytes = @splat(0) };
 
 // Convenience function to return a new v4 UUID.
 pub fn newV4() UUID {

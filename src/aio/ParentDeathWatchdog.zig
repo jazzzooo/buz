@@ -65,7 +65,7 @@ pub fn ppidToWatch() ?std.c.pid_t {
 /// reaches grandchildren that the libproc/procfs walk would miss once the
 /// script itself has exited. Stack-disciplined for nested `spawnSync` (e.g.
 /// `pre`/`post` lifecycle scripts) — though in practice depth is 1.
-var sync_pgids_buf: [4]std.c.pid_t = .{0} ** 4;
+var sync_pgids_buf: [4]std.c.pid_t = @splat(0);
 var sync_pgids: []std.c.pid_t = sync_pgids_buf[0..0];
 
 /// Returns true if the push was recorded; caller must pop iff true. Depth >4

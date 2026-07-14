@@ -240,7 +240,7 @@ pub fn generateFiles(allocator: std.mem.Allocator, entry_point: string, dependen
 
             var max_filename_len: usize = 0;
             var filenames: [files.len]string = undefined;
-            var created_files: [files.len]bool = .{false} ** files.len;
+            var created_files: [files.len]bool = @splat(false);
 
             // Create all template files
             inline for (0..files.len) |index| {
