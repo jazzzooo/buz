@@ -281,8 +281,7 @@ pub fn init(addr: []const u8, port_: u16) AddressError!SocketAddress {
 
 /// Create an IPv4 socket address. `addr` is assumed to be valid. Port is in host byte order.
 pub fn initIPv4(addr: [4]u8, port_: u16) SocketAddress {
-    // TODO: make sure casting doesn't swap byte order on us.
-    return .{ ._addr = sockaddr.v4(std.mem.nativeToBig(u16, port_), @bitCast(addr)) };
+    return .{ ._addr = sockaddr.v4(std.mem.nativeToBig(u16, port_), std.mem.bytesToValue(u32, &addr)) };
 }
 
 /// Create an IPv6 socket address. `addr` is assumed to be valid. Port is in
@@ -431,8 +430,7 @@ pub fn getFlowLabel(this: *SocketAddress, _: *jsc.JSGlobalObject) JSValue {
 /// - [RFC 6437](https://tools.ietf.org/html/rfc6437)
 pub fn flowLabel(this: *const SocketAddress) ?u32 {
     if (this.family() == AF.INET6) {
-        const in6: inet.sockaddr_in6 = @bitCast(this._addr);
-        return in6.flowinfo;
+        return this.asV6().flowinfo;
     } else {
         return null;
     }
@@ -579,7 +577,7 @@ pub const sockaddr = extern union {
             if (!std.mem.allEqual(u8, self.sin6.addr[0..10], 0)) return null;
             if (self.sin6.addr[10] != 255) return null;
             if (self.sin6.addr[11] != 255) return null;
-            return @bitCast(self.sin6.addr[12..16].*);
+            return std.mem.bytesToValue(u32, self.sin6.addr[12..16]);
         }
         return null;
     }
@@ -601,8 +599,7 @@ pub const sockaddr = extern union {
         return formatted;
     }
 
-    // I'd be money endianess is going to screw us here.
-    pub const @"127.0.0.1": sockaddr = sockaddr.v4(0, @bitCast([_]u8{ 127, 0, 0, 1 }));
+    pub const @"127.0.0.1": sockaddr = sockaddr.v4(0, std.mem.nativeToBig(u32, 0x7f000001));
     // TODO: check that `::` is all zeroes on all platforms. Should correspond
     // to `IN6ADDR_ANY_INIT`.
     pub const @"::": sockaddr = sockaddr.v6(0, inet.IN6ADDR_ANY_INIT, 0, 0);

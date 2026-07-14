@@ -133,7 +133,7 @@ const Context = struct {
 
     flush: Op = .process,
 
-    last_result: extern union { e: c_int, d: c.BrotliDecoderResult } = @bitCast(@as(u32, 0)),
+    last_result: extern union { e: c_int, d: c.BrotliDecoderResult } = .{ .e = 0 },
     error_: c.BrotliDecoderErrorCode2 = .NO_ERROR,
 
     pub fn init(this: *Context) Error {

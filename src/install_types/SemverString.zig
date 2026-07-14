@@ -227,10 +227,7 @@ pub const String = extern struct {
             SlicedString.init(buf, this.slice(buf));
     }
 
-    // https://en.wikipedia.org/wiki/Intel_5-level_paging
-    // https://developer.arm.com/documentation/101811/0101/Address-spaces-in-AArch64#:~:text=0%2DA%2C%20the%20maximum%20size,2%2DA.
-    // X64 seems to need some of the pointer bits
-    const max_addressable_space = u63;
+    const external_tag: u64 = 1 << 63;
 
     comptime {
         if (@sizeOf(usize) != 8) {
@@ -298,39 +295,22 @@ pub const String = extern struct {
             // This should only happen for non-ascii strings that are exactly 8 bytes.
             // so that's an edge-case
             if ((in[max_inline_len - 1]) >= 128)
-                @as(String, @bitCast((@as(
-                    u64,
-                    0,
-                ) | @as(
-                    u64,
-                    @as(
-                        max_addressable_space,
-                        @truncate(@as(
-                            u64,
-                            @bitCast(Pointer.init(buf, in)),
-                        )),
-                    ),
-                )) | 1 << 63))
+                initExternal(buf, in)
             else
                 String{ .bytes = .{ in[0], in[1], in[2], in[3], in[4], in[5], in[6], in[7] } },
 
-            else => @as(
-                String,
-                @bitCast((@as(
-                    u64,
-                    0,
-                ) | @as(
-                    u64,
-                    @as(
-                        max_addressable_space,
-                        @truncate(@as(
-                            u64,
-                            @bitCast(Pointer.init(buf, in)),
-                        )),
-                    ),
-                )) | 1 << 63),
-            ),
+            else => initExternal(buf, in),
         };
+    }
+
+    fn initExternal(buf: string, in: string) String {
+        const pointer = Pointer.init(buf, in);
+        const bits = @as(u64, pointer.off) |
+            (@as(u64, pointer.len) << 32) |
+            external_tag;
+        var result: String = .{};
+        std.mem.writeInt(u64, &result.bytes, bits, .little);
+        return result;
     }
 
     pub fn initInline(
@@ -386,7 +366,7 @@ pub const String = extern struct {
     ) OOM!String {
         try buf.appendSlice(allocator, in);
         const in_buf = buf.items[buf.items.len - in.len ..];
-        return @bitCast((@as(u64, 0) | @as(u64, @as(max_addressable_space, @truncate(@as(u64, @bitCast(Pointer.init(buf.items, in_buf))))))) | 1 << 63);
+        return initExternal(buf.items, in_buf);
     }
 
     pub fn eql(this: String, that: String, this_buf: []const u8, that_buf: []const u8) bool {
@@ -431,9 +411,9 @@ pub const String = extern struct {
         }
     }
 
-    pub const Pointer = extern struct {
+    pub const Pointer = struct {
         off: u32 = 0,
-        len: u32 = 0,
+        len: u31 = 0,
 
         pub inline fn init(
             buf: string,
@@ -442,16 +422,25 @@ pub const String = extern struct {
             if (Environment.allow_assert) {
                 assert(bun.isSliceInBuffer(in, buf));
             }
+            const offset = @intFromPtr(in.ptr) - @intFromPtr(buf.ptr);
+            if (Environment.allow_assert) {
+                assert(offset <= std.math.maxInt(u32));
+                assert(in.len <= std.math.maxInt(u31));
+            }
 
             return Pointer{
-                .off = @as(u32, @truncate(@intFromPtr(in.ptr) - @intFromPtr(buf.ptr))),
-                .len = @as(u32, @truncate(in.len)),
+                .off = @intCast(offset),
+                .len = @intCast(in.len),
             };
         }
     };
 
     pub inline fn ptr(this: String) Pointer {
-        return @as(Pointer, @bitCast(@as(u64, @as(u63, @truncate(@as(u64, @bitCast(this)))))));
+        const bits = std.mem.readInt(u64, &this.bytes, .little) & ~external_tag;
+        return .{
+            .off = @truncate(bits),
+            .len = @truncate(bits >> 32),
+        };
     }
 
     pub const toJS = @import("../semver_jsc/SemverString_jsc.zig").toJS;
@@ -637,12 +626,6 @@ pub const String = extern struct {
             }
         }
     };
-
-    comptime {
-        if (@sizeOf(String) != @sizeOf(Pointer)) {
-            @compileError("String types must be the same size");
-        }
-    }
 };
 
 const string = []const u8;

@@ -152,7 +152,7 @@ pub inline fn streamOffset(self: InternalSourceMap) u32 {
 
 pub fn syncEntry(self: InternalSourceMap, index: usize) SyncEntry {
     const off = header_size + index * @sizeOf(SyncEntry);
-    return @as(SyncEntry, @bitCast(self.data[off..][0..@sizeOf(SyncEntry)].*));
+    return std.mem.bytesToValue(SyncEntry, self.data[off..][0..@sizeOf(SyncEntry)]);
 }
 
 pub inline fn stream(self: InternalSourceMap) []const u8 {

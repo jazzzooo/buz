@@ -1211,13 +1211,6 @@ pub fn ComptimeEnumMap(comptime T: type) type {
     return ComptimeStringMap(T, entries);
 }
 
-/// Write 0's for every byte in Type
-/// Ignores default struct values.
-pub fn zero(comptime Type: type) Type {
-    var out: [@sizeOf(Type)]u8 align(@alignOf(Type)) = undefined;
-    @memset(@as([*]u8, @ptrCast(&out))[0..out.len], 0);
-    return @as(Type, @bitCast(out));
-}
 pub const c_ares = @import("./cares_sys/c_ares.zig");
 pub const URL = @import("./url/url.zig").URL;
 pub const FormData = @import("./runtime/webcore/FormData.zig").FormData;

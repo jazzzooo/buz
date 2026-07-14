@@ -2,9 +2,9 @@
 pub const SmolStr = packed struct(u128) {
     __len: u32,
     cap: u32,
-    __ptr: [*]u8,
+    __ptr: usize,
 
-    const Tag: usize = 0x8000000000000000; // NOTE: only works on little endian systems
+    const Tag: usize = 1 << 63; // Requires a 64-bit little-endian target.
     const NegatedTag: usize = ~Tag;
 
     pub fn jsonStringify(self: *const SmolStr, writer: anytype) !void {
@@ -74,49 +74,49 @@ pub const SmolStr = packed struct(u128) {
 
     pub fn len(this: *const SmolStr) u32 {
         if (this.isInlined()) {
-            return @intCast((@intFromPtr(this.__ptr) >> 56) & 0b01111111);
+            return @intCast((this.__ptr >> 56) & 0b01111111);
         }
 
         return this.__len;
     }
 
     pub fn ptr(this: *SmolStr) [*]u8 {
-        return @ptrFromInt(@as(usize, @intFromPtr(this.__ptr)) & NegatedTag);
+        return @ptrFromInt(this.__ptr & NegatedTag);
     }
 
     pub fn ptrConst(this: *const SmolStr) [*]const u8 {
-        return @ptrFromInt(@as(usize, @intFromPtr(this.__ptr)) & NegatedTag);
+        return @ptrFromInt(this.__ptr & NegatedTag);
     }
 
     pub fn markInlined(this: *SmolStr) void {
-        this.__ptr = @ptrFromInt(@as(usize, @intFromPtr(this.__ptr)) | Tag);
-    }
-
-    pub fn markHeap(this: *SmolStr) void {
-        this.__ptr = @ptrFromInt(@as(usize, @intFromPtr(this.__ptr)) & NegatedTag);
+        this.__ptr |= Tag;
     }
 
     pub fn isInlined(this: *const SmolStr) bool {
-        return @as(usize, @intFromPtr(this.__ptr)) & Tag != 0;
+        return this.__ptr & Tag != 0;
+    }
+
+    fn heapPointer(ptr_: [*]u8) usize {
+        const ptr_bits = @intFromPtr(ptr_);
+        assert(ptr_bits & Tag == 0);
+        return ptr_bits;
     }
 
     /// ## Panics
     /// if `this` is too long to fit in an inlined string
     pub fn toInlined(this: *const SmolStr) Inlined {
         assert(this.len() <= Inlined.max_len);
-        var inlined: Inlined = @bitCast(@as(u128, @bitCast(this.*)));
+        var inlined: Inlined = @bitCast(this.*);
         inlined._tag = 1;
         return inlined;
     }
 
     pub fn fromBabyList(baby_list: BabyList(u8)) SmolStr {
-        var smol_str: SmolStr = .{
+        return .{
             .__len = baby_list.len,
             .cap = baby_list.cap,
-            .__ptr = baby_list.ptr,
+            .__ptr = heapPointer(baby_list.ptr),
         };
-        smol_str.markHeap();
-        return smol_str;
     }
 
     pub fn fromInlined(inlined: Inlined) SmolStr {
@@ -171,15 +171,13 @@ pub const SmolStr = packed struct(u128) {
                 baby_list.appendSliceAssumeCapacity(inlined.slice());
                 try baby_list.append(allocator, char);
                 this.__len = baby_list.len;
-                this.__ptr = baby_list.ptr;
+                this.__ptr = heapPointer(baby_list.ptr);
                 this.cap = baby_list.cap;
-                this.markHeap();
                 return;
             }
             inlined.allChars()[inlined.len()] = char;
             inlined.setLen(@intCast(inlined.len() + 1));
-            this.* = @bitCast(inlined);
-            this.markInlined();
+            this.* = SmolStr.fromInlined(inlined);
             return;
         }
 
@@ -191,7 +189,7 @@ pub const SmolStr = packed struct(u128) {
         try baby_list.append(allocator, char);
 
         this.__len = baby_list.len;
-        this.__ptr = baby_list.ptr;
+        this.__ptr = heapPointer(baby_list.ptr);
         this.cap = baby_list.cap;
         return;
     }

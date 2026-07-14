@@ -478,7 +478,7 @@ pub const Channel = opaque {
             }
         };
 
-        var opts = bun.zero(Options);
+        var opts = std.mem.zeroes(Options);
 
         // Android note: c-ares can't auto-discover servers (no /etc/resolv.conf,
         // no JNI), so it falls back to 127.0.0.1 and queries time out. We do
@@ -582,7 +582,7 @@ pub const Channel = opaque {
             break :brk (std.mem.printSentinel(&port_buf, "{d}", .{port}, 0) catch unreachable).ptr;
         };
 
-        var hints_buf: [3]AddrInfo_hints = bun.zero([3]AddrInfo_hints);
+        var hints_buf = std.mem.zeroes([3]AddrInfo_hints);
         for (hints[0..@min(hints.len, 2)], 0..) |hint, i| {
             hints_buf[i] = hint;
         }
