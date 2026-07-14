@@ -163,19 +163,18 @@ pub const Action = union(enum) {
     }
 };
 
-fn captureLibcBacktrace(begin_addr: usize, stack_trace: *std.builtin.StackTrace) void {
+fn captureLibcBacktrace(begin_addr: usize, addrs: []usize) std.debug.StackTrace {
     const backtrace = struct {
         extern "c" fn backtrace(buffer: [*]*anyopaque, size: c_int) c_int;
     }.backtrace;
 
-    const addrs = stack_trace.instruction_addresses;
-    const count = backtrace(@ptrCast(addrs), @intCast(addrs.len));
-    stack_trace.index = @intCast(count);
+    var count: usize = @intCast(backtrace(@ptrCast(addrs.ptr), @intCast(addrs.len)));
+    const may_have_skipped = count == addrs.len;
 
     // Skip frames until we find begin_addr (or close to it)
     // backtrace() captures everything including crash handler frames
     const tolerance: usize = 128;
-    const skip: usize = for (addrs[0..stack_trace.index], 0..) |addr, i| {
+    const skip: usize = for (addrs[0..count], 0..) |addr, i| {
         // Check if this address is close to begin_addr (within tolerance)
         const delta = if (addr >= begin_addr)
             addr - begin_addr
@@ -189,17 +188,14 @@ fn captureLibcBacktrace(begin_addr: usize, stack_trace: *std.builtin.StackTrace)
     // Shift the addresses to skip crash handler frames
     // If begin_addr was not found, use the complete backtrace
     if (skip > 0) {
-        std.mem.copyForwards(usize, addrs, addrs[skip..stack_trace.index]);
-        stack_trace.index -= skip;
+        std.mem.copyForwards(usize, addrs, addrs[skip..count]);
+        count -= skip;
     }
-}
 
-fn captureStackTrace(begin_addr: usize, stack_trace: *std.builtin.StackTrace) void {
-    const trace = std.debug.captureCurrentStackTrace(
-        .{ .first_address = begin_addr },
-        stack_trace.instruction_addresses,
-    );
-    stack_trace.index = trace.return_addresses.len;
+    return .{
+        .return_addresses = addrs[0..count],
+        .skipped = if (may_have_skipped) .unknown else .none,
+    };
 }
 
 /// This function is invoked when a crash happens. A crash is classified in `CrashReason`.
@@ -345,40 +341,34 @@ pub fn crashHandler(
                 }
 
                 var addr_buf: [20]usize = undefined;
-                var trace_buf: std.builtin.StackTrace = undefined;
+                var addr_buf_libc: [20]usize = undefined;
 
                 // If a trace was not provided, compute one now
                 const trace = blk: {
                     if (error_return_trace) |ert| {
-                        if (ert.index > 0) break :blk ert;
+                        if (ert.index > 0) break :blk stackTraceFromErrorReturnTrace(ert);
                     }
-                    trace_buf = std.builtin.StackTrace{
-                        .index = 0,
-                        .instruction_addresses = &addr_buf,
-                    };
                     const desired_begin_addr = begin_addr orelse @returnAddress();
-                    captureStackTrace(desired_begin_addr, &trace_buf);
+                    const captured = std.debug.captureCurrentStackTrace(
+                        .{ .first_address = desired_begin_addr },
+                        &addr_buf,
+                    );
+                    var best_trace = captured;
 
                     if (comptime bun.Environment.isGlibc) {
-                        var addr_buf_libc: [20]usize = undefined;
-                        var trace_buf_libc: std.builtin.StackTrace = .{
-                            .index = 0,
-                            .instruction_addresses = &addr_buf_libc,
-                        };
-                        captureLibcBacktrace(desired_begin_addr, &trace_buf_libc);
+                        const libc_trace = captureLibcBacktrace(desired_begin_addr, &addr_buf_libc);
                         // Use stack trace from glibc's backtrace() if it has more frames
-                        if (trace_buf_libc.index > trace_buf.index) {
-                            addr_buf = addr_buf_libc;
-                            trace_buf.index = trace_buf_libc.index;
+                        if (libc_trace.return_addresses.len > best_trace.return_addresses.len) {
+                            best_trace = libc_trace;
                         }
                     }
-                    break :blk &trace_buf;
+                    break :blk best_trace;
                 };
 
                 if (debug_trace) {
                     has_printed_message = true;
 
-                    dumpStackTrace(trace.*, .{});
+                    dumpTrace(trace, .{});
 
                     trace_str_buf.writer().print("{f}", .{TraceString{
                         .trace = trace,
@@ -1346,8 +1336,16 @@ const StackLine = struct {
     }
 };
 
+fn stackTraceFromErrorReturnTrace(trace: *const std.builtin.StackTrace) std.debug.StackTrace {
+    const len = @min(trace.index, trace.instruction_addresses.len);
+    return .{
+        .return_addresses = trace.instruction_addresses[0..len],
+        .skipped = @enumFromInt(trace.index - len),
+    };
+}
+
 const TraceString = struct {
-    trace: *const std.builtin.StackTrace,
+    trace: std.debug.StackTrace,
     reason: CrashReason,
     action: TraceString.Action,
 
@@ -1380,7 +1378,7 @@ fn encodeTraceString(opts: TraceString, writer: anytype) !void {
 
     var name_bytes: [1024]u8 = undefined;
 
-    for (opts.trace.instruction_addresses[0..opts.trace.index]) |addr| {
+    for (opts.trace.return_addresses) |addr| {
         const line = StackLine.fromAddress(addr, &name_bytes);
         try StackLine.writeEncoded(line, writer);
     }
@@ -1652,10 +1650,10 @@ noinline fn coldHandleErrorReturnTrace(err_int_workaround_for_zig_ccall_bug: @In
             );
         }
         Output.flush();
-        dumpStackTrace(trace.*, .{});
+        dumpErrorReturnTrace(trace, .{});
     } else {
         const ts = TraceString{
-            .trace = trace,
+            .trace = stackTraceFromErrorReturnTrace(trace),
             .reason = .{ .zig_error = err },
             .action = .view_trace,
         };
@@ -1702,7 +1700,15 @@ extern "c" fn WTF__DumpStackTrace(ptr: [*]usize, count: usize) void;
 
 /// Version of the standard library dumpStackTrace that has some fallbacks for
 /// cases where such logic fails to run.
-pub fn dumpStackTrace(trace: std.builtin.StackTrace, limits: WriteStackTraceLimits) void {
+pub fn dumpStackTrace(trace: std.debug.StackTrace, limits: WriteStackTraceLimits) void {
+    dumpTrace(trace, limits);
+}
+
+fn dumpErrorReturnTrace(trace: *const std.builtin.StackTrace, limits: WriteStackTraceLimits) void {
+    dumpTrace(stackTraceFromErrorReturnTrace(trace), limits);
+}
+
+fn dumpTrace(trace: std.debug.StackTrace, limits: WriteStackTraceLimits) void {
     Output.flush();
     var stderr_w = std.fs.File.stderr().writerStreaming(&.{});
     const stderr = &stderr_w.interface;
@@ -1711,7 +1717,7 @@ pub fn dumpStackTrace(trace: std.builtin.StackTrace, limits: WriteStackTraceLimi
         stderr.print("View Debug Trace: {f}\n", .{TraceString{
             .action = .view_trace,
             .reason = .{ .zig_error = error.DumpStackTrace },
-            .trace = &trace,
+            .trace = trace,
         }}) catch {};
         return;
     }
@@ -1732,7 +1738,7 @@ pub fn dumpStackTrace(trace: std.builtin.StackTrace, limits: WriteStackTraceLimi
         .linux => {
             // In non-debug builds, use WTF's stack trace printer and return early
             if (!bun.Environment.isDebug) {
-                WTF__DumpStackTrace(trace.instruction_addresses.ptr, trace.index);
+                WTF__DumpStackTrace(trace.return_addresses.ptr, trace.return_addresses.len);
                 return;
             }
             // Otherwise fall through to llvm-symbolizer for debug builds
@@ -1761,7 +1767,7 @@ pub fn dumpStackTrace(trace: std.builtin.StackTrace, limits: WriteStackTraceLimi
         defer arena.deinit();
         var sfa_buffer: [16384]u8 = undefined;
         var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, arena.allocator());
-        spawnSymbolizer(program, sfa.allocator(), &trace) catch |err| switch (err) {
+        spawnSymbolizer(program, sfa.allocator(), trace) catch |err| switch (err) {
             // try next program if this one wasn't found
             error.FileNotFound => continue,
             else => {},
@@ -1770,7 +1776,7 @@ pub fn dumpStackTrace(trace: std.builtin.StackTrace, limits: WriteStackTraceLimi
     }
 }
 
-fn spawnSymbolizer(program: [:0]const u8, alloc: std.mem.Allocator, trace: *const std.builtin.StackTrace) !void {
+fn spawnSymbolizer(program: [:0]const u8, alloc: std.mem.Allocator, trace: std.debug.StackTrace) !void {
     var argv = std.array_list.Managed([]const u8).init(alloc);
     try argv.append(program);
     try argv.append("--exe");
@@ -1788,7 +1794,7 @@ fn spawnSymbolizer(program: [:0]const u8, alloc: std.mem.Allocator, trace: *cons
     );
 
     var name_bytes: [1024]u8 = undefined;
-    for (trace.instruction_addresses[0..trace.index]) |addr| {
+    for (trace.return_addresses) |addr| {
         const line = StackLine.fromAddress(addr, &name_bytes) orelse
             continue;
         try argv.append(try std.fmt.allocPrint(alloc, "0x{X}", .{line.address}));
@@ -1819,8 +1825,10 @@ fn spawnSymbolizer(program: [:0]const u8, alloc: std.mem.Allocator, trace: *cons
 
 pub fn dumpCurrentStackTrace(first_address: ?usize, limits: WriteStackTraceLimits) void {
     var addrs: [32]usize = undefined;
-    var stack: std.builtin.StackTrace = .{ .index = 0, .instruction_addresses = &addrs };
-    captureStackTrace(first_address orelse @returnAddress(), &stack);
+    const stack = std.debug.captureCurrentStackTrace(
+        .{ .first_address = first_address orelse @returnAddress() },
+        &addrs,
+    );
     dumpStackTrace(stack, limits);
 }
 
@@ -1847,48 +1855,47 @@ pub fn suppressReporting() void {
     suppress_reporting = true;
 }
 
-/// A variant of `std.builtin.StackTrace` that stores its data within itself
+/// A variant of `std.debug.StackTrace` that stores its data within itself
 /// instead of being a pointer. This allows storing captured stack traces
 /// for later printing.
 pub const StoredTrace = struct {
     data: [31]usize,
-    index: usize,
+    len: usize,
+    skipped: std.debug.SkippedAddresses,
 
     pub const empty: StoredTrace = .{
         .data = @splat(0),
-        .index = 0,
+        .len = 0,
+        .skipped = .none,
     };
 
-    pub fn trace(stored: *StoredTrace) std.builtin.StackTrace {
+    pub fn trace(stored: *StoredTrace) std.debug.StackTrace {
         return .{
-            .index = stored.index,
-            .instruction_addresses = &stored.data,
+            .return_addresses = stored.data[0..stored.len],
+            .skipped = stored.skipped,
         };
     }
 
     pub fn capture(begin: ?usize) StoredTrace {
         var stored: StoredTrace = StoredTrace.empty;
-        var frame = stored.trace();
-        captureStackTrace(begin orelse @returnAddress(), &frame);
-        stored.index = frame.index;
-        for (frame.instruction_addresses[0..frame.index], 0..) |addr, i| {
-            if (addr == 0) {
-                stored.index = i;
-                break;
-            }
-        }
+        const trace_ = std.debug.captureCurrentStackTrace(
+            .{ .first_address = begin orelse @returnAddress() },
+            &stored.data,
+        );
+        stored.len = trace_.return_addresses.len;
+        stored.skipped = trace_.skipped;
         return stored;
     }
 
     pub fn from(stack_trace: ?*std.builtin.StackTrace) StoredTrace {
         if (stack_trace) |stack| {
-            var data: [31]usize = undefined;
-            @memset(&data, 0);
-            const items = @min(stack.instruction_addresses.len, 31);
-            @memcpy(data[0..items], stack.instruction_addresses[0..items]);
+            var data: [31]usize = @splat(0);
+            const len = @min(stack.index, stack.instruction_addresses.len, data.len);
+            @memcpy(data[0..len], stack.instruction_addresses[0..len]);
             return .{
                 .data = data,
-                .index = @min(items, stack.index),
+                .len = len,
+                .skipped = @enumFromInt(stack.index - len),
             };
         } else {
             return empty;
@@ -1952,8 +1959,8 @@ pub const WriteStackTraceLimits = struct {
 /// frame count, or when hitting jsc LLInt Additionally, the printing function
 /// does not print the `^`, instead it highlights the word at the column. This
 /// Makes each frame take up two lines instead of three.
-pub fn writeStackTrace(
-    stack_trace: std.builtin.StackTrace,
+fn writeStackTrace(
+    stack_trace: std.debug.StackTrace,
     out_stream: anytype,
     debug_info: *debug.SelfInfo,
     tty_config: std.io.tty.Config,
@@ -1961,16 +1968,16 @@ pub fn writeStackTrace(
 ) !void {
     if (builtin.strip_debug_info) return error.MissingDebugInfo;
     var frame_index: usize = 0;
-    var frames_left: usize = @min(stack_trace.index, stack_trace.instruction_addresses.len);
+    var frames_left = stack_trace.return_addresses.len;
 
     while (frames_left != 0) : ({
         frames_left -= 1;
-        frame_index = (frame_index + 1) % stack_trace.instruction_addresses.len;
+        frame_index += 1;
     }) {
         if (frame_index >= limits.frame_count) {
             break;
         }
-        const return_address = stack_trace.instruction_addresses[frame_index];
+        const return_address = stack_trace.return_addresses[frame_index];
         const source = (try getSourceAtAddress(debug_info, return_address - 1)) orelse {
             const module_name = debug_info.getModuleNameForAddress(return_address - 1);
             try printLineInfo(
@@ -2017,16 +2024,22 @@ pub fn writeStackTrace(
         );
     }
 
-    if (stack_trace.index > stack_trace.instruction_addresses.len) {
-        const dropped_frames = stack_trace.index - stack_trace.instruction_addresses.len;
-
-        tty_config.setColor(out_stream, .bold) catch {};
-        try out_stream.print("({d} additional stack frames not recorded...)\n", .{dropped_frames});
-        tty_config.setColor(out_stream, .reset) catch {};
-    } else if (frames_left != 0) {
-        tty_config.setColor(out_stream, .bold) catch {};
-        try out_stream.print("({d} additional stack frames skipped...)\n", .{frames_left});
-        tty_config.setColor(out_stream, .reset) catch {};
+    switch (stack_trace.skipped) {
+        .none => if (frames_left != 0) {
+            tty_config.setColor(out_stream, .bold) catch {};
+            try out_stream.print("({d} additional stack frames skipped...)\n", .{frames_left});
+            tty_config.setColor(out_stream, .reset) catch {};
+        },
+        .unknown => {
+            tty_config.setColor(out_stream, .bold) catch {};
+            try out_stream.writeAll("(additional stack frames may not have been recorded...)\n");
+            tty_config.setColor(out_stream, .reset) catch {};
+        },
+        else => |dropped_frames| {
+            tty_config.setColor(out_stream, .bold) catch {};
+            try out_stream.print("({d} additional stack frames not recorded...)\n", .{dropped_frames});
+            tty_config.setColor(out_stream, .reset) catch {};
+        },
     }
     out_stream.writeAll("\n") catch {};
 }
