@@ -228,11 +228,11 @@ pub fn JSSink(comptime SinkType: type, comptime abi_name: []const u8) type {
             }
 
             pub fn close(this: *@This(), _: ?Syscall.Error) void {
-                onClose(@as(SinkSignal, @bitCast(@intFromPtr(this))).cpp, .js_undefined);
+                onClose(JSValue.cast(this), .js_undefined);
             }
 
             pub fn ready(this: *@This(), _: ?Blob.SizeType, _: ?Blob.SizeType) void {
-                onReady(@as(SinkSignal, @bitCast(@intFromPtr(this))).cpp, .js_undefined, .js_undefined);
+                onReady(JSValue.cast(this), .js_undefined, .js_undefined);
             }
 
             pub fn start(_: *@This()) void {}
