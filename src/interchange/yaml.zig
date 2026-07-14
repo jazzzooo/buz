@@ -270,6 +270,7 @@ pub fn Parser(comptime enc: Encoding) type {
 
         pos: Pos,
         line_indent: Indent,
+        tab_after_indent: bool,
         line: Line,
         token: Token(enc),
 
@@ -318,6 +319,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 .allocator = allocator,
                 .pos = start,
                 .line_indent = .none,
+                .tab_after_indent = false,
                 .line = .from(1),
                 .token = .eof(.{ .start = start, .indent = .none, .line = .from(1) }),
                 // .key = null,
@@ -564,6 +566,7 @@ pub fn Parser(comptime enc: Encoding) type {
 
         fn newline(self: *@This()) void {
             self.line_indent = .none;
+            self.tab_after_indent = false;
             self.line.inc(1);
         }
 
@@ -893,6 +896,8 @@ pub fn Parser(comptime enc: Encoding) type {
             var prev_line: Line = .from(0);
 
             while (self.token.data == .sequence_entry and self.token.indent == sequence_indent) {
+                try self.rejectTabAsIndentation(self.token.tab_after_indent);
+
                 const entry_line = self.token.line;
                 const entry_start = self.token.start;
 
@@ -903,9 +908,6 @@ pub fn Parser(comptime enc: Encoding) type {
                 }
 
                 prev_line = self.token.line;
-                if (self.next() == '\t') {
-                    return error.InvalidIndentation;
-                }
                 try self.scan(.{ .additional_parent_indent = sequence_indent.add(1) });
                 const item = try self.parseBlockIndented(sequence_indent, entry_line, entry_start.add(2), .sequence_entry);
                 try seq.append(item);
@@ -1054,7 +1056,10 @@ pub fn Parser(comptime enc: Encoding) type {
             mapping_start: Pos,
             mapping_indent: Indent,
             mapping_line: Line,
+            tab_after_indent: bool,
         ) ParseError!Expr {
+            try self.rejectTabAsIndentation(tab_after_indent);
+
             if (self.explicit_document_start_line) |explicit_document_start_line| {
                 if (mapping_line == explicit_document_start_line) {
                     // TODO: more specific error
@@ -1086,8 +1091,9 @@ pub fn Parser(comptime enc: Encoding) type {
                         break :value .init(E.Null, .{}, mapping_value_start.loc());
                     },
                     .mapping_value => value: {
+                        try self.rejectTabAsIndentation(self.token.tab_after_indent);
                         const parent_indent = if (mapping_value_line != mapping_line) mapping_indent.add(1) else null;
-                        try self.scan(.{ .additional_parent_indent = parent_indent });
+                        try self.scan(.{ .additional_parent_indent = parent_indent, .block_indented = true });
                         break :value try self.parseBlockIndented(
                             mapping_indent,
                             mapping_value_line,
@@ -1117,6 +1123,8 @@ pub fn Parser(comptime enc: Encoding) type {
                 => false,
                 else => true,
             } and self.token.indent == mapping_indent and self.token.line != previous_line) {
+                try self.rejectTabAsIndentation(self.token.tab_after_indent);
+
                 const key_line = self.token.line;
                 previous_line = key_line;
                 const explicit_key = self.token.data == .mapping_key;
@@ -1159,8 +1167,9 @@ pub fn Parser(comptime enc: Encoding) type {
                         break :value .init(E.Null, .{}, mapping_value_start.loc());
                     },
                     else => value: {
+                        try self.rejectTabAsIndentation(self.token.tab_after_indent);
                         const parent_indent = if (mapping_value_line != key_line) mapping_indent.add(1) else null;
-                        try self.scan(.{ .additional_parent_indent = parent_indent });
+                        try self.scan(.{ .additional_parent_indent = parent_indent, .block_indented = true });
                         break :value try self.parseBlockIndented(
                             mapping_indent,
                             mapping_value_line,
@@ -1359,6 +1368,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             self.pos = self.token.start;
                             self.line = self.token.line;
                             self.line_indent = self.token.indent;
+                            self.tab_after_indent = self.token.tab_after_indent;
                             self.whitespace_buf.clearRetainingCapacity();
                             try self.scan(.{});
                         }
@@ -1366,6 +1376,11 @@ pub fn Parser(comptime enc: Encoding) type {
                         const empty_node: Expr = .init(E.Null, .{}, indicator_start.loc());
                         return self.finishNodeProperties(node_props, empty_node);
                     }
+                }
+
+                switch (self.token.data) {
+                    .sequence_entry, .mapping_key, .mapping_value => try self.rejectTabAsIndentation(self.token.tab_after_indent),
+                    else => {},
                 }
 
                 switch (self.token.data) {
@@ -1551,6 +1566,7 @@ pub fn Parser(comptime enc: Encoding) type {
                     const alias_start = self.token.start;
                     const alias_indent = self.token.indent;
                     const alias_line = self.token.line;
+                    const alias_tab_after_indent = self.token.tab_after_indent;
 
                     if (node_props.has_anchor) |anchor| {
                         if (anchor.line == alias_line) {
@@ -1601,6 +1617,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             alias_start,
                             alias_indent,
                             alias_line,
+                            alias_tab_after_indent,
                         );
 
                         return map;
@@ -1613,6 +1630,7 @@ pub fn Parser(comptime enc: Encoding) type {
                     const sequence_start = self.token.start;
                     const sequence_indent = self.token.indent;
                     const sequence_line = self.token.line;
+                    const sequence_tab_after_indent = self.token.tab_after_indent;
                     const seq = try self.parseFlowSequence();
 
                     if (self.token.data == .mapping_value) {
@@ -1641,6 +1659,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             sequence_start,
                             sequence_indent,
                             sequence_line,
+                            sequence_tab_after_indent,
                         );
 
                         if (implicit_key_anchors.mapping_anchor) |mapping_anchor| {
@@ -1679,6 +1698,7 @@ pub fn Parser(comptime enc: Encoding) type {
                     const mapping_start = self.token.start;
                     const mapping_indent = self.token.indent;
                     const mapping_line = self.token.line;
+                    const mapping_tab_after_indent = self.token.tab_after_indent;
 
                     const map = try self.parseFlowMapping();
 
@@ -1708,6 +1728,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             mapping_start,
                             mapping_indent,
                             mapping_line,
+                            mapping_tab_after_indent,
                         );
 
                         if (implicit_key_anchors.mapping_anchor) |mapping_anchor| {
@@ -1723,14 +1744,12 @@ pub fn Parser(comptime enc: Encoding) type {
                     const mapping_start = self.token.start;
                     const mapping_indent = self.token.indent;
                     const mapping_line = self.token.line;
+                    const mapping_tab_after_indent = self.token.tab_after_indent;
 
                     const key = key: {
                         try self.block_indents.push(mapping_indent);
                         defer self.block_indents.pop();
-                        if (self.next() == '\t') {
-                            return error.InvalidIndentation;
-                        }
-                        try self.scan(.{});
+                        try self.scan(.{ .block_indented = true });
                         break :key try self.parseBlockIndented(
                             mapping_indent,
                             mapping_line,
@@ -1750,6 +1769,7 @@ pub fn Parser(comptime enc: Encoding) type {
                         mapping_start,
                         mapping_indent,
                         mapping_line,
+                        mapping_tab_after_indent,
                     );
                 },
                 .mapping_value => {
@@ -1796,6 +1816,7 @@ pub fn Parser(comptime enc: Encoding) type {
                     }
 
                     const first_key = key_tag.resolveNull(self.token.start.loc());
+                    const mapping_tab_after_indent = self.token.tab_after_indent;
                     if (key_anchor) |anchor| {
                         try self.anchors.put(anchor.data.anchor.slice(self.input), first_key);
                     }
@@ -1804,12 +1825,14 @@ pub fn Parser(comptime enc: Encoding) type {
                         self.token.start,
                         self.token.indent,
                         self.token.line,
+                        mapping_tab_after_indent,
                     );
                 },
                 .scalar => |scalar| {
                     const scalar_start = self.token.start;
                     const scalar_indent = self.token.indent;
                     const scalar_line = self.token.line;
+                    const scalar_tab_after_indent = self.token.tab_after_indent;
 
                     try self.scan(.{ .tag = node_props.tag(), .outside_context = true });
 
@@ -1879,6 +1902,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             scalar_start,
                             scalar_indent,
                             scalar_line,
+                            scalar_tab_after_indent,
                         );
 
                         if (implicit_key_anchors.mapping_anchor) |mapping_anchor| {
@@ -1934,12 +1958,14 @@ pub fn Parser(comptime enc: Encoding) type {
 
                     self.line_indent = indent;
 
+                    if (self.next() == '\t') self.tab_after_indent = true;
                     self.skipSWhite();
                     continue :next self.next();
                 },
                 '\t' => {
                     // there's no indentation, but we still skip
                     // the whitespace
+                    self.tab_after_indent = true;
                     self.inc(1);
                     self.skipSWhite();
                     continue :next self.next();
@@ -3052,8 +3078,8 @@ pub fn Parser(comptime enc: Encoding) type {
                 break :explicit c;
             };
 
-            if (first == '\t' and !self.line_indent.isLessThan(ctx.content_indent)) {
-                self.line_indent.inc(1);
+            if (first == '\t') {
+                self.tab_after_indent = true;
             }
 
             next: switch (first) {
@@ -3087,10 +3113,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             ctx.leading_newlines += 1;
                             self.newline();
                             self.inc(1);
-                            if (self.next() == '\t') {
-                                // tab for indentation
-                                return error.UnexpectedCharacter;
-                            }
+                            if (self.next() == '\t') self.tab_after_indent = true;
                             continue :newlines self.next();
                         },
                         ' ' => {
@@ -3104,15 +3127,18 @@ pub fn Parser(comptime enc: Encoding) type {
                                 self.inc(1);
                             }
 
-                            if (self.next() == '\t' and !indent.isLessThan(ctx.content_indent)) {
-                                indent.inc(1);
+                            if (self.next() == '\t') {
+                                self.tab_after_indent = true;
                             }
 
                             self.line_indent = indent;
 
                             continue :next self.next();
                         },
-                        else => |c| continue :next c,
+                        else => |c| {
+                            if (c == '\t') self.tab_after_indent = true;
+                            continue :next c;
+                        },
                     }
                 },
 
@@ -3132,6 +3158,8 @@ pub fn Parser(comptime enc: Encoding) type {
                     if (self.line_indent.isLessThan(ctx.content_indent)) {
                         return ctx.done(false);
                     }
+
+                    if (c == '\t') self.line_indent.inc(1);
 
                     ctx.unterminated_line = true;
                     try ctx.append(c, self.line_indent);
@@ -3707,6 +3735,10 @@ pub fn Parser(comptime enc: Encoding) type {
             /// count indentation.
             first_scan: bool = false,
 
+            /// Spaces after a block indicator count as indentation for a
+            /// compact collection.
+            block_indented: bool = false,
+
             outside_context: bool = false,
         };
 
@@ -3715,6 +3747,8 @@ pub fn Parser(comptime enc: Encoding) type {
                 parser: *Parser(enc),
 
                 count_indentation: bool,
+                in_indentation: bool,
+                tab_after_indent: bool,
                 additional_parent_indent: ?Indent,
 
                 pub fn scanWhitespace(ctx: *@This(), comptime ws: enc.unit()) ScanError!enc.unit() {
@@ -3730,6 +3764,8 @@ pub fn Parser(comptime enc: Encoding) type {
                         },
                         '\n' => {
                             ctx.count_indentation = true;
+                            ctx.in_indentation = true;
+                            ctx.tab_after_indent = false;
                             ctx.additional_parent_indent = null;
 
                             parser.newline();
@@ -3755,10 +3791,12 @@ pub fn Parser(comptime enc: Encoding) type {
                             return parser.next();
                         },
                         '\t' => {
-                            if (ctx.count_indentation and ctx.parser.context.get() == .block_in) {
-                                return error.UnexpectedCharacter;
+                            if (ctx.in_indentation) {
+                                ctx.tab_after_indent = true;
+                                parser.tab_after_indent = true;
                             }
                             ctx.count_indentation = false;
+                            ctx.in_indentation = false;
                             parser.inc(1);
                             return parser.next();
                         },
@@ -3767,10 +3805,13 @@ pub fn Parser(comptime enc: Encoding) type {
                 }
             };
 
+            const in_indentation = opts.first_scan or opts.block_indented or opts.additional_parent_indent != null;
             var ctx: ScanCtx = .{
                 .parser = self,
 
                 .count_indentation = opts.first_scan or opts.additional_parent_indent != null,
+                .in_indentation = in_indentation,
+                .tab_after_indent = self.tab_after_indent,
                 .additional_parent_indent = opts.additional_parent_indent,
             };
 
@@ -4270,6 +4311,8 @@ pub fn Parser(comptime enc: Encoding) type {
                     }
                 },
             }
+
+            self.token.tab_after_indent = ctx.tab_after_indent;
         }
 
         fn isChar(self: *@This(), char: enc.unit()) bool {
@@ -4390,6 +4433,15 @@ pub fn Parser(comptime enc: Encoding) type {
                 '\n', '\r' => true,
                 else => false,
             };
+        }
+
+        fn rejectTabAsIndentation(self: *const @This(), tab_after_indent: bool) error{InvalidIndentation}!void {
+            if (!tab_after_indent) return;
+
+            switch (self.context.get()) {
+                .block_out, .block_in => return error.InvalidIndentation,
+                .flow_in, .flow_key => {},
+            }
         }
 
         fn isDocumentIndicator(self: *const @This(), comptime indicator: []const u8) bool {
@@ -5635,6 +5687,7 @@ pub fn Token(comptime encoding: Encoding) type {
     return struct {
         start: Pos,
         indent: Indent,
+        tab_after_indent: bool = false,
         line: Line,
         data: Data,
 
