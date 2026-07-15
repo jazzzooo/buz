@@ -737,6 +737,14 @@ fn getTranslateC(b: *Build, initial_target: std.Build.ResolvedTarget, optimize: 
     if (target.result.abi.isAndroid()) {
         const sysroot = android_ndk_sysroot orelse
             std.debug.panic("translate-c for Android requires -Dandroid_ndk_sysroot", .{});
+        // Bionic annotates array parameters with Clang nullability keywords,
+        // which translate-c rejects even though the annotations do not affect
+        // the declarations' ABI. Its signedness overload for ioctl is likewise
+        // unnecessary for translated declarations.
+        translate_c.defineCMacroRaw("_Nonnull=");
+        translate_c.defineCMacroRaw("_Nullable=");
+        translate_c.defineCMacroRaw("_Null_unspecified=");
+        translate_c.defineCMacro("BIONIC_IOCTL_NO_SIGNEDNESS_OVERLOAD", "1");
         const arch_triple = switch (target.result.cpu.arch) {
             .aarch64 => "aarch64-linux-android",
             .x86_64 => "x86_64-linux-android",
