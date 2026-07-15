@@ -1731,7 +1731,7 @@ pub const RunCommand = struct {
 
             const trigger = bun.pathLiteral("/[stdin]");
             var entry_point_buf: [bun.MAX_PATH_BYTES + trigger.len]u8 = undefined;
-            const cwd = entry_point_buf[0..try std.Io.Dir.cwd().realPath(ctx.io, &entry_point_buf)];
+            const cwd = entry_point_buf[0..try std.process.currentPath(ctx.io, &entry_point_buf)];
             @memcpy(entry_point_buf[cwd.len..][0..trigger.len], trigger);
             const entry_path = entry_point_buf[0 .. cwd.len + trigger.len];
 
@@ -1955,7 +1955,7 @@ pub const RunCommand = struct {
         if (ctx.runtime_options.eval.script.len > 0) {
             const trigger = bun.pathLiteral("/[eval]");
             var entry_point_buf: [bun.MAX_PATH_BYTES + trigger.len]u8 = undefined;
-            const cwd = entry_point_buf[0..try std.Io.Dir.cwd().realPath(ctx.io, &entry_point_buf)];
+            const cwd = entry_point_buf[0..try std.process.currentPath(ctx.io, &entry_point_buf)];
             @memcpy(entry_point_buf[cwd.len..][0..trigger.len], trigger);
             try Run.boot(ctx, entry_point_buf[0 .. cwd.len + trigger.len], null);
             return;
@@ -1998,7 +1998,7 @@ pub const RunCommand = struct {
     fn @"bun feedback"(ctx: Command.Context) !noreturn {
         const trigger = bun.pathLiteral("/[eval]");
         var entry_point_buf: [bun.MAX_PATH_BYTES + trigger.len]u8 = undefined;
-        const cwd = entry_point_buf[0..try std.Io.Dir.cwd().realPath(ctx.io, &entry_point_buf)];
+        const cwd = entry_point_buf[0..try std.process.currentPath(ctx.io, &entry_point_buf)];
         @memcpy(entry_point_buf[cwd.len..][0..trigger.len], trigger);
         ctx.runtime_options.eval.script = if (bun.Environment.codegen_embed)
             @embedFile("eval/feedback.ts")

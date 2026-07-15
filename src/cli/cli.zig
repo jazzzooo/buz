@@ -1178,7 +1178,7 @@ pub const Command = struct {
     fn @"bun --eval --print"(ctx: Context) !void {
         const trigger = bun.pathLiteral("/[eval]");
         var entry_point_buf: [bun.MAX_PATH_BYTES + trigger.len]u8 = undefined;
-        const cwd = entry_point_buf[0..try std.Io.Dir.cwd().realPath(ctx.io, &entry_point_buf)];
+        const cwd = entry_point_buf[0..try std.process.currentPath(ctx.io, &entry_point_buf)];
         @memcpy(entry_point_buf[cwd.len..][0..trigger.len], trigger);
         ctx.passthrough = try std.mem.concat(ctx.allocator, []const u8, &.{ ctx.positionals, ctx.passthrough });
         try bun_js.Run.boot(ctx, entry_point_buf[0 .. cwd.len + trigger.len], null);
