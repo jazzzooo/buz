@@ -49,7 +49,7 @@ pub const Loop = struct {
             }
         }
         if (comptime Environment.isFreeBSD) {
-            loop.kqueue_fd = .fromNative(std.posix.kqueue() catch @panic("Failed to create kqueue"));
+            loop.kqueue_fd = bun.sys.kqueue().unwrap() catch @panic("Failed to create kqueue");
             // Register the eventfd waker. udata = 0 → Pollable.tag() == .empty,
             // which onUpdateKQueue treats as a no-op (the wakeup just unblocks
             // the kevent() wait so the pending queue gets drained). EV_CLEAR
@@ -327,8 +327,8 @@ pub const Loop = struct {
             timespec.sec = @intCast(sec);
             timespec.nsec = @intCast(nsec);
         } else {
-            const updated = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch return;
-            timespec.* = updated;
+            const rc = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, timespec);
+            assert(rc == 0);
         }
     }
 };
@@ -356,7 +356,7 @@ inline fn keventCall(
     if (comptime Environment.isFreeBSD) {
         return std.c.kevent(kq, changes, nchanges, events, nevents, timeout);
     }
-    return posix.system.kevent64(kq, changes, nchanges, events, nevents, 0, timeout);
+    return posix.system.kevent64(kq, changes, nchanges, events, nevents, .{}, timeout);
 }
 
 const EventType = if (Environment.isLinux) linux.epoll_event else KEvent;

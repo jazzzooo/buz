@@ -442,12 +442,12 @@ pub const CopyFile = struct {
                             .result => |result| {
                                 stat_ = result;
 
-                                if (posix.S.ISDIR(result.mode)) {
+                                if (posix.S.ISDIR(@intCast(result.mode))) {
                                     this.system_error = unsupported_directory_error;
                                     return;
                                 }
 
-                                if (!posix.S.ISREG(result.mode))
+                                if (!posix.S.ISREG(@intCast(result.mode)))
                                     break :do_clonefile;
                             },
                             .err => |err| {

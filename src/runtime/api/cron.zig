@@ -294,7 +294,7 @@ pub const CronRegisterJob = struct {
             return;
         };
         defer bun.default_allocator.free(launch_agents_dir);
-        bun.FD.cwd().makePath(u8, launch_agents_dir) catch {
+        bun.FD.cwd().makePath(this.global.bunVM().io, u8, launch_agents_dir) catch {
             this.setErr("Failed to create ~/Library/LaunchAgents directory", .{});
             this.finish();
             return;

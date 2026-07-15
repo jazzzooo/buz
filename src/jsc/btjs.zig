@@ -37,23 +37,35 @@ fn dumpBtjsTraceDebugImpl() [*:0]const u8 {
 
 fn printSourceAtAddress(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Writer, address: usize, tty_config: std.Io.Terminal, fp: usize) !void {
     if (!bun.Environment.isDebug) unreachable;
-    const module = debug_info.getModuleForAddress(address) catch |err| switch (err) {
-        error.MissingDebugInfo, error.InvalidDebugInfo => return printUnknownSource(debug_info, out_stream, address, tty_config),
-        else => return err,
-    };
+    const allocator = std.debug.getDebugInfoAllocator();
+    var symbol_buf: [1]std.debug.Symbol = undefined;
+    var bfa: std.heap.BufferFirstAllocator = .init(@ptrCast(&symbol_buf), allocator);
+    const symbol_allocator = bfa.allocator();
+    var symbols = try std.ArrayList(std.debug.Symbol).initCapacity(symbol_allocator, 1);
+    defer symbols.deinit(symbol_allocator);
 
-    const symbol_info = module.getSymbolAtAddress(debug_info.allocator, address) catch |err| switch (err) {
-        error.MissingDebugInfo, error.InvalidDebugInfo => return printUnknownSource(debug_info, out_stream, address, tty_config),
+    debug_info.getSymbols(
+        std.Options.debug_io,
+        symbol_allocator,
+        allocator,
+        address,
+        false,
+        &symbols,
+    ) catch |err| switch (err) {
+        error.MissingDebugInfo, error.InvalidDebugInfo, error.UnsupportedDebugInfo => return printUnknownSource(debug_info, out_stream, address, tty_config),
         else => return err,
     };
-    defer if (symbol_info.source_location) |sl| debug_info.allocator.free(sl.file_name);
+    if (symbols.items.len == 0) return printUnknownSource(debug_info, out_stream, address, tty_config);
+    const symbol_info = symbols.items[0];
+    defer if (symbol_info.source_location) |sl| allocator.free(sl.file_name);
+    const symbol_name = symbol_info.name orelse "???";
 
     const probably_llint = address > @intFromPtr(&jsc_llint_begin) and address < @intFromPtr(&jsc_llint_end);
     var allow_llint = true;
-    if (std.mem.startsWith(u8, symbol_info.name, "__")) {
+    if (std.mem.startsWith(u8, symbol_name, "__")) {
         allow_llint = false; // disallow llint for __ZN3JSC11Interpreter20executeModuleProgramEPNS_14JSModuleRecordEPNS_23ModuleProgramExecutableEPNS_14JSGlobalObjectEPNS_19JSModuleEnvironmentENS_7JSValueES9_
     }
-    if (std.mem.startsWith(u8, symbol_info.name, "_llint_call_javascript")) {
+    if (std.mem.startsWith(u8, symbol_name, "_llint_call_javascript")) {
         allow_llint = false; // disallow llint for _llint_call_javascript
     }
     const do_llint = probably_llint and allow_llint;
@@ -70,8 +82,8 @@ fn printSourceAtAddress(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Wri
         out_stream,
         symbol_info.source_location,
         address,
-        symbol_info.name,
-        symbol_info.compile_unit_name,
+        symbol_name,
+        symbol_info.compile_unit_name orelse "",
         tty_config,
         printLineFromFileAnyOs,
         do_llint,
@@ -88,7 +100,7 @@ fn printSourceAtAddress(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Wri
 
 fn printUnknownSource(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Writer, address: usize, tty_config: std.Io.Terminal) !void {
     if (!bun.Environment.isDebug) unreachable;
-    const module_name = debug_info.getModuleNameForAddress(address);
+    const module_name = debug_info.getModuleName(std.Options.debug_io, address) catch null;
     return printLineInfo(
         out_stream,
         null,
@@ -218,7 +230,7 @@ fn printLastUnwindError(it: *std.debug.StackIterator, debug_info: *std.debug.Sel
 fn printUnwindError(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Writer, address: usize, err: std.debug.UnwindError, tty_config: std.Io.Terminal) !void {
     if (!bun.Environment.isDebug) unreachable;
 
-    const module_name = debug_info.getModuleNameForAddress(address) orelse "???";
+    const module_name = debug_info.getModuleName(std.Options.debug_io, address) catch "???";
     try tty_config.setColor(.dim);
     if (err == error.MissingDebugInfo) {
         try out_stream.print("Unwind information for `{s}:0x{x}` was not available, trace may be incomplete\n\n", .{ module_name, address });

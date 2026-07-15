@@ -651,9 +651,27 @@ const string = []const u8;
 
 const std = @import("std");
 const EventType = @import("./path_watcher.zig").PathWatcher.EventType;
-const Semaphore = std.Thread.Semaphore;
 
 const bun = @import("bun");
+const Semaphore = struct {
+    mutex: bun.Mutex = .{},
+    condition: bun.Condition = .{},
+    permits: usize = 0,
+
+    fn post(this: *Semaphore) void {
+        this.mutex.lock();
+        defer this.mutex.unlock();
+        this.permits += 1;
+        this.condition.signal();
+    }
+
+    fn wait(this: *Semaphore) void {
+        this.mutex.lock();
+        defer this.mutex.unlock();
+        while (this.permits == 0) this.condition.wait(&this.mutex);
+        this.permits -= 1;
+    }
+};
 const Mutex = bun.Mutex;
 const UnboundedQueue = bun.threading.UnboundedQueue;
 const Event = bun.jsc.Node.fs.Watcher.Event;

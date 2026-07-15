@@ -1042,7 +1042,7 @@ const WaiterThreadPosix = struct {
                 _ = std.posix.poll(&polls, std.math.maxInt(i32)) catch 0;
             } else {
                 var mask = std.posix.sigemptyset();
-                var signal: c_int = std.posix.SIG.CHLD;
+                var signal: c_int = @intFromEnum(std.posix.SIG.CHLD);
                 const rc = std.c.sigwait(&mask, &signal);
                 _ = rc;
             }
@@ -2382,9 +2382,7 @@ pub const sync = struct {
         // scan root after spawn.
         var no_orphans_kq: bun.FD = bun.invalid_fd;
         if (comptime Environment.isMac) if (no_orphans) {
-            if (std.posix.kqueue()) |kq| {
-                no_orphans_kq = bun.FD.fromNative(kq);
-            } else |_| {}
+            no_orphans_kq = bun.sys.kqueue().asValue() orelse bun.invalid_fd;
         };
         // LIFO: this runs LAST — after killSyncScriptTree() (which scans via
         // m_kq) and releaseKq().
@@ -2636,7 +2634,7 @@ pub const sync = struct {
         // disposition; only direct children raise SIGCHLD, so this fires for
         // `child` alone.
         if (jc.isActive())
-            add(&changes, std.posix.SIG.CHLD, std.c.EVFILT.SIGNAL, 0, 0);
+            add(&changes, @intFromEnum(std.posix.SIG.CHLD), std.c.EVFILT.SIGNAL, 0, 0);
         for (out_fds_to_wait_for, 0..) |fd, i| {
             if (fd != bun.invalid_fd) add(&changes, @intCast(fd.cast()), std.c.EVFILT.READ, 0, i);
         }

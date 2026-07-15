@@ -152,19 +152,36 @@ pub const PosixSpawn = struct {
         }
 
         pub fn get(self: PosixSpawnAttr) !u16 {
-            var flags: c_short = undefined;
-            switch (errno(system.posix_spawnattr_getflags(&self.attr, &flags))) {
-                .SUCCESS => return @as(u16, @bitCast(flags)),
-                .INVAL => unreachable,
-                else => |err| return unexpectedErrno(err),
+            if (comptime Environment.isMac) {
+                var flags: system.POSIX_SPAWN = undefined;
+                switch (errno(system.posix_spawnattr_getflags(&self.attr, &flags))) {
+                    .SUCCESS => return @bitCast(flags),
+                    .INVAL => unreachable,
+                    else => |err| return unexpectedErrno(err),
+                }
+            } else {
+                var flags: c_short = undefined;
+                switch (errno(system.posix_spawnattr_getflags(&self.attr, &flags))) {
+                    .SUCCESS => return @as(u16, @bitCast(flags)),
+                    .INVAL => unreachable,
+                    else => |err| return unexpectedErrno(err),
+                }
             }
         }
 
         pub fn set(self: *PosixSpawnAttr, flags: u16) !void {
-            switch (errno(system.posix_spawnattr_setflags(&self.attr, @as(c_short, @bitCast(flags))))) {
-                .SUCCESS => return,
-                .INVAL => unreachable,
-                else => |err| return unexpectedErrno(err),
+            if (comptime Environment.isMac) {
+                switch (errno(system.posix_spawnattr_setflags(&self.attr, @as(system.POSIX_SPAWN, @bitCast(flags))))) {
+                    .SUCCESS => return,
+                    .INVAL => unreachable,
+                    else => |err| return unexpectedErrno(err),
+                }
+            } else {
+                switch (errno(system.posix_spawnattr_setflags(&self.attr, @as(c_short, @bitCast(flags))))) {
+                    .SUCCESS => return,
+                    .INVAL => unreachable,
+                    else => |err| return unexpectedErrno(err),
+                }
             }
         }
 

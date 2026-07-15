@@ -918,7 +918,7 @@ pub const FilePoll = struct {
             };
 
             // output events only include change errors
-            const KEVENT_FLAG_ERROR_EVENTS = 0x000002;
+            const KEVENT_FLAG_ERROR_EVENTS: std.c.KEVENT.FLAG = .{ .ERROR_EVENTS = true };
 
             // The kevent() system call returns the number of events placed in
             // the eventlist, up to the value given by nevents.  If the time
@@ -1158,7 +1158,7 @@ pub const FilePoll = struct {
             }
 
             // output events only include change errors
-            const KEVENT_FLAG_ERROR_EVENTS = 0x000002;
+            const KEVENT_FLAG_ERROR_EVENTS: std.c.KEVENT.FLAG = .{ .ERROR_EVENTS = true };
 
             // The kevent() system call returns the number of events placed in
             // the eventlist, up to the value given by nevents.  If the time
@@ -1343,7 +1343,7 @@ pub const KEventWaker = struct {
             0,
             &events,
             events.len,
-            0,
+            .{},
             null,
         );
     }
@@ -1359,7 +1359,7 @@ pub const KEventWaker = struct {
     extern fn io_darwin_schedule_wakeup(bun.mach_port) bool;
 
     pub fn init() !Waker {
-        return initWithFileDescriptor(bun.default_allocator, try std.posix.kqueue());
+        return initWithFileDescriptor(bun.default_allocator, (try bun.sys.kqueue().unwrap()).cast());
     }
 
     pub fn initWithFileDescriptor(allocator: std.mem.Allocator, kq: i32) !Waker {

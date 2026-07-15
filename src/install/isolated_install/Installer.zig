@@ -800,6 +800,7 @@ pub const Installer = struct {
                                 .cache_dir = cache_dir,
                                 .cache_dir_subpath = pkg_cache_dir_subpath,
                                 .dest_subpath = dest_subpath,
+                                .io = installer.manager.io,
                             };
 
                             switch (cloner.clone()) {

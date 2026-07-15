@@ -39,9 +39,9 @@ const CPUTimes = struct {
 pub fn cpus(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
     const cpusImpl = switch (Environment.os) {
         .linux => cpusImplLinux,
-        .mac => cpusImplDarwin,
+        .mac => cpusImplLibuv,
         .freebsd => cpusImplFreeBSD,
-        .windows => cpusImplWindows,
+        .windows => cpusImplLibuv,
         .wasm => @compileError("Unsupported OS"),
     };
 
@@ -195,25 +195,25 @@ fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
 fn cpusImplFreeBSD(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
     var ncpu: c_uint = 0;
     var ncpu_len: usize = @sizeOf(c_uint);
-    try std.posix.sysctlbynameZ("hw.ncpu", &ncpu, &ncpu_len, null, 0);
+    try sysctlByName("hw.ncpu", &ncpu, &ncpu_len);
     if (ncpu == 0) return error.no_processor_info;
 
     var model_buf: [512]u8 = undefined;
     var model_len: usize = model_buf.len;
-    const model = if (std.posix.sysctlbynameZ("hw.model", &model_buf, &model_len, null, 0)) |_|
+    const model = if (sysctlByName("hw.model", &model_buf, &model_len)) |_|
         jsc.ZigString.init(std.mem.sliceTo(&model_buf, 0)).withEncoding().toJS(globalThis)
     else |_|
         jsc.ZigString.static("unknown").withEncoding().toJS(globalThis);
 
     var speed_mhz: c_uint = 0;
     var speed_len: usize = @sizeOf(c_uint);
-    _ = std.posix.sysctlbynameZ("hw.clockrate", &speed_mhz, &speed_len, null, 0) catch {};
+    sysctlByName("hw.clockrate", &speed_mhz, &speed_len) catch {};
 
     const cpu_states = 5; // user, nice, sys, intr, idle
     const times_buf = try bun.default_allocator.alloc(c_long, @as(usize, ncpu) * cpu_states);
     defer bun.default_allocator.free(times_buf);
     var times_len: usize = times_buf.len * @sizeOf(c_long);
-    try std.posix.sysctlbynameZ("kern.cp_times", times_buf.ptr, &times_len, null, 0);
+    try sysctlByName("kern.cp_times", times_buf.ptr, &times_len);
 
     const ticks: i64 = bun_sysconf__SC_CLK_TCK();
     const mult: u64 = if (ticks > 0) 1000 / @as(u64, @intCast(ticks)) else 1;
@@ -239,79 +239,7 @@ fn cpusImplFreeBSD(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
 }
 
 extern fn bun_sysconf__SC_CLK_TCK() isize;
-fn cpusImplDarwin(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
-    // Fetch the CPU info structure
-    var num_cpus: c.natural_t = 0;
-    var info: [*]bun.c.processor_cpu_load_info = undefined;
-    var info_size: std.c.mach_msg_type_number_t = 0;
-    if (bun.c.host_processor_info(
-        std.c.mach_host_self(),
-        bun.c.PROCESSOR_CPU_LOAD_INFO,
-        &num_cpus,
-        @as(*bun.c.processor_info_array_t, @ptrCast(&info)),
-        &info_size,
-    ) != 0) {
-        return error.no_processor_info;
-    }
-    defer _ = std.c.vm_deallocate(std.c.mach_task_self(), @intFromPtr(info), info_size);
-
-    // Ensure we got the amount of data we expected to guard against buffer overruns
-    if (info_size != bun.c.PROCESSOR_CPU_LOAD_INFO_COUNT * num_cpus) {
-        return error.broken_process_info;
-    }
-
-    // Get CPU model name
-    var model_name_buf: [512]u8 = undefined;
-    var len: usize = model_name_buf.len;
-    // Try brand_string first and if it fails try hw.model
-    if (!(std.c.sysctlbyname("machdep.cpu.brand_string", &model_name_buf, &len, null, 0) == 0 or
-        std.c.sysctlbyname("hw.model", &model_name_buf, &len, null, 0) == 0))
-    {
-        return error.no_processor_info;
-    }
-    // NOTE: sysctlbyname doesn't update len if it was large enough, so we
-    // still have to find the null terminator.  All cpus can share the same
-    // model name.
-    const model_name = jsc.ZigString.init(std.mem.sliceTo(&model_name_buf, 0)).withEncoding().toJS(globalThis);
-
-    // Get CPU speed
-    var speed: u64 = 0;
-    len = @sizeOf(@TypeOf(speed));
-    _ = std.c.sysctlbyname("hw.cpufrequency", &speed, &len, null, 0);
-    if (speed == 0) {
-        // Suggested by Node implementation:
-        // If sysctl hw.cputype == CPU_TYPE_ARM64, the correct value is unavailable
-        // from Apple, but we can hard-code it here to a plausible value.
-        speed = 2_400_000_000;
-    }
-
-    // Get the multiplier; this is the number of ms/tick
-    const ticks: i64 = bun_sysconf__SC_CLK_TCK();
-    const multiplier = 1000 / @as(u64, @intCast(ticks));
-
-    // Set up each CPU value in the return
-    const values = try jsc.JSValue.createEmptyArray(globalThis, @as(u32, @intCast(num_cpus)));
-    var cpu_index: u32 = 0;
-    while (cpu_index < num_cpus) : (cpu_index += 1) {
-        const times = CPUTimes{
-            .user = info[cpu_index].cpu_ticks[0] * multiplier,
-            .nice = info[cpu_index].cpu_ticks[3] * multiplier,
-            .sys = info[cpu_index].cpu_ticks[1] * multiplier,
-            .idle = info[cpu_index].cpu_ticks[2] * multiplier,
-            .irq = 0, // not available
-        };
-
-        const cpu = jsc.JSValue.createEmptyObject(globalThis, 3);
-        cpu.put(globalThis, jsc.ZigString.static("speed"), jsc.JSValue.jsNumber(speed / 1_000_000));
-        cpu.put(globalThis, jsc.ZigString.static("model"), model_name);
-        cpu.put(globalThis, jsc.ZigString.static("times"), times.toValue(globalThis));
-
-        try values.putIndex(globalThis, cpu_index, cpu);
-    }
-    return values;
-}
-
-pub fn cpusImplWindows(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
+pub fn cpusImplLibuv(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
     var cpu_infos: [*]libuv.uv_cpu_info_t = undefined;
     var count: c_int = undefined;
     const err = libuv.uv_cpu_info(&cpu_infos, &count);
@@ -481,15 +409,7 @@ pub fn loadavg(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
             var avg: c.struct_loadavg = undefined;
             var size: usize = @sizeOf(@TypeOf(avg));
 
-            std.posix.sysctlbynameZ(
-                "vm.loadavg",
-                &avg,
-                &size,
-                null,
-                0,
-            ) catch |err| switch (err) {
-                else => break :loadavg [3]f64{ 0, 0, 0 },
-            };
+            sysctlByName("vm.loadavg", &avg, &size) catch break :loadavg [3]f64{ 0, 0, 0 };
 
             const scale: f64 = @floatFromInt(avg.fscale);
             break :loadavg .{
@@ -938,20 +858,10 @@ pub fn setPriority2(global: *jsc.JSGlobalObject, priority: i32) !void {
 pub fn totalmem() u64 {
     switch (bun.Environment.os) {
         .mac => {
-            var memory_: [32]c_ulonglong = undefined;
-            var size: usize = memory_.len;
-
-            std.posix.sysctlbynameZ(
-                "hw.memsize",
-                &memory_,
-                &size,
-                null,
-                0,
-            ) catch |err| switch (err) {
-                else => return 0,
-            };
-
-            return memory_[0];
+            var memory: u64 = 0;
+            var size: usize = @sizeOf(@TypeOf(memory));
+            sysctlByName("hw.memsize", &memory, &size) catch return 0;
+            return memory;
         },
         .linux => {
             var info: c.struct_sysinfo = undefined;
@@ -961,7 +871,7 @@ pub fn totalmem() u64 {
         .freebsd => {
             var physmem: u64 = 0;
             var size: usize = @sizeOf(u64);
-            std.posix.sysctlbynameZ("hw.physmem", &physmem, &size, null, 0) catch return 0;
+            sysctlByName("hw.physmem", &physmem, &size) catch return 0;
             return physmem;
         },
         .windows => {
@@ -988,20 +898,10 @@ pub fn uptime(global: *jsc.JSGlobalObject) bun.JSError!f64 {
             return uptime_value;
         },
         .mac, .freebsd => {
-            var boot_time: std.posix.timeval = undefined;
+            var boot_time: std.c.timeval = undefined;
             var size: usize = @sizeOf(@TypeOf(boot_time));
-
-            std.posix.sysctlbynameZ(
-                "kern.boottime",
-                &boot_time,
-                &size,
-                null,
-                0,
-            ) catch |err| switch (err) {
-                else => return 0,
-            };
-
-            return @floatFromInt(std.time.timestamp() - boot_time.sec);
+            sysctlByName("kern.boottime", &boot_time, &size) catch return 0;
+            return @floatFromInt(bun.realSeconds(global.bunVM().io) - boot_time.sec);
         },
         .linux => {
             var info: c.struct_sysinfo = undefined;
@@ -1011,6 +911,10 @@ pub fn uptime(global: *jsc.JSGlobalObject) bun.JSError!f64 {
         },
         .wasm => @compileError("unsupported os"),
     }
+}
+
+fn sysctlByName(name: [*:0]const u8, oldp: ?*anyopaque, oldlenp: *usize) error{SysctlFailed}!void {
+    if (std.c.sysctlbyname(name, oldp, oldlenp, null, 0) != 0) return error.SysctlFailed;
 }
 
 pub fn userInfo(globalThis: *jsc.JSGlobalObject, options: gen.UserInfoOptions) bun.JSError!jsc.JSValue {

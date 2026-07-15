@@ -549,6 +549,13 @@ pub fn eventfd(initial_value: u32, flags: u32) Maybe(bun.FD) {
     @compileError("eventfd is only available on Linux and FreeBSD");
 }
 
+pub fn kqueue() Maybe(bun.FD) {
+    if (comptime !Environment.isMac and !Environment.isFreeBSD) @compileError("kqueue is only available on macOS and FreeBSD");
+    const rc = std.c.kqueue();
+    if (Maybe(bun.FD).errnoSys(rc, .kqueue)) |err| return err;
+    return .{ .result = .fromNative(rc) };
+}
+
 pub fn epoll_create1(flags: u32) Maybe(bun.FD) {
     if (comptime !Environment.isLinux) @compileError("epoll is only available on Linux");
     const rc = linux.epoll_create1(flags);

@@ -3578,7 +3578,7 @@ pub const NodeFS = struct {
                     .err => |err| return Maybe(Return.CopyFile){ .err = err.withPath(src) },
                 };
 
-                if (!posix.S.ISREG(stat_.mode)) {
+                if (!posix.S.ISREG(@intCast(stat_.mode))) {
                     return Maybe(Return.CopyFile){ .err = .{
                         .errno = @intFromEnum(SystemErrno.ENOTSUP),
                         .syscall = .copyfile,
@@ -3594,7 +3594,7 @@ pub const NodeFS = struct {
                     }
 
                     if (ret.errnoSysP(c.clonefile(src, dest, 0), .copyfile, src) == null) {
-                        _ = Syscall.chmod(dest, stat_.mode);
+                        _ = Syscall.chmod(dest, @intCast(stat_.mode));
                         return ret.success;
                     }
                 } else {
@@ -3618,7 +3618,7 @@ pub const NodeFS = struct {
                     };
                     defer {
                         _ = Syscall.ftruncate(dest_fd, @as(std.c.off_t, @intCast(@as(u63, @truncate(wrote)))));
-                        _ = Syscall.fchmod(dest_fd, stat_.mode);
+                        _ = Syscall.fchmod(dest_fd, @intCast(stat_.mode));
                         dest_fd.close();
                     }
 
@@ -3657,7 +3657,7 @@ pub const NodeFS = struct {
                 .result => |result| result,
                 .err => |err| return Maybe(Return.CopyFile){ .err = err },
             };
-            if (!posix.S.ISREG(stat_.mode)) {
+            if (!posix.S.ISREG(@intCast(stat_.mode))) {
                 return Maybe(Return.CopyFile){ .err = .{ .errno = @intFromEnum(SystemErrno.EOPNOTSUPP), .syscall = .copyfile } };
             }
 
@@ -3688,7 +3688,7 @@ pub const NodeFS = struct {
                 const rc = std.c.copy_file_range(src_fd.native(), null, dest_fd.native(), null, std.math.maxInt(i32) - 1, 0);
                 switch (bun.sys.getErrno(rc)) {
                     .SUCCESS => if (rc == 0) {
-                        _ = Syscall.fchmod(dest_fd, stat_.mode);
+                        _ = Syscall.fchmod(dest_fd, @intCast(stat_.mode));
                         return ret.success;
                     },
                     .INTR => continue,
@@ -3705,7 +3705,7 @@ pub const NodeFS = struct {
                 _ = bun.sys.unlink(dest);
                 return Maybe(Return.CopyFile){ .err = err };
             }
-            _ = Syscall.fchmod(dest_fd, stat_.mode);
+            _ = Syscall.fchmod(dest_fd, @intCast(stat_.mode));
             return ret.success;
         }
 
@@ -6448,7 +6448,7 @@ pub const NodeFS = struct {
                     }
 
                     if (ret.errnoSysP(c.clonefile(src, dest, 0), .clonefile, src) == null) {
-                        _ = Syscall.chmod(dest, stat_.mode);
+                        _ = Syscall.chmod(dest, @intCast(stat_.mode));
                         return ret.success;
                     }
                 } else {
@@ -6500,7 +6500,7 @@ pub const NodeFS = struct {
                     };
                     defer {
                         _ = Syscall.ftruncate(dest_fd, @intCast(@as(u63, @truncate(wrote))));
-                        _ = Syscall.fchmod(dest_fd, stat_.mode);
+                        _ = Syscall.fchmod(dest_fd, @intCast(stat_.mode));
                         dest_fd.close();
                     }
 
@@ -6518,7 +6518,11 @@ pub const NodeFS = struct {
 
             const first_try = ret.errnoSysP(c.copyfile(src, dest, null, mode_), .copyfile, src) orelse return ret.success;
             if (first_try == .err and first_try.err.errno == @intFromEnum(Syscall.E.NOENT)) {
-                bun.makePath(std.Io.Dir.cwd(), bun.path.dirname(dest, .auto)) catch {};
+                const mkdir_result = this.mkdirRecursive(.{
+                    .path = PathLike{ .string = PathString.init(bun.path.dirname(dest, .auto)) },
+                    .recursive = true,
+                });
+                if (mkdir_result == .err) return .{ .err = mkdir_result.err };
                 return ret.errnoSysP(c.copyfile(src, dest, null, mode_), .copyfile, src) orelse ret.success;
             }
             return first_try;
@@ -6698,7 +6702,7 @@ pub const NodeFS = struct {
                 .result => |result| result,
                 .err => |err| return Maybe(Return.CopyFile){ .err = err.withFd(src_fd) },
             };
-            if (!posix.S.ISREG(stat_.mode)) {
+            if (!posix.S.ISREG(@intCast(stat_.mode))) {
                 return Maybe(Return.CopyFile){ .err = .{ .errno = @intFromEnum(SystemErrno.EOPNOTSUPP), .syscall = .copyfile } };
             }
 
@@ -6747,7 +6751,7 @@ pub const NodeFS = struct {
 
             defer {
                 _ = Syscall.ftruncate(dest_fd, @as(i64, @intCast(@as(u63, @truncate(wrote)))));
-                _ = Syscall.fchmod(dest_fd, stat_.mode);
+                _ = Syscall.fchmod(dest_fd, @intCast(stat_.mode));
                 dest_fd.close();
             }
 

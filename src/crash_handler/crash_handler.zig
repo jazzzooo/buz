@@ -1239,15 +1239,14 @@ const StackLine = struct {
                     // This 'slide' is the ASLR offset. Subtract from `address` to get a stable address
                     const vmaddr_slide = std.c._dyld_get_image_vmaddr_slide(i);
 
-                    var it = std.macho.LoadCommandIterator{
-                        .ncmds = header.ncmds,
-                        .buffer = @alignCast(@as(
-                            [*]u8,
-                            @ptrFromInt(@intFromPtr(header) + @sizeOf(std.macho.mach_header_64)),
-                        )[0..header.sizeofcmds]),
-                    };
+                    const header_64: *const std.macho.mach_header_64 = @ptrFromInt(@intFromPtr(header));
+                    const raw_macho: [*]const u8 = @ptrCast(header_64);
+                    var it = std.macho.LoadCommandIterator.init(
+                        header_64,
+                        raw_macho[@sizeOf(std.macho.mach_header_64)..][0..header_64.sizeofcmds],
+                    ) catch continue;
 
-                    while (it.next()) |cmd| switch (cmd.cmd()) {
+                    while (it.next() catch break) |cmd| switch (cmd.hdr.cmd) {
                         .SEGMENT_64 => {
                             const segment_cmd = cmd.cast(std.macho.segment_command_64).?;
                             if (!bun.strings.eqlComptime(segment_cmd.segName(), "__TEXT")) continue;
@@ -1974,8 +1973,8 @@ pub const SourceAtAddress = struct {
     source_location: ?SourceLocation,
     symbol_name: []const u8,
     compile_unit_name: []const u8,
-    fn deinit(self: *@This(), debug_info: *debug.SelfInfo) void {
-        if (self.source_location) |sl| debug_info.allocator.free(sl.file_name);
+    fn deinit(self: *@This()) void {
+        if (self.source_location) |sl| debug.getDebugInfoAllocator().free(sl.file_name);
     }
 };
 
@@ -2010,8 +2009,8 @@ fn writeStackTrace(
             break;
         }
         const return_address = stack_trace.return_addresses[frame_index];
-        const source = (try getSourceAtAddress(debug_info, return_address - 1)) orelse {
-            const module_name = debug_info.getModuleNameForAddress(return_address - 1);
+        var source = (try getSourceAtAddress(debug_info, return_address - 1)) orelse {
+            const module_name = debug_info.getModuleName(std.Options.debug_io, return_address - 1) catch null;
             try printLineInfo(
                 out_stream,
                 null,
@@ -2022,6 +2021,7 @@ fn writeStackTrace(
             );
             continue;
         };
+        defer source.deinit();
 
         if (limits.skip_stdlib) {
             if (source.source_location) |sl| {
@@ -2078,20 +2078,31 @@ fn writeStackTrace(
 
 /// Clone of `debug.printSourceAtAddress` but it returns the metadata as well.
 pub fn getSourceAtAddress(debug_info: *debug.SelfInfo, address: usize) !?SourceAtAddress {
-    const module = debug_info.getModuleForAddress(address) catch |err| switch (err) {
-        error.MissingDebugInfo, error.InvalidDebugInfo => return null,
-        else => return err,
-    };
+    const allocator = debug.getDebugInfoAllocator();
+    var symbol_buf: [1]debug.Symbol = undefined;
+    var bfa: std.heap.BufferFirstAllocator = .init(@ptrCast(&symbol_buf), allocator);
+    const symbol_allocator = bfa.allocator();
+    var symbols = try std.ArrayList(debug.Symbol).initCapacity(symbol_allocator, 1);
+    defer symbols.deinit(symbol_allocator);
 
-    const symbol_info = module.getSymbolAtAddress(debug_info.allocator, address) catch |err| switch (err) {
-        error.MissingDebugInfo, error.InvalidDebugInfo => return null,
+    debug_info.getSymbols(
+        std.Options.debug_io,
+        symbol_allocator,
+        allocator,
+        address,
+        false,
+        &symbols,
+    ) catch |err| switch (err) {
+        error.MissingDebugInfo, error.InvalidDebugInfo, error.UnsupportedDebugInfo => return null,
         else => return err,
     };
+    if (symbols.items.len == 0) return null;
+    const symbol_info = symbols.items[0];
 
     return .{
         .source_location = symbol_info.source_location,
-        .symbol_name = symbol_info.name,
-        .compile_unit_name = symbol_info.compile_unit_name,
+        .symbol_name = symbol_info.name orelse "???",
+        .compile_unit_name = symbol_info.compile_unit_name orelse "",
     };
 }
 
@@ -2139,7 +2150,7 @@ fn printLineInfo(
         // Show the matching source code line if possible
         if (source_location) |sl| {
             if (printLineFromFileAnyOs(out_stream, tty_config, sl)) {
-                if (sl.column > 0 and tty_config == .no_color) {
+                if (sl.column > 0 and tty_config.mode == .no_color) {
                     // The caret already takes one char
                     const space_needed = @as(usize, @intCast(sl.column - 1));
                     try out_stream.splatByteAll(' ', space_needed);
@@ -2162,7 +2173,7 @@ fn printLineInfo(
 fn printLineFromFileAnyOs(out_stream: anytype, tty_config: std.Io.Terminal, source_location: SourceLocation) !void {
     // Need this to always block even in async I/O mode, because this could potentially
     // be called from e.g. the event loop code crashing.
-    const f = try bun.sys.File.open(source_location.file_name, bun.O.RDONLY, 0).unwrap();
+    const f = bun.sys.File.from(try bun.sys.openA(source_location.file_name, bun.O.RDONLY, 0).unwrap());
     defer f.close();
 
     var line_buf: [4096]u8 = undefined;

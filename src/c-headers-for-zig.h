@@ -29,7 +29,9 @@
 #include <net/if.h>
 #include <netdb.h>
 #include <pwd.h>
+#if !DARWIN
 #include <spawn.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -38,15 +40,25 @@
 #endif
 
 #if DARWIN
+// Darwin's <spawn.h> includes Mach message types that translate-c cannot
+// represent on aarch64. Bun uses std.c for the spawn APIs and only needs these
+// flag values from the translated headers.
+#define POSIX_SPAWN_SETPGROUP 0x0002
+#define POSIX_SPAWN_SETSIGDEF 0x0004
+#define POSIX_SPAWN_SETSIGMASK 0x0008
+#define POSIX_SPAWN_SETEXEC 0x0040
+#define POSIX_SPAWN_SETSID 0x0400
+#define POSIX_SPAWN_CLOEXEC_DEFAULT 0x4000
 #include <copyfile.h>
-#include <libproc.h>
-#include <mach/mach_host.h>
-#include <mach/processor_info.h>
 #include <net/if_dl.h>
 #include <sys/clonefile.h>
 #include <sys/mount.h>
+#include <sys/proc_info.h>
 #include <sys/stdio.h>
 #include <sys/sysctl.h>
+
+int proc_listchildpids(pid_t ppid, void *buffer, int buffersize);
+int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
 #elif LINUX
 #include <linux/fs.h>
 #include <sys/statfs.h>

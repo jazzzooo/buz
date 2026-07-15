@@ -378,7 +378,7 @@ pub const PackageInstall = struct {
 
     fn installWithClonefileEachDir(this: *@This(), destination_dir: std.Io.Dir) !Result {
         var cached_package_dir = bun.openDir(this.cache_dir, this.cache_dir_subpath) catch |err| return Result.fail(err, .opening_cache_dir, @errorReturnTrace());
-        defer cached_package_dir.close();
+        defer cached_package_dir.close(this.io);
         var walker_ = Walker.walk(
             .fromStdDir(cached_package_dir),
             this.allocator,
@@ -408,7 +408,7 @@ pub const PackageInstall = struct {
                             switch (bun.c.clonefileat(
                                 entry.dir.cast(),
                                 basename,
-                                destination_dir_.fd,
+                                destination_dir_.handle,
                                 path,
                                 0,
                             )) {
@@ -453,15 +453,15 @@ pub const PackageInstall = struct {
             if (strings.indexOfCharZ(this.destination_dir_subpath, std.fs.path.sep)) |slash| {
                 this.destination_dir_subpath_buf[slash] = 0;
                 const subdir = this.destination_dir_subpath_buf[0..slash :0];
-                destination_dir.makeDirZ(subdir) catch {};
+                destination_dir.createDir(this.io, subdir, .default_dir) catch {};
                 this.destination_dir_subpath_buf[slash] = std.fs.path.sep;
             }
         }
 
         return switch (bun.c.clonefileat(
-            this.cache_dir.fd,
+            this.cache_dir.handle,
             this.cache_dir_subpath,
-            destination_dir.fd,
+            destination_dir.handle,
             this.destination_dir_subpath,
             0,
         )) {
