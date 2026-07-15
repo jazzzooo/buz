@@ -205,7 +205,7 @@ pub fn BindgenArray(comptime Child: type) type {
             }
 
             defer unmanaged.deinit(
-                if (bun.use_mimalloc) bun.default_allocator else std.heap.raw_c_allocator,
+                if (bun.use_mimalloc) bun.default_allocator else std.heap.c_allocator,
             );
             var result = bun.handleOom(ZigType.initCapacity(length));
             for (unmanaged.items) |*item| {
