@@ -90,48 +90,6 @@ pub const Fs = struct {
         c.entries.deinit();
     }
 
-    pub fn readFileShared(
-        this: *Fs,
-        _fs: *fs.FileSystem,
-        path: [:0]const u8,
-        cached_file_descriptor: ?FD,
-        shared: *MutableString,
-    ) !Entry {
-        var rfs = _fs.fs;
-
-        const file_handle: std.Io.File = if (cached_file_descriptor) |fd| handle: {
-            const handle = std.Io.File{ .handle = fd };
-            try handle.seekTo(0);
-            break :handle handle;
-        } else try std.fs.openFileAbsoluteZ(path, .{ .mode = .read_only });
-
-        defer {
-            if (rfs.needToCloseFiles() and cached_file_descriptor == null) {
-                file_handle.close();
-            }
-        }
-
-        const file = if (this.stream)
-            rfs.readFileWithHandle(path, null, file_handle, true, shared, true) catch |err| {
-                if (comptime Environment.isDebug) {
-                    Output.printError("{s}: readFile error -- {s}", .{ path, @errorName(err) });
-                }
-                return err;
-            }
-        else
-            rfs.readFileWithHandle(path, null, file_handle, true, shared, false) catch |err| {
-                if (comptime Environment.isDebug) {
-                    Output.printError("{s}: readFile error -- {s}", .{ path, @errorName(err) });
-                }
-                return err;
-            };
-
-        return Entry{
-            .contents = file.contents,
-            .fd = if (FeatureFlags.store_file_descriptors) file_handle.handle else 0,
-        };
-    }
-
     pub fn readFile(
         c: *Fs,
         io: std.Io,

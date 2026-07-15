@@ -1322,31 +1322,29 @@ pub const FileSystem = struct {
             var symlink: []const u8 = "";
 
             if (is_symlink) {
-                var file = try if (existing_fd != 0)
-                    std.Io.File{ .handle = existing_fd }
+                var file: bun.FD = if (existing_fd.unwrapValid()) |valid|
+                    valid
                 else if (store_fd)
-                    std.fs.openFileAbsoluteZ(absolute_path, .{ .mode = .read_only })
+                    try bun.sys.openA(absolute_path, bun.O.RDONLY, 0).unwrap()
                 else
-                    bun.openFileForPath(absolute_path);
-                setMaxFd(file.handle);
+                    .fromStdFile(try bun.openFileForPath(absolute_path));
+                setMaxFd(file.native());
 
                 defer {
-                    if ((!store_fd or fs.needToCloseFiles()) and existing_fd == 0) {
+                    if ((!store_fd or fs.needToCloseFiles()) and !existing_fd.isValid()) {
                         file.close();
                     } else if (comptime FeatureFlags.store_file_descriptors) {
-                        cache.fd = file.handle;
+                        cache.fd = file;
                     }
                 }
-                const _stat = try file.stat();
 
-                symlink = try bun.getFdPath(file.handle, &outpath);
-
-                _kind = _stat.kind;
+                symlink = try file.getFdPath(&outpath);
+                _kind = try bun.sys.File.from(file).kind().unwrap();
             }
 
-            bun.assert(_kind != .SymLink);
+            bun.assert(_kind != .sym_link);
 
-            if (_kind == .Directory) {
+            if (_kind == .directory) {
                 cache.kind = .dir;
             } else {
                 cache.kind = .file;
