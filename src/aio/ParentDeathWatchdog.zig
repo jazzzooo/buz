@@ -171,7 +171,7 @@ pub fn enable() void {
         // also runs the descendant reaper; on Linux the SIGKILL case relies on
         // env-var inheritance — Bun-spawning-Bun chains self-reap because each
         // link sets its own PDEATHSIG.
-        _ = std.posix.prctl(.SET_PDEATHSIG, .{std.posix.SIG.KILL}) catch return;
+        _ = std.posix.prctl(.SET_PDEATHSIG, .{@intFromEnum(std.posix.SIG.KILL)}) catch return;
         // Race: parent may have died between getppid() above and prctl()
         // taking effect. If so we've already been reparented and the kernel
         // will never deliver the signal — exit now.

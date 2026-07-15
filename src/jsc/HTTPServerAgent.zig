@@ -30,7 +30,7 @@ pub fn notifyServerStarted(this: *HTTPServerAgent, instance: jsc.API.AnyServer) 
 
 pub fn notifyServerStopped(this: *const HTTPServerAgent, server: jsc.API.AnyServer) void {
     if (this.agent) |agent| {
-        agent.notifyServerStopped(server.inspectorServerID(), @floatFromInt(std.time.milliTimestamp()));
+        agent.notifyServerStopped(server.inspectorServerID(), @floatFromInt(bun.timespec.now(.allow_mocked_time).ms()));
     }
 }
 

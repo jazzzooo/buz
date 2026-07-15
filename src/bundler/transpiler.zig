@@ -66,6 +66,7 @@ pub const PluginRunner = @import("../bundler_jsc/PluginRunner.zig").PluginRunner
 /// This object is not exclusive to bundle_v2/Bun.build, one of these is stored
 /// on every VM so that the options can be used for transpilation.
 pub const Transpiler = struct {
+    io: std.Io,
     options: options.BundleOptions,
     log: *logger.Log,
     allocator: std.mem.Allocator,
@@ -169,6 +170,7 @@ pub const Transpiler = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
+        io: std.Io,
         log: *logger.Log,
         opts: api.TransformOptions,
         env_loader_: ?*DotEnv.Loader,
@@ -179,6 +181,7 @@ pub const Transpiler = struct {
         const fs = try Fs.FileSystem.init(opts.absolute_working_dir);
         const bundle_options = try options.BundleOptions.fromApi(
             allocator,
+            io,
             fs,
             log,
             opts,
@@ -207,11 +210,12 @@ pub const Transpiler = struct {
         const resolve_results = try allocator.create(ResolveResults);
         resolve_results.* = ResolveResults.init(allocator);
         return Transpiler{
+            .io = io,
             .options = bundle_options,
             .fs = fs,
             .allocator = allocator,
             .timer = SystemTimer.start() catch @panic("Timer fail"),
-            .resolver = Resolver.init1(allocator, log, fs, bundle_options),
+            .resolver = Resolver.init1(allocator, io, log, fs, bundle_options),
             .log = log,
             // .thread_pool = pool,
             .linker = undefined,
@@ -483,6 +487,7 @@ pub const Transpiler = struct {
 
                 const entry = transpiler.resolver.caches.fs.readFileWithAllocator(
                     transpiler.allocator,
+                    transpiler.io,
                     transpiler.fs,
                     file_path.text,
                     resolve_result.dirname_fd,
@@ -837,6 +842,7 @@ pub const Transpiler = struct {
 
             const entry = transpiler.resolver.caches.fs.readFileWithAllocator(
                 if (use_shared_buffer) bun.default_allocator else this_parse.allocator,
+                transpiler.io,
                 transpiler.fs,
                 path.text,
                 dirname_fd,
@@ -1223,7 +1229,7 @@ pub const Transpiler = struct {
         var paths = [_]string{_entry};
         var entry = transpiler.fs.abs(&paths);
 
-        std.fs.accessAbsolute(entry, .{}) catch
+        std.Io.Dir.accessAbsolute(transpiler.io, entry, .{}) catch
             return _entry;
 
         entry = transpiler.fs.relativeTo(entry);
@@ -1300,7 +1306,7 @@ pub const Transpiler = struct {
         const did_start = false;
 
         if (transpiler.options.output_dir_handle == null) {
-            const outstream = bun.sys.File.from(std.fs.File.stdout());
+            const outstream = bun.sys.File.from(std.Io.File.stdout());
 
             if (!did_start) {
                 try switch (transpiler.options.import_path_format) {
@@ -1318,10 +1324,10 @@ pub const Transpiler = struct {
 
             if (!did_start) {
                 try switch (transpiler.options.import_path_format) {
-                    .relative => transpiler.processResolveQueue(.relative, false, std.fs.Dir, output_dir),
-                    .absolute_url => transpiler.processResolveQueue(.absolute_url, false, std.fs.Dir, output_dir),
-                    .absolute_path => transpiler.processResolveQueue(.absolute_path, false, std.fs.Dir, output_dir),
-                    .package_path => transpiler.processResolveQueue(.package_path, false, std.fs.Dir, output_dir),
+                    .relative => transpiler.processResolveQueue(.relative, false, std.Io.Dir, output_dir),
+                    .absolute_url => transpiler.processResolveQueue(.absolute_url, false, std.Io.Dir, output_dir),
+                    .absolute_path => transpiler.processResolveQueue(.absolute_path, false, std.Io.Dir, output_dir),
+                    .package_path => transpiler.processResolveQueue(.package_path, false, std.Io.Dir, output_dir),
                 };
             }
         }

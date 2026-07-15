@@ -7,7 +7,8 @@ pub fn writeOutputFilesToDisk(
 ) !void {
     const trace = bun.perf.trace("Bundler.writeOutputFilesToDisk");
     defer trace.end();
-    var root_dir = std.fs.cwd().makeOpenPath(root_path, .{}) catch |err| {
+    const io = c.resolver.io;
+    var root_dir = bun.MakePath.makeOpenPath(io, std.Io.Dir.cwd(), root_path, .{}) catch |err| {
         if (err == error.NotDir) {
             c.log.addErrorFmt(null, Logger.Loc.Empty, bun.default_allocator, "Failed to create output directory {f} is a file. Please choose a different outdir or delete {f}", .{
                 bun.fmt.quote(root_path),
@@ -22,7 +23,7 @@ pub fn writeOutputFilesToDisk(
 
         return err;
     };
-    defer root_dir.close();
+    defer root_dir.close(io);
     // Optimization: when writing to disk, we can re-use the memory
     var max_heap_allocator: bun.MaxHeapAllocator = undefined;
     defer max_heap_allocator.deinit();
@@ -73,7 +74,7 @@ pub fn writeOutputFilesToDisk(
         const rel_path = chunk.final_rel_path;
         if (std.fs.path.dirnamePosix(rel_path)) |rel_parent| {
             if (rel_parent.len > 0) {
-                root_dir.makePath(rel_parent) catch |err| {
+                bun.makePath(root_dir, io, rel_parent) catch |err| {
                     c.log.addErrorFmt(null, Logger.Loc.Empty, bun.default_allocator, "{s} creating outdir {f} while saving chunk {f}", .{
                         @errorName(err),
                         bun.fmt.quote(rel_parent),
@@ -404,7 +405,7 @@ pub fn writeOutputFilesToDisk(
 
             if (std.fs.path.dirname(src.dest_path)) |rel_parent| {
                 if (rel_parent.len > 0) {
-                    root_dir.makePath(rel_parent) catch |err| {
+                    bun.makePath(root_dir, io, rel_parent) catch |err| {
                         c.log.addErrorFmt(null, Logger.Loc.Empty, bun.default_allocator, "{s} creating outdir {f} while saving file {f}", .{
                             @errorName(err),
                             bun.fmt.quote(rel_parent),

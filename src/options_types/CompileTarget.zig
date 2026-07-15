@@ -161,7 +161,7 @@ pub fn exePath(this: *const CompileTarget, buf: *bun.PathBuffer, version_str: [:
     return dest;
 }
 
-pub fn downloadToPath(this: *const CompileTarget, env: *bun.DotEnv.Loader, allocator: std.mem.Allocator, dest_z: [:0]const u8) !void {
+pub fn downloadToPath(this: *const CompileTarget, io: std.Io, env: *bun.DotEnv.Loader, allocator: std.mem.Allocator, dest_z: [:0]const u8) !void {
     HTTP.HTTPThread.init(&.{});
     var refresher = bun.Progress{};
 
@@ -180,7 +180,7 @@ pub fn downloadToPath(this: *const CompileTarget, env: *bun.DotEnv.Loader, alloc
         const url_str_copy = try bun.default_allocator.dupe(u8, url_str);
         const url = bun.URL.parse(url_str_copy);
         {
-            var progress = refresher.start("Downloading", 0);
+            var progress = refresher.start(io, "Downloading", 0);
             defer progress.end();
             const http_proxy: ?bun.URL = env.getHttpProxyFor(url);
 
@@ -226,7 +226,7 @@ pub fn downloadToPath(this: *const CompileTarget, env: *bun.DotEnv.Loader, alloc
             }
 
             {
-                var node = refresher.start("Decompressing", 0);
+                var node = refresher.start(io, "Decompressing", 0);
                 defer node.end();
                 var gunzip = bun.zlib.ZlibReaderArrayList.init(compressed_archive_bytes.list.items, &tarball_bytes, allocator) catch {
                     node.end();
@@ -243,16 +243,17 @@ pub fn downloadToPath(this: *const CompileTarget, env: *bun.DotEnv.Loader, alloc
             refresher.refresh();
 
             {
-                var node = refresher.start("Extracting", 0);
+                var node = refresher.start(io, "Extracting", 0);
                 defer node.end();
 
                 const libarchive = bun.libarchive;
                 var tmpname_buf: [1024]u8 = undefined;
                 const tempdir_name = try bun.fs.FileSystem.tmpname("tmp", &tmpname_buf, bun.fastRandom());
-                var tmpdir = try std.fs.cwd().makeOpenPath(tempdir_name, .{});
-                defer tmpdir.close();
-                defer std.fs.cwd().deleteTree(tempdir_name) catch {};
+                var tmpdir = try bun.MakePath.makeOpenPath(io, std.Io.Dir.cwd(), tempdir_name, .{});
+                defer tmpdir.close(io);
+                defer std.Io.Dir.cwd().deleteTree(io, tempdir_name) catch {};
                 _ = libarchive.Archiver.extractToDir(
+                    io,
                     tarball_bytes.items,
                     tmpdir,
                     null,
@@ -275,7 +276,7 @@ pub fn downloadToPath(this: *const CompileTarget, env: *bun.DotEnv.Loader, alloc
                             did_retry = true;
                             const dirname = bun.path.dirname(dest_z, .loose);
                             if (dirname.len > 0) {
-                                std.fs.cwd().makePath(dirname) catch {};
+                                bun.makePath(std.Io.Dir.cwd(), io, dirname) catch {};
                                 continue;
                             }
 

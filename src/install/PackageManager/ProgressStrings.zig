@@ -74,7 +74,7 @@ pub fn startProgressBarIfNone(manager: *PackageManager) void {
 }
 pub fn startProgressBar(manager: *PackageManager) void {
     manager.progress.supports_ansi_escape_codes = Output.enable_ansi_colors_stderr;
-    manager.downloads_node = manager.progress.start(ProgressStrings.download(), 0);
+    manager.downloads_node = manager.progress.start(manager.io, ProgressStrings.download(), 0);
     manager.setNodeName(manager.downloads_node.?, ProgressStrings.download_no_emoji_, ProgressStrings.download_emoji, true);
     manager.downloads_node.?.setEstimatedTotalItems(manager.total_tasks + manager.extracted_count);
     manager.downloads_node.?.setCompletedItems(manager.total_tasks - manager.pendingTaskCount());

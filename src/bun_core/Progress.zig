@@ -18,7 +18,8 @@ const Progress = @This();
 
 /// `null` if the current node (and its children) should
 /// not print on update()
-terminal: ?std.fs.File = undefined,
+terminal: ?std.Io.File = undefined,
+io: std.Io = undefined,
 
 /// Is this a windows API terminal (note: this is not the same as being run on windows
 /// because other terminals exist like MSYS/git-bash)
@@ -176,13 +177,14 @@ pub const Node = struct {
 /// TODO solve https://github.com/ziglang/zig/issues/2765 and then change this
 /// API to return Progress rather than accept it as a parameter.
 /// `estimated_total_items` value of 0 means unknown.
-pub fn start(self: *Progress, name: []const u8, estimated_total_items: usize) *Node {
-    const stderr = std.fs.File.stderr();
+pub fn start(self: *Progress, io: std.Io, name: []const u8, estimated_total_items: usize) *Node {
+    const stderr = std.Io.File.stderr();
+    self.io = io;
     self.terminal = null;
-    if (stderr.supportsAnsiEscapeCodes()) {
+    if (stderr.supportsAnsiEscapeCodes(io) catch false) {
         self.terminal = stderr;
         self.supports_ansi_escape_codes = true;
-    } else if (builtin.os.tag == .windows and stderr.isTty()) {
+    } else if (builtin.os.tag == .windows and (stderr.isTty(io) catch false)) {
         self.is_windows_terminal = true;
         self.terminal = stderr;
     } else if (builtin.os.tag != .windows) {
@@ -349,7 +351,8 @@ fn refreshWithHeldLock(self: *Progress) void {
         }
     }
 
-    _ = file.write(self.output_buffer[0..end]) catch {
+    var file_writer = file.writerStreaming(self.io, &.{});
+    file_writer.interface.writeAll(self.output_buffer[0..end]) catch {
         // stop trying to write to this file
         self.terminal = null;
     };
@@ -363,7 +366,7 @@ pub fn log(self: *Progress, comptime format: []const u8, args: anytype) void {
         (std.debug).print(format, args);
         return;
     };
-    var file_writer = file.writerStreaming(&.{});
+    var file_writer = file.writerStreaming(self.io, &.{});
     const writer = &file_writer.interface;
     self.refresh();
     writer.print(format, args) catch {
@@ -380,7 +383,8 @@ pub fn lock_stderr(p: *Progress) void {
     if (p.terminal) |file| {
         var end: usize = 0;
         clearWithHeldLock(p, &end);
-        _ = file.write(p.output_buffer[0..end]) catch {
+        var file_writer = file.writerStreaming(p.io, &.{});
+        file_writer.interface.writeAll(p.output_buffer[0..end]) catch {
             // stop trying to write to this file
             p.terminal = null;
         };

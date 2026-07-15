@@ -4,6 +4,7 @@ pub const Snapshots = struct {
     pub const ValuesHashMap = std.HashMap(usize, string, bun.IdentityContext(usize), std.hash_map.default_max_load_percentage);
 
     allocator: std.mem.Allocator,
+    io: std.Io,
     update_snapshots: bool,
     total: usize = 0,
     added: usize = 0,
@@ -38,7 +39,7 @@ pub const Snapshots = struct {
 
     const File = struct {
         id: TestRunner.File.ID,
-        file: std.fs.File,
+        file: std.Io.File,
     };
 
     /// Reset per-run snapshot counters to 0. Keys stay owned by the map until
@@ -107,7 +108,9 @@ pub const Snapshots = struct {
 
         const estimated_length = "\nexports[`".len + name_with_counter.len + "`] = `".len + target_value.len + "`;\n".len;
         try this.file_buf.ensureUnusedCapacity(estimated_length + 10);
-        try this.file_buf.writer().print(
+        var file_buf_writer = bun.ManagedWriter.init(this.file_buf);
+        defer file_buf_writer.finish();
+        try file_buf_writer.writer().print(
             "\nexports[`{f}`] = `{f}`;\n",
             .{
                 strings.formatEscapes(name_with_counter, .{ .quote_char = '`' }),
@@ -197,10 +200,11 @@ pub const Snapshots = struct {
     pub fn writeSnapshotFile(this: *Snapshots) !void {
         if (this._current_file) |_file| {
             var file = _file;
-            file.file.writeAll(this.file_buf.items) catch {
+            file.file.writePositionalAll(this.io, this.file_buf.items, 0) catch {
                 return error.FailedToWriteSnapshotFile;
             };
-            file.file.close();
+            file.file.setLength(this.io, this.file_buf.items.len) catch return error.FailedToWriteSnapshotFile;
+            file.file.close(this.io);
             this.file_buf.clearAndFree();
 
             var value_itr = this.values.valueIterator();
@@ -262,9 +266,10 @@ pub const Snapshots = struct {
                 .id = file_id,
                 .file = fd.stdFile(),
             };
-            errdefer file.file.close();
+            errdefer file.file.close(this.io);
 
-            const file_text = try file.file.readToEndAlloc(arena, std.math.maxInt(usize));
+            var file_reader = file.file.reader(this.io, &.{});
+            const file_text = try file_reader.interface.allocRemaining(arena, .unlimited);
 
             const source = &bun.logger.Source.initPathString(test_filename, file_text);
 
@@ -453,9 +458,11 @@ pub const Snapshots = struct {
                 } else ils.value;
 
                 if (needs_pre_comma) try result_text.appendSlice(", ");
-                const result_text_writer = result_text.writer();
                 try result_text.appendSlice("`");
+                var result_text_writer_state = bun.ManagedWriter.init(&result_text);
+                const result_text_writer = result_text_writer_state.writer();
                 try bun.js_printer.writePreQuotedString(re_indented, @TypeOf(result_text_writer), result_text_writer, '`', false, false, .utf8);
+                result_text_writer_state.finish();
                 try result_text.appendSlice("`");
 
                 if (ils.is_added) Jest.runner.?.snapshots.added += 1;
@@ -470,17 +477,12 @@ pub const Snapshots = struct {
             }
 
             // 4. write out result_text to the file
-            file.file.seekTo(0) catch |e| {
-                try log.addErrorFmt(source, .{ .start = 0 }, arena, "Failed to update inline snapshot: Seek file error: {s}", .{@errorName(e)});
-                continue;
-            };
-
-            file.file.writeAll(result_text.items) catch |e| {
+            file.file.writePositionalAll(this.io, result_text.items, 0) catch |e| {
                 try log.addErrorFmt(source, .{ .start = 0 }, arena, "Failed to update inline snapshot: Write file error: {s}", .{@errorName(e)});
                 continue;
             };
             if (result_text.items.len < file_text.len) {
-                file.file.setEndPos(result_text.items.len) catch {
+                file.file.setLength(this.io, result_text.items.len) catch {
                     @panic("Failed to update inline snapshot: File was left in an invalid state");
                 };
             }
@@ -535,20 +537,17 @@ pub const Snapshots = struct {
                 .id = file_id,
                 .file = fd.stdFile(),
             };
-            errdefer file.file.close();
+            errdefer file.file.close(this.io);
 
             if (this.update_snapshots) {
                 try this.file_buf.appendSlice(file_header);
             } else {
-                const length = try file.file.getEndPos();
+                const length = try file.file.length(this.io);
                 if (length == 0) {
                     try this.file_buf.appendSlice(file_header);
                 } else {
                     const buf = try this.allocator.alloc(u8, length);
-                    _ = try file.file.preadAll(buf, 0);
-                    if (comptime bun.Environment.isWindows) {
-                        try file.file.seekTo(0);
-                    }
+                    _ = try file.file.readPositionalAll(this.io, buf, 0);
                     try this.file_buf.appendSlice(buf);
                     this.allocator.free(buf);
                 }

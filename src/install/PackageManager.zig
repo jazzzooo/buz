@@ -1,4 +1,4 @@
-cache_directory_: ?std.fs.Dir = null,
+cache_directory_: ?std.Io.Dir = null,
 cache_directory_path: stringZ = "",
 root_dir: *Fs.FileSystem.DirEntry,
 allocator: std.mem.Allocator,
@@ -31,7 +31,7 @@ update_requests: []UpdateRequest = &[_]UpdateRequest{},
 /// Only set in `bun pm`
 root_package_json_name_at_time_of_init: []const u8 = "",
 
-root_package_json_file: std.fs.File,
+root_package_json_file: std.Io.File,
 
 /// The package id corresponding to the workspace the install is happening in. Could be root, or
 /// could be any of the workspaces.
@@ -91,8 +91,8 @@ options: Options,
 preinstall_state: std.ArrayListUnmanaged(PreinstallState) = .empty,
 postinstall_optimizer: PostinstallOptimizer.List = .{},
 
-global_link_dir: ?std.fs.Dir = null,
-global_dir: ?std.fs.Dir = null,
+global_link_dir: ?std.Io.Dir = null,
+global_dir: ?std.Io.Dir = null,
 global_link_dir_path: string = "",
 
 onWake: WakeHandler = .{},
@@ -361,7 +361,7 @@ pub var configureEnvForScriptsOnce = bun.once(struct {
                 var PATH = try std.array_list.Managed(u8).initCapacity(bun.default_allocator, current_path.len);
                 try PATH.appendSlice(current_path);
                 var bun_path: string = "";
-                RunCommand.createFakeTemporaryNodeExecutable(&PATH, &bun_path) catch break :brk;
+                RunCommand.createFakeTemporaryNodeExecutable(this.io, &PATH, &bun_path) catch break :brk;
                 try this.env.map.put("PATH", PATH.items);
                 _ = try this.env.loadNodeJSConfig(this_transpiler.fs, bun.handleOom(bun.default_allocator.dupe(u8, bun_path)));
             }
@@ -464,7 +464,7 @@ var ensureTempNodeGypScriptOnce = bun.once(struct {
         // used later for adding to path for scripts
         manager.node_gyp_tempdir_name = try manager.allocator.dupe(u8, node_gyp_tempdir_name);
 
-        var node_gyp_tempdir = tempdir.handle.makeOpenPath(manager.node_gyp_tempdir_name, .{}) catch |err| {
+        const node_gyp_tempdir = bun.MakePath.makeOpenPath(manager.io, tempdir.handle, manager.node_gyp_tempdir_name, .{}) catch |err| {
             if (err == error.EEXIST) {
                 // it should not exist
                 Output.prettyErrorln("<r><red>error<r>: node-gyp tempdir already exists", .{});
@@ -473,22 +473,19 @@ var ensureTempNodeGypScriptOnce = bun.once(struct {
             Output.prettyErrorln("<r><red>error<r>: <b><red>{s}<r> creating node-gyp tempdir", .{@errorName(err)});
             Global.crash();
         };
-        defer node_gyp_tempdir.close();
+        defer node_gyp_tempdir.close(manager.io);
 
         const file_name = switch (Environment.os) {
             else => "node-gyp",
             .windows => "node-gyp.cmd",
         };
-        const mode = switch (Environment.os) {
-            else => 0o755,
-            .windows => 0, // windows does not have an executable bit
-        };
-
-        var node_gyp_file = node_gyp_tempdir.createFile(file_name, .{ .mode = mode }) catch |err| {
+        const node_gyp_file = node_gyp_tempdir.createFile(manager.io, file_name, .{
+            .permissions = if (Environment.isWindows) .default_file else .executable_file,
+        }) catch |err| {
             Output.prettyErrorln("<r><red>error<r>: <b><red>{s}<r> creating node-gyp tempdir", .{@errorName(err)});
             Global.crash();
         };
-        defer node_gyp_file.close();
+        defer node_gyp_file.close(manager.io);
 
         const content = switch (Environment.os) {
             .windows =>
@@ -509,7 +506,7 @@ var ensureTempNodeGypScriptOnce = bun.once(struct {
             ,
         };
 
-        node_gyp_file.writeAll(content) catch |err| {
+        node_gyp_file.writeStreamingAll(manager.io, content) catch |err| {
             Output.prettyErrorln("<r><red>error<r>: <b><red>{s}<r> writing to " ++ file_name ++ " file", .{@errorName(err)});
             Global.crash();
         };
@@ -572,8 +569,8 @@ pub fn init(
         if (ctx.install) |opts| {
             explicit_global_dir = opts.global_dir orelse explicit_global_dir;
         }
-        var global_dir = try Options.openGlobalDir(explicit_global_dir);
-        try global_dir.setAsCwd();
+        const global_dir = try Options.openGlobalDir(ctx.io, explicit_global_dir);
+        try std.process.setCurrentDir(ctx.io, global_dir);
     }
 
     var fs = try Fs.FileSystem.init(null);
@@ -627,7 +624,8 @@ pub fn init(
                 package_json_path_buf[this_cwd.len + "/package.json".len] = 0;
                 const package_json_path = package_json_path_buf[0 .. this_cwd.len + "/package.json".len :0];
 
-                break :child std.fs.cwd().openFileZ(
+                break :child std.Io.Dir.cwd().openFile(
+                    ctx.io,
                     package_json_path,
                     .{ .mode = if (need_write) .read_write else .read_only },
                 ) catch |err| switch (err) {
@@ -669,7 +667,7 @@ pub fn init(
                     // switching to the add command.
                     this_cwd = original_cwd;
                     created_package_json = true;
-                    break :child try attemptToCreatePackageJSONAndOpen();
+                    break :child try attemptToCreatePackageJSONAndOpen(ctx.io);
                 }
             }
             return error.MissingPackageJSON;
@@ -694,17 +692,18 @@ pub fn init(
                     parent_path_buf[parent_without_trailing_slash.len..parent_path_buf.len][0.."/package.json".len].* = "/package.json".*;
                     parent_path_buf[parent_without_trailing_slash.len + "/package.json".len] = 0;
 
-                    const json_file = std.fs.cwd().openFileZ(
-                        parent_path_buf[0 .. parent_without_trailing_slash.len + "/package.json".len :0].ptr,
+                    const json_file = std.Io.Dir.cwd().openFile(
+                        ctx.io,
+                        parent_path_buf[0 .. parent_without_trailing_slash.len + "/package.json".len :0],
                         .{ .mode = .read_write },
                     ) catch {
                         continue;
                     };
-                    defer if (!found) json_file.close();
-                    const json_stat_size = try json_file.getEndPos();
+                    defer if (!found) json_file.close(ctx.io);
+                    const json_stat_size = try json_file.length(ctx.io);
                     const json_buf = try ctx.allocator.alloc(u8, json_stat_size + 64);
                     defer ctx.allocator.free(json_buf);
-                    const json_len = try json_file.preadAll(json_buf, 0);
+                    const json_len = try json_file.readPositionalAll(ctx.io, json_buf, 0);
                     const json_path = try bun.getFdPath(.fromStdFile(json_file), &root_package_json_path_buf);
                     const json_source = logger.Source.initPathString(json_path, json_buf[0..json_len]);
                     initializeStore();
@@ -751,7 +750,7 @@ pub fn init(
                             if (strings.eqlLong(maybe_workspace_path, path, true)) {
                                 fs.top_level_dir = try bun.default_allocator.dupeSentinel(u8, parent, 0);
                                 found = true;
-                                child_json.close();
+                                child_json.close(ctx.io);
                                 if (comptime Environment.isWindows) {
                                     try json_file.seekTo(0);
                                 }
@@ -845,7 +844,7 @@ pub fn init(
         Output.flush();
     }
 
-    workspace_names.map.deinit();
+    workspace_names.deinit();
 
     PackageManager.allocatePackageManager();
     const manager = PackageManager.get();
@@ -972,7 +971,7 @@ pub fn init(
             }
         }
 
-        break :brk @truncate(@as(u64, @intCast(@max(std.time.timestamp(), 0))));
+        break :brk @truncate(@as(u64, @intCast(@max(bun.realSeconds(ctx.io), 0))));
     };
     return .{
         manager,
@@ -984,6 +983,7 @@ pub fn initWithRuntime(
     log: *logger.Log,
     bun_install: ?*Api.BunInstall,
     allocator: std.mem.Allocator,
+    io: std.Io,
     cli: CommandLineArguments,
     env: *DotEnv.Loader,
 ) *PackageManager {
@@ -991,6 +991,7 @@ pub fn initWithRuntime(
         log,
         bun_install,
         allocator,
+        io,
         cli,
         env,
     });
@@ -1003,6 +1004,7 @@ pub fn initWithRuntimeOnce(
     log: *logger.Log,
     bun_install: ?*Api.BunInstall,
     allocator: std.mem.Allocator,
+    io: std.Io,
     cli: CommandLineArguments,
     env: *DotEnv.Loader,
 ) void {
@@ -1031,6 +1033,7 @@ pub fn initWithRuntimeOnce(
     @memcpy(original_package_json_path[top_level_dir_no_trailing_slash.len..][0.."/package.json".len], "/package.json");
 
     manager.* = PackageManager{
+        .io = io,
         .preallocated_network_tasks = .init(bun.default_allocator),
         .preallocated_resolve_tasks = .init(bun.default_allocator),
         .options = .{
@@ -1061,7 +1064,7 @@ pub fn initWithRuntimeOnce(
     if (Output.enable_ansi_colors_stderr) {
         manager.progress = Progress{};
         manager.progress.supports_ansi_escape_codes = Output.enable_ansi_colors_stderr;
-        manager.root_progress_node = manager.progress.start("", 0);
+        manager.root_progress_node = manager.progress.start(manager.io, "", 0);
     } else {
         manager.options.log_level = .default_no_progress;
     }
@@ -1102,7 +1105,7 @@ pub fn initWithRuntimeOnce(
         @truncate(@as(
             u64,
             @intCast(@max(
-                std.time.timestamp(),
+                bun.realSeconds(io),
                 0,
             )),
         )),

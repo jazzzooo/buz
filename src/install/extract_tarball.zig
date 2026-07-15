@@ -2,8 +2,8 @@ const ExtractTarball = @This();
 
 name: strings.StringOrTinyString,
 resolution: Resolution,
-cache_dir: std.fs.Dir,
-temp_dir: std.fs.Dir,
+cache_dir: std.Io.Dir,
+temp_dir: std.Io.Dir,
 dependency_id: DependencyID,
 skip_verify: bool = false,
 integrity: Integrity = .{},
@@ -181,7 +181,7 @@ fn extract(this: *const ExtractTarball, log: *logger.Log, tgz_bytes: []const u8)
     var resolved: string = "";
     const tmpname = try FileSystem.tmpname(basename[0..@min(basename.len, 32)], std.mem.asBytes(&tmpname_buf), bun.fastRandom());
     {
-        var extract_destination = bun.MakePath.makeOpenPath(tmpdir, tmpname, .{}) catch |err| {
+        var extract_destination = bun.MakePath.makeOpenPath(this.package_manager.io, tmpdir, tmpname, .{}) catch |err| {
             log.addErrorFmt(
                 null,
                 logger.Loc.Empty,
@@ -192,7 +192,7 @@ fn extract(this: *const ExtractTarball, log: *logger.Log, tgz_bytes: []const u8)
             return error.InstallFailed;
         };
 
-        defer extract_destination.close();
+        defer extract_destination.close(this.package_manager.io);
 
         const Archiver = bun.libarchive.Archiver;
         const Zlib = @import("../zlib/zlib.zig");
@@ -273,6 +273,7 @@ fn extract(this: *const ExtractTarball, log: *logger.Log, tgz_bytes: []const u8)
 
                 switch (PackageManager.verbose_install) {
                     inline else => |verbose_log| _ = try Archiver.extractToDir(
+                        this.package_manager.io,
                         zlib_pool.data.list.items,
                         extract_destination,
                         null,
@@ -290,15 +291,16 @@ fn extract(this: *const ExtractTarball, log: *logger.Log, tgz_bytes: []const u8)
                 // installed from GitHub. package.json version becomes sort of
                 // meaningless in cases like this.
                 if (resolved.len > 0) insert_tag: {
-                    const gh_tag = extract_destination.createFileZ(".bun-tag", .{ .truncate = true }) catch break :insert_tag;
-                    defer gh_tag.close();
-                    gh_tag.writeAll(resolved) catch {
-                        extract_destination.deleteFileZ(".bun-tag") catch {};
+                    const gh_tag = extract_destination.createFile(this.package_manager.io, ".bun-tag", .{ .truncate = true }) catch break :insert_tag;
+                    defer gh_tag.close(this.package_manager.io);
+                    gh_tag.writeStreamingAll(this.package_manager.io, resolved) catch {
+                        extract_destination.deleteFile(this.package_manager.io, ".bun-tag") catch {};
                     };
                 }
             },
             else => switch (PackageManager.verbose_install) {
                 inline else => |verbose_log| _ = try Archiver.extractToDir(
+                    this.package_manager.io,
                     zlib_pool.data.list.items,
                     extract_destination,
                     null,
@@ -446,11 +448,12 @@ pub fn moveToCacheDirectory(
 
         if (create_subdir) {
             if (bun.Dirname.dirname(u8, folder_name)) |folder| {
-                bun.MakePath.makePath(u8, cache_dir, folder) catch {};
+                bun.MakePath.makePath(this.package_manager.io, u8, cache_dir, folder) catch {};
             }
         }
 
         if (bun.sys.renameatConcurrently(
+            this.package_manager.io,
             .fromStdDir(tmpdir),
             tmpname,
             .fromStdDir(cache_dir),
@@ -480,7 +483,7 @@ pub fn moveToCacheDirectory(
         ) catch unreachable;
         return error.InstallFailed;
     };
-    defer final_dir.close();
+    defer final_dir.close(this.package_manager.io);
     // and get the fd path
     const final_path = bun.getFdPathZ(
         .fromStdDir(final_dir),
@@ -571,7 +574,7 @@ pub fn moveToCacheDirectory(
                     break :create_index;
                 };
             } else {
-                var index_dir = bun.FD.fromStdDir(bun.MakePath.makeOpenPath(cache_dir, name, .{}) catch break :create_index);
+                var index_dir = bun.FD.fromStdDir(bun.MakePath.makeOpenPath(this.package_manager.io, cache_dir, name, .{}) catch break :create_index);
                 defer index_dir.close();
 
                 bun.sys.symlinkat(final_path, index_dir, dest_name).unwrap() catch break :create_index;

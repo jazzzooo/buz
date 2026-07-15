@@ -767,14 +767,13 @@ const PGNummericString = union(enum) {
 fn parseBinaryNumeric(input: []const u8, result: *std.array_list.Managed(u8)) !PGNummericString {
     // Reference: https://github.com/postgres/postgres/blob/50e6eb731d98ab6d0e625a0b87fb327b172bbebd/src/backend/utils/adt/numeric.c#L7612-L7740
     if (input.len < 8) return error.InvalidBuffer;
-    var fixed_buffer = std.io.fixedBufferStream(input);
-    var reader = fixed_buffer.reader();
+    var reader = std.Io.Reader.fixed(input);
 
     // Read header values using big-endian
-    const ndigits = try reader.readInt(i16, .big);
-    const weight = try reader.readInt(i16, .big);
-    const sign = try reader.readInt(u16, .big);
-    const dscale = try reader.readInt(i16, .big);
+    const ndigits = try reader.takeInt(i16, .big);
+    const weight = try reader.takeInt(i16, .big);
+    const sign = try reader.takeInt(u16, .big);
+    const dscale = try reader.takeInt(i16, .big);
     log("ndigits: {d}, weight: {d}, sign: {d}, dscale: {d}", .{ ndigits, weight, sign, dscale });
 
     // Handle special cases
@@ -811,7 +810,7 @@ fn parseBinaryNumeric(input: []const u8, result: *std.array_list.Managed(u8)) !P
         var first_non_zero = false;
 
         while (idx <= weight) : (idx += 1) {
-            const digit = if (idx < ndigits) try reader.readInt(u16, .big) else 0;
+            const digit = if (idx < ndigits) try reader.takeInt(u16, .big) else 0;
             log("digit: {d}", .{digit});
             var digit_str: [4]u8 = undefined;
             const digit_len = std.fmt.printInt(&digit_str, digit, 10, .lower, .{ .width = 4, .fill = '0' });
@@ -838,7 +837,7 @@ fn parseBinaryNumeric(input: []const u8, result: *std.array_list.Managed(u8)) !P
         const end: usize = result.items.len + @as(usize, @intCast(dscale));
         while (idx < dscale) : (idx += 4) {
             if (idx >= 0 and idx < dscale) {
-                const digit = reader.readInt(u16, .big) catch 0;
+                const digit = reader.takeInt(u16, .big) catch 0;
                 log("dscale digit: {d}", .{digit});
                 var digit_str: [4]u8 = undefined;
                 const digit_len = std.fmt.printInt(&digit_str, digit, 10, .lower, .{ .width = 4, .fill = '0' });

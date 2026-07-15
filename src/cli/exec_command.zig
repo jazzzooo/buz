@@ -4,6 +4,7 @@ pub const ExecCommand = struct {
         // this is a hack: make dummy bundler so we can use its `.runEnvLoader()` function to populate environment variables probably should split out the functionality
         var bundle = try bun.Transpiler.init(
             ctx.allocator,
+            ctx.io,
             ctx.log,
             try @import("../jsc/config.zig").configureTransformOptionsForBunVM(ctx.allocator, ctx.args),
             null,

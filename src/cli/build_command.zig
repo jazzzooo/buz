@@ -42,7 +42,7 @@ pub const BuildCommand = struct {
             }
         }
 
-        var this_transpiler = try transpiler.Transpiler.init(allocator, log, ctx.args, null);
+        var this_transpiler = try transpiler.Transpiler.init(allocator, ctx.io, log, ctx.args, null);
         if (fetcher) |fetch| {
             this_transpiler.options.entry_points = fetch.entry_points;
             this_transpiler.resolver.opts.entry_points = fetch.entry_points;
@@ -261,7 +261,7 @@ pub const BuildCommand = struct {
 
         var client_transpiler: transpiler.Transpiler = undefined;
         if (this_transpiler.options.server_components) {
-            client_transpiler = try transpiler.Transpiler.init(allocator, log, ctx.args, null);
+            client_transpiler = try transpiler.Transpiler.init(allocator, ctx.io, log, ctx.args, null);
             client_transpiler.options = this_transpiler.options;
             client_transpiler.options.target = .browser;
             client_transpiler.options.server_components = true;
@@ -325,7 +325,7 @@ pub const BuildCommand = struct {
 
                     if (result.errors.len > 0 or result.output_files.len == 0) {
                         Output.flush();
-                        exitOrWatch(1, ctx.debug.hot_reload == .watch);
+                        exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
                         unreachable;
                     }
                 }
@@ -359,18 +359,18 @@ pub const BuildCommand = struct {
                 }
 
                 Output.flush();
-                exitOrWatch(1, ctx.debug.hot_reload == .watch);
+                exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
             };
 
             // Write metafile if requested
             if (build_result.metafile) |metafile_json| {
                 if (ctx.bundler_options.metafile.len > 0) {
                     // Use makeOpen which auto-creates parent directories on failure
-                    const file = switch (bun.sys.File.makeOpen(ctx.bundler_options.metafile, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o664)) {
+                    const file = switch (bun.sys.File.makeOpen(ctx.io, ctx.bundler_options.metafile, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o664)) {
                         .result => |f| f,
                         .err => |err| {
                             Output.err(err, "could not open metafile {f}", .{bun.fmt.quote(ctx.bundler_options.metafile)});
-                            exitOrWatch(1, ctx.debug.hot_reload == .watch);
+                            exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
                             unreachable;
                         },
                     };
@@ -380,7 +380,7 @@ pub const BuildCommand = struct {
                         .result => {},
                         .err => |err| {
                             Output.err(err, "could not write metafile {f}", .{bun.fmt.quote(ctx.bundler_options.metafile)});
-                            exitOrWatch(1, ctx.debug.hot_reload == .watch);
+                            exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
                             unreachable;
                         },
                     }
@@ -394,11 +394,11 @@ pub const BuildCommand = struct {
                     };
                     if (metafile_md) |md_content| {
                         defer allocator.free(md_content);
-                        const file = switch (bun.sys.File.makeOpen(ctx.bundler_options.metafile_md, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o664)) {
+                        const file = switch (bun.sys.File.makeOpen(ctx.io, ctx.bundler_options.metafile_md, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o664)) {
                             .result => |f| f,
                             .err => |err| {
                                 Output.err(err, "could not open metafile-md {f}", .{bun.fmt.quote(ctx.bundler_options.metafile_md)});
-                                exitOrWatch(1, ctx.debug.hot_reload == .watch);
+                                exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
                                 unreachable;
                             },
                         };
@@ -408,7 +408,7 @@ pub const BuildCommand = struct {
                             .result => {},
                             .err => |err| {
                                 Output.err(err, "could not write metafile-md {f}", .{bun.fmt.quote(ctx.bundler_options.metafile_md)});
-                                exitOrWatch(1, ctx.debug.hot_reload == .watch);
+                                exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
                                 unreachable;
                             },
                         }
@@ -418,7 +418,7 @@ pub const BuildCommand = struct {
 
             break :brk build_result.output_files.items;
         };
-        const bundled_end = std.time.nanoTimestamp();
+        const bundled_end = bun.awakeNanoseconds(ctx.io);
 
         var had_err = false;
         dump: {
@@ -466,11 +466,11 @@ pub const BuildCommand = struct {
                 root_path = std.fs.path.dirname(ctx.args.entry_points[0]) orelse ".";
 
             const root_dir = if (root_path.len == 0 or strings.eqlComptime(root_path, "."))
-                std.fs.cwd()
+                std.Io.Dir.cwd()
             else
-                std.fs.cwd().makeOpenPath(root_path, .{}) catch |err| {
+                bun.MakePath.makeOpenPath(ctx.io, std.Io.Dir.cwd(), root_path, .{}) catch |err| {
                     Output.err(err, "could not open output directory {f}", .{bun.fmt.quote(root_path)});
-                    exitOrWatch(1, ctx.debug.hot_reload == .watch);
+                    exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
                     unreachable;
                 };
 
@@ -522,6 +522,7 @@ pub const BuildCommand = struct {
                 const result = bun.StandaloneModuleGraph.toExecutable(
                     compile_target,
                     allocator,
+                    ctx.io,
                     output_files,
                     root_dir,
                     this_transpiler.options.public_path,
@@ -598,7 +599,7 @@ pub const BuildCommand = struct {
                     }
                 }
 
-                const compiled_elapsed = @divTrunc(@as(i64, @truncate(std.time.nanoTimestamp() - bundled_end)), @as(i64, std.time.ns_per_ms));
+                const compiled_elapsed = @divTrunc(@as(i64, @truncate(bun.awakeNanoseconds(ctx.io) - bundled_end)), @as(i64, std.time.ns_per_ms));
                 const compiled_elapsed_digit_count: isize = switch (compiled_elapsed) {
                     0...9 => 3,
                     10...99 => 2,
@@ -629,13 +630,13 @@ pub const BuildCommand = struct {
             if (log.errors == 0) {
                 if (this_transpiler.options.transform_only) {
                     Output.prettyln("<green>Transpiled file in {d}ms<r>", .{
-                        @divFloor(std.time.nanoTimestamp() - bun.cli.start_time, std.time.ns_per_ms),
+                        @divFloor(bun.awakeNanoseconds(ctx.io) - bun.cli.start_time, std.time.ns_per_ms),
                     });
                 } else {
                     Output.prettyln("<green>Bundled {d} module{s} in {d}ms<r>", .{
                         reachable_file_count,
                         if (reachable_file_count == 1) "" else "s",
-                        @divFloor(std.time.nanoTimestamp() - bun.cli.start_time, std.time.ns_per_ms),
+                        @divFloor(bun.awakeNanoseconds(ctx.io) - bun.cli.start_time, std.time.ns_per_ms),
                     });
                 }
                 Output.prettyln("\n", .{});
@@ -647,7 +648,7 @@ pub const BuildCommand = struct {
             }
 
             for (output_files) |f| {
-                f.writeToDisk(root_dir, from_path) catch |err| {
+                f.writeToDisk(ctx.io, root_dir, from_path) catch |err| {
                     Output.err(err, "failed to write file '{f}'", .{bun.fmt.quote(f.dest_path)});
                     had_err = true;
                     continue;
@@ -712,14 +713,14 @@ pub const BuildCommand = struct {
         }
 
         try log.print(Output.errorWriter());
-        exitOrWatch(if (had_err) 1 else 0, ctx.debug.hot_reload == .watch);
+        exitOrWatch(ctx.io, if (had_err) 1 else 0, ctx.debug.hot_reload == .watch);
     }
 };
 
-fn exitOrWatch(code: u8, watch: bool) noreturn {
+fn exitOrWatch(io: std.Io, code: u8, watch: bool) noreturn {
     if (watch) {
         // the watcher thread will exit the process
-        std.Thread.sleep(std.math.maxInt(u64) - 1);
+        std.Io.sleep(io, .max, .awake) catch {};
     }
     Global.exit(code);
 }

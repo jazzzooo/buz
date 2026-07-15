@@ -300,7 +300,7 @@ pub const Lookup = struct {
                 .loose,
             );
             switch (bun.sys.File.readFrom(
-                std.fs.cwd(),
+                std.Io.Dir.cwd(),
                 normalized,
                 bun.default_allocator,
             )) {

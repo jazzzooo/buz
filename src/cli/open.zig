@@ -128,7 +128,7 @@ pub const Editor = enum(u8) {
     pub fn byFallbackPathForEditor(editor: Editor, out: ?*[]const u8) bool {
         if (bin_path.get(editor)) |paths| {
             for (paths) |path| {
-                if (std.fs.cwd().openFile(path, .{})) |opened| {
+                if (bun.sys.openA(path, bun.O.RDONLY, 0).unwrap()) |opened| {
                     opened.close();
                     if (out != null) {
                         out.?.* = bun.asByteSlice(path);
@@ -228,8 +228,7 @@ pub const Editor = enum(u8) {
     ) !void {
         var spawned = try default_allocator.create(SpawnedEditorContext);
         spawned.* = .{};
-        var file_path_buf_stream = std.io.fixedBufferStream(&spawned.file_path_buf);
-        var file_path_buf_writer = file_path_buf_stream.writer();
+        var file_path_buf_writer = std.Io.Writer.fixed(&spawned.file_path_buf);
         var args_buf = &spawned.buf;
         errdefer default_allocator.destroy(spawned);
 
@@ -272,14 +271,14 @@ pub const Editor = enum(u8) {
                         }
                     }
                 }
-                if (file_path_buf_stream.pos > 0) {
-                    args_buf[i] = file_path_buf_stream.getWritten();
+                if (file_path_buf_writer.end > 0) {
+                    args_buf[i] = file_path_buf_writer.buffered();
                     i += 1;
                 }
             },
             .textmate => {
                 try file_path_buf_writer.writeAll(file);
-                const file_path = file_path_buf_stream.getWritten();
+                const file_path = file_path_buf_writer.buffered();
 
                 if (line) |line_| {
                     if (line_.len > 0) {
@@ -293,7 +292,7 @@ pub const Editor = enum(u8) {
                                 try file_path_buf_writer.print(":{s}", .{col});
                         }
 
-                        const line_column = file_path_buf_stream.getWritten()[file_path.len..];
+                        const line_column = file_path_buf_writer.buffered()[file_path.len..];
                         if (line_column.len > 0) {
                             args_buf[i] = line_column;
                             i += 1;
@@ -301,7 +300,7 @@ pub const Editor = enum(u8) {
                     }
                 }
 
-                if (file_path_buf_stream.pos > 0) {
+                if (file_path_buf_writer.end > 0) {
                     args_buf[i] = file_path;
                     i += 1;
                 }
@@ -309,29 +308,37 @@ pub const Editor = enum(u8) {
             else => {
                 if (file.len > 0) {
                     try file_path_buf_writer.writeAll(file);
-                    const file_path = file_path_buf_stream.getWritten();
+                    const file_path = file_path_buf_writer.buffered();
                     args_buf[i] = file_path;
                     i += 1;
                 }
             },
         }
 
-        spawned.child_process = std.process.Child.init(args_buf[0..i], default_allocator);
+        spawned.args_len = i;
         var thread = try std.Thread.spawn(.{}, autoClose, .{spawned});
         thread.detach();
     }
     const SpawnedEditorContext = struct {
         file_path_buf: [1024 + bun.MAX_PATH_BYTES]u8 = undefined,
         buf: [10]string = undefined,
-        child_process: std.process.Child = undefined,
+        args_len: usize = 0,
     };
 
     fn autoClose(spawned: *SpawnedEditorContext) void {
         defer bun.default_allocator.destroy(spawned);
 
         Global.setThreadName("Open Editor");
-        spawned.child_process.spawn() catch return;
-        _ = spawned.child_process.wait() catch {};
+        _ = bun.spawnSync(&.{
+            .argv = spawned.buf[0..spawned.args_len],
+            .envp = null,
+            .stdin = .inherit,
+            .stdout = .inherit,
+            .stderr = .inherit,
+            .windows = if (Environment.isWindows) .{
+                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+            },
+        }) catch {};
     }
 };
 
@@ -341,7 +348,7 @@ pub const EditorContext = struct {
     path: string = "",
     const Fs = @import("../resolver/fs.zig");
 
-    pub fn openInEditor(this: *EditorContext, editor_: Editor, blob: []const u8, id: string, tmpdir: std.fs.Dir, line: string, column: string) void {
+    pub fn openInEditor(this: *EditorContext, editor_: Editor, blob: []const u8, id: string, tmpdir: std.Io.Dir, line: string, column: string) void {
         _openInEditor(this.path, editor_, blob, id, tmpdir, line, column) catch |err| {
             if (editor_ != .other) {
                 Output.prettyErrorln("Error {s} opening in {s}", .{ @errorName(err), @tagName(editor_) });
@@ -351,7 +358,7 @@ pub const EditorContext = struct {
         };
     }
 
-    fn _openInEditor(path: string, editor_: Editor, blob: []const u8, id: string, tmpdir: std.fs.Dir, line: string, column: string) !void {
+    fn _openInEditor(path: string, editor_: Editor, blob: []const u8, id: string, tmpdir: std.Io.Dir, line: string, column: string) !void {
         var basename_buf: [512]u8 = undefined;
         var basename = std.fs.path.basename(id);
         if (strings.endsWith(basename, ".bun") and basename.len < 499) {

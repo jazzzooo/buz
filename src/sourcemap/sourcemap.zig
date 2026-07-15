@@ -436,7 +436,7 @@ pub fn getSourceMapImpl(
             @memcpy(load_path_buf[source_filename.len..][0..4], ".map");
 
             const load_path = load_path_buf[0 .. source_filename.len + 4];
-            const data = switch (bun.sys.File.readFrom(std.fs.cwd(), load_path, allocator)) {
+            const data = switch (bun.sys.File.readFrom(std.Io.Dir.cwd(), load_path, allocator)) {
                 .err => break :try_external,
                 .result => |data| data,
             };

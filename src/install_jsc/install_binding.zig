@@ -22,7 +22,7 @@ pub const bun_install_js_bindings = struct {
         var dir = bun.openDirAbsoluteNotForDeletingOrRenaming(cwd.slice()) catch |err| {
             return globalObject.throw("failed to open: {s}, '{s}'", .{ @errorName(err), cwd.slice() });
         };
-        defer dir.close();
+        defer dir.close(globalObject.bunVM().io);
 
         const lockfile_path = Path.joinAbsStringZ(cwd.slice(), &[_]string{"bun.lockb"}, .auto);
 

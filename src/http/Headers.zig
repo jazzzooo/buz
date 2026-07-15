@@ -88,7 +88,7 @@ pub fn fromPicoHttpHeaders(headers: []const picohttp.Header, allocator: std.mem.
     const header_count = headers.len;
     var result = Headers{
         .entries = .{},
-        .buf = .{},
+        .buf = .empty,
         .allocator = allocator,
     };
 
@@ -130,7 +130,7 @@ pub fn from(fetch_headers_ref: ?*FetchHeaders, allocator: std.mem.Allocator, opt
         headers_ref.count(&header_count, &buf_len);
     var headers = Headers{
         .entries = .{},
-        .buf = .{},
+        .buf = .empty,
         .allocator = allocator,
     };
     const buf_len_before_content_type = buf_len;

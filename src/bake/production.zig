@@ -31,6 +31,7 @@ pub fn buildCommand(ctx: bun.cli.Command.Context) !void {
 
     const vm = try VirtualMachine.initBake(.{
         .allocator = arena.allocator(),
+        .io = ctx.io,
         .log = ctx.log,
         .args = ctx.args,
         .smol = ctx.runtime_options.smol,
@@ -235,10 +236,10 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
     var client_transpiler: bun.transpiler.Transpiler = undefined;
     var server_transpiler: bun.transpiler.Transpiler = undefined;
     var ssr_transpiler: bun.transpiler.Transpiler = undefined;
-    try framework.initTranspilerWithOptions(allocator, vm.log, .production_static, .server, &server_transpiler, &options.bundler_options.server, bun.options.SourceMapOption.fromApi(options.bundler_options.server.source_map), options.bundler_options.server.minify_whitespace, options.bundler_options.server.minify_syntax, options.bundler_options.server.minify_identifiers);
-    try framework.initTranspilerWithOptions(allocator, vm.log, .production_static, .client, &client_transpiler, &options.bundler_options.client, bun.options.SourceMapOption.fromApi(options.bundler_options.client.source_map), options.bundler_options.client.minify_whitespace, options.bundler_options.client.minify_syntax, options.bundler_options.client.minify_identifiers);
+    try framework.initTranspilerWithOptions(allocator, vm.io, vm.log, .production_static, .server, &server_transpiler, &options.bundler_options.server, bun.options.SourceMapOption.fromApi(options.bundler_options.server.source_map), options.bundler_options.server.minify_whitespace, options.bundler_options.server.minify_syntax, options.bundler_options.server.minify_identifiers);
+    try framework.initTranspilerWithOptions(allocator, vm.io, vm.log, .production_static, .client, &client_transpiler, &options.bundler_options.client, bun.options.SourceMapOption.fromApi(options.bundler_options.client.source_map), options.bundler_options.client.minify_whitespace, options.bundler_options.client.minify_syntax, options.bundler_options.client.minify_identifiers);
     if (separate_ssr_graph) {
-        try framework.initTranspilerWithOptions(allocator, vm.log, .production_static, .ssr, &ssr_transpiler, &options.bundler_options.ssr, bun.options.SourceMapOption.fromApi(options.bundler_options.ssr.source_map), options.bundler_options.ssr.minify_whitespace, options.bundler_options.ssr.minify_syntax, options.bundler_options.ssr.minify_identifiers);
+        try framework.initTranspilerWithOptions(allocator, vm.io, vm.log, .production_static, .ssr, &ssr_transpiler, &options.bundler_options.ssr, bun.options.SourceMapOption.fromApi(options.bundler_options.ssr.source_map), options.bundler_options.ssr.minify_whitespace, options.bundler_options.ssr.minify_syntax, options.bundler_options.ssr.minify_identifiers);
     }
 
     if (ctx.bundler_options.bake_debug_disable_minify) {
@@ -331,8 +332,8 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
     Output.prettyErrorln("Rendering routes", .{});
     Output.flush();
 
-    var root_dir = try std.fs.cwd().makeOpenPath("dist", .{});
-    defer root_dir.close();
+    const root_dir = try bun.MakePath.makeOpenPath(vm.io, std.Io.Dir.cwd(), "dist", .{});
+    defer root_dir.close(vm.io);
 
     var maybe_runtime_file_index: ?u32 = null;
 
@@ -385,14 +386,14 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         switch (file.side orelse continue) {
             .client => {
                 // Client-side resources will be written to disk for usage in on the client side
-                _ = file.writeToDisk(root_dir, ".") catch |err| {
+                _ = file.writeToDisk(vm.io, root_dir, ".") catch |err| {
                     bun.handleErrorReturnTrace(err, @errorReturnTrace());
                     Output.err(err, "Failed to write {f} to output directory", .{bun.fmt.quote(file.dest_path)});
                 };
             },
             .server => {
                 if (ctx.bundler_options.bake_debug_dump_server) {
-                    _ = file.writeToDisk(root_dir, ".") catch |err| {
+                    _ = file.writeToDisk(vm.io, root_dir, ".") catch |err| {
                         bun.handleErrorReturnTrace(err, @errorReturnTrace());
                         Output.err(err, "Failed to write {f} to output directory", .{bun.fmt.quote(file.dest_path)});
                     };
@@ -460,7 +461,7 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         };
         if (any_client_chunks) {
             const runtime_file: *const OutputFile = &bundled_outputs[runtime_file_index];
-            _ = runtime_file.writeToDisk(root_dir, ".") catch |err| {
+            _ = runtime_file.writeToDisk(vm.io, root_dir, ".") catch |err| {
                 bun.handleErrorReturnTrace(err, @errorReturnTrace());
                 Output.err(err, "Failed to write {f} to output directory", .{bun.fmt.quote(runtime_file.dest_path)});
             };

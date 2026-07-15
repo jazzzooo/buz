@@ -423,9 +423,9 @@ fn updatePackageJSONAndInstallWithManagerWithUpdates(
             0,
         ).unwrap()).handle.stdFile();
 
-        try workspace_package_json_file.pwriteAll(source, 0);
-        std.posix.ftruncate(workspace_package_json_file.handle, source.len) catch {};
-        workspace_package_json_file.close();
+        try workspace_package_json_file.writePositionalAll(manager.io, source, 0);
+        workspace_package_json_file.setLength(manager.io, source.len) catch {};
+        workspace_package_json_file.close(manager.io);
 
         if (subcommand == .remove) {
             if (!any_changes) {
@@ -433,7 +433,7 @@ fn updatePackageJSONAndInstallWithManagerWithUpdates(
                 return;
             }
 
-            var cwd = std.fs.cwd();
+            var cwd = std.Io.Dir.cwd();
             // This is not exactly correct
             var node_modules_buf: bun.PathBuffer = undefined;
             bun.copy(u8, &node_modules_buf, "node_modules" ++ std.fs.path.sep_str);
@@ -446,19 +446,18 @@ fn updatePackageJSONAndInstallWithManagerWithUpdates(
                 // This is a quick & dirty cleanup intended for when deleting top-level dependencies
                 if (std.mem.indexOfScalar(PackageNameHash, name_hashes, String.Builder.stringHash(request.name)) == null) {
                     bun.copy(u8, offset_buf, request.name);
-                    cwd.deleteTree(node_modules_buf[0 .. "node_modules/".len + request.name.len]) catch {};
+                    cwd.deleteTree(manager.io, node_modules_buf[0 .. "node_modules/".len + request.name.len]) catch {};
                 }
             }
 
             // This is where we clean dangling symlinks
             // This could be slow if there are a lot of symlinks
-            if (bun.openDir(cwd, manager.options.bin_path)) |node_modules_bin_handle| {
-                var node_modules_bin: std.fs.Dir = node_modules_bin_handle;
-                defer node_modules_bin.close();
-                var iter: std.fs.Dir.Iterator = node_modules_bin.iterate();
-                iterator: while (iter.next() catch null) |entry| {
+            if (cwd.openDir(manager.io, manager.options.bin_path, .{ .iterate = true })) |node_modules_bin| {
+                defer node_modules_bin.close(manager.io);
+                var iter: std.Io.Dir.Iterator = node_modules_bin.iterate();
+                iterator: while (iter.next(manager.io) catch null) |entry| {
                     switch (entry.kind) {
-                        std.fs.Dir.Entry.Kind.sym_link => {
+                        .sym_link => {
 
                             // any symlinks which we are unable to open are assumed to be dangling
                             // note that using access won't work here, because access doesn't resolve symlinks
@@ -466,18 +465,18 @@ fn updatePackageJSONAndInstallWithManagerWithUpdates(
                             node_modules_buf[entry.name.len] = 0;
                             const buf: [:0]u8 = node_modules_buf[0..entry.name.len :0];
 
-                            var file = node_modules_bin.openFileZ(buf, .{ .mode = .read_only }) catch {
-                                node_modules_bin.deleteFileZ(buf) catch {};
+                            const file = node_modules_bin.openFile(manager.io, buf, .{ .mode = .read_only }) catch {
+                                node_modules_bin.deleteFile(manager.io, buf) catch {};
                                 continue :iterator;
                             };
 
-                            file.close();
+                            file.close(manager.io);
                         },
                         else => {},
                     }
                 }
             } else |err| {
-                if (err != error.ENOENT) {
+                if (err != error.FileNotFound) {
                     Output.err(err, "while reading node_modules/.bin", .{});
                     Global.crash();
                 }
@@ -526,7 +525,7 @@ fn updatePackageJSONAndInstallAndCLI(
                     Global.crash();
                 },
                 else => {
-                    try attemptToCreatePackageJSON();
+                    try attemptToCreatePackageJSON(ctx.io);
                     break :brk try PackageManager.init(ctx, cli, subcommand);
                 },
             }

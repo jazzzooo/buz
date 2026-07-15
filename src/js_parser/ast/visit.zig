@@ -21,7 +21,7 @@ pub fn Visit(
             }
 
             p.temp_refs_to_declare.deinit(p.allocator);
-            p.temp_refs_to_declare = @TypeOf(p.temp_refs_to_declare){};
+            p.temp_refs_to_declare = .empty;
             p.temp_ref_count = 0;
 
             try p.visitStmts(stmts, opts.kind);

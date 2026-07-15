@@ -244,6 +244,7 @@ pub const Archiver = struct {
     };
 
     pub fn getOverwritingFileList(
+        io: std.Io,
         file_buffer: []const u8,
         root: []const u8,
         ctx: *Archiver.Context,
@@ -258,16 +259,17 @@ pub const Archiver = struct {
         defer stream.deinit();
         _ = stream.openRead();
         const archive = stream.archive;
-        const dir: std.fs.Dir = brk: {
-            const cwd = std.fs.cwd();
+        const dir: std.Io.Dir = brk: {
+            const cwd = std.Io.Dir.cwd();
 
             // if the destination doesn't exist, we skip the whole thing since nothing can overwrite it.
             if (std.fs.path.isAbsolute(root)) {
-                break :brk std.fs.openDirAbsolute(root, .{}) catch return;
+                break :brk std.Io.Dir.openDirAbsolute(io, root, .{}) catch return;
             } else {
-                break :brk cwd.openDir(root, .{}) catch return;
+                break :brk cwd.openDir(io, root, .{}) catch return;
             }
         };
+        defer dir.close(io);
 
         loop: while (true) {
             const r = archive.readNextHeader(&entry);
@@ -293,9 +295,9 @@ pub const Archiver = struct {
 
                     const size: usize = @intCast(@max(entry.size(), 0));
                     if (size > 0) {
-                        var opened = dir.openFileZ(pathname, .{ .mode = .write_only }) catch continue :loop;
-                        defer opened.close();
-                        const stat_size = try opened.getEndPos();
+                        const opened = dir.openFile(io, pathname, .{ .mode = .write_only }) catch continue :loop;
+                        defer opened.close(io);
+                        const stat_size = try opened.length(io);
 
                         if (stat_size > 0) {
                             const is_already_top_level = dirname.len == 0;
@@ -334,8 +336,9 @@ pub const Archiver = struct {
     };
 
     pub fn extractToDir(
+        io: std.Io,
         file_buffer: []const u8,
-        dir: std.fs.Dir,
+        dir: std.Io.Dir,
         ctx: ?*Archiver.Context,
         comptime ContextType: type,
         appender: ContextType,
@@ -349,7 +352,7 @@ pub const Archiver = struct {
         _ = stream.openRead();
         const archive = stream.archive;
         var count: u32 = 0;
-        const dir_fd = dir.fd;
+        const dir_fd = bun.FD.fromStdDir(dir);
 
         var symlink_join_buf: ?*bun.PathBuffer = null;
         defer if (symlink_join_buf) |join_buf| bun.path_buffer_pool.put(join_buf);
@@ -469,15 +472,15 @@ pub const Archiver = struct {
                                 mode |= 0o1;
 
                             if (comptime Environment.isWindows) {
-                                try bun.MakePath.makePath(u16, dir, path);
+                                try bun.MakePath.makePath(io, u16, dir, path);
                             } else {
-                                std.posix.mkdiratZ(dir_fd, path, @intCast(mode)) catch |err| {
+                                bun.sys.mkdiratZ(dir_fd, path, @intCast(mode)).unwrap() catch |err| {
                                     // It's possible for some tarballs to return a directory twice, with and
                                     // without `./` in the beginning. So if it already exists, continue to the
                                     // next entry.
                                     if (err == error.PathAlreadyExists or err == error.NotDir) continue;
-                                    bun.makePath(dir, std.fs.path.dirname(path_slice) orelse return err) catch {};
-                                    std.posix.mkdiratZ(dir_fd, path, 0o777) catch {};
+                                    bun.makePath(dir, io, std.fs.path.dirname(path_slice) orelse return err) catch {};
+                                    bun.sys.mkdiratZ(dir_fd, path, 0o777).unwrap() catch {};
                                 };
                             }
                         },
@@ -497,11 +500,11 @@ pub const Archiver = struct {
                                     }
                                     continue;
                                 }
-                                bun.sys.symlinkat(link_target, .fromNative(dir_fd), path).unwrap() catch |err| brk: {
+                                bun.sys.symlinkat(link_target, dir_fd, path).unwrap() catch |err| brk: {
                                     switch (err) {
                                         error.EPERM, error.ENOENT => {
-                                            dir.makePath(std.fs.path.dirname(path_slice) orelse return err) catch {};
-                                            break :brk try bun.sys.symlinkat(link_target, .fromNative(dir_fd), path).unwrap();
+                                            bun.makePath(dir, io, std.fs.path.dirname(path_slice) orelse return err) catch {};
+                                            break :brk try bun.sys.symlinkat(link_target, dir_fd, path).unwrap();
                                         },
                                         else => return err,
                                     }
@@ -519,33 +522,26 @@ pub const Archiver = struct {
 
                             const flags = bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC;
                             const file_handle_native: bun.FD = if (Environment.isWindows)
-                                switch (bun.sys.openatWindows(.fromNative(dir_fd), path, flags, 0)) {
+                                switch (bun.sys.openatWindows(dir_fd, path, flags, 0)) {
                                     .result => |fd| fd,
                                     .err => |e| switch (e.errno) {
                                         @intFromEnum(bun.sys.E.PERM),
                                         @intFromEnum(bun.sys.E.NOENT),
                                         => brk: {
-                                            bun.MakePath.makePath(u16, dir, bun.Dirname.dirname(u16, path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
-                                            break :brk try bun.sys.openatWindows(.fromNative(dir_fd), path, flags, 0).unwrap();
+                                            bun.MakePath.makePath(io, u16, dir, bun.Dirname.dirname(u16, path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
+                                            break :brk try bun.sys.openatWindows(dir_fd, path, flags, 0).unwrap();
                                         },
                                         else => return bun.errnoToZigErr(e.errno),
                                     },
                                 }
                             else
-                                .fromStdFile(dir.createFileZ(path, .{
-                                    .truncate = true,
-                                    .mode = mode,
-                                }) catch |err|
-                                    switch (err) {
-                                        error.AccessDenied, error.FileNotFound => brk: {
-                                            dir.makePath(std.fs.path.dirname(path_slice) orelse return err) catch {};
-                                            break :brk try dir.createFileZ(path, .{
-                                                .truncate = true,
-                                                .mode = mode,
-                                            });
-                                        },
-                                        else => return err,
-                                    });
+                                bun.sys.openat(dir_fd, path, flags, mode).unwrap() catch |err| switch (err) {
+                                    error.EACCES, error.ENOENT => brk: {
+                                        bun.makePath(dir, io, std.fs.path.dirname(path_slice) orelse return err) catch {};
+                                        break :brk try bun.sys.openat(dir_fd, path, flags, mode).unwrap();
+                                    },
+                                    else => return err,
+                                };
 
                             const file_handle = brk: {
                                 errdefer _ = file_handle_native.close();
@@ -650,6 +646,7 @@ pub const Archiver = struct {
     }
 
     pub fn extractToDisk(
+        io: std.Io,
         file_buffer: []const u8,
         root: []const u8,
         ctx: ?*Archiver.Context,
@@ -657,21 +654,19 @@ pub const Archiver = struct {
         appender: FilePathAppender,
         comptime options: ExtractOptions,
     ) !u32 {
-        var dir: std.fs.Dir = brk: {
-            const cwd = std.fs.cwd();
-            cwd.makePath(
-                root,
-            ) catch {};
+        var dir: std.Io.Dir = brk: {
+            const cwd = std.Io.Dir.cwd();
+            bun.makePath(cwd, io, root) catch {};
 
             if (std.fs.path.isAbsolute(root)) {
-                break :brk try std.fs.openDirAbsolute(root, .{});
+                break :brk try std.Io.Dir.openDirAbsolute(io, root, .{});
             } else {
-                break :brk try cwd.openDir(root, .{});
+                break :brk try cwd.openDir(io, root, .{});
             }
         };
 
-        defer if (comptime options.close_handles) dir.close();
-        return try extractToDir(file_buffer, dir, ctx, FilePathAppender, appender, options);
+        defer if (comptime options.close_handles) dir.close(io);
+        return try extractToDir(io, file_buffer, dir, ctx, FilePathAppender, appender, options);
     }
 };
 

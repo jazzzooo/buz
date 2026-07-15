@@ -26,6 +26,7 @@ const MINIMUM_CACHE_SIZE = 50 * 1024;
 var bun_debug_restore_from_cache = false;
 
 pub const RuntimeTranspilerCache = struct {
+    io: std.Io,
     input_hash: ?u64 = null,
     input_byte_length: ?u64 = null,
     features_hash: ?u64 = null,
@@ -93,30 +94,30 @@ pub const RuntimeTranspilerCache = struct {
         }
 
         pub fn decode(this: *Metadata, reader: anytype) !void {
-            this.cache_version = try reader.readInt(u32, .little);
+            this.cache_version = try reader.takeInt(u32, .little);
             if (this.cache_version != expected_version) {
                 return error.StaleCache;
             }
 
-            this.module_type = @enumFromInt(try reader.readInt(u8, .little));
-            this.output_encoding = @enumFromInt(try reader.readInt(u8, .little));
+            this.module_type = @enumFromInt(try reader.takeInt(u8, .little));
+            this.output_encoding = @enumFromInt(try reader.takeInt(u8, .little));
 
-            this.features_hash = try reader.readInt(u64, .little);
+            this.features_hash = try reader.takeInt(u64, .little);
 
-            this.input_byte_length = try reader.readInt(u64, .little);
-            this.input_hash = try reader.readInt(u64, .little);
+            this.input_byte_length = try reader.takeInt(u64, .little);
+            this.input_hash = try reader.takeInt(u64, .little);
 
-            this.output_byte_offset = try reader.readInt(u64, .little);
-            this.output_byte_length = try reader.readInt(u64, .little);
-            this.output_hash = try reader.readInt(u64, .little);
+            this.output_byte_offset = try reader.takeInt(u64, .little);
+            this.output_byte_length = try reader.takeInt(u64, .little);
+            this.output_hash = try reader.takeInt(u64, .little);
 
-            this.sourcemap_byte_offset = try reader.readInt(u64, .little);
-            this.sourcemap_byte_length = try reader.readInt(u64, .little);
-            this.sourcemap_hash = try reader.readInt(u64, .little);
+            this.sourcemap_byte_offset = try reader.takeInt(u64, .little);
+            this.sourcemap_byte_length = try reader.takeInt(u64, .little);
+            this.sourcemap_hash = try reader.takeInt(u64, .little);
 
-            this.esm_record_byte_offset = try reader.readInt(u64, .little);
-            this.esm_record_byte_length = try reader.readInt(u64, .little);
-            this.esm_record_hash = try reader.readInt(u64, .little);
+            this.esm_record_byte_offset = try reader.takeInt(u64, .little);
+            this.esm_record_byte_length = try reader.takeInt(u64, .little);
+            this.esm_record_hash = try reader.takeInt(u64, .little);
 
             switch (this.module_type) {
                 .esm, .cjs => {},
@@ -232,18 +233,17 @@ pub const RuntimeTranspilerCache = struct {
                         metadata.esm_record_hash = hash(esm_record);
                     }
 
-                    var metadata_stream = std.io.fixedBufferStream(&metadata_buf);
-
-                    try metadata.encode(metadata_stream.writer());
+                    var metadata_writer = std.Io.Writer.fixed(&metadata_buf);
+                    try metadata.encode(&metadata_writer);
 
                     if (comptime bun.Environment.isDebug) {
-                        var metadata_stream2 = std.io.fixedBufferStream(metadata_buf[0..Metadata.size]);
+                        var metadata_reader = std.Io.Reader.fixed(metadata_buf[0..Metadata.size]);
                         var metadata2 = Metadata{};
-                        metadata2.decode(metadata_stream2.reader()) catch |err| bun.Output.panic("Metadata did not roundtrip encode -> decode  successfully: {s}", .{@errorName(err)});
+                        metadata2.decode(&metadata_reader) catch |err| bun.Output.panic("Metadata did not roundtrip encode -> decode  successfully: {s}", .{@errorName(err)});
                         bun.assert(std.meta.eql(metadata, metadata2));
                     }
 
-                    break :brk metadata_buf[0..metadata_stream.pos];
+                    break :brk metadata_buf[0..metadata_writer.end];
                 };
 
                 var vecs_buf: [4]bun.PlatformIOVecConst = undefined;
@@ -293,12 +293,13 @@ pub const RuntimeTranspilerCache = struct {
 
         pub fn load(
             this: *Entry,
-            file: std.fs.File,
+            file: std.Io.File,
+            io: std.Io,
             sourcemap_allocator: std.mem.Allocator,
             output_code_allocator: std.mem.Allocator,
             esm_record_allocator: std.mem.Allocator,
         ) !void {
-            const stat_size = try file.getEndPos();
+            const stat_size = try file.length(io);
             if (stat_size < Metadata.size + this.metadata.output_byte_length + this.metadata.sourcemap_byte_length) {
                 return error.MissingData;
             }
@@ -311,7 +312,7 @@ pub const RuntimeTranspilerCache = struct {
                 .utf8 => brk: {
                     const utf8 = try output_code_allocator.alloc(u8, this.metadata.output_byte_length);
                     errdefer output_code_allocator.free(utf8);
-                    const read_bytes = try file.preadAll(utf8, this.metadata.output_byte_offset);
+                    const read_bytes = try file.readPositionalAll(io, utf8, this.metadata.output_byte_offset);
                     if (read_bytes != this.metadata.output_byte_length) {
                         return error.MissingData;
                     }
@@ -320,7 +321,7 @@ pub const RuntimeTranspilerCache = struct {
                 .latin1 => brk: {
                     var latin1, const bytes = bun.String.createUninitialized(.latin1, this.metadata.output_byte_length);
                     errdefer latin1.deref();
-                    const read_bytes = try file.preadAll(bytes, this.metadata.output_byte_offset);
+                    const read_bytes = try file.readPositionalAll(io, bytes, this.metadata.output_byte_offset);
 
                     if (this.metadata.output_hash != 0) {
                         if (hash(latin1.latin1()) != this.metadata.output_hash) {
@@ -338,7 +339,7 @@ pub const RuntimeTranspilerCache = struct {
                     var string, const chars = bun.String.createUninitialized(.utf16, this.metadata.output_byte_length / 2);
                     errdefer string.deref();
 
-                    const read_bytes = try file.preadAll(std.mem.sliceAsBytes(chars), this.metadata.output_byte_offset);
+                    const read_bytes = try file.readPositionalAll(io, std.mem.sliceAsBytes(chars), this.metadata.output_byte_offset);
                     if (read_bytes != this.metadata.output_byte_length) {
                         return error.MissingData;
                     }
@@ -365,7 +366,7 @@ pub const RuntimeTranspilerCache = struct {
             if (this.metadata.sourcemap_byte_length > 0) {
                 const sourcemap = try sourcemap_allocator.alloc(u8, this.metadata.sourcemap_byte_length);
                 errdefer sourcemap_allocator.free(sourcemap);
-                const read_bytes = try file.preadAll(sourcemap, this.metadata.sourcemap_byte_offset);
+                const read_bytes = try file.readPositionalAll(io, sourcemap, this.metadata.sourcemap_byte_offset);
                 if (read_bytes != this.metadata.sourcemap_byte_length) {
                     return error.MissingData;
                 }
@@ -376,7 +377,7 @@ pub const RuntimeTranspilerCache = struct {
             if (this.metadata.esm_record_byte_length > 0) {
                 const esm_record = try esm_record_allocator.alloc(u8, this.metadata.esm_record_byte_length);
                 errdefer esm_record_allocator.free(esm_record);
-                const read_bytes = try file.preadAll(esm_record, this.metadata.esm_record_byte_offset);
+                const read_bytes = try file.readPositionalAll(io, esm_record, this.metadata.esm_record_byte_offset);
                 if (read_bytes != this.metadata.esm_record_byte_length) {
                     return error.MissingData;
                 }
@@ -501,6 +502,7 @@ pub const RuntimeTranspilerCache = struct {
     }
 
     pub fn fromFile(
+        io: std.Io,
         input_hash: u64,
         feature_hash: u64,
         input_stat_size: u64,
@@ -515,6 +517,7 @@ pub const RuntimeTranspilerCache = struct {
         const cache_file_path = try getCacheFilePath(&cache_file_path_buf, input_hash);
         bun.assert(cache_file_path.len > 0);
         return fromFileWithCacheFilePath(
+            io,
             bun.PathString.init(cache_file_path),
             input_hash,
             feature_hash,
@@ -526,6 +529,7 @@ pub const RuntimeTranspilerCache = struct {
     }
 
     pub fn fromFileWithCacheFilePath(
+        io: std.Io,
         cache_file_path: bun.PathString,
         input_hash: u64,
         feature_hash: u64,
@@ -543,17 +547,15 @@ pub const RuntimeTranspilerCache = struct {
         }
 
         const file = cache_fd.stdFile();
-        const metadata_bytes = try file.preadAll(&metadata_bytes_buf, 0);
-        if (comptime bun.Environment.isWindows) try file.seekTo(0);
-        var metadata_stream = std.io.fixedBufferStream(metadata_bytes_buf[0..metadata_bytes]);
+        const metadata_bytes = try file.readPositionalAll(io, &metadata_bytes_buf, 0);
+        var metadata_reader = std.Io.Reader.fixed(metadata_bytes_buf[0..metadata_bytes]);
 
         var entry = Entry{
             .metadata = Metadata{},
             .output_code = .{ .utf8 = "" },
             .sourcemap = "",
         };
-        const reader = metadata_stream.reader();
-        try entry.metadata.decode(reader);
+        try entry.metadata.decode(&metadata_reader);
         if (entry.metadata.input_hash != input_hash or entry.metadata.input_byte_length != input_stat_size) {
             // delete the cache in this case
             return error.InvalidInputHash;
@@ -564,7 +566,7 @@ pub const RuntimeTranspilerCache = struct {
             return error.MismatchedFeatureHash;
         }
 
-        try entry.load(file, sourcemap_allocator, output_code_allocator, esm_record_allocator);
+        try entry.load(file, io, sourcemap_allocator, output_code_allocator, esm_record_allocator);
 
         return entry;
     }
@@ -577,6 +579,7 @@ pub const RuntimeTranspilerCache = struct {
     }
 
     pub fn toFile(
+        io: std.Io,
         input_byte_length: u64,
         input_hash: u64,
         features_hash: u64,
@@ -603,8 +606,8 @@ pub const RuntimeTranspilerCache = struct {
 
         const cache_dir_fd = brk: {
             if (std.fs.path.dirname(cache_file_path)) |dirname| {
-                var dir = try std.fs.cwd().makeOpenPath(dirname, .{ .access_sub_paths = true });
-                errdefer dir.close();
+                var dir = try bun.MakePath.makeOpenPath(io, std.Io.Dir.cwd(), dirname, .{ .access_sub_paths = true });
+                errdefer dir.close(io);
                 break :brk try bun.FD.fromStdDir(dir).makeLibUVOwned();
             }
 
@@ -655,7 +658,7 @@ pub const RuntimeTranspilerCache = struct {
         parser_options.hashForRuntimeTranspiler(&features_hasher, used_jsx);
         this.features_hash = features_hasher.final();
 
-        this.entry = fromFile(input_hash, this.features_hash.?, source.contents.len, this.sourcemap_allocator, this.output_code_allocator, this.esm_record_allocator) catch |err| {
+        this.entry = fromFile(this.io, input_hash, this.features_hash.?, source.contents.len, this.sourcemap_allocator, this.output_code_allocator, this.esm_record_allocator) catch |err| {
             debug("get(\"{s}\") = {s}", .{ source.path.text, @errorName(err) });
             return false;
         };
@@ -691,7 +694,7 @@ pub const RuntimeTranspilerCache = struct {
         const output_code = bun.String.cloneLatin1(output_code_bytes);
         this.output_code = output_code;
 
-        toFile(this.input_byte_length.?, this.input_hash.?, this.features_hash.?, sourcemap, esm_record, output_code, this.exports_kind) catch |err| {
+        toFile(this.io, this.input_byte_length.?, this.input_hash.?, this.features_hash.?, sourcemap, esm_record, output_code, this.exports_kind) catch |err| {
             debug("put() = {s}", .{@errorName(err)});
             return;
         };

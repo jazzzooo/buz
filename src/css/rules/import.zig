@@ -157,7 +157,7 @@ pub const ImportRule = struct {
             .url = url,
             .layer = null,
             .supports = null,
-            .media = MediaList{ .media_queries = .{} },
+            .media = MediaList{ .media_queries = .empty },
             .import_record_idx = std.math.maxInt(u32),
             .loc = Location.dummy(),
         };
@@ -168,7 +168,7 @@ pub const ImportRule = struct {
             .url = url,
             .layer = null,
             .supports = null,
-            .media = MediaList{ .media_queries = .{} },
+            .media = MediaList{ .media_queries = .empty },
             .import_record_idx = import_record_idx,
             .loc = Location.dummy(),
         };

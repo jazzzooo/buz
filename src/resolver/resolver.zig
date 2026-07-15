@@ -454,6 +454,7 @@ pub const Resolver = struct {
     fs: *Fs.FileSystem,
     log: *logger.Log,
     allocator: std.mem.Allocator,
+    io: std.Io,
     extension_order: []const string = undefined,
     timer: Timer = undefined,
 
@@ -545,6 +546,7 @@ pub const Resolver = struct {
                 // This cannot be the threadlocal allocator. It goes to the HTTP thread.
                 bun.default_allocator,
 
+                this.io,
                 .{},
                 this.env_loader.?,
             );
@@ -575,6 +577,7 @@ pub const Resolver = struct {
 
     pub fn init1(
         allocator: std.mem.Allocator,
+        io: std.Io,
         log: *logger.Log,
         _fs: *Fs.FileSystem,
         opts: options.BundleOptions,
@@ -586,6 +589,7 @@ pub const Resolver = struct {
 
         return ThisResolver{
             .allocator = allocator,
+            .io = io,
             .dir_cache = DirInfo.HashMap.init(bun.default_allocator),
             .mutex = &resolver_Mutex,
             .caches = CacheSet.init(allocator),
@@ -1096,7 +1100,7 @@ pub const Resolver = struct {
                         if (!query.entry.cache.fd.isValid() and store_fd) {
                             buf[out.len] = 0;
                             const span = buf[0..out.len :0];
-                            var file: bun.FD = .fromStdFile(try std.fs.openFileAbsoluteZ(span, .{ .mode = .read_only }));
+                            const file = try bun.sys.open(span, bun.O.RDONLY, 0).unwrap();
                             query.entry.cache.fd = file;
                             Fs.FileSystem.setMaxFd(file.native());
                         }
@@ -1104,8 +1108,7 @@ pub const Resolver = struct {
                         defer {
                             if (r.fs.fs.needToCloseFiles()) {
                                 if (query.entry.cache.fd.isValid()) {
-                                    var file = query.entry.cache.fd.stdFile();
-                                    file.close();
+                                    query.entry.cache.fd.close();
                                     query.entry.cache.fd = .invalid;
                                 }
                             }
@@ -2606,6 +2609,7 @@ pub const Resolver = struct {
         // we must use the global allocator
         var entry = try r.caches.fs.readFileWithAllocator(
             bun.default_allocator,
+            r.io,
             r.fs,
             file,
             dirname_fd,
@@ -2875,11 +2879,9 @@ pub const Resolver = struct {
                 const sentinel = path.ptr[0..queue_top.unsafe_path.len :0];
 
                 const open_req = if (comptime Environment.isPosix) open_req: {
-                    const dir_result = std.fs.openDirAbsoluteZ(
-                        sentinel,
-                        .{ .no_follow = !follow_symlinks, .iterate = true },
-                    ) catch |err| break :open_req err;
-                    break :open_req FD.fromStdDir(dir_result);
+                    const flags = bun.O.DIRECTORY | bun.O.RDONLY | if (!follow_symlinks) bun.O.NOFOLLOW else 0;
+                    const dir_result = bun.sys.openA(sentinel, flags, 0).unwrap() catch |err| break :open_req err;
+                    break :open_req dir_result;
                 } else if (comptime Environment.isWindows) open_req: {
                     const dirfd_result = bun.sys.openDirAtWindowsA(bun.invalid_fd, sentinel, .{
                         .iterable = true,
@@ -4046,9 +4048,8 @@ pub const Resolver = struct {
                             bin_folders = BinFolderArray.init(0) catch unreachable;
                         }
 
-                        const this_dir = fd.stdDir();
-                        var file = bun.FD.fromStdDir(this_dir.openDirZ(bun.pathLiteral("node_modules/.bin"), .{}) catch
-                            break :append_bin_dir);
+                        const file = bun.sys.openat(fd, bun.pathLiteral("node_modules/.bin"), bun.O.DIRECTORY | bun.O.RDONLY, 0).unwrap() catch
+                            break :append_bin_dir;
                         defer file.close();
                         const bin_path = file.getFdPath(bufs(.node_bin_path)) catch break :append_bin_dir;
                         bin_folders_lock.lock();
@@ -4072,10 +4073,9 @@ pub const Resolver = struct {
                                 bin_folders = BinFolderArray.init(0) catch unreachable;
                             }
 
-                            const this_dir = fd.stdDir();
-                            var file = this_dir.openDirZ(".bin", .{}) catch break :append_bin_dir;
+                            const file = bun.sys.openat(fd, ".bin", bun.O.DIRECTORY | bun.O.RDONLY, 0).unwrap() catch break :append_bin_dir;
                             defer file.close();
-                            const bin_path = bun.getFdPath(.fromStdDir(file), bufs(.node_bin_path)) catch break :append_bin_dir;
+                            const bin_path = bun.getFdPath(file, bufs(.node_bin_path)) catch break :append_bin_dir;
                             bin_folders_lock.lock();
                             defer bin_folders_lock.unlock();
 
@@ -4268,7 +4268,7 @@ pub const Resolver = struct {
                             // that was separately heap-allocated in TSConfigJSON.parse()
                             // (tsconfig_json.zig), so free those before the map itself.
                             for (merged_config.paths.values()) |v| bun.default_allocator.free(v);
-                            merged_config.paths.deinit();
+                            merged_config.paths.deinit(bun.default_allocator);
                             merged_config.paths = parent_config.paths;
                             merged_config.base_url_for_paths = parent_config.base_url_for_paths;
                         } else {
@@ -4276,7 +4276,7 @@ pub const Resolver = struct {
                             // by parent_config. base_url_for_paths.len == 0 implies the map
                             // is empty (it's only set when the `paths` key is present in the
                             // JSON), so this is a no-op but documents the ownership.
-                            parent_config.paths.deinit();
+                            parent_config.paths.deinit(bun.default_allocator);
                         }
                         // Every scalar/reference we need has been copied into merged_config
                         // (strings live in dirname_store or default_allocator and outlive the

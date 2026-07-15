@@ -745,7 +745,7 @@ pub fn migrateNPMLockfile(
                         break :peer_dep_meta expr.data.e_object;
                     } else null
                 else
-                    void{};
+                    {};
 
                 if (deps.data != .e_object) return error.InvalidNPMLockfile;
                 const properties = deps.data.e_object.properties;
@@ -1072,7 +1072,7 @@ pub fn migrateNPMLockfile(
     try this.resolve(log);
 
     // if (Environment.isDebug) {
-    //     const dump_file = try std.fs.cwd().createFileZ("after-clean.json", .{});
+    //     const dump_file = try std.Io.Dir.cwd().createFileZ("after-clean.json", .{});
     //     defer dump_file.close();
     //     try std.json.stringify(this, .{ .whitespace = .indent_2 }, dump_file.writer());
     // }

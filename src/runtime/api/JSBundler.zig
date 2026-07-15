@@ -786,7 +786,7 @@ pub const JSBundler = struct {
 
                 defer path.deinit();
 
-                var dir = bun.FD.fromStdDir(std.fs.cwd().openDir(path.slice(), .{}) catch |err| {
+                var dir = bun.FD.fromStdDir(std.Io.Dir.cwd().openDir(globalThis.bunVM().io, path.slice(), .{}) catch |err| {
                     return globalThis.throwPretty("{s}: failed to open root directory: {s}", .{ @errorName(err), path.slice() });
                 });
                 defer dir.close();

@@ -1256,9 +1256,9 @@ pub fn getRemoteAddress(
     var text_buf: [512]u8 = undefined;
 
     const address_bytes = this.websocket().getRemoteAddress(&buf);
-    const address: std.net.Address = switch (address_bytes.len) {
-        4 => std.net.Address.initIp4(address_bytes[0..4].*, 0),
-        16 => std.net.Address.initIp6(address_bytes[0..16].*, 0, 0, 0),
+    const address: bun.api.socket.SocketAddress = switch (address_bytes.len) {
+        4 => .initIp4(address_bytes[0..4].*, 0),
+        16 => .initIp6(address_bytes[0..16].*, 0, 0, 0),
         else => return .js_undefined,
     };
 

@@ -931,16 +931,15 @@ pub const FFI = struct {
             return val;
         }
 
-        var arraylist = std.array_list.Managed(u8).init(allocator);
+        var arraylist = std.Io.Writer.Allocating.init(allocator);
         defer arraylist.deinit();
-        var writer = arraylist.writer();
 
         function.base_name = "my_callback_function";
 
-        function.printCallbackSourceCode(null, null, &writer) catch {
+        function.printCallbackSourceCode(null, null, &arraylist.writer) catch {
             return ZigString.init("Error while printing code").toErrorInstance(global);
         };
-        return ZigString.init(arraylist.items).toJS(global);
+        return ZigString.init(arraylist.written()).toJS(global);
     }
 
     pub fn print(global: *JSGlobalObject, object: jsc.JSValue, is_callback_val: ?jsc.JSValue) bun.JSError!JSValue {
@@ -1604,21 +1603,20 @@ pub const FFI = struct {
             is_threadsafe: bool,
         ) !void {
             jsc.markBinding(@src());
-            var source_code = std.array_list.Managed(u8).init(this.allocator);
-            var source_code_writer = source_code.writer();
+            var source_code = std.Io.Writer.Allocating.init(this.allocator);
             const ffi_wrapper = Bun__createFFICallbackFunction(js_context, js_function);
-            try this.printCallbackSourceCode(js_context, ffi_wrapper, &source_code_writer);
+            try this.printCallbackSourceCode(js_context, ffi_wrapper, &source_code.writer);
 
             if (comptime Environment.isDebug and Environment.isPosix) {
                 debug_write: {
-                    const fd = std.posix.open("/tmp/bun-ffi-callback-source.c", .{ .CREAT = true, .ACCMODE = .WRONLY }, 0o644) catch break :debug_write;
-                    _ = bun.sys.write(.fromNative(fd), source_code.items).unwrap() catch break :debug_write;
-                    std.posix.ftruncate(fd, source_code.items.len) catch break :debug_write;
-                    std.posix.close(fd);
+                    const file = bun.sys.File.open("/tmp/bun-ffi-callback-source.c", bun.O.CREAT | bun.O.WRONLY, 0o644).unwrap() catch break :debug_write;
+                    defer file.close();
+                    file.writeAll(source_code.written()).unwrap() catch break :debug_write;
+                    bun.sys.ftruncate(file.handle, @intCast(source_code.written().len)).unwrap() catch break :debug_write;
                 }
             }
 
-            try source_code.append(0);
+            try source_code.writer.writeByte(0);
             // defer source_code.deinit();
 
             const state = TCC.State.init(Function, .{
@@ -1649,7 +1647,7 @@ pub const FFI = struct {
 
             CompilerRT.define(state);
 
-            state.compileString(@ptrCast(source_code.items)) catch {
+            state.compileString(@ptrCast(source_code.written())) catch {
                 this.fail("Failed to compile source code");
                 return;
             };
@@ -2337,13 +2335,14 @@ const CompilerRT = struct {
 
     fn createCompilerRTDir() void {
         const tmpdir = Fs.FileSystem.instance.tmpdir() catch return;
-        var bunCC = tmpdir.makeOpenPath("bun-cc", .{}) catch return;
-        defer bunCC.close();
+        const io = VirtualMachine.get().io;
+        var bunCC = bun.MakePath.makeOpenPath(io, tmpdir, "bun-cc", .{}) catch return;
+        defer bunCC.close(io);
 
         inline for (comptime std.meta.declarations(compiler_rt_sources)) |decl| {
-            const source = @field(compiler_rt_sources, decl.name);
-            bunCC.writeFile(.{
-                .sub_path = decl.name,
+            const source = @field(compiler_rt_sources, decl);
+            bunCC.writeFile(io, .{
+                .sub_path = decl,
                 .data = source,
             }) catch {};
         }

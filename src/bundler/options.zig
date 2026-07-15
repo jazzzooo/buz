@@ -1609,7 +1609,7 @@ pub fn loadersFromTransformOptions(allocator: std.mem.Allocator, _loaders: ?api.
     return loaders;
 }
 
-const Dir = std.fs.Dir;
+const Dir = std.Io.Dir;
 
 pub const SourceMapOption = enum {
     none,
@@ -1982,6 +1982,7 @@ pub const BundleOptions = struct {
 
     pub fn fromApi(
         allocator: std.mem.Allocator,
+        io: std.Io,
         fs: *Fs.FileSystem,
         log: *logger.Log,
         transform: api.TransformOptions,
@@ -2084,7 +2085,7 @@ pub const BundleOptions = struct {
         }
 
         if (opts.write and opts.output_dir.len > 0) {
-            opts.output_dir_handle = try openOutputDir(opts.output_dir);
+            opts.output_dir_handle = try openOutputDir(io, opts.output_dir);
             opts.output_dir = try fs.getFdPath(.fromStdDir(opts.output_dir_handle.?));
         }
 
@@ -2100,14 +2101,14 @@ pub const BundleOptions = struct {
     }
 };
 
-pub fn openOutputDir(output_dir: string) !std.fs.Dir {
-    return std.fs.cwd().openDir(output_dir, .{}) catch brk: {
-        std.fs.cwd().makeDir(output_dir) catch |err| {
+pub fn openOutputDir(io: std.Io, output_dir: string) !std.Io.Dir {
+    return std.Io.Dir.cwd().openDir(io, output_dir, .{}) catch brk: {
+        std.Io.Dir.cwd().createDir(io, output_dir, .default_dir) catch |err| {
             Output.printErrorln("error: Unable to mkdir \"{s}\": \"{s}\"", .{ output_dir, @errorName(err) });
             Global.crash();
         };
 
-        const handle = std.fs.cwd().openDir(output_dir, .{}) catch |err2| {
+        const handle = std.Io.Dir.cwd().openDir(io, output_dir, .{}) catch |err2| {
             Output.printErrorln("error: Unable to open \"{s}\": \"{s}\"", .{ output_dir, @errorName(err2) });
             Global.crash();
         };
@@ -2175,7 +2176,7 @@ pub const TransformResult = struct {
     warnings: []logger.Msg = &([_]logger.Msg{}),
     output_files: []OutputFile = &([_]OutputFile{}),
     outbase: string,
-    root_dir: ?std.fs.Dir = null,
+    root_dir: ?std.Io.Dir = null,
     pub fn init(
         outbase: string,
         output_files: []OutputFile,

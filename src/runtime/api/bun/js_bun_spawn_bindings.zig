@@ -667,7 +667,7 @@ pub fn spawnMaybeSync(
         .stdin = .{ .ignore = {} },
         .stdout = .{ .ignore = {} },
         .stderr = .{ .ignore = {} },
-        .stdio_pipes = .{},
+        .stdio_pipes = .empty,
         .ipc_data = null,
         .flags = .{
             .is_sync = is_sync,

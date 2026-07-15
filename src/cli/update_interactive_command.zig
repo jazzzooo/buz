@@ -98,14 +98,14 @@ pub const UpdateInteractiveCommand = struct {
         const new_package_json_source = try manager.allocator.dupe(u8, package_json_writer.ctx.writtenWithoutTrailingZero());
 
         // Write the updated package.json
-        const write_file = std.fs.cwd().createFile(package_json_path, .{}) catch |err| {
+        const write_file = std.Io.Dir.cwd().createFile(manager.io, package_json_path, .{}) catch |err| {
             manager.allocator.free(new_package_json_source);
             Output.errGeneric("Failed to write package.json at {s}: {s}", .{ package_json_path, @errorName(err) });
             return err;
         };
-        defer write_file.close();
+        defer write_file.close(manager.io);
 
-        write_file.writeAll(new_package_json_source) catch |err| {
+        write_file.writeStreamingAll(manager.io, new_package_json_source) catch |err| {
             manager.allocator.free(new_package_json_source);
             Output.errGeneric("Failed to write package.json at {s}: {s}", .{ package_json_path, @errorName(err) });
             return err;
@@ -399,7 +399,7 @@ pub const UpdateInteractiveCommand = struct {
         }
 
         // Prompt user to select packages
-        const selected = try promptForUpdates(bun.default_allocator, outdated_packages);
+        const selected = try promptForUpdates(bun.default_allocator, manager.io, outdated_packages);
         defer bun.default_allocator.free(selected);
 
         // Create package specifier array from selected packages
@@ -529,7 +529,7 @@ pub const UpdateInteractiveCommand = struct {
 
                 // Reset the timer to show actual install time instead of total command time
                 var install_ctx = ctx;
-                install_ctx.start_time = std.time.nanoTimestamp();
+                install_ctx.start_time = bun.awakeNanoseconds(manager.io);
 
                 try PackageManager.installWithManager(manager, install_ctx, PackageManager.root_package_json_path, manager.root_dir.dir);
             }
@@ -729,10 +729,6 @@ pub const UpdateInteractiveCommand = struct {
         var outdated_packages = std.array_list.Managed(OutdatedPackage).init(allocator);
         defer outdated_packages.deinit();
 
-        var version_buf = std.array_list.Managed(u8).init(allocator);
-        defer version_buf.deinit();
-        const version_writer = version_buf.writer();
-
         for (workspace_pkg_ids) |workspace_pkg_id| {
             const pkg_deps = pkg_dependencies[workspace_pkg_id];
             for (pkg_deps.begin()..pkg_deps.end()) |dep_id| {
@@ -786,21 +782,12 @@ pub const UpdateInteractiveCommand = struct {
                     continue;
                 }
 
-                version_buf.clearRetainingCapacity();
-                try version_writer.print("{f}", .{resolution.value.npm.version.fmt(string_buf)});
-                const current_version_buf = try allocator.dupe(u8, version_buf.items);
-
-                version_buf.clearRetainingCapacity();
-                try version_writer.print("{f}", .{update_version.version.fmt(manifest.string_buf)});
-                const update_version_buf = try allocator.dupe(u8, version_buf.items);
-
-                version_buf.clearRetainingCapacity();
-                try version_writer.print("{f}", .{latest.version.fmt(manifest.string_buf)});
-                const latest_version_buf = try allocator.dupe(u8, version_buf.items);
+                const current_version_buf = try std.fmt.allocPrint(allocator, "{f}", .{resolution.value.npm.version.fmt(string_buf)});
+                const update_version_buf = try std.fmt.allocPrint(allocator, "{f}", .{update_version.version.fmt(manifest.string_buf)});
+                const latest_version_buf = try std.fmt.allocPrint(allocator, "{f}", .{latest.version.fmt(manifest.string_buf)});
 
                 // Already filtered by version.order check above
 
-                version_buf.clearRetainingCapacity();
                 const dep_type = if (dep.behavior.dev) "devDependencies" else if (dep.behavior.optional) "optionalDependencies" else if (dep.behavior.peer) "peerDependencies" else "dependencies";
 
                 // Get workspace name but only show if it's actually a workspace
@@ -819,9 +806,9 @@ pub const UpdateInteractiveCommand = struct {
 
                 try outdated_packages.append(.{
                     .name = try allocator.dupe(u8, name_slice),
-                    .current_version = try allocator.dupe(u8, current_version_buf),
-                    .latest_version = try allocator.dupe(u8, latest_version_buf),
-                    .update_version = try allocator.dupe(u8, update_version_buf),
+                    .current_version = current_version_buf,
+                    .latest_version = latest_version_buf,
+                    .update_version = update_version_buf,
                     .package_id = package_id,
                     .dep_id = @intCast(dep_id),
                     .workspace_pkg_id = workspace_pkg_id,
@@ -1032,7 +1019,7 @@ pub const UpdateInteractiveCommand = struct {
         return result;
     }
 
-    fn promptForUpdates(allocator: std.mem.Allocator, packages: []OutdatedPackage) ![]bool {
+    fn promptForUpdates(allocator: std.mem.Allocator, io: std.Io, packages: []OutdatedPackage) ![]bool {
         if (packages.len == 0) {
             Output.prettyln("<r><green>✓<r> All packages are up to date!", .{});
             return allocator.alloc(bool, 0);
@@ -1084,7 +1071,7 @@ pub const UpdateInteractiveCommand = struct {
             }
         }
 
-        const result = processMultiSelect(&state, terminal_size) catch |err| {
+        const result = processMultiSelect(io, &state, terminal_size) catch |err| {
             if (err == error.EndOfStream) {
                 Output.flush();
                 Output.prettyln("\n<r><red>x<r> Cancelled", .{});
@@ -1166,7 +1153,7 @@ pub const UpdateInteractiveCommand = struct {
         }
     }
 
-    fn processMultiSelect(state: *MultiSelectState, initial_terminal_size: TerminalSize) ![]bool {
+    fn processMultiSelect(io: std.Io, state: *MultiSelectState, initial_terminal_size: TerminalSize) ![]bool {
         const colors = Output.enable_ansi_colors_stdout;
 
         // Clear any previous progress output
@@ -1644,7 +1631,7 @@ pub const UpdateInteractiveCommand = struct {
 
             // Read input
             var reader_buffer: [1]u8 = undefined;
-            var reader_file = std.fs.File.stdin().readerStreaming(&reader_buffer);
+            var reader_file = std.Io.File.stdin().readerStreaming(io, &reader_buffer);
             const reader = &reader_file.interface;
             const byte = reader.takeByte() catch return state.selected;
 

@@ -228,8 +228,8 @@ pub const CreateCommand = struct {
         var progress = Progress{};
         progress.supports_ansi_escape_codes = Output.enable_ansi_colors_stderr;
         var node = switch (example_tag) {
-            .jslike_file => progress.start(try ProgressBuf.print("Analyzing {s}", .{template}), 0),
-            else => progress.start(try ProgressBuf.print("Loading {s}", .{template}), 0),
+            .jslike_file => progress.start(ctx.io, try ProgressBuf.print("Analyzing {s}", .{template}), 0),
+            else => progress.start(ctx.io, try ProgressBuf.print("Loading {s}", .{template}), 0),
         };
 
         // alacritty is fast
@@ -242,7 +242,7 @@ pub const CreateCommand = struct {
         }
 
         var package_json_contents: MutableString = undefined;
-        var package_json_file: ?std.fs.File = null;
+        var package_json_file: ?std.Io.File = null;
 
         if (example_tag != .local_folder) {
             if (create_options.verbose) {
@@ -350,6 +350,7 @@ pub const CreateCommand = struct {
 
                 if (!create_options.overwrite) {
                     try Archiver.getOverwritingFileList(
+                        ctx.io,
                         tarball_buf_list.items,
                         destination,
                         &archive_context,
@@ -388,6 +389,7 @@ pub const CreateCommand = struct {
                 }
 
                 _ = try Archiver.extractToDisk(
+                    ctx.io,
                     tarball_buf_list.items,
                     destination,
                     &archive_context,
@@ -417,16 +419,17 @@ pub const CreateCommand = struct {
                 progress.refresh();
 
                 const abs_template_path = filesystem.abs(&template_parts);
-                const template_dir = std.fs.openDirAbsolute(abs_template_path, .{ .iterate = true }) catch |err| {
+                const template_dir = std.Io.Dir.cwd().openDir(ctx.io, abs_template_path, .{ .iterate = true }) catch |err| {
                     node.end();
                     progress.refresh();
 
                     Output.prettyErrorln("<r><red>{s}<r>: opening dir {s}", .{ @errorName(err), template });
                     Global.exit(1);
                 };
+                defer template_dir.close(ctx.io);
 
-                std.fs.deleteTreeAbsolute(destination) catch {};
-                const destination_dir__ = std.fs.cwd().makeOpenPath(destination, .{}) catch |err| {
+                std.Io.Dir.cwd().deleteTree(ctx.io, destination) catch {};
+                const destination_dir__ = bun.MakePath.makeOpenPath(ctx.io, std.Io.Dir.cwd(), destination, .{}) catch |err| {
                     node.end();
 
                     progress.refresh();
@@ -450,13 +453,15 @@ pub const CreateCommand = struct {
                 }
 
                 const destination_dir = destination_dir__;
+                defer destination_dir.close(ctx.io);
                 const Walker = @import("../sys/walker_skippable.zig");
                 var walker_ = try Walker.walk(.fromStdDir(template_dir), ctx.allocator, skip_files, skip_dirs);
                 defer walker_.deinit();
 
                 const FileCopier = struct {
                     pub fn copy(
-                        destination_dir_: std.fs.Dir,
+                        io: std.Io,
+                        destination_dir_: std.Io.Dir,
                         walker: *Walker,
                         node_: *Progress.Node,
                         progress_: *Progress,
@@ -480,14 +485,14 @@ pub const CreateCommand = struct {
                                 switch (entry.kind) {
                                     .directory => {
                                         if (bun.windows.CreateDirectoryExW(src.ptr, dst.ptr, null) == 0) {
-                                            bun.MakePath.makePath(u16, destination_dir_, entry.path) catch {};
+                                            bun.MakePath.makePath(io, u16, destination_dir_, entry.path) catch {};
                                         }
                                     },
                                     .file => {
                                         defer node_.completeOne();
                                         if (bun.windows.CopyFileW(src.ptr, dst.ptr, 0) == bun.windows.FALSE) {
                                             if (bun.Dirname.dirname(u16, entry.path)) |entry_dirname| {
-                                                bun.MakePath.makePath(u16, destination_dir_, entry_dirname) catch {};
+                                                bun.MakePath.makePath(io, u16, destination_dir_, entry_dirname) catch {};
                                                 if (bun.windows.CopyFileW(src.ptr, dst.ptr, 0) != bun.windows.FALSE) {
                                                     continue;
                                                 }
@@ -514,32 +519,9 @@ pub const CreateCommand = struct {
                             }
                             if (entry.kind != .file) continue;
 
-                            var outfile = bun.FD.fromStdFile(destination_dir_.createFile(entry.path, .{}) catch brk: {
-                                if (bun.Dirname.dirname(bun.OSPathChar, entry.path)) |entry_dirname| {
-                                    bun.MakePath.makePath(bun.OSPathChar, destination_dir_, entry_dirname) catch {};
-                                }
-                                break :brk destination_dir_.createFile(entry.path, .{}) catch |err| {
-                                    node_.end();
-                                    progress_.refresh();
-                                    Output.err(err, "failed to copy file {f}", .{bun.fmt.fmtOSPath(entry.path, .{})});
-                                    Global.crash();
-                                };
-                            });
-                            defer outfile.close();
                             defer node_.completeOne();
 
-                            const infile = try entry.dir.openat(entry.basename, bun.O.RDONLY, 0).unwrap();
-                            defer infile.close();
-
-                            // Assumption: you only really care about making sure something that was executable is still executable
-                            switch (infile.stat()) {
-                                .err => {},
-                                .result => |stat| {
-                                    _ = outfile.chmod(@intCast(stat.mode));
-                                },
-                            }
-
-                            CopyFile.copyFile(infile, outfile).unwrap() catch |err| {
+                            entry.dir.stdDir().copyFile(entry.basename, destination_dir_, entry.path, io, .{ .make_path = true }) catch |err| {
                                 node_.end();
                                 progress_.refresh();
                                 Output.err(err, "failed to copy file {f}", .{bun.fmt.fmtOSPath(entry.path, .{})});
@@ -550,6 +532,7 @@ pub const CreateCommand = struct {
                 };
 
                 try FileCopier.copy(
+                    ctx.io,
                     destination_dir,
                     &walker_,
                     node,
@@ -560,16 +543,12 @@ pub const CreateCommand = struct {
                     if (comptime Environment.isWindows) &template_path_buf,
                 );
 
-                package_json_file = destination_dir.openFile("package.json", .{ .mode = .read_write }) catch null;
+                package_json_file = destination_dir.openFile(ctx.io, "package.json", .{ .mode = .read_write }) catch null;
 
                 read_package_json: {
                     if (package_json_file) |pkg| {
                         const size = brk: {
-                            if (comptime Environment.isWindows) {
-                                break :brk try pkg.getEndPos();
-                            }
-
-                            const stat = pkg.stat() catch |err| {
+                            const stat = pkg.stat(ctx.io) catch |err| {
                                 node.end();
 
                                 progress.refresh();
@@ -593,8 +572,7 @@ pub const CreateCommand = struct {
                         package_json_contents = try MutableString.init(ctx.allocator, size);
                         package_json_contents.list.expandToCapacity();
 
-                        const prev_file_pos = if (comptime Environment.isWindows) try pkg.getPos() else 0;
-                        _ = pkg.preadAll(package_json_contents.list.items, 0) catch |err| {
+                        _ = pkg.readPositionalAll(ctx.io, package_json_contents.list.items, 0) catch |err| {
                             package_json_file = null;
 
                             node.end();
@@ -604,9 +582,8 @@ pub const CreateCommand = struct {
                             Output.prettyErrorln("Error reading package.json: <r><red>{s}", .{@errorName(err)});
                             break :read_package_json;
                         };
-                        if (comptime Environment.isWindows) try pkg.seekTo(prev_file_pos);
                         // The printer doesn't truncate, so we must do so manually
-                        std.posix.ftruncate(pkg.handle, 0) catch {};
+                        pkg.setLength(ctx.io, 0) catch {};
 
                         initializeStore();
                     }
@@ -627,24 +604,16 @@ pub const CreateCommand = struct {
         const PATH = env_loader.map.get("PATH") orelse "";
 
         {
-            var parent_dir = try std.fs.openDirAbsolute(destination, .{});
-            defer parent_dir.close();
+            const parent_dir = try std.Io.Dir.cwd().openDir(ctx.io, destination, .{});
+            defer parent_dir.close(ctx.io);
             if (comptime Environment.isWindows) {
-                parent_dir.copyFile("gitignore", parent_dir, ".gitignore", .{}) catch {};
+                parent_dir.copyFile("gitignore", parent_dir, ".gitignore", ctx.io, .{}) catch {};
             } else {
-                std.posix.linkat(parent_dir.fd, "gitignore", parent_dir.fd, ".gitignore", 0) catch {};
+                parent_dir.hardLink("gitignore", parent_dir, ".gitignore", ctx.io, .{}) catch {};
             }
 
-            std.posix.unlinkat(
-                parent_dir.fd,
-                "gitignore",
-                0,
-            ) catch {};
-            std.posix.unlinkat(
-                parent_dir.fd,
-                ".npmignore",
-                0,
-            ) catch {};
+            parent_dir.deleteFile(ctx.io, "gitignore") catch {};
+            parent_dir.deleteFile(ctx.io, ".npmignore") catch {};
         }
 
         var start_command: string = "bun dev";
@@ -1186,7 +1155,7 @@ pub const CreateCommand = struct {
                 //         var public_index_html_parts = [_]string{ destination, "public/index.html" };
                 //         var public_index_html_path = filesystem.absBuf(&public_index_html_parts, &bun_path_buf);
 
-                //         const public_index_html_file = std.fs.cwd().openFile(public_index_html_path, .{ .mode = .read_write }) catch break :bail;
+                //         const public_index_html_file = std.Io.Dir.cwd().openFile(public_index_html_path, .{ .mode = .read_write }) catch break :bail;
                 //         defer public_index_html_file.close();
 
                 //         const file_extensions_to_try = [_]string{ ".tsx", ".ts", ".jsx", ".js", ".mts", ".mcjs" };
@@ -1390,8 +1359,6 @@ pub const CreateCommand = struct {
                     package_json_expr.data.e_object.properties.shrinkRetainingCapacity(property_i);
                 }
 
-                const file: bun.FD = .fromStdFile(package_json_file.?);
-
                 var buffer_writer = JSPrinter.BufferWriter.init(bun.default_allocator);
                 buffer_writer.append_newline = true;
                 var package_json_writer = JSPrinter.BufferPrinter.init(buffer_writer);
@@ -1408,12 +1375,12 @@ pub const CreateCommand = struct {
                     break :process_package_json;
                 };
                 const written = package_json_writer.ctx.getWritten();
-                bun.sys.File.writeAll(.{ .handle = file }, written).unwrap() catch |err| {
+                package_json_file.?.writePositionalAll(ctx.io, written, 0) catch |err| {
                     Output.prettyErrorln("package.json failed to write due to error {s}", .{@errorName(err)});
                     package_json_file = null;
                     break :process_package_json;
                 };
-                file.truncate(@intCast(written.len)).unwrap() catch |err| {
+                package_json_file.?.setLength(ctx.io, written.len) catch |err| {
                     Output.prettyErrorln("package.json failed to write due to error {s}", .{@errorName(err)});
                     package_json_file = null;
                     break :process_package_json;
@@ -1431,12 +1398,12 @@ pub const CreateCommand = struct {
 
         if (!create_options.skip_git) {
             if (!create_options.skip_install) {
-                GitHandler.spawn(destination, PATH, create_options.verbose);
+                GitHandler.spawn(ctx.io, destination, PATH, create_options.verbose);
             } else {
                 if (create_options.verbose) {
-                    create_options.skip_git = GitHandler.run(destination, PATH, true) catch false;
+                    create_options.skip_git = GitHandler.run(ctx.io, destination, PATH, true) catch false;
                 } else {
-                    create_options.skip_git = GitHandler.run(destination, PATH, false) catch false;
+                    create_options.skip_git = GitHandler.run(ctx.io, destination, PATH, false) catch false;
                 }
             }
         }
@@ -1455,7 +1422,7 @@ pub const CreateCommand = struct {
         }
 
         if (npm_client_) |npm_client| {
-            const start_time = std.time.nanoTimestamp();
+            const start_time = bun.awakeNanoseconds(ctx.io);
             const install_args = &[_]string{ npm_client.bin, "install" };
             Output.flush();
             Output.pretty("\n<r><d>$ <b><cyan>{s}<r><d> install", .{@tagName(npm_client.tag)});
@@ -1471,7 +1438,7 @@ pub const CreateCommand = struct {
             Output.flush();
             defer {
                 Output.printErrorln("\n", .{});
-                Output.printStartEnd(start_time, std.time.nanoTimestamp());
+                Output.printStartEnd(start_time, bun.awakeNanoseconds(ctx.io));
                 Output.prettyError(" <r><d>{s} install<r>\n", .{@tagName(npm_client.tag)});
                 Output.flush();
 
@@ -1505,7 +1472,7 @@ pub const CreateCommand = struct {
         }
 
         Output.printError("\n", .{});
-        Output.printStartEnd(ctx.start_time, std.time.nanoTimestamp());
+        Output.printStartEnd(ctx.start_time, bun.awakeNanoseconds(ctx.io));
         Output.prettyErrorln(" <r><d>bun create {s}<r>", .{template});
 
         Output.flush();
@@ -1625,18 +1592,23 @@ pub const CreateCommand = struct {
 
         if (create_options.open) {
             if (which(&bun_path_buf, PATH, destination, "bun")) |bin| {
-                var argv = [_]string{bun.asByteSlice(bin)};
-                var child = std.process.Child.init(&argv, ctx.allocator);
-                child.cwd = destination;
-                child.stdin_behavior = .Inherit;
-                child.stdout_behavior = .Inherit;
-                child.stderr_behavior = .Inherit;
+                const argv = [_]string{bun.asByteSlice(bin)};
 
                 const open = @import("./open.zig");
                 open.openURL("http://localhost:3000/");
 
-                try child.spawn();
-                _ = child.wait() catch {};
+                const child = try bun.spawnSync(&.{
+                    .argv = &argv,
+                    .envp = null,
+                    .cwd = destination,
+                    .stdin = .inherit,
+                    .stdout = .inherit,
+                    .stderr = .inherit,
+                    .windows = if (Environment.isWindows) .{
+                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                    },
+                });
+                _ = child.unwrap() catch {};
             }
         }
     }
@@ -1869,7 +1841,7 @@ pub const Example = struct {
 
         var examples = std.array_list.Managed(Example).fromOwnedSlice(ctx.allocator, remote_examples);
         {
-            var folders = [3]std.fs.Dir{
+            var folders = [3]std.Io.Dir{
                 bun.invalid_fd.stdDir(),
                 bun.invalid_fd.stdDir(),
                 bun.invalid_fd.stdDir(),
@@ -1877,28 +1849,29 @@ pub const Example = struct {
             if (env_loader.map.get("BUN_CREATE_DIR")) |home_dir| {
                 var parts = [_]string{home_dir};
                 const outdir_path = filesystem.absBuf(&parts, &home_dir_buf);
-                folders[0] = std.fs.cwd().openDir(outdir_path, .{}) catch bun.invalid_fd.stdDir();
+                folders[0] = std.Io.Dir.cwd().openDir(ctx.io, outdir_path, .{ .iterate = true }) catch bun.invalid_fd.stdDir();
             }
 
             {
                 var parts = [_]string{ filesystem.top_level_dir, BUN_CREATE_DIR };
                 const outdir_path = filesystem.absBuf(&parts, &home_dir_buf);
-                folders[1] = std.fs.cwd().openDir(outdir_path, .{}) catch bun.invalid_fd.stdDir();
+                folders[1] = std.Io.Dir.cwd().openDir(ctx.io, outdir_path, .{ .iterate = true }) catch bun.invalid_fd.stdDir();
             }
 
             if (env_loader.map.get(bun.env_var.HOME.key())) |home_dir| {
                 var parts = [_]string{ home_dir, BUN_CREATE_DIR };
                 const outdir_path = filesystem.absBuf(&parts, &home_dir_buf);
-                folders[2] = std.fs.cwd().openDir(outdir_path, .{}) catch bun.invalid_fd.stdDir();
+                folders[2] = std.Io.Dir.cwd().openDir(ctx.io, outdir_path, .{ .iterate = true }) catch bun.invalid_fd.stdDir();
             }
 
             // subfolders with package.json
             for (folders) |folder| {
-                if (folder.fd != bun.invalid_fd.cast()) {
+                if (folder.handle != bun.invalid_fd.cast()) {
+                    defer folder.close(ctx.io);
                     var iter = folder.iterate();
 
-                    loop: while (iter.next() catch null) |entry_| {
-                        const entry: std.fs.Dir.Entry = entry_;
+                    loop: while (iter.next(ctx.io) catch null) |entry_| {
+                        const entry: std.Io.Dir.Entry = entry_;
 
                         switch (entry.kind) {
                             .directory => {
@@ -1915,7 +1888,7 @@ pub const Example = struct {
 
                                 const path: [:0]u8 = home_dir_buf[0 .. entry.name.len + 1 + "package.json".len :0];
 
-                                folder.accessZ(path, .{ .mode = .read_only }) catch continue :loop;
+                                folder.access(ctx.io, path, .{ .read = true }) catch continue :loop;
 
                                 try examples.append(
                                     Example{
@@ -2291,7 +2264,7 @@ pub const CreateListExamplesCommand = struct {
 
         var progress = Progress{};
         progress.supports_ansi_escape_codes = Output.enable_ansi_colors_stderr;
-        const node = progress.start("Fetching manifest", 0);
+        const node = progress.start(ctx.io, "Fetching manifest", 0);
         progress.refresh();
 
         const examples = try Example.fetchAllLocalAndRemote(ctx, node, &env_loader, filesystem);
@@ -2322,19 +2295,21 @@ const GitHandler = struct {
     var success: std.atomic.Value(u32) = undefined;
     var thread: std.Thread = undefined;
     pub fn spawn(
+        io: std.Io,
         destination: string,
         PATH: string,
         verbose: bool,
     ) void {
         success = std.atomic.Value(u32).init(0);
 
-        thread = std.Thread.spawn(.{}, spawnThread, .{ destination, PATH, verbose }) catch |err| {
+        thread = std.Thread.spawn(.{}, spawnThread, .{ io, destination, PATH, verbose }) catch |err| {
             Output.prettyErrorln("<r><red>{s}<r>", .{@errorName(err)});
             Global.exit(1);
         };
     }
 
     fn spawnThread(
+        io: std.Io,
         destination: string,
         PATH: string,
         verbose: bool,
@@ -2342,9 +2317,9 @@ const GitHandler = struct {
         Output.Source.configureNamedThread("git");
         defer Output.flush();
         const outcome = if (verbose)
-            run(destination, PATH, true) catch false
+            run(io, destination, PATH, true) catch false
         else
-            run(destination, PATH, false) catch false;
+            run(io, destination, PATH, false) catch false;
 
         success.store(
             if (outcome)
@@ -2367,11 +2342,12 @@ const GitHandler = struct {
     }
 
     pub fn run(
+        io: std.Io,
         destination: string,
         PATH: string,
         comptime verbose: bool,
     ) !bool {
-        const git_start = std.time.nanoTimestamp();
+        const git_start = bun.awakeNanoseconds(io);
 
         // Not sure why...
         // But using libgit for this operation is slower than the CLI!
@@ -2407,18 +2383,22 @@ const GitHandler = struct {
 
             inline for (comptime std.meta.fieldNames(@TypeOf(Commands))) |command_field| {
                 const command: []const string = @field(git_commands, command_field);
-                var process = std.process.Child.init(command, default_allocator);
-                process.cwd = destination;
-                process.stdin_behavior = .Inherit;
-                process.stdout_behavior = .Inherit;
-                process.stderr_behavior = .Inherit;
-
-                _ = try process.spawnAndWait();
-                _ = process.kill() catch {};
+                const process = try bun.spawnSync(&.{
+                    .argv = command,
+                    .envp = null,
+                    .cwd = destination,
+                    .stdin = .inherit,
+                    .stdout = .inherit,
+                    .stderr = .inherit,
+                    .windows = if (Environment.isWindows) .{
+                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                    },
+                });
+                _ = try process.unwrap();
             }
 
             Output.prettyError("\n", .{});
-            Output.printStartEnd(git_start, std.time.nanoTimestamp());
+            Output.printStartEnd(git_start, bun.awakeNanoseconds(io));
             Output.prettyError(" <d>git<r>\n", .{});
             return true;
         }
@@ -2429,7 +2409,6 @@ const GitHandler = struct {
 
 const string = []const u8;
 
-const CopyFile = @import("../sys/copy_file.zig");
 const DotEnv = @import("../dotenv/env_loader.zig");
 const SourceFileProjectGenerator = @import("./create/SourceFileProjectGenerator.zig");
 const Zlib = @import("../zlib/zlib.zig");

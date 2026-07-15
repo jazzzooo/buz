@@ -27,7 +27,7 @@ inflight: ?u32 = null,
 /// range has the most remaining — the end is furthest from that worker's
 /// hot region.
 range: FileRange = .{ .lo = 0, .hi = 0 },
-/// `std.time.milliTimestamp()` at the most recent dispatch; drives lazy
+/// Real-clock milliseconds at the most recent dispatch; drives lazy
 /// scale-up.
 dispatched_at: i64 = 0,
 /// Worker stdout+stderr since the last `test_done`. Flushed atomically
@@ -172,7 +172,7 @@ pub fn dispatch(this: *Worker, file_idx: u32, file: []const u8) void {
     f.str(file);
     this.ipc.send(f.finish());
     this.inflight = file_idx;
-    this.dispatched_at = std.time.milliTimestamp();
+    this.dispatched_at = bun.realMilliseconds(this.coord.vm.io);
 }
 
 pub fn shutdown(this: *Worker) void {

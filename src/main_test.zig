@@ -78,7 +78,7 @@ const Stats = struct {
 
 fn runTests() u8 {
     var stats = Stats.init();
-    var stderr = std.fs.File.stderr();
+    var stderr = std.Io.File.stderr();
 
     namebuf = std.heap.page_allocator.alloc(u8, namebuf_size) catch {
         Output.panic("Failed to allocate name buffer", .{});

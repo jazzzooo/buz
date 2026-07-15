@@ -318,7 +318,7 @@ pub fn Writer(comptime WritableStream: type) type {
 }
 
 pub const ByteWriter = Writer(*std.io.FixedBufferStream([]u8));
-pub const FileWriter = Writer(std.fs.File);
+pub const FileWriter = Writer(std.Io.File);
 
 pub const analytics = struct {
     pub const OperatingSystem = enum(u8) {

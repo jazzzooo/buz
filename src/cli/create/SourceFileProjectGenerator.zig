@@ -1,7 +1,7 @@
 const SourceFileProjectGenerator = @This();
 
 // Generate project files based on the entry point and dependencies
-pub fn generate(_: Command.Context, _: Example.Tag, entry_point: string, result: *BundleV2.DependenciesScanner.Result) !void {
+pub fn generate(ctx: Command.Context, _: Example.Tag, entry_point: string, result: *BundleV2.DependenciesScanner.Result) !void {
     const react_component_export = findReactComponentExport(result.bundle_v2) orelse {
         Output.errGeneric("No component export found in <b>{f}<r>", .{bun.fmt.quote(entry_point)});
         Output.flush();
@@ -79,38 +79,28 @@ pub fn generate(_: Command.Context, _: Example.Tag, entry_point: string, result:
     };
 
     // Generate project files from template
-    try generateFiles(default_allocator, entry_point, result.dependencies.keys(), dev_dependencies, template, react_component_export);
+    try generateFiles(ctx.io, default_allocator, entry_point, result.dependencies.keys(), dev_dependencies, template, react_component_export);
 
     Global.exit(0);
 }
 
 // Create a file with given contents, returns if file was newly created
-fn createFile(filename: []const u8, contents: []const u8) bun.sys.Maybe(bool) {
+fn createFile(io: std.Io, filename: []const u8, contents: []const u8) !bool {
     // Check if file exists and has same contents
-    if (bun.sys.File.readFrom(bun.FD.cwd(), filename, default_allocator).asValue()) |source_contents| {
+    if (std.Io.Dir.cwd().readFileAlloc(io, filename, default_allocator, .unlimited)) |source_contents| {
         defer default_allocator.free(source_contents);
         if (strings.eqlLong(source_contents, contents, true)) {
-            return .{ .result = false };
+            return false;
         }
-    }
+    } else |_| {}
 
     // Create parent directories if needed
     if (std.fs.path.dirname(filename)) |dirname| {
-        bun.makePath(std.fs.cwd(), dirname) catch {};
+        bun.makePath(std.Io.Dir.cwd(), io, dirname) catch {};
     }
 
-    // Open file for writing
-    const fd = switch (bun.sys.openatA(.cwd(), filename, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o644)) {
-        .result => |fd| fd,
-        .err => |err| return .{ .err = err },
-    };
-    defer fd.close();
-
-    // Write contents
-    switch (bun.sys.File.writeAll(.{ .handle = fd }, contents)) {
-        .result => return .{ .result = true },
-        .err => |err| return .{ .err = err },
-    }
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = filename, .data = contents });
+    return true;
 }
 
 // Count number of occurrences to calculate buffer size
@@ -213,7 +203,7 @@ fn runInstall(argv: [][]const u8) !void {
 }
 
 // Generate all project files from template
-pub fn generateFiles(allocator: std.mem.Allocator, entry_point: string, dependencies: []const []const u8, dev_dependencies: []const []const u8, template: Template, react_component_export: []const u8) !void {
+pub fn generateFiles(io: std.Io, allocator: std.mem.Allocator, entry_point: string, dependencies: []const []const u8, dev_dependencies: []const []const u8, template: Template, react_component_export: []const u8) !void {
     var log = template.logger();
     var basename = std.fs.path.basename(entry_point);
     const extension = std.fs.path.extension(basename);
@@ -247,18 +237,14 @@ pub fn generateFiles(allocator: std.mem.Allocator, entry_point: string, dependen
                 const file = &files[index];
                 const file_name = try stringWithReplacements(file.name, basename, normalized_name, react_component_export, allocator);
                 if (file.overwrite or !bun.sys.exists(file_name)) {
-                    switch (createFile(file_name, try stringWithReplacements(file.content, basename, normalized_name, react_component_export, default_allocator))) {
-                        .result => |new| {
-                            if (new) {
-                                created_files[index] = true;
-                                filenames[index] = file_name;
-                                max_filename_len = @max(max_filename_len, file_name.len);
-                            }
-                        },
-                        .err => |err| {
-                            Output.err(err, "failed to create {s}", .{file_name});
-                            Global.crash();
-                        },
+                    const new = createFile(io, file_name, try stringWithReplacements(file.content, basename, normalized_name, react_component_export, default_allocator)) catch |err| {
+                        Output.err(err, "failed to create {s}", .{file_name});
+                        Global.crash();
+                    };
+                    if (new) {
+                        created_files[index] = true;
+                        filenames[index] = file_name;
+                        max_filename_len = @max(max_filename_len, file_name.len);
                     }
                 }
             }

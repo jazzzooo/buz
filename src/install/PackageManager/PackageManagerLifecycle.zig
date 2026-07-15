@@ -277,7 +277,7 @@ pub fn spawnPackageLifecycleScripts(
     var this_transpiler = try this.configureEnvForScripts(ctx, log_level);
 
     var script_env = try this_transpiler.env.map.cloneWithAllocator(bun.default_allocator);
-    defer script_env.map.deinit();
+    defer script_env.map.deinit(bun.default_allocator);
 
     const original_path = script_env.get("PATH") orelse "";
 

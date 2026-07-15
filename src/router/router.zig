@@ -327,7 +327,7 @@ const RouteLoader = struct {
             .config = config,
             .static_list = bun.StringHashMap(*Route).init(allocator),
             .dedupe_dynamic = std.array_hash_map.Auto(u32, string).empty,
-            .all_routes = .{},
+            .all_routes = .empty,
             .route_dirname_len = route_dirname_len,
         };
         defer this.dedupe_dynamic.deinit(allocator);
@@ -732,26 +732,26 @@ pub const Route = struct {
         }
 
         if (abs_path_str.len == 0) {
-            var file: std.fs.File = undefined;
+            var file: bun.FD = undefined;
             var needs_close = true;
             defer if (needs_close) file.close();
             if (entry.cache.fd.unwrapValid()) |valid| {
-                file = valid.stdFile();
+                file = valid;
                 needs_close = false;
             } else {
                 var parts = [_]string{ entry.dir, entry.base() };
                 abs_path_str = FileSystem.instance.absBuf(&parts, route_file_buf);
                 route_file_buf[abs_path_str.len] = 0;
                 const buf = route_file_buf[0..abs_path_str.len :0];
-                file = std.fs.openFileAbsoluteZ(buf, .{ .mode = .read_only }) catch |err| {
+                file = bun.sys.open(buf, bun.O.RDONLY, 0).unwrap() catch |err| {
                     needs_close = false;
                     log.addErrorFmt(null, Logger.Loc.Empty, allocator, "{s} opening route: {s}", .{ @errorName(err), abs_path_str }) catch unreachable;
                     return null;
                 };
-                FileSystem.setMaxFd(file.handle);
+                FileSystem.setMaxFd(file.native());
             }
 
-            const _abs = bun.getFdPath(.fromStdFile(file), route_file_buf) catch |err| {
+            const _abs = bun.getFdPath(file, route_file_buf) catch |err| {
                 log.addErrorFmt(null, Logger.Loc.Empty, allocator, "{s} resolving route: {s}", .{ @errorName(err), abs_path_str }) catch unreachable;
                 return null;
             };
@@ -917,7 +917,7 @@ pub const MockServer = struct {
 fn makeTest(cwd_path: string, data: anytype) !void {
     Output.initTest();
     bun.assert(cwd_path.len > 1 and !strings.eql(cwd_path, "/") and !strings.endsWith(cwd_path, "bun"));
-    const bun_tests_dir = try std.fs.cwd().makeOpenPath("bun-test-scratch", .{});
+    const bun_tests_dir = try std.Io.Dir.cwd().makeOpenPath("bun-test-scratch", .{});
     bun_tests_dir.deleteTree(cwd_path) catch {};
 
     const cwd = try bun_tests_dir.makeOpenPath(cwd_path, .{});

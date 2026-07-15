@@ -428,7 +428,7 @@ pub fn generateCodeForFileInChunkJS(
                 };
 
                 var hoist = ExportHoist{
-                    .decls = .{},
+                    .decls = .empty,
                     .allocator = temp_allocator,
                 };
 

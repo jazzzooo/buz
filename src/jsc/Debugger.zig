@@ -43,7 +43,7 @@ pub fn waitForDebuggerIfNecessary(this: *VirtualMachine) void {
     if (comptime Environment.enable_logs)
         Debugger.log("waitForDebugger: {f}", .{Output.ElapsedFormatter{
             .colors = Output.enable_ansi_colors_stderr,
-            .duration_ns = @truncate(@as(u128, @intCast(std.time.nanoTimestamp() - bun.cli.start_time))),
+            .duration_ns = @truncate(@as(u128, @intCast(bun.awakeNanoseconds(this.io) - bun.cli.start_time))),
         }});
 
     Bun__ensureDebugger(debugger.script_execution_context_id, debugger.wait_for_connection != .off);
@@ -155,6 +155,7 @@ pub fn startJSDebuggerThread(other_vm: *VirtualMachine) void {
 
     var vm = VirtualMachine.init(.{
         .allocator = thread_allocator,
+        .io = other_vm.io,
         .args = std.mem.zeroes(bun.schema.api.TransformOptions),
         .store_fd = false,
         .env_loader = env_loader,

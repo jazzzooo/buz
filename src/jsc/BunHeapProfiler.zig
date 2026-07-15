@@ -46,7 +46,7 @@ pub fn generateAndWriteProfile(vm: *jsc.VM, config: HeapProfilerConfig) !void {
             const abs_path = path_buf.slice();
             const dir_path = bun.path.dirname(abs_path, .auto);
             if (dir_path.len > 0) {
-                bun.FD.cwd().makePath(u8, dir_path) catch {};
+                bun.FD.cwd().makePath(jsc.VirtualMachine.get().io, u8, dir_path) catch {};
                 // Retry write
                 const retry_result = bun.sys.File.writeFile(bun.FD.cwd(), output_path_os, profile_slice.slice());
                 if (retry_result.asErr()) |_| {

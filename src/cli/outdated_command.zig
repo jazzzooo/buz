@@ -6,6 +6,15 @@ pub const OutdatedCommand = struct {
         is_catalog: bool,
     };
 
+    fn appendVersion(buffer: *std.array_list.Managed(u8), value: anytype) OOM!void {
+        var writer_state = bun.ManagedWriter.init(buffer);
+        var writer_finished = false;
+        defer if (!writer_finished) writer_state.finish();
+        writer_state.writer().print("{f}", .{value}) catch return error.OutOfMemory;
+        writer_state.finish();
+        writer_finished = true;
+    }
+
     pub fn exec(ctx: Command.Context) !void {
         Output.prettyln("<r><b>bun outdated <r><d>v" ++ Global.package_json_version_with_sha ++ "<r>", .{});
         Output.flush();
@@ -380,7 +389,6 @@ pub const OutdatedCommand = struct {
 
         var version_buf = std.array_list.Managed(u8).init(bun.default_allocator);
         defer version_buf.deinit();
-        const version_writer = version_buf.writer();
 
         var outdated_ids: std.ArrayListUnmanaged(OutdatedInfo) = .empty;
         defer outdated_ids.deinit(manager.allocator);
@@ -457,23 +465,23 @@ pub const OutdatedCommand = struct {
 
                 if (package_name_len > max_name) max_name = package_name_len;
 
-                bun.handleOom(version_writer.print("{f}", .{resolution.value.npm.version.fmt(string_buf)}));
+                bun.handleOom(appendVersion(&version_buf, resolution.value.npm.version.fmt(string_buf)));
                 if (version_buf.items.len > max_current) max_current = version_buf.items.len;
                 version_buf.clearRetainingCapacity();
 
                 if (update_version.unwrap()) |update_version_| {
-                    bun.handleOom(version_writer.print("{f}", .{update_version_.version.fmt(manifest.string_buf)}));
+                    bun.handleOom(appendVersion(&version_buf, update_version_.version.fmt(manifest.string_buf)));
                 } else {
-                    bun.handleOom(version_writer.print("{f}", .{resolution.value.npm.version.fmt(manifest.string_buf)}));
+                    bun.handleOom(appendVersion(&version_buf, resolution.value.npm.version.fmt(manifest.string_buf)));
                 }
                 const update_version_len = version_buf.items.len + (if (has_filtered_update) " *".len else 0);
                 if (update_version_len > max_update) max_update = update_version_len;
                 version_buf.clearRetainingCapacity();
 
                 if (latest.unwrap()) |latest_version| {
-                    bun.handleOom(version_writer.print("{f}", .{latest_version.version.fmt(manifest.string_buf)}));
+                    bun.handleOom(appendVersion(&version_buf, latest_version.version.fmt(manifest.string_buf)));
                 } else {
-                    bun.handleOom(version_writer.print("{f}", .{resolution.value.npm.version.fmt(manifest.string_buf)}));
+                    bun.handleOom(appendVersion(&version_buf, resolution.value.npm.version.fmt(manifest.string_buf)));
                 }
                 const latest_version_len = version_buf.items.len + (if (has_filtered_latest) " *".len else 0);
                 if (latest_version_len > max_latest) max_latest = latest_version_len;
@@ -617,7 +625,7 @@ pub const OutdatedCommand = struct {
                     Output.pretty("{s}", .{table.symbols.verticalEdge()});
                     for (0..column_left_pad) |_| Output.pretty(" ", .{});
 
-                    bun.handleOom(version_writer.print("{f}", .{resolution.value.npm.version.fmt(string_buf)}));
+                    bun.handleOom(appendVersion(&version_buf, resolution.value.npm.version.fmt(string_buf)));
                     Output.pretty("{s}", .{version_buf.items});
                     for (version_buf.items.len..current_column_inside_length + column_right_pad) |_| Output.pretty(" ", .{});
                     version_buf.clearRetainingCapacity();
@@ -628,10 +636,10 @@ pub const OutdatedCommand = struct {
                     Output.pretty("{s}", .{table.symbols.verticalEdge()});
                     for (0..column_left_pad) |_| Output.pretty(" ", .{});
                     if (update.unwrap()) |update_version| {
-                        bun.handleOom(version_writer.print("{f}", .{update_version.version.fmt(manifest.string_buf)}));
+                        bun.handleOom(appendVersion(&version_buf, update_version.version.fmt(manifest.string_buf)));
                         Output.pretty("{f}", .{update_version.version.diffFmt(resolution.value.npm.version, manifest.string_buf, string_buf)});
                     } else {
-                        bun.handleOom(version_writer.print("{f}", .{resolution.value.npm.version.fmt(string_buf)}));
+                        bun.handleOom(appendVersion(&version_buf, resolution.value.npm.version.fmt(string_buf)));
                         Output.pretty("<d>{s}<r>", .{version_buf.items});
                     }
                     var update_version_len: usize = version_buf.items.len;
@@ -648,10 +656,10 @@ pub const OutdatedCommand = struct {
                     Output.pretty("{s}", .{table.symbols.verticalEdge()});
                     for (0..column_left_pad) |_| Output.pretty(" ", .{});
                     if (latest.unwrap()) |latest_version| {
-                        bun.handleOom(version_writer.print("{f}", .{latest_version.version.fmt(manifest.string_buf)}));
+                        bun.handleOom(appendVersion(&version_buf, latest_version.version.fmt(manifest.string_buf)));
                         Output.pretty("{f}", .{latest_version.version.diffFmt(resolution.value.npm.version, manifest.string_buf, string_buf)});
                     } else {
-                        bun.handleOom(version_writer.print("{f}", .{resolution.value.npm.version.fmt(string_buf)}));
+                        bun.handleOom(appendVersion(&version_buf, resolution.value.npm.version.fmt(string_buf)));
                         Output.pretty("<d>{s}<r>", .{version_buf.items});
                     }
                     var latest_version_len: usize = version_buf.items.len;

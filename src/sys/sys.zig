@@ -57,6 +57,14 @@ pub const syscall = switch (Environment.os) {
     .windows, .wasm => @compileError("not implemented"),
 };
 
+pub fn execve(
+    path: [*:0]const u8,
+    argv: [*:null]const ?[*:0]const u8,
+    envp: [*:null]const ?[*:0]const u8,
+) E {
+    return getErrno(syscall.execve(path, argv, envp));
+}
+
 fn toPackedO(number: anytype) std.posix.O {
     return @bitCast(number);
 }
@@ -2635,13 +2643,14 @@ pub const RenameAt2Flags = packed struct {
 };
 
 pub fn renameatConcurrently(
+    io: std.Io,
     from_dir_fd: bun.FD,
     from: [:0]const u8,
     to_dir_fd: bun.FD,
     to: [:0]const u8,
     comptime opts: struct { move_fallback: bool = false },
 ) Maybe(void) {
-    switch (renameatConcurrentlyWithoutFallback(from_dir_fd, from, to_dir_fd, to)) {
+    switch (renameatConcurrentlyWithoutFallback(io, from_dir_fd, from, to_dir_fd, to)) {
         .result => return .success,
         .err => |e| {
             if (opts.move_fallback and e.getErrno() == E.XDEV) {
@@ -2654,6 +2663,7 @@ pub fn renameatConcurrently(
 }
 
 pub fn renameatConcurrentlyWithoutFallback(
+    io: std.Io,
     from_dir_fd: bun.FD,
     from: [:0]const u8,
     to_dir_fd: bun.FD,
@@ -2696,9 +2706,9 @@ pub fn renameatConcurrentlyWithoutFallback(
         //  sad path: let's try to delete the folder and then rename it
         if (to_dir_fd.isValid()) {
             var to_dir = to_dir_fd.stdDir();
-            to_dir.deleteTree(to) catch {};
+            to_dir.deleteTree(io, to) catch {};
         } else {
-            std.fs.deleteTreeAbsolute(to) catch {};
+            std.Io.Dir.cwd().deleteTree(io, to) catch {};
         }
         switch (renameat(from_dir_fd, from, to_dir_fd, to)) {
             .err => |err| {
@@ -2727,7 +2737,7 @@ pub fn renameat2(from_dir: bun.FD, from: [:0]const u8, to_dir: bun.FD, to: [:0]c
 
     while (true) {
         const rc = switch (comptime Environment.os) {
-            .linux => std.os.linux.renameat2(@intCast(from_dir.cast()), from.ptr, @intCast(to_dir.cast()), to.ptr, flags.int()),
+            .linux => std.os.linux.renameat2(@intCast(from_dir.cast()), from.ptr, @intCast(to_dir.cast()), to.ptr, @bitCast(flags.int())),
             .mac => bun.c.renameatx_np(@intCast(from_dir.cast()), from.ptr, @intCast(to_dir.cast()), to.ptr, flags.int()),
             .freebsd => unreachable, // returned above
             .windows, .wasm => @compileError("renameat2() is not implemented on this platform"),
@@ -4405,7 +4415,7 @@ pub fn lstat_absolute(path: [:0]const u8) !Stat {
 // renameatZ fails when renaming across mount points
 // we assume that this is relatively uncommon
 pub fn moveFileZ(from_dir: bun.FD, filename: [:0]const u8, to_dir: bun.FD, destination: [:0]const u8) !void {
-    switch (renameatConcurrentlyWithoutFallback(from_dir, filename, to_dir, destination)) {
+    switch (renameat(from_dir, filename, to_dir, destination)) {
         .err => |err| {
             // allow over-writing an empty directory
             if (err.getErrno() == .ISDIR) {
@@ -4517,8 +4527,8 @@ pub fn copyFileZSlowWithHandle(in_handle: bun.FD, to_dir: bun.FD, destination: [
         }
 
         if (comptime Environment.isPosix) {
-            _ = bun.c.fchmod(out_handle.cast(), stat_.mode);
-            _ = bun.c.fchown(out_handle.cast(), stat_.uid, stat_.gid);
+            _ = bun.c.fchmod(out_handle.cast(), @intCast(stat_.mode));
+            _ = bun.c.fchown(out_handle.cast(), @intCast(stat_.uid), @intCast(stat_.gid));
         }
 
         return .success;

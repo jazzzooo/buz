@@ -47,9 +47,9 @@ fn alert(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSErr
     bun.Output.flush();
 
     // 7. Optionally, pause while waiting for the user to acknowledge the message.
-    var stdin = std.fs.File.stdin();
+    var stdin = std.Io.File.stdin();
     var stdin_buf: [1]u8 = undefined;
-    var stdin_reader = stdin.readerStreaming(&stdin_buf);
+    var stdin_reader = stdin.readerStreaming(globalObject.bunVM().io, &stdin_buf);
     const reader = &stdin_reader.interface;
     while (true) {
         const byte = reader.takeByte() catch break;
@@ -98,9 +98,9 @@ fn confirm(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSE
     bun.Output.flush();
 
     // 6. Pause until the user responds either positively or negatively.
-    var stdin = std.fs.File.stdin();
+    var stdin = std.Io.File.stdin();
     var stdin_buf: [1024]u8 = undefined;
-    var stdin_reader = stdin.readerStreaming(&stdin_buf);
+    var stdin_reader = stdin.readerStreaming(globalObject.bunVM().io, &stdin_buf);
     const reader = &stdin_reader.interface;
 
     const first_byte = reader.takeByte() catch {

@@ -1,4 +1,4 @@
-// This is copied from std.fs.Dir.Iterator
+// This is copied from std.Io.Dir.Iterator
 // The differences are:
 // - it returns errors in the expected format
 // - doesn't mark BADF as unreachable
@@ -560,4 +560,4 @@ const Entry = jsc.Node.Dirent;
 const std = @import("std");
 const mem = std.mem;
 const posix = std.posix;
-const Dir = std.fs.Dir;
+const Dir = std.Io.Dir;

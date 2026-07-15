@@ -2478,16 +2478,16 @@ pub fn fixDeadCodeElimination() void {
         std.mem.doNotOptimizeAway(&fn_name);
     }
 
-    inline for (comptime std.meta.declarations(uv_functions_to_export)) |decl| {
-        std.mem.doNotOptimizeAway(&@field(uv_functions_to_export, decl.name));
+    inline for (comptime std.meta.declarations(uv_functions_to_export)) |decl_name| {
+        std.mem.doNotOptimizeAway(&@field(uv_functions_to_export, decl_name));
     }
 
-    inline for (comptime std.meta.declarations(V8API)) |decl| {
-        std.mem.doNotOptimizeAway(&@field(V8API, decl.name));
+    inline for (comptime std.meta.declarations(V8API)) |decl_name| {
+        std.mem.doNotOptimizeAway(&@field(V8API, decl_name));
     }
 
-    inline for (comptime std.meta.declarations(posix_platform_specific_v8_apis)) |decl| {
-        std.mem.doNotOptimizeAway(&@field(posix_platform_specific_v8_apis, decl.name));
+    inline for (comptime std.meta.declarations(posix_platform_specific_v8_apis)) |decl_name| {
+        std.mem.doNotOptimizeAway(&@field(posix_platform_specific_v8_apis, decl_name));
     }
 
     std.mem.doNotOptimizeAway(&@import("../runtime/node/buffer.zig").BufferVectorized.fill);

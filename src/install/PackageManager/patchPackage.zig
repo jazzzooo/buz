@@ -70,8 +70,8 @@ pub fn doPatchCommit(
     defer if (free_argument) manager.allocator.free(argument);
 
     // Attempt to open the existing node_modules folder
-    var root_node_modules = switch (bun.sys.openatOSPath(bun.FD.cwd(), bun.OSPathLiteral("node_modules"), bun.O.DIRECTORY | bun.O.RDONLY, 0o755)) {
-        .result => |fd| std.fs.Dir{ .fd = fd.cast() },
+    const root_node_modules = switch (bun.sys.openatOSPath(bun.FD.cwd(), bun.OSPathLiteral("node_modules"), bun.O.DIRECTORY | bun.O.RDONLY, 0o755)) {
+        .result => |fd| fd.stdDir(),
         .err => |e| {
             Output.prettyError(
                 "<r><red>error<r>: failed to open root <b>node_modules<r> folder: {f}<r>\n",
@@ -80,11 +80,11 @@ pub fn doPatchCommit(
             Global.crash();
         },
     };
-    defer root_node_modules.close();
+    defer root_node_modules.close(manager.io);
 
     var iterator = Lockfile.Tree.Iterator(.node_modules).init(lockfile);
     var resolution_buf: [1024]u8 = undefined;
-    const _cache_dir: std.fs.Dir, const _cache_dir_subpath: stringZ, const _changes_dir: []const u8, const _pkg: Package = switch (arg_kind) {
+    const _cache_dir: std.Io.Dir, const _cache_dir_subpath: stringZ, const _changes_dir: []const u8, const _pkg: Package = switch (arg_kind) {
         .path => result: {
             const package_json_source: *const logger.Source = &brk: {
                 const package_json_path = bun.path.joinZ(&[_][]const u8{ argument, "package.json" }, .auto);
@@ -181,7 +181,7 @@ pub fn doPatchCommit(
     };
 
     // zls
-    const cache_dir: std.fs.Dir = _cache_dir;
+    const cache_dir: std.Io.Dir = _cache_dir;
     const cache_dir_subpath: stringZ = _cache_dir_subpath;
     const changes_dir: []const u8 = _changes_dir;
     const pkg: Package = _pkg;
@@ -218,13 +218,14 @@ pub fn doPatchCommit(
         // There isn't an option to exclude it with `git diff --no-index`, so we
         // will `rename()` it out and back again.
         const has_nested_node_modules = has_nested_node_modules: {
-            var new_folder_handle = std.fs.cwd().openDir(new_folder, .{}) catch |e| {
+            const new_folder_handle = std.Io.Dir.cwd().openDir(manager.io, new_folder, .{}) catch |e| {
                 Output.err(e, "failed to open directory <b>{s}<r>", .{new_folder});
                 Global.crash();
             };
-            defer new_folder_handle.close();
+            defer new_folder_handle.close(manager.io);
 
             if (bun.sys.renameatConcurrently(
+                manager.io,
                 .fromStdDir(new_folder_handle),
                 "node_modules",
                 .fromStdDir(root_node_modules),
@@ -253,13 +254,14 @@ pub fn doPatchCommit(
                 }
                 break :has_bun_patch_tag null;
             };
-            var new_folder_handle = std.fs.cwd().openDir(new_folder, .{}) catch |e| {
+            const new_folder_handle = std.Io.Dir.cwd().openDir(manager.io, new_folder, .{}) catch |e| {
                 Output.err(e, "failed to open directory <b>{s}<r>", .{new_folder});
                 Global.crash();
             };
-            defer new_folder_handle.close();
+            defer new_folder_handle.close(manager.io);
 
             if (bun.sys.renameatConcurrently(
+                manager.io,
                 .fromStdDir(new_folder_handle),
                 patch_tag,
                 .fromStdDir(root_node_modules),
@@ -273,17 +275,18 @@ pub fn doPatchCommit(
         };
         defer {
             if (has_nested_node_modules or bun_patch_tag != null) {
-                var new_folder_handle = std.fs.cwd().openDir(new_folder, .{}) catch |e| {
+                const new_folder_handle = std.Io.Dir.cwd().openDir(manager.io, new_folder, .{}) catch |e| {
                     Output.prettyError(
                         "<r><red>error<r>: failed to open directory <b>{s}<r> {s}<r>\n",
                         .{ new_folder, @errorName(e) },
                     );
                     Global.crash();
                 };
-                defer new_folder_handle.close();
+                defer new_folder_handle.close(manager.io);
 
                 if (has_nested_node_modules) {
                     if (bun.sys.renameatConcurrently(
+                        manager.io,
                         .fromStdDir(root_node_modules),
                         random_tempdir,
                         .fromStdDir(new_folder_handle),
@@ -296,6 +299,7 @@ pub fn doPatchCommit(
 
                 if (bun_patch_tag) |patch_tag| {
                     if (bun.sys.renameatConcurrently(
+                        manager.io,
                         .fromStdDir(root_node_modules),
                         patch_tag_tmpname,
                         .fromStdDir(new_folder_handle),
@@ -442,6 +446,7 @@ pub fn doPatchCommit(
 
     // rename to patches dir
     if (bun.sys.renameatConcurrently(
+        manager.io,
         .fromStdDir(tmpdir),
         tempfile_name,
         bun.FD.cwd(),
@@ -567,7 +572,7 @@ pub fn preparePatch(manager: *PackageManager) !void {
     } else argument;
     defer if (free_argument) manager.allocator.free(argument);
 
-    const cache_dir: std.fs.Dir, const cache_dir_subpath: []const u8, const module_folder: []const u8, const pkg_name: []const u8 = switch (arg_kind) {
+    const cache_dir: std.Io.Dir, const cache_dir_subpath: []const u8, const module_folder: []const u8, const pkg_name: []const u8 = switch (arg_kind) {
         .path => brk: {
             var lockfile = manager.lockfile;
 
@@ -717,9 +722,9 @@ pub fn preparePatch(manager: *PackageManager) !void {
     // edits into the shared cache. Detach first: walk up `module_folder` to
     // find the first symlink ancestor, replace it with a real directory, and
     // recreate the path below it so the copy lands in a project-local tree.
-    detachModuleFolderFromSharedStore(module_folder);
+    detachModuleFolderFromSharedStore(manager.io, module_folder);
 
-    overwritePackageInNodeModulesFolder(cache_dir, cache_dir_subpath, module_folder) catch |e| {
+    overwritePackageInNodeModulesFolder(manager.io, cache_dir, cache_dir_subpath, module_folder) catch |e| {
         Output.prettyError(
             "<r><red>error<r>: error overwriting folder in node_modules: {s}\n<r>",
             .{@errorName(e)},
@@ -739,7 +744,7 @@ pub fn preparePatch(manager: *PackageManager) !void {
     return;
 }
 
-fn detachModuleFolderFromSharedStore(module_folder: []const u8) void {
+fn detachModuleFolderFromSharedStore(io: std.Io, module_folder: []const u8) void {
     // `module_folder` reaches here normalised to forward slashes on every
     // platform (see `pathToPosixBuf` in `preparePatch`). Re-normalise to the
     // platform separator so `undo()`/`basename()` walk the path correctly on
@@ -790,7 +795,7 @@ fn detachModuleFolderFromSharedStore(module_folder: []const u8) void {
             // symlink so `module_folder`'s parent exists for the copy.
             const parent = bun.path.dirname(native, .auto);
             if (parent.len > 0) {
-                FD.cwd().makePath(u8, parent) catch {};
+                FD.cwd().makePath(io, u8, parent) catch {};
             }
             return;
         }
@@ -799,11 +804,12 @@ fn detachModuleFolderFromSharedStore(module_folder: []const u8) void {
 }
 
 fn overwritePackageInNodeModulesFolder(
-    cache_dir: std.fs.Dir,
+    io: std.Io,
+    cache_dir: std.Io.Dir,
     cache_dir_subpath: []const u8,
     node_modules_folder_path: []const u8,
 ) !void {
-    FD.cwd().deleteTree(node_modules_folder_path) catch {};
+    FD.cwd().deleteTree(io, node_modules_folder_path) catch {};
 
     var dest_subpath: bun.Path(.{ .sep = .auto, .unit = .os }) = .from(node_modules_folder_path);
     defer dest_subpath.deinit();
@@ -824,8 +830,8 @@ fn overwritePackageInNodeModulesFolder(
     };
     defer src_path.deinit();
 
-    var cached_package_folder = try cache_dir.openDir(cache_dir_subpath, .{ .iterate = true });
-    defer cached_package_folder.close();
+    const cached_package_folder = try cache_dir.openDir(io, cache_dir_subpath, .{ .iterate = true });
+    defer cached_package_folder.close(io);
 
     const ignore_directories: []const bun.OSPathSlice = &.{
         comptime bun.OSPathLiteral("node_modules"),
@@ -834,6 +840,7 @@ fn overwritePackageInNodeModulesFolder(
     };
 
     var copier: bun.install.FileCopier = try .init(
+        io,
         .fromStdDir(cached_package_folder),
         src_path,
         dest_subpath,

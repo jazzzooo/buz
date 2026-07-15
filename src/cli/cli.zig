@@ -205,7 +205,7 @@ pub const HelpCommand = struct {
     ;
 
     pub fn printWithReason(comptime reason: Reason, show_all_flags: bool) void {
-        var rand_state = std.Random.DefaultPrng.init(@as(u64, @intCast(@max(std.time.milliTimestamp(), 0))));
+        var rand_state = std.Random.DefaultPrng.init(bun.fastRandom());
         const rand = rand_state.random();
 
         const package_x_i = rand.uintAtMost(usize, packages_to_x_filler.len - 1);
@@ -628,7 +628,7 @@ pub const Command = struct {
             .DiscordCommand => return try DiscordCommand.exec(allocator),
             .HelpCommand => return try HelpCommand.exec(allocator),
             .ReservedCommand => return try ReservedCommand.exec(allocator),
-            .InitCommand => return try InitCommand.exec(allocator, bun.argv[@min(2, bun.argv.len)..]),
+            .InitCommand => return try InitCommand.exec(allocator, Cli.io, bun.argv[@min(2, bun.argv.len)..]),
             .InfoCommand => {
                 try @"bun info"(allocator, log);
                 return;
@@ -638,7 +638,7 @@ pub const Command = struct {
                 try BuildCommand.exec(ctx, null);
             },
             .InstallCompletionsCommand => {
-                try InstallCompletionsCommand.exec(allocator);
+                try InstallCompletionsCommand.exec(allocator, Cli.io);
                 return;
             },
             .InstallCommand => {
@@ -1178,7 +1178,7 @@ pub const Command = struct {
     fn @"bun --eval --print"(ctx: Context) !void {
         const trigger = bun.pathLiteral("/[eval]");
         var entry_point_buf: [bun.MAX_PATH_BYTES + trigger.len]u8 = undefined;
-        const cwd = try std.posix.getcwd(&entry_point_buf);
+        const cwd = entry_point_buf[0..try std.Io.Dir.cwd().realPath(ctx.io, &entry_point_buf)];
         @memcpy(entry_point_buf[cwd.len..][0..trigger.len], trigger);
         ctx.passthrough = try std.mem.concat(ctx.allocator, []const u8, &.{ ctx.positionals, ctx.passthrough });
         try bun_js.Run.boot(ctx, entry_point_buf[0 .. cwd.len + trigger.len], null);
@@ -1305,7 +1305,7 @@ pub const Command = struct {
         // Create command wraps bunx
         const ctx = try Command.init(allocator, log, .CreateCommand);
 
-        var args = try std.process.argsAlloc(allocator);
+        const args = bun.argv;
 
         if (args.len <= 2) {
             Command.Tag.printHelp(.CreateCommand, false);

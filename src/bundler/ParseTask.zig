@@ -709,6 +709,7 @@ fn getCodeForParseTaskWithoutPlugins(
                     bun.default_allocator
                 else
                     allocator,
+                resolver.io,
                 transpiler.fs,
                 file_path.text,
                 task.contents_or_fd.fd.dir,

@@ -240,7 +240,7 @@ pub fn tickImmediateTasks(this: *EventLoop, virtual_machine: *VirtualMachine) vo
     var to_run_now = this.immediate_tasks;
 
     this.immediate_tasks = this.next_immediate_tasks;
-    this.next_immediate_tasks = .{};
+    this.next_immediate_tasks = .empty;
 
     var exception_thrown = false;
     for (to_run_now.items) |task| {

@@ -23,7 +23,14 @@ pub const InitCommand = struct {
         };
 
         var input: std.array_list.Managed(u8) = .init(alloc);
-        try bun.Output.buffered_stdin.reader().readUntilDelimiterArrayList(&input, '\n', 1024);
+        var input_writer = bun.ManagedWriter.init(&input);
+        var input_writer_finished = false;
+        defer if (!input_writer_finished) input_writer.finish();
+        const stdin_reader = bun.Output.buffered_stdin.reader();
+        _ = try stdin_reader.streamDelimiterLimit(input_writer.writer(), '\n', .limited(1024));
+        _ = try stdin_reader.discardDelimiterInclusive('\n');
+        input_writer.finish();
+        input_writer_finished = true;
 
         if (strings.endsWithChar(input.items, '\r')) {
             _ = input.pop();
@@ -38,7 +45,7 @@ pub const InitCommand = struct {
             return input.items[0 .. input.items.len - 1 :0];
         }
     }
-    fn processRadioButton(label: string, comptime Choices: type) !Choices {
+    fn processRadioButton(io: std.Io, label: string, comptime Choices: type) !Choices {
         const colors = Output.enable_ansi_colors_stdout;
         const choices = switch (colors) {
             inline else => |colors_comptime| comptime choices: {
@@ -115,7 +122,7 @@ pub const InitCommand = struct {
 
             // Read a single character
             var stdin_b: [1]u8 = undefined;
-            var stdin_r = std.fs.File.stdin().readerStreaming(&stdin_b);
+            var stdin_r = std.Io.File.stdin().readerStreaming(io, &stdin_b);
             var stdin_i = &stdin_r.interface;
             const byte = stdin_i.takeByte() catch return selected;
 
@@ -175,7 +182,7 @@ pub const InitCommand = struct {
     }
 
     /// `Choices` must be an enum type with the `fmt` method.
-    pub fn radio(label: string, comptime Choices: type) !Choices {
+    pub fn radio(io: std.Io, label: string, comptime Choices: type) !Choices {
 
         // Set raw mode to read single characters without echo
         const original_mode: if (Environment.isWindows) ?bun.windows.DWORD else void = if (comptime Environment.isWindows)
@@ -203,7 +210,7 @@ pub const InitCommand = struct {
             }
         }
 
-        const selection = processRadioButton(label, Choices) catch |err| {
+        const selection = processRadioButton(io, label, Choices) catch |err| {
             if (err == error.EndOfStream) {
                 Output.flush();
                 // Add an "x" cancelled
@@ -228,18 +235,18 @@ pub const InitCommand = struct {
 
         /// Create a new asset file, overriding anything that already exists. Known
         /// assets will have their contents pre-populated; otherwise the file will be empty.
-        fn create(comptime asset_name: []const u8, args: anytype) !void {
+        fn create(io: std.Io, comptime asset_name: []const u8, args: anytype) !void {
             const is_template = comptime (@TypeOf(args) != @TypeOf(null)) and @typeInfo(@TypeOf(args)).@"struct".field_names.len > 0;
-            return createFull(asset_name, asset_name, "", is_template, args);
+            return createFull(io, asset_name, asset_name, "", is_template, args);
         }
 
-        pub fn createWithContents(comptime asset_name: []const u8, comptime contents: []const u8, args: anytype) !void {
+        pub fn createWithContents(io: std.Io, comptime asset_name: []const u8, comptime contents: []const u8, args: anytype) !void {
             const is_template = comptime (@TypeOf(args) != @TypeOf(null)) and @typeInfo(@TypeOf(args)).@"struct".field_names.len > 0;
-            return createFullWithContents(asset_name, contents, "", is_template, args);
+            return createFullWithContents(io, asset_name, contents, "", is_template, args);
         }
 
-        fn createNew(filename: [:0]const u8, contents: []const u8) !void {
-            const file = try bun.sys.File.makeOpen(filename, bun.O.CREAT | bun.O.EXCL | bun.O.WRONLY, 0o666).unwrap();
+        fn createNew(io: std.Io, filename: [:0]const u8, contents: []const u8) !void {
+            const file = try bun.sys.File.makeOpen(io, filename, bun.O.CREAT | bun.O.EXCL | bun.O.WRONLY, 0o666).unwrap();
             defer file.close();
 
             try file.writeAll(contents).unwrap();
@@ -249,6 +256,7 @@ pub const InitCommand = struct {
         }
 
         fn createFull(
+            io: std.Io,
             /// name of possibly-existing asset
             comptime asset_name: []const u8,
             /// name of asset file to create
@@ -260,9 +268,9 @@ pub const InitCommand = struct {
             /// Format arguments
             args: anytype,
         ) !void {
-            var file = try std.fs.cwd().createFile(filename, .{ .truncate = true });
-            defer file.close();
-            var file_w = file.writerStreaming(&.{});
+            var file = try std.Io.Dir.cwd().createFile(io, filename, .{ .truncate = true });
+            defer file.close(io);
+            var file_w = file.writerStreaming(io, &.{});
             const file_i = &file_w.interface;
 
             // Write contents of known assets to the new file. Template assets get formatted.
@@ -281,6 +289,7 @@ pub const InitCommand = struct {
         }
 
         fn createFullWithContents(
+            io: std.Io,
             /// name of asset file to create
             filename: []const u8,
             comptime contents: []const u8,
@@ -291,9 +300,9 @@ pub const InitCommand = struct {
             /// Format arguments
             args: anytype,
         ) !void {
-            var file = try std.fs.cwd().createFile(filename, .{ .truncate = true });
-            defer file.close();
-            var file_w = file.writerStreaming(&.{});
+            var file = try std.Io.Dir.cwd().createFile(io, filename, .{ .truncate = true });
+            defer file.close(io);
+            var file_w = file.writerStreaming(io, &.{});
             var file_i = &file_w.interface;
 
             if (comptime is_template) {
@@ -343,7 +352,7 @@ pub const InitCommand = struct {
         private: bool = true,
     };
 
-    pub fn exec(alloc: std.mem.Allocator, init_args: [][:0]const u8) !void {
+    pub fn exec(alloc: std.mem.Allocator, io: std.Io, init_args: [][:0]const u8) !void {
         // --minimal is a special preset to create only empty package.json + tsconfig.json
         var minimal = false;
         var auto_yes = false;
@@ -392,7 +401,7 @@ pub const InitCommand = struct {
         }
 
         if (initialize_in_folder) |ifdir| {
-            std.fs.cwd().makePath(ifdir) catch |err| {
+            bun.makePath(std.Io.Dir.cwd(), io, ifdir) catch |err| {
                 Output.prettyErrorln("Failed to create directory {s}: {s}", .{ ifdir, @errorName(err) });
                 Global.exit(1);
             };
@@ -404,42 +413,32 @@ pub const InitCommand = struct {
 
         var fs = try Fs.FileSystem.init(null);
         const pathname = Fs.PathName.init(fs.topLevelDirWithoutTrailingSlash());
-        const destination_dir = std.fs.cwd();
+        const destination_dir = std.Io.Dir.cwd();
 
         var fields = PackageJSONFields{};
 
-        var package_json_file = destination_dir.openFile("package.json", .{ .mode = .read_write }) catch null;
+        var package_json_file = destination_dir.openFile(io, "package.json", .{ .mode = .read_write }) catch null;
         var package_json_contents: MutableString = MutableString.initEmpty(alloc);
         initializeStore();
         read_package_json: {
             if (package_json_file) |pkg| {
                 const size = brk: {
-                    if (comptime bun.Environment.isWindows) {
-                        const end = pkg.getEndPos() catch break :read_package_json;
-                        if (end == 0) {
-                            break :read_package_json;
-                        }
-
-                        break :brk end;
-                    }
-                    const stat = pkg.stat() catch break :read_package_json;
+                    const stat = pkg.stat(io) catch break :read_package_json;
 
                     if (stat.kind != .file or stat.size == 0) {
                         break :read_package_json;
                     }
 
-                    break :brk stat.size;
+                    break :brk @as(usize, @intCast(stat.size));
                 };
 
                 package_json_contents = try MutableString.init(alloc, size);
                 package_json_contents.list.expandToCapacity();
 
-                const prev_file_pos = if (comptime Environment.isWindows) try pkg.getPos() else 0;
-                _ = pkg.preadAll(package_json_contents.list.items, 0) catch {
+                _ = pkg.readPositionalAll(io, package_json_contents.list.items, 0) catch {
                     package_json_file = null;
                     break :read_package_json;
                 };
-                if (comptime Environment.isWindows) try pkg.seekTo(prev_file_pos);
             }
         }
 
@@ -511,8 +510,8 @@ pub const InitCommand = struct {
             }
 
             // Find any source file
-            var dir = std.fs.cwd().openDir(".", .{ .iterate = true }) catch break :infer;
-            defer dir.close();
+            var dir = std.Io.Dir.cwd().openDir(io, ".", .{ .iterate = true }) catch break :infer;
+            defer dir.close(io);
             var it = bun.DirIterator.iterate(.fromStdDir(dir), .u8);
             while (try it.next().unwrap()) |file| {
                 if (file.kind != .file) continue;
@@ -540,7 +539,7 @@ pub const InitCommand = struct {
             if (!did_load_package_json) {
                 Output.pretty("\n", .{});
 
-                const selected = try radio("Select a project template", enum {
+                const selected = try radio(io, "Select a project template", enum {
                     blank,
                     react,
                     library,
@@ -578,7 +577,7 @@ pub const InitCommand = struct {
                         fields.private = false;
                     },
                     .react => {
-                        const react_selected = try radio("Select a React template", enum {
+                        const react_selected = try radio(io, "Select a React template", enum {
                             default,
                             tailwind,
                             shadcn_tailwind,
@@ -611,7 +610,7 @@ pub const InitCommand = struct {
 
         switch (template) {
             inline .react_blank, .react_tailwind, .react_tailwind_shadcn => |t| {
-                try t.@"write files and run `bun dev`"(alloc);
+                try t.@"write files and run `bun dev`"(io);
                 return;
             },
             else => {},
@@ -750,7 +749,7 @@ pub const InitCommand = struct {
         }
 
         write_package_json: {
-            var fd = bun.FD.fromStdFile(package_json_file orelse try std.fs.cwd().createFileZ("package.json", .{}));
+            var fd = bun.FD.fromStdFile(package_json_file orelse try std.Io.Dir.cwd().createFile(io, "package.json", .{}));
             defer fd.close();
             var buffer_writer = JSPrinter.BufferWriter.init(bun.default_allocator);
             buffer_writer.append_newline = true;
@@ -781,7 +780,7 @@ pub const InitCommand = struct {
         }
 
         if (steps.write_gitignore) {
-            Assets.create(".gitignore", .{}) catch {
+            Assets.create(io, ".gitignore", .{}) catch {
                 // suppressed
             };
         }
@@ -789,7 +788,7 @@ pub const InitCommand = struct {
         switch (template) {
             .blank, .typescript_library => {
                 if (!minimal) {
-                    Template.createAgentRule();
+                    Template.createAgentRule(io);
                 }
 
                 if (package_json_file != null and !did_load_package_json) {
@@ -798,14 +797,14 @@ pub const InitCommand = struct {
                 }
 
                 if (fields.entry_point.len > 0 and !exists(fields.entry_point)) {
-                    const cwd = std.fs.cwd();
+                    const cwd = std.Io.Dir.cwd();
                     if (std.fs.path.dirname(fields.entry_point)) |dirname| {
                         if (!strings.eqlComptime(dirname, ".")) {
-                            cwd.makePath(dirname) catch {};
+                            bun.makePath(cwd, io, dirname) catch {};
                         }
                     }
 
-                    Assets.createNew(fields.entry_point, "console.log(\"Hello via Bun!\");") catch {
+                    Assets.createNew(io, fields.entry_point, "console.log(\"Hello via Bun!\");") catch {
                         // suppress
                     };
                 }
@@ -818,12 +817,12 @@ pub const InitCommand = struct {
                             "tsconfig.json"
                         else
                             "jsconfig.json";
-                        Assets.createFull("tsconfig.json", filename, " (for editor autocomplete)", false, .{}) catch break :brk;
+                        Assets.createFull(io, "tsconfig.json", filename, " (for editor autocomplete)", false, .{}) catch break :brk;
                     }
                 }
 
                 if (steps.write_readme) {
-                    Assets.create("README.md", .{
+                    Assets.create(io, "README.md", .{
                         .name = fields.name,
                         .bunVersion = Environment.version_string,
                         .entryPoint = fields.entry_point,
@@ -846,17 +845,14 @@ pub const InitCommand = struct {
 
                 if (existsZ("package.json") and need_run_bun_install) {
                     Output.prettyln("", .{});
-                    var process = std.process.Child.init(
-                        &.{
-                            try bun.selfExePath(),
-                            "install",
-                        },
-                        alloc,
-                    );
-                    process.stderr_behavior = .Inherit;
-                    process.stdin_behavior = .Inherit;
-                    process.stdout_behavior = .Inherit;
-                    _ = try process.spawnAndWait();
+                    var process = try std.process.spawn(io, .{
+                        .argv = &.{ try bun.selfExePath(), "install" },
+                        .stdin = .inherit,
+                        .stdout = .inherit,
+                        .stderr = .inherit,
+                    });
+                    defer process.kill(io);
+                    _ = try process.wait(io);
                 }
             },
             else => {},
@@ -1015,7 +1011,7 @@ const Template = enum {
         return bun.which(pathbuffer, bun.env_var.PATH.get() orelse return false, bun.fs.FileSystem.instance.top_level_dir, "claude") != null;
     }
 
-    pub fn createAgentRule() void {
+    pub fn createAgentRule(io: std.Io) void {
         var @"create CLAUDE.md" = Template.isClaudeCodeInstalled() and
             // Never overwrite CLAUDE.md
             !bun.sys.exists("CLAUDE.md");
@@ -1026,14 +1022,14 @@ const Template = enum {
             // If both Cursor & Claude is installed, make the cursor rule a
             // symlink to ../../CLAUDE.md
             const asset_path = if (@"create CLAUDE.md") "CLAUDE.md" else template_file.path;
-            const result = InitCommand.Assets.createNew(asset_path, template_file.contents);
+            const result = InitCommand.Assets.createNew(io, asset_path, template_file.contents);
             did_create_agent_rule = true;
             result catch {
                 did_create_agent_rule = false;
                 if (@"create CLAUDE.md") {
                     @"create CLAUDE.md" = false;
                     // If installing the CLAUDE.md fails for some reason, fall back to installing the cursor rule.
-                    InitCommand.Assets.createNew(template_file.path, template_file.contents) catch {};
+                    InitCommand.Assets.createNew(io, template_file.path, template_file.contents) catch {};
                 }
             };
 
@@ -1045,7 +1041,7 @@ const Template = enum {
                 // appear prominently in repos) doesn't show a file path.
                 if (did_create_agent_rule and @"create CLAUDE.md") symlink_cursor_rule: {
                     @"create CLAUDE.md" = false;
-                    bun.makePath(bun.FD.cwd().stdDir(), ".cursor/rules") catch {};
+                    bun.makePath(bun.FD.cwd().stdDir(), io, ".cursor/rules") catch {};
                     bun.sys.symlinkat(cursor_rule_path_to_claude_md, .cwd(), template_file.path).unwrap() catch break :symlink_cursor_rule;
                     Output.prettyln(" + <r><d>{s} -\\> {s}<r>", .{ template_file.path, asset_path });
                     Output.flush();
@@ -1058,7 +1054,7 @@ const Template = enum {
             // In this case, the frontmatter from the cursor rule is not helpful so let's trim it out.
             const end_of_frontmatter = if (bun.strings.lastIndexOf(agent_rule, "---\n")) |start| start + "---\n".len else 0;
 
-            InitCommand.Assets.createNew("CLAUDE.md", agent_rule[end_of_frontmatter..]) catch {};
+            InitCommand.Assets.createNew(io, "CLAUDE.md", agent_rule[end_of_frontmatter..]) catch {};
         }
     }
 
@@ -1180,20 +1176,20 @@ const Template = enum {
         };
     }
 
-    pub fn @"write files and run `bun dev`"(comptime this: Template, allocator: std.mem.Allocator) !void {
-        Template.createAgentRule();
+    pub fn @"write files and run `bun dev`"(comptime this: Template, io: std.Io) !void {
+        Template.createAgentRule(io);
 
         inline for (comptime this.files()) |file| {
             const path = file.path;
             const contents = file.contents;
 
             const result = if (comptime strings.eqlComptime(path, "README.md"))
-                InitCommand.Assets.createWithContents("README.md", contents, .{
+                InitCommand.Assets.createWithContents(io, "README.md", contents, .{
                     .name = this.name(),
                     .bunVersion = Environment.version_string,
                 })
             else
-                InitCommand.Assets.createNew(path, contents);
+                InitCommand.Assets.createNew(io, path, contents);
             result catch |err| {
                 if (err == error.EEXIST) {
                     Output.prettyln(" ○ <r><yellow>{s}<r> (already exists, skipping)", .{path});
@@ -1208,18 +1204,14 @@ const Template = enum {
         Output.pretty("\n", .{});
         Output.flush();
 
-        var install = std.process.Child.init(
-            &.{
-                try bun.selfExePath(),
-                "install",
-            },
-            allocator,
-        );
-        install.stderr_behavior = .Inherit;
-        install.stdin_behavior = .Ignore;
-        install.stdout_behavior = .Inherit;
-
-        _ = try install.spawnAndWait();
+        var install = try std.process.spawn(io, .{
+            .argv = &.{ try bun.selfExePath(), "install" },
+            .stdin = .ignore,
+            .stdout = .inherit,
+            .stderr = .inherit,
+        });
+        defer install.kill(io);
+        _ = try install.wait(io);
 
         Output.prettyln(
             \\

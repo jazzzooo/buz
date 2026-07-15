@@ -9,7 +9,7 @@ pub const PackageInstaller = struct {
     skip_verify_installed_version_number: bool,
     skip_delete: bool,
     force_install: bool,
-    root_node_modules_folder: std.fs.Dir,
+    root_node_modules_folder: std.Io.Dir,
     summary: *PackageInstall.Summary,
     options: *const PackageManager.Options,
     metas: []const Lockfile.Package.Meta,
@@ -35,7 +35,7 @@ pub const PackageInstaller = struct {
         list: Lockfile.Package.Scripts.List,
         tree_id: Lockfile.Tree.Id,
         optional: bool,
-    }) = .{},
+    }) = .empty,
 
     trusted_dependencies_from_update_requests: std.array_hash_map.Auto(TruncatedPackageNameHash, void),
 
@@ -55,13 +55,13 @@ pub const PackageInstaller = struct {
         }
 
         // Since the stack size of these functions are rather large, let's not let them be inlined.
-        noinline fn directoryExistsAtWithoutOpeningDirectories(this: *const NodeModulesFolder, root_node_modules_dir: std.fs.Dir, file_path: [:0]const u8) bool {
+        noinline fn directoryExistsAtWithoutOpeningDirectories(this: *const NodeModulesFolder, root_node_modules_dir: std.Io.Dir, file_path: [:0]const u8) bool {
             var path_buf: bun.PathBuffer = undefined;
             const parts: [2][]const u8 = .{ this.path.items, file_path };
             return bun.sys.directoryExistsAt(.fromStdDir(root_node_modules_dir), bun.path.joinZBuf(&path_buf, &parts, .auto)).unwrapOr(false);
         }
 
-        pub fn directoryExistsAt(this: *const NodeModulesFolder, root_node_modules_dir: std.fs.Dir, file_path: [:0]const u8) bool {
+        pub fn directoryExistsAt(this: *const NodeModulesFolder, root_node_modules_dir: std.Io.Dir, file_path: [:0]const u8) bool {
             if (file_path.len + this.path.items.len * 2 < bun.MAX_PATH_BYTES) {
                 return this.directoryExistsAtWithoutOpeningDirectories(root_node_modules_dir, file_path);
             }
@@ -72,25 +72,25 @@ pub const PackageInstaller = struct {
         }
 
         // Since the stack size of these functions are rather large, let's not let them be inlined.
-        noinline fn openFileWithoutOpeningDirectories(this: *const NodeModulesFolder, root_node_modules_dir: std.fs.Dir, file_path: [:0]const u8) bun.sys.Maybe(bun.sys.File) {
+        noinline fn openFileWithoutOpeningDirectories(this: *const NodeModulesFolder, root_node_modules_dir: std.Io.Dir, file_path: [:0]const u8) bun.sys.Maybe(bun.sys.File) {
             var path_buf: bun.PathBuffer = undefined;
             const parts: [2][]const u8 = .{ this.path.items, file_path };
             return bun.sys.File.openat(.fromStdDir(root_node_modules_dir), bun.path.joinZBuf(&path_buf, &parts, .auto), bun.O.RDONLY, 0);
         }
 
-        pub fn readFile(this: *const NodeModulesFolder, root_node_modules_dir: std.fs.Dir, file_path: [:0]const u8, allocator: std.mem.Allocator) !bun.sys.File.ReadToEndResult {
+        pub fn readFile(this: *const NodeModulesFolder, root_node_modules_dir: std.Io.Dir, file_path: [:0]const u8, allocator: std.mem.Allocator) !bun.sys.File.ReadToEndResult {
             const file = try this.openFile(root_node_modules_dir, file_path);
             defer file.close();
             return file.readToEnd(allocator);
         }
 
-        pub fn readSmallFile(this: *const NodeModulesFolder, root_node_modules_dir: std.fs.Dir, file_path: [:0]const u8, allocator: std.mem.Allocator) !bun.sys.File.ReadToEndResult {
+        pub fn readSmallFile(this: *const NodeModulesFolder, root_node_modules_dir: std.Io.Dir, file_path: [:0]const u8, allocator: std.mem.Allocator) !bun.sys.File.ReadToEndResult {
             const file = try this.openFile(root_node_modules_dir, file_path);
             defer file.close();
             return file.readToEndSmall(allocator);
         }
 
-        pub fn openFile(this: *const NodeModulesFolder, root_node_modules_dir: std.fs.Dir, file_path: [:0]const u8) !bun.sys.File {
+        pub fn openFile(this: *const NodeModulesFolder, root_node_modules_dir: std.Io.Dir, file_path: [:0]const u8) !bun.sys.File {
             if (this.path.items.len + file_path.len * 2 < bun.MAX_PATH_BYTES) {
                 // If we do not run the risk of ENAMETOOLONG, then let's just avoid opening the extra directories altogether.
                 switch (this.openFileWithoutOpeningDirectories(root_node_modules_dir, file_path)) {
@@ -113,7 +113,7 @@ pub const PackageInstaller = struct {
             return try bun.sys.File.openat(dir, file_path, bun.O.RDONLY, 0).unwrap();
         }
 
-        pub fn openDir(this: *const NodeModulesFolder, root: std.fs.Dir) !std.fs.Dir {
+        pub fn openDir(this: *const NodeModulesFolder, root: std.Io.Dir) !std.Io.Dir {
             if (comptime Environment.isPosix) {
                 return (try bun.sys.openat(.fromStdDir(root), &try std.posix.toPosixPath(this.path.items), bun.O.DIRECTORY, 0).unwrap()).stdDir();
             }
@@ -124,10 +124,10 @@ pub const PackageInstaller = struct {
             }).unwrap()).stdDir();
         }
 
-        pub fn makeAndOpenDir(this: *NodeModulesFolder, root: std.fs.Dir) !std.fs.Dir {
+        pub fn makeAndOpenDir(this: *NodeModulesFolder, io: std.Io, root: std.Io.Dir) !std.Io.Dir {
             const out = brk: {
                 if (comptime Environment.isPosix) {
-                    break :brk try root.makeOpenPath(this.path.items, .{ .iterate = true, .access_sub_paths = true });
+                    break :brk try bun.MakePath.makeOpenPath(io, root, this.path.items, .{ .iterate = true, .access_sub_paths = true });
                 }
 
                 break :brk (try bun.sys.openDirAtWindowsA(.fromStdDir(root), this.path.items, .{
@@ -160,19 +160,19 @@ pub const PackageInstaller = struct {
 
         pub fn deinit(this: *TreeContext, allocator: std.mem.Allocator) void {
             this.pending_installs.deinit(allocator);
-            this.binaries.deinit();
+            this.binaries.deinit(allocator);
         }
     };
 
     pub const LazyPackageDestinationDir = union(enum) {
-        dir: std.fs.Dir,
+        dir: std.Io.Dir,
         node_modules_path: struct {
             node_modules: *NodeModulesFolder,
-            root_node_modules_dir: std.fs.Dir,
+            root_node_modules_dir: std.Io.Dir,
         },
         closed: void,
 
-        pub fn getDir(this: *LazyPackageDestinationDir) !std.fs.Dir {
+        pub fn getDir(this: *LazyPackageDestinationDir) !std.Io.Dir {
             return switch (this.*) {
                 .dir => |dir| dir,
                 .node_modules_path => |lazy| brk: {
@@ -184,11 +184,11 @@ pub const PackageInstaller = struct {
             };
         }
 
-        pub fn close(this: *LazyPackageDestinationDir) void {
+        pub fn close(this: *LazyPackageDestinationDir, io: std.Io) void {
             switch (this.*) {
                 .dir => {
-                    if (this.dir.fd != std.Io.Dir.cwd().handle) {
-                        this.dir.close();
+                    if (this.dir.handle != std.Io.Dir.cwd().handle) {
+                        this.dir.close(io);
                     }
                 },
                 .node_modules_path, .closed => {},
@@ -267,7 +267,7 @@ pub const PackageInstaller = struct {
         const pkg_resolutions_buffer = lockfile.buffers.resolutions.items;
         const pkg_names = pkgs.items(.name);
 
-        while (tree.binaries.removeOrNull()) |dep_id| {
+        while (tree.binaries.pop()) |dep_id| {
             bun.assertWithLocation(dep_id < lockfile.buffers.dependencies.items.len, @src());
             const package_id = lockfile.buffers.resolutions.items[dep_id];
             bun.assertWithLocation(package_id != invalid_package_id, @src());
@@ -329,6 +329,7 @@ pub const PackageInstaller = struct {
 
             while (true) {
                 var bin_linker: Bin.Linker = .{
+                    .io = this.manager.io,
                     .bin = bin,
                     .global_bin_path = this.options.bin_path,
                     .package_name = package_name_,
@@ -848,6 +849,7 @@ pub const PackageInstaller = struct {
             .destination_dir_subpath = destination_dir_subpath,
             .destination_dir_subpath_buf = &this.destination_dir_subpath_buf,
             .allocator = this.lockfile.allocator,
+            .io = this.manager.io,
             .package_name = pkg_name,
             .patch = if (patch_patch) |p| .{
                 .contents_hash = patch_contents_hash.?,
@@ -893,7 +895,7 @@ pub const PackageInstaller = struct {
                         this.folder_path_buf[folder.len] = 0;
                         installer.cache_dir_subpath = this.folder_path_buf[0..folder.len :0];
                     }
-                    installer.cache_dir = std.fs.cwd();
+                    installer.cache_dir = std.Io.Dir.cwd();
                 } else {
                     // transitive folder dependencies are relative to their parent. they are not hoisted
                     @memcpy(this.folder_path_buf[0..folder.len], folder);
@@ -901,7 +903,7 @@ pub const PackageInstaller = struct {
                     installer.cache_dir_subpath = this.folder_path_buf[0..folder.len :0];
 
                     // cache_dir might not be created yet (if it's in node_modules)
-                    installer.cache_dir = std.fs.cwd();
+                    installer.cache_dir = std.Io.Dir.cwd();
                 }
             },
             .local_tarball => {
@@ -922,11 +924,11 @@ pub const PackageInstaller = struct {
                     this.folder_path_buf[folder.len] = 0;
                     installer.cache_dir_subpath = this.folder_path_buf[0..folder.len :0];
                 }
-                installer.cache_dir = std.fs.cwd();
+                installer.cache_dir = std.Io.Dir.cwd();
             },
             .root => {
                 installer.cache_dir_subpath = ".";
-                installer.cache_dir = std.fs.cwd();
+                installer.cache_dir = std.Io.Dir.cwd();
             },
             .symlink => {
                 const directory = this.manager.globalLinkDir();
@@ -935,7 +937,7 @@ pub const PackageInstaller = struct {
 
                 if (folder.len == 0 or (folder.len == 1 and folder[0] == '.')) {
                     installer.cache_dir_subpath = ".";
-                    installer.cache_dir = std.fs.cwd();
+                    installer.cache_dir = std.Io.Dir.cwd();
                 } else {
                     const global_link_dir = this.manager.globalLinkDirPath();
                     var ptr = &this.folder_path_buf;
@@ -1103,7 +1105,7 @@ pub const PackageInstaller = struct {
             }
 
             // creating this directory now, right before installing package
-            var destination_dir = this.node_modules.makeAndOpenDir(this.root_node_modules_folder) catch |err| {
+            const destination_dir = this.node_modules.makeAndOpenDir(this.manager.io, this.root_node_modules_folder) catch |err| {
                 if (log_level != .silent) {
                     Output.err(err, "Failed to open node_modules folder for <r><red>{s}<r> in {f}", .{
                         pkg_name.slice(this.lockfile.buffers.string_bytes.items),
@@ -1116,7 +1118,7 @@ pub const PackageInstaller = struct {
             };
 
             defer {
-                if (std.Io.Dir.cwd().handle != destination_dir.fd) destination_dir.close();
+                if (std.Io.Dir.cwd().handle != destination_dir.handle) destination_dir.close(this.manager.io);
             }
 
             var lazy_package_dir: LazyPackageDestinationDir = .{ .dir = destination_dir };
@@ -1129,7 +1131,7 @@ pub const PackageInstaller = struct {
                         // and is not hoisted.
                         const dirname = std.fs.path.dirname(this.node_modules.path.items) orelse this.node_modules.path.items;
 
-                        installer.cache_dir = this.root_node_modules_folder.openDir(dirname, .{ .iterate = true, .access_sub_paths = true }) catch |err|
+                        installer.cache_dir = this.root_node_modules_folder.openDir(this.manager.io, dirname, .{ .iterate = true, .access_sub_paths = true }) catch |err|
                             break :result .fail(err, .opening_cache_dir, @errorReturnTrace());
 
                         const result = if (resolution.tag == .root)
@@ -1158,7 +1160,7 @@ pub const PackageInstaller = struct {
                     }
 
                     if (this.bins[package_id].tag != .none) {
-                        bun.handleOom(this.trees[this.current_tree_id].binaries.add(dependency_id));
+                        bun.handleOom(this.trees[this.current_tree_id].binaries.push(this.manager.allocator, dependency_id));
                     }
 
                     const dep = this.lockfile.buffers.dependencies.items[dependency_id];
@@ -1334,7 +1336,7 @@ pub const PackageInstaller = struct {
             }
         } else {
             if (this.bins[package_id].tag != .none) {
-                bun.handleOom(this.trees[this.current_tree_id].binaries.add(dependency_id));
+                bun.handleOom(this.trees[this.current_tree_id].binaries.push(this.manager.allocator, dependency_id));
             }
 
             var destination_dir: LazyPackageDestinationDir = .{
@@ -1345,7 +1347,7 @@ pub const PackageInstaller = struct {
             };
 
             defer {
-                destination_dir.close();
+                destination_dir.close(this.manager.io);
             }
 
             defer this.incrementTreeInstallCount(this.current_tree_id, !is_pending_package_install, log_level);

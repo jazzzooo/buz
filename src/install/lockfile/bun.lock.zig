@@ -46,7 +46,9 @@ pub const Stringifier = struct {
 
         var temp_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer temp_buf.deinit(allocator);
-        const temp_writer = temp_buf.writer(allocator);
+        var temp_writer_state = bun.UnmanagedWriter.init(&temp_buf, allocator);
+        defer temp_writer_state.finish();
+        const temp_writer = temp_writer_state.writer();
 
         var found_trusted_dependencies: std.AutoHashMapUnmanaged(u64, String) = .{};
         defer found_trusted_dependencies.deinit(allocator);
@@ -223,9 +225,9 @@ pub const Stringifier = struct {
                                 try temp_writer.print("{f}", .{res.fmt(buf, .posix)});
                             },
                         }
-                        defer temp_buf.clearRetainingCapacity();
+                        defer temp_writer_state.allocating.clearRetainingCapacity();
 
-                        const name_and_version = temp_buf.items;
+                        const name_and_version = temp_writer_state.allocating.written();
                         const name_and_version_hash = String.Builder.stringHash(name_and_version);
 
                         if (lockfile.patched_dependencies.get(name_and_version_hash)) |patch| {

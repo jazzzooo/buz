@@ -8,7 +8,7 @@ pub fn print(
     // internal for debugging, print the lockfile as custom json
     // limited to debug because we don't want people to rely on this format.
     if (Environment.isDebug) {
-        if (std.process.hasEnvVarConstant("JSON")) {
+        if (bun.getenvZ("JSON") != null) {
             var stringify = std.json.Stringify{
                 .options = .{
                     .whitespace = .indent_2,

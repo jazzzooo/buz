@@ -226,7 +226,7 @@ pub const PmPkgCommand = struct {
         }
 
         if (modified) {
-            try savePackageJson(ctx.allocator, path, root, &pkg);
+            try savePackageJson(ctx.io, ctx.allocator, path, root, &pkg);
         }
     }
 
@@ -259,7 +259,7 @@ pub const PmPkgCommand = struct {
         }
 
         if (modified) {
-            try savePackageJson(ctx.allocator, path, root, &pkg);
+            try savePackageJson(ctx.io, ctx.allocator, path, root, &pkg);
         }
     }
 
@@ -320,7 +320,7 @@ pub const PmPkgCommand = struct {
         }
 
         if (modified) {
-            try savePackageJson(ctx.allocator, path, root, &pkg);
+            try savePackageJson(ctx.io, ctx.allocator, path, root, &pkg);
         }
     }
 
@@ -732,7 +732,7 @@ pub const PmPkgCommand = struct {
         return true;
     }
 
-    fn savePackageJson(allocator: std.mem.Allocator, path: []const u8, root: js_ast.Expr, pkg: *const PackageJson) !void {
+    fn savePackageJson(io: std.Io, allocator: std.mem.Allocator, path: []const u8, root: js_ast.Expr, pkg: *const PackageJson) !void {
         const preserve_newline = pkg.contents.len > 0 and pkg.contents[pkg.contents.len - 1] == '\n';
 
         var buffer_writer = JSPrinter.BufferWriter.init(allocator);
@@ -756,7 +756,7 @@ pub const PmPkgCommand = struct {
         };
 
         const content = writer.ctx.writtenWithoutTrailingZero();
-        std.fs.cwd().writeFile(.{
+        std.Io.Dir.cwd().writeFile(io, .{
             .sub_path = path,
             .data = content,
         }) catch |err| {

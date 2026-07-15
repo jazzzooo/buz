@@ -42,7 +42,10 @@ pub fn generateChunkJson(
     var json = std.array_list.Managed(u8).init(allocator);
     errdefer json.deinit();
 
-    const writer = json.writer();
+    var writer_state = bun.ManagedWriter.init(&json);
+    var writer_finished = false;
+    defer if (!writer_finished) writer_state.finish();
+    const writer = writer_state.writer();
     const sources = c.parse_graph.input_files.items(.source);
 
     // Start chunk entry: "path/to/output.js": {
@@ -154,6 +157,8 @@ pub fn generateChunkJson(
 
     try writer.writeAll("\n    }");
 
+    writer_state.finish();
+    writer_finished = true;
     return json.toOwnedSlice();
 }
 
@@ -359,7 +364,10 @@ pub fn generateMarkdown(allocator: std.mem.Allocator, metafile_json: []const u8)
 
     var md = std.array_list.Managed(u8).init(allocator);
     errdefer md.deinit();
-    const writer = md.writer();
+    var writer_state = bun.ManagedWriter.init(&md);
+    var writer_finished = false;
+    defer if (!writer_finished) writer_state.finish();
+    const writer = writer_state.writer();
 
     // Get inputs and outputs
     const inputs = root.object.get("inputs") orelse return error.InvalidJSON;
@@ -544,7 +552,7 @@ pub fn generateMarkdown(allocator: std.mem.Allocator, metafile_json: []const u8)
                                 if (matched_key) |key| {
                                     const gop = try imported_by.getOrPut(key);
                                     if (!gop.found_existing) {
-                                        gop.value_ptr.* = .{};
+                                        gop.value_ptr.* = .empty;
                                     }
                                     try gop.value_ptr.append(allocator, path);
                                 }
@@ -1058,6 +1066,8 @@ pub fn generateMarkdown(allocator: std.mem.Allocator, metafile_json: []const u8)
         try writer.writeAll("```\n");
     }
 
+    writer_state.finish();
+    writer_finished = true;
     return md.toOwnedSlice();
 }
 

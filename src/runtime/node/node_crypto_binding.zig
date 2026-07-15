@@ -257,7 +257,14 @@ const random = struct {
             return global.ERR(.OUT_OF_RANGE, "The value of \"max\" is out of range. It must be <= {d}. Received {d}", .{ max_range, max - min }).throw();
         }
 
-        const res = std.crypto.random.intRangeLessThan(i64, min, max);
+        const range: u64 = @intCast(max - min);
+        const rejection_limit = std.math.maxInt(u64) - (std.math.maxInt(u64) % range);
+        var random_value: u64 = undefined;
+        while (true) {
+            bun.csprng(std.mem.asBytes(&random_value));
+            if (random_value < rejection_limit) break;
+        }
+        const res = min + @as(i64, @intCast(random_value % range));
 
         if (!callback.isUndefined()) {
             try callback.callNextTick(global, [2]JSValue{ .js_undefined, JSValue.jsNumber(res) });

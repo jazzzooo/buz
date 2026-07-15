@@ -48,7 +48,22 @@ pub const DepSorter = struct {
     }
 };
 
-pub const Stream = std.io.FixedBufferStream([]u8);
+pub const Stream = struct {
+    buffer: []u8,
+    reader_state: std.Io.Reader,
+
+    pub fn init(buffer: []u8) Stream {
+        return .{ .buffer = buffer, .reader_state = .fixed(buffer) };
+    }
+
+    pub fn reader(this: *Stream) *std.Io.Reader {
+        return &this.reader_state;
+    }
+
+    pub fn getPos(this: *const Stream) error{}!u64 {
+        return this.reader_state.seek;
+    }
+};
 pub const default_filename = "bun.lockb";
 
 pub const Scripts = struct {
@@ -370,7 +385,7 @@ pub fn loadFromDir(
 }
 
 pub fn loadFromBytes(this: *Lockfile, pm: ?*PackageManager, buf: []u8, allocator: Allocator, log: *logger.Log) LoadResult {
-    var stream = Stream{ .buffer = buf, .pos = 0 };
+    var stream = Stream.init(buf);
 
     this.format = FormatVersion.current;
     this.scripts = .{};
@@ -860,7 +875,7 @@ pub const Cloner = struct {
     lockfile: *Lockfile,
     old: *Lockfile,
     mapping: []PackageID,
-    trees: Tree.List = Tree.List{},
+    trees: Tree.List = .empty,
     trees_count: u32 = 1,
     log: *logger.Log,
     old_preinstall_state: std.ArrayListUnmanaged(Install.PreinstallState),

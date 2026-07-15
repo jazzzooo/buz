@@ -1,4 +1,4 @@
-//! This is a similar API to std.fs.File, except it:
+//! This is a similar API to std.Io.File, except it:
 //! - Preserves errors from the operating system
 //! - Supports normalizing BOM to UTF-8
 //! - Has several optimizations somewhat specific to Bun
@@ -7,7 +7,7 @@
 
 const File = @This();
 
-// "handle" matches std.fs.File
+// "handle" matches std.Io.File
 handle: bun.FD,
 
 pub fn openat(dir: bun.FD, path: [:0]const u8, flags: i32, mode: bun.Mode) Maybe(File) {
@@ -21,16 +21,16 @@ pub fn open(path: [:0]const u8, flags: i32, mode: bun.Mode) Maybe(File) {
     return File.openat(bun.FD.cwd(), path, flags, mode);
 }
 
-pub fn makeOpen(path: [:0]const u8, flags: i32, mode: bun.Mode) Maybe(File) {
-    return File.makeOpenat(bun.FD.cwd(), path, flags, mode);
+pub fn makeOpen(io: std.Io, path: [:0]const u8, flags: i32, mode: bun.Mode) Maybe(File) {
+    return File.makeOpenat(io, bun.FD.cwd(), path, flags, mode);
 }
 
-pub fn makeOpenat(other: bun.FD, path: [:0]const u8, flags: i32, mode: bun.Mode) Maybe(File) {
+pub fn makeOpenat(io: std.Io, other: bun.FD, path: [:0]const u8, flags: i32, mode: bun.Mode) Maybe(File) {
     const fd = switch (sys.openat(other, path, flags, mode)) {
         .result => |fd| fd,
         .err => |err| fd: {
             if (std.fs.path.dirname(path)) |dir_path| {
-                bun.makePath(other.stdDir(), dir_path) catch {};
+                bun.makePath(other.stdDir(), io, dir_path) catch {};
                 break :fd switch (sys.openat(other, path, flags, mode)) {
                     .result => |fd| fd,
                     .err => |err2| return .{ .err = err2 },
@@ -66,11 +66,11 @@ pub fn from(other: anytype) File {
         return .{ .handle = other };
     }
 
-    if (T == std.fs.File) {
+    if (T == std.Io.File) {
         return .{ .handle = .fromStdFile(other) };
     }
 
-    if (T == std.fs.Dir) {
+    if (T == std.Io.Dir) {
         return File{ .handle = .fromStdDir(other) };
     }
 
@@ -544,7 +544,7 @@ pub fn toSourceAt(dir_fd: anytype, path: anytype, allocator: std.mem.Allocator, 
 }
 
 pub fn toSource(path: anytype, allocator: std.mem.Allocator, opts: ToSourceOptions) Maybe(bun.logger.Source) {
-    return toSourceAt(std.fs.cwd(), path, allocator, opts);
+    return toSourceAt(std.Io.Dir.cwd(), path, allocator, opts);
 }
 
 const bun = @import("bun");

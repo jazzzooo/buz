@@ -295,9 +295,9 @@ pub fn DifferWithEql(comptime Line: type, comptime opts: Options, comptime areLi
 
 pub fn printDiff(T: type, diffs: std.array_list.Managed(Diff(T))) !void {
     const stdout = if (builtin.is_test)
-        std.fs.File.stderr().writer()
+        std.Io.File.stderr().writer()
     else
-        std.fs.File.stdout().writer();
+        std.Io.File.stdout().writer();
 
     const specifier = switch (T) {
         u8 => "c",

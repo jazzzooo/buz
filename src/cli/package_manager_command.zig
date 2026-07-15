@@ -136,8 +136,7 @@ pub const PackageManagerCommand = struct {
     }
 
     pub fn exec(ctx: Command.Context) !void {
-        var args = try std.process.argsAlloc(ctx.allocator);
-        args = args[1..];
+        const args = bun.argv[1..];
 
         // Check if we're being invoked directly as "bun whoami" instead of "bun pm whoami"
         const is_direct_whoami = if (bun.argv.len > 1) strings.eqlComptime(bun.argv[1], "whoami") else false;
@@ -250,18 +249,18 @@ pub const PackageManagerCommand = struct {
             Global.exit(0);
         } else if (strings.eqlComptime(subcommand, "cache")) {
             var dir: bun.PathBuffer = undefined;
-            var fd = pm.getCacheDirectory();
+            const fd = pm.getCacheDirectory();
             const outpath = bun.getFdPath(.fromStdDir(fd), &dir) catch |err| {
                 Output.prettyErrorln("{s} getting cache directory", .{@errorName(err)});
                 Global.crash();
             };
 
             if (pm.options.positionals.len > 1 and strings.eqlComptime(pm.options.positionals[1], "rm")) {
-                fd.close();
+                fd.close(ctx.io);
 
                 var had_err = false;
 
-                std.fs.deleteTreeAbsolute(outpath) catch |err| {
+                std.Io.Dir.cwd().deleteTree(ctx.io, outpath) catch |err| {
                     Output.err(err, "Could not delete {s}", .{outpath});
                     had_err = true;
                 };
@@ -269,11 +268,12 @@ pub const PackageManagerCommand = struct {
 
                 bunx: {
                     const tmp = bun.fs.FileSystem.RealFS.platformTempDir();
-                    const tmp_dir = std.fs.openDirAbsolute(tmp, .{ .iterate = true }) catch |err| {
+                    const tmp_dir = std.Io.Dir.cwd().openDir(ctx.io, tmp, .{ .iterate = true }) catch |err| {
                         Output.err(err, "Could not open {s}", .{tmp});
                         had_err = true;
                         break :bunx;
                     };
+                    defer tmp_dir.close(ctx.io);
                     var iter = tmp_dir.iterate();
 
                     // This is to match 'bunx_command.BunxCommand.exec's logic
@@ -282,13 +282,13 @@ pub const PackageManagerCommand = struct {
                     });
 
                     var deleted: usize = 0;
-                    while (iter.next() catch |err| {
+                    while (iter.next(ctx.io) catch |err| {
                         Output.err(err, "Could not read {s}", .{tmp});
                         had_err = true;
                         break :bunx;
                     }) |entry| {
                         if (std.mem.startsWith(u8, entry.name, prefix)) {
-                            tmp_dir.deleteTree(entry.name) catch |err| {
+                            tmp_dir.deleteTree(ctx.io, entry.name) catch |err| {
                                 Output.err(err, "Could not delete {s}", .{entry.name});
                                 had_err = true;
                                 continue;
@@ -304,6 +304,7 @@ pub const PackageManagerCommand = struct {
                 Global.exit(if (had_err) 1 else 0);
             }
 
+            fd.close(ctx.io);
             Output.writer().writeAll(outpath) catch {};
             Global.exit(0);
         } else if (strings.eqlComptime(subcommand, "default-trusted")) {

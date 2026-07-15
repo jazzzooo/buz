@@ -616,6 +616,7 @@ pub const PackageJSON = struct {
 
         var entry = r.caches.fs.readFileWithAllocator(
             allocator,
+            r.io,
             r.fs,
             package_json_path,
             dirname_fd,
@@ -1555,8 +1556,7 @@ pub const ESModule = struct {
         // respectively), then throw an Invalid Module Specifier error.
         const PercentEncoding = @import("../url/url.zig").PercentEncoding;
         const resolved_path_buf_percent = &module_bufs.get().resolved_path_buf_percent;
-        var fbs = std.io.fixedBufferStream(resolved_path_buf_percent);
-        var writer = fbs.writer();
+        var writer = std.Io.Writer.fixed(resolved_path_buf_percent);
         const len = PercentEncoding.decode(@TypeOf(&writer), &writer, result.path) catch return Resolution{
             .status = .InvalidModuleSpecifier,
             .path = result.path,

@@ -19,19 +19,22 @@ pub fn save(this: *Lockfile, options: *const PackageManager.Options, bytes: *std
     this.packages = try this.packages.clone(z_allocator);
     old_packages_list.deinit(this.allocator);
 
-    var writer = bytes.writer();
+    var writer_state = bun.ManagedWriter.init(bytes);
+    var writer_finished = false;
+    defer if (!writer_finished) writer_state.finish();
+    const writer = writer_state.writer();
     try writer.writeAll(header_bytes);
     try writer.writeInt(u32, @intFromEnum(this.format), .little);
 
     try writer.writeAll(&this.meta_hash);
 
-    end_pos.* = bytes.items.len;
+    end_pos.* = writer.buffered().len;
     try writer.writeInt(u64, 0, .little);
 
     const StreamType = struct {
-        bytes: *std.array_list.Managed(u8),
+        writer: *std.Io.Writer,
         pub inline fn getPos(s: @This()) anyerror!usize {
-            return s.bytes.items.len;
+            return s.writer.buffered().len;
         }
 
         pub fn pwrite(
@@ -39,11 +42,11 @@ pub fn save(this: *Lockfile, options: *const PackageManager.Options, bytes: *std
             data: []const u8,
             index: usize,
         ) usize {
-            @memcpy(s.bytes.items[index..][0..data.len], data);
+            @memcpy(s.writer.buffered()[index..][0..data.len], data);
             return data.len;
         }
     };
-    const stream = StreamType{ .bytes = bytes };
+    const stream = StreamType{ .writer = writer };
 
     if (comptime Environment.allow_assert) {
         for (this.packages.items(.resolution)) |res| {
@@ -254,6 +257,8 @@ pub fn save(this: *Lockfile, options: *const PackageManager.Options, bytes: *std
     total_size.* = try stream.getPos();
 
     try writer.writeAll(&alignment_bytes_to_repeat_buffer);
+    writer_state.finish();
+    writer_finished = true;
 }
 
 pub const SerializerLoadResult = struct {
@@ -271,14 +276,14 @@ pub fn load(
     var res = SerializerLoadResult{};
     var reader = stream.reader();
     var header_buf_: [header_bytes.len]u8 = undefined;
-    const header_buf = header_buf_[0..try reader.readAll(&header_buf_)];
+    const header_buf = header_buf_[0..try reader.readSliceShort(&header_buf_)];
 
     if (!strings.eqlComptime(header_buf, header_bytes)) {
         return error.InvalidLockfile;
     }
 
     var migrate_from_v2 = false;
-    const format = try reader.readInt(u32, .little);
+    const format = try reader.takeInt(u32, .little);
     if (format > @intFromEnum(Lockfile.FormatVersion.current)) {
         return error.@"Unexpected lockfile version";
     }
@@ -296,9 +301,9 @@ pub fn load(
     lockfile.format = Lockfile.FormatVersion.current;
     lockfile.allocator = allocator;
 
-    _ = try reader.readAll(&lockfile.meta_hash);
+    _ = try reader.readSliceShort(&lockfile.meta_hash);
 
-    const total_buffer_size = try reader.readInt(u64, .little);
+    const total_buffer_size = try reader.takeInt(u64, .little);
     if (total_buffer_size > stream.buffer.len) {
         return error.@"Lockfile is missing data";
     }
@@ -321,7 +326,7 @@ pub fn load(
         log,
         manager,
     );
-    if ((try stream.reader().readInt(u64, .little)) != 0) {
+    if ((try stream.reader().takeInt(u64, .little)) != 0) {
         return error.@"Lockfile is malformed (expected 0 at the end)";
     }
 
@@ -329,10 +334,10 @@ pub fn load(
     // < Bun v1.0.4 stopped right here when reading the lockfile
     // So we add an extra 8 byte tag to say "hey, there's more data here"
     {
-        const remaining_in_buffer = total_buffer_size -| stream.pos;
+        const remaining_in_buffer = total_buffer_size -| stream.reader_state.seek;
 
         if (remaining_in_buffer > 8 and total_buffer_size <= stream.buffer.len) {
-            const next_num = try reader.readInt(u64, .little);
+            const next_num = try reader.takeInt(u64, .little);
             if (next_num == has_workspace_package_ids_tag) {
                 {
                     var workspace_package_name_hashes = try Lockfile.Buffers.readArray(
@@ -404,17 +409,17 @@ pub fn load(
                     try lockfile.workspace_paths.reIndex(allocator);
                 }
             } else {
-                stream.pos -= 8;
+                stream.reader_state.seek -= 8;
             }
         }
     }
 
     {
-        const remaining_in_buffer = total_buffer_size -| stream.pos;
+        const remaining_in_buffer = total_buffer_size -| stream.reader_state.seek;
 
         // >= because `has_empty_trusted_dependencies_tag` is tag only
         if (remaining_in_buffer >= 8 and total_buffer_size <= stream.buffer.len) {
-            const next_num = try reader.readInt(u64, .little);
+            const next_num = try reader.takeInt(u64, .little);
             if (remaining_in_buffer > 8 and next_num == has_trusted_dependencies_tag) {
                 var trusted_dependencies_hashes = try Lockfile.Buffers.readArray(
                     stream,
@@ -433,16 +438,16 @@ pub fn load(
                 // trusted dependencies exists in package.json but is an empty array.
                 lockfile.trusted_dependencies = .{};
             } else {
-                stream.pos -= 8;
+                stream.reader_state.seek -= 8;
             }
         }
     }
 
     {
-        const remaining_in_buffer = total_buffer_size -| stream.pos;
+        const remaining_in_buffer = total_buffer_size -| stream.reader_state.seek;
 
         if (remaining_in_buffer > 8 and total_buffer_size <= stream.buffer.len) {
-            const next_num = try reader.readInt(u64, .little);
+            const next_num = try reader.takeInt(u64, .little);
             if (next_num == has_overrides_tag) {
                 var overrides_name_hashes = try Lockfile.Buffers.readArray(
                     stream,
@@ -470,16 +475,16 @@ pub fn load(
                     map.putAssumeCapacity(name, Dependency.toDependency(value, context));
                 }
             } else {
-                stream.pos -= 8;
+                stream.reader_state.seek -= 8;
             }
         }
     }
 
     {
-        const remaining_in_buffer = total_buffer_size -| stream.pos;
+        const remaining_in_buffer = total_buffer_size -| stream.reader_state.seek;
 
         if (remaining_in_buffer > 8 and total_buffer_size <= stream.buffer.len) {
-            const next_num = try reader.readInt(u64, .little);
+            const next_num = try reader.takeInt(u64, .little);
             if (next_num == has_patched_dependencies_tag) {
                 var patched_dependencies_name_and_version_hashes =
                     try Lockfile.Buffers.readArray(
@@ -503,16 +508,16 @@ pub fn load(
                     map.putAssumeCapacity(name_hash, patch_path);
                 }
             } else {
-                stream.pos -= 8;
+                stream.reader_state.seek -= 8;
             }
         }
     }
 
     {
-        const remaining_in_buffer = total_buffer_size -| stream.pos;
+        const remaining_in_buffer = total_buffer_size -| stream.reader_state.seek;
 
         if (remaining_in_buffer > 8 and total_buffer_size <= stream.buffer.len) {
-            const next_num = try reader.readInt(u64, .little);
+            const next_num = try reader.takeInt(u64, .little);
             if (next_num == has_catalogs_tag) {
                 lockfile.catalogs = .{};
 
@@ -556,18 +561,18 @@ pub fn load(
                     }
                 }
             } else {
-                stream.pos -= 8;
+                stream.reader_state.seek -= 8;
             }
         }
     }
 
     {
-        const remaining_in_buffer = total_buffer_size -| stream.pos;
+        const remaining_in_buffer = total_buffer_size -| stream.reader_state.seek;
 
         if (remaining_in_buffer > 8 and total_buffer_size <= stream.buffer.len) {
-            const next_num = try reader.readInt(u64, .little);
+            const next_num = try reader.takeInt(u64, .little);
             if (next_num == has_config_version_tag) {
-                const config_version = bun.ConfigVersion.fromInt(try reader.readInt(u64, .little)) orelse {
+                const config_version = bun.ConfigVersion.fromInt(try reader.takeInt(u64, .little)) orelse {
                     return error.InvalidLockfile;
                 };
                 lockfile.saved_config_version = config_version;
@@ -603,9 +608,9 @@ pub fn load(
         }
     }
 
-    if (comptime Environment.allow_assert) assert(stream.pos == total_buffer_size);
+    if (comptime Environment.allow_assert) assert(stream.reader_state.seek == total_buffer_size);
 
-    // const end = try reader.readInt(u64, .little);
+    // const end = try reader.takeInt(u64, .little);
     return res;
 }
 

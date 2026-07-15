@@ -66,7 +66,7 @@ fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
 
     // Read /proc/stat to get number of CPUs and times
     {
-        const file = std.fs.cwd().openFile("/proc/stat", .{}) catch {
+        const file = std.Io.Dir.cwd().openFile(globalThis.bunVM().io, "/proc/stat", .{}) catch {
             // hidepid mounts (common on Android) deny /proc/stat. lazyCpus in os.ts
             // pre-creates hostCpuCount lazy proxies, so return that many stub
             // entries (zeroed times / unknown model / speed 0) — matches Node.
@@ -82,7 +82,7 @@ fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
             }
             return stubs;
         };
-        defer file.close();
+        defer file.close(globalThis.bunVM().io);
 
         const read = try bun.sys.File.from(file).readToEndWithArrayList(&file_buf, .probably_small).unwrap();
         defer file_buf.clearRetainingCapacity();
@@ -121,8 +121,8 @@ fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
     }
 
     // Read /proc/cpuinfo to get model information (optional)
-    if (std.fs.cwd().openFile("/proc/cpuinfo", .{})) |file| {
-        defer file.close();
+    if (std.Io.Dir.cwd().openFile(globalThis.bunVM().io, "/proc/cpuinfo", .{})) |file| {
+        defer file.close(globalThis.bunVM().io);
 
         const read = try bun.sys.File.from(file).readToEndWithArrayList(&file_buf, .probably_small).unwrap();
         defer file_buf.clearRetainingCapacity();
@@ -172,8 +172,8 @@ fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
 
         var path_buf: [128]u8 = undefined;
         const path = try std.fmt.bufPrint(&path_buf, "/sys/devices/system/cpu/cpu{}/cpufreq/scaling_cur_freq", .{cpu_index});
-        if (std.fs.cwd().openFile(path, .{})) |file| {
-            defer file.close();
+        if (std.Io.Dir.cwd().openFile(globalThis.bunVM().io, path, .{})) |file| {
+            defer file.close(globalThis.bunVM().io);
 
             const read = try bun.sys.File.from(file).readToEndWithArrayList(&file_buf, .probably_small).unwrap();
             defer file_buf.clearRetainingCapacity();
@@ -603,8 +603,8 @@ fn networkInterfacesPosix(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSVal
         if (helpers.skip(iface) or helpers.isLinkLayer(iface)) continue;
 
         const interface_name = std.mem.sliceTo(iface.ifa_name, 0);
-        const addr = std.net.Address.initPosix(@alignCast(@as(*std.posix.sockaddr, @ptrCast(iface.ifa_addr))));
-        const netmask = std.net.Address.initPosix(@alignCast(@as(*std.posix.sockaddr, @ptrCast(iface.ifa_netmask))));
+        const addr = SocketAddress.fromPosix(@alignCast(@as(*std.posix.sockaddr, @ptrCast(iface.ifa_addr)))) orelse continue;
+        const netmask = SocketAddress.fromPosix(@alignCast(@as(*std.posix.sockaddr, @ptrCast(iface.ifa_netmask)))) orelse continue;
 
         var interface = jsc.JSValue.createEmptyObject(globalThis, 0);
 
@@ -613,10 +613,9 @@ fn networkInterfacesPosix(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSVal
         {
             // Compute the CIDR suffix; returns null if the netmask cannot
             //  be converted to a CIDR suffix
-            const maybe_suffix: ?u8 = switch (addr.any.family) {
-                std.posix.AF.INET => netmaskToCIDRSuffix(netmask.in.sa.addr),
-                std.posix.AF.INET6 => netmaskToCIDRSuffix(@as(u128, @bitCast(netmask.in6.sa.addr))),
-                else => null,
+            const maybe_suffix: ?u8 = switch (addr.family()) {
+                .INET => netmaskToCIDRSuffix(netmask.address4()),
+                .INET6 => netmaskToCIDRSuffix(@as(u128, @bitCast(netmask.address6()))),
             };
 
             // Format the address and then, if valid, the CIDR suffix; both
@@ -647,10 +646,9 @@ fn networkInterfacesPosix(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSVal
         }
 
         // family <string> Either IPv4 or IPv6
-        interface.put(globalThis, jsc.ZigString.static("family"), switch (addr.any.family) {
-            std.posix.AF.INET => globalThis.commonStrings().IPv4(),
-            std.posix.AF.INET6 => globalThis.commonStrings().IPv6(),
-            else => jsc.ZigString.static("unknown").toJS(globalThis),
+        interface.put(globalThis, jsc.ZigString.static("family"), switch (addr.family()) {
+            .INET => globalThis.commonStrings().IPv4(),
+            .INET6 => globalThis.commonStrings().IPv6(),
         });
 
         // mac <string> The MAC address of the network interface
@@ -700,8 +698,8 @@ fn networkInterfacesPosix(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSVal
         interface.put(globalThis, jsc.ZigString.static("internal"), jsc.JSValue.jsBoolean(helpers.isLoopback(iface)));
 
         // scopeid <number> The numeric IPv6 scope ID (only specified when family is IPv6)
-        if (addr.any.family == std.posix.AF.INET6) {
-            interface.put(globalThis, jsc.ZigString.static("scopeid"), jsc.JSValue.jsNumber(addr.in6.sa.scope_id));
+        if (addr.family() == .INET6) {
+            interface.put(globalThis, jsc.ZigString.static("scopeid"), jsc.JSValue.jsNumber(addr.scopeId()));
         }
 
         // Does this entry already exist?
@@ -762,8 +760,7 @@ fn networkInterfacesWindows(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSV
             //  the address and cidr values can be slices into this same buffer
             // e.g. addr_str = "192.168.88.254", cidr_str = "192.168.88.254/24"
             const addr_str = bun.fmt.formatIp(
-                // std.net.Address will do ptrCast depending on the family so this is ok
-                std.net.Address.initPosix(@ptrCast(&iface.address.address4)),
+                SocketAddress.fromPosix(@ptrCast(&iface.address.address4)) orelse unreachable,
                 &ip_buf,
             ) catch unreachable;
             if (maybe_suffix) |suffix| {
@@ -782,8 +779,7 @@ fn networkInterfacesWindows(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSV
         // netmask
         {
             const str = bun.fmt.formatIp(
-                // std.net.Address will do ptrCast depending on the family so this is ok
-                std.net.Address.initPosix(@ptrCast(&iface.netmask.netmask4)),
+                SocketAddress.fromPosix(@ptrCast(&iface.netmask.netmask4)) orelse unreachable,
                 &ip_buf,
             ) catch unreachable;
             interface.put(globalThis, jsc.ZigString.static("netmask"), jsc.ZigString.init(str).withEncoding().toJS(globalThis));
@@ -1113,3 +1109,4 @@ const strings = bun.strings;
 const sys = bun.sys;
 const gen = bun.gen.node_os;
 const libuv = bun.windows.libuv;
+const SocketAddress = bun.api.socket.SocketAddress;

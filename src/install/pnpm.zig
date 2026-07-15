@@ -543,10 +543,15 @@ pub fn migratePnpmLockfile(
                     try found_patches.put(allocator, patch.value.dep_name, res_str);
 
                     patch_join_buf.clearRetainingCapacity();
-                    try patch_join_buf.writer().print("{s}@{s}", .{
+                    var patch_writer_state = bun.ManagedWriter.init(&patch_join_buf);
+                    var patch_writer_finished = false;
+                    defer if (!patch_writer_finished) patch_writer_state.finish();
+                    patch_writer_state.writer().print("{s}@{s}", .{
                         patch.value.dep_name,
                         res_str,
-                    });
+                    }) catch return error.OutOfMemory;
+                    patch_writer_state.finish();
+                    patch_writer_finished = true;
 
                     const patch_hash = String.Builder.stringHash(patch_join_buf.items);
                     try lockfile.patched_dependencies.put(allocator, patch_hash, .{ .path = patch.value.path });
@@ -718,10 +723,15 @@ pub fn migratePnpmLockfile(
             }
 
             res_buf.clearRetainingCapacity();
-            try res_buf.writer().print("{s}@{s}", .{
+            var res_writer_state = bun.ManagedWriter.init(&res_buf);
+            var res_writer_finished = false;
+            defer if (!res_writer_finished) res_writer_state.finish();
+            res_writer_state.writer().print("{s}@{s}", .{
                 if (has_alias) |alias| alias else dep_name,
                 version_without_suffix,
-            });
+            }) catch return error.OutOfMemory;
+            res_writer_state.finish();
+            res_writer_finished = true;
 
             const pkg_id = pkg_map.get(res_buf.items) orelse {
                 return invalidPnpmLockfile();
@@ -767,10 +777,15 @@ pub fn migratePnpmLockfile(
             }
 
             res_buf.clearRetainingCapacity();
-            try res_buf.writer().print("{s}@{s}", .{
+            var res_writer_state = bun.ManagedWriter.init(&res_buf);
+            var res_writer_finished = false;
+            defer if (!res_writer_finished) res_writer_state.finish();
+            res_writer_state.writer().print("{s}@{s}", .{
                 if (has_alias) |alias| alias else dep_name,
                 version_without_suffix,
-            });
+            }) catch return error.OutOfMemory;
+            res_writer_state.finish();
+            res_writer_finished = true;
 
             const res_pkg_id = pkg_map.get(res_buf.items) orelse {
                 return invalidPnpmLockfile();
@@ -809,10 +824,15 @@ pub fn migratePnpmLockfile(
             }
 
             res_buf.clearRetainingCapacity();
-            try res_buf.writer().print("{s}@{s}", .{
+            var res_writer_state = bun.ManagedWriter.init(&res_buf);
+            var res_writer_finished = false;
+            defer if (!res_writer_finished) res_writer_state.finish();
+            res_writer_state.writer().print("{s}@{s}", .{
                 if (has_alias) |alias| alias else dep.name.slice(string_buf),
                 version_without_suffix,
-            });
+            }) catch return error.OutOfMemory;
+            res_writer_state.finish();
+            res_writer_finished = true;
 
             const res_pkg_id = pkg_map.get(res_buf.items) orelse {
                 return invalidPnpmLockfile();
@@ -950,7 +970,12 @@ fn parseAppendPackageDependencies(
                 if (has_alias) |alias_str| {
                     alias = try string_buf.appendExternal(alias_str);
                     version_buf.clearRetainingCapacity();
-                    try version_buf.writer().print("npm:{s}", .{version_without_suffix});
+                    var version_writer_state = bun.ManagedWriter.init(&version_buf);
+                    var version_writer_finished = false;
+                    defer if (!version_writer_finished) version_writer_state.finish();
+                    version_writer_state.writer().print("npm:{s}", .{version_without_suffix}) catch return error.OutOfMemory;
+                    version_writer_state.finish();
+                    version_writer_finished = true;
                     const version = try string_buf.append(version_buf.items);
                     const version_sliced = version.sliced(string_buf.bytes.items);
                     break :version version_sliced;
@@ -1496,10 +1521,15 @@ fn updatePackageJsonAfterMigration(allocator: Allocator, manager: *PackageManage
                     continue;
                 };
                 join_buf.clearRetainingCapacity();
-                try join_buf.writer().print("{s}@{s}", .{
+                var join_writer_state = bun.ManagedWriter.init(&join_buf);
+                var join_writer_finished = false;
+                defer if (!join_writer_finished) join_writer_state.finish();
+                join_writer_state.writer().print("{s}@{s}", .{
                     key_str,
                     res_str,
-                });
+                }) catch return error.OutOfMemory;
+                join_writer_state.finish();
+                join_writer_finished = true;
                 prop.key = Expr.init(E.String, .{ .data = try allocator.dupe(u8, join_buf.items) }, .Empty);
             }
             if (json.asProperty("patchedDependencies")) |existing_prop| {

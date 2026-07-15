@@ -133,10 +133,10 @@ pub fn parse(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError
     const paddr = host.latin1(); // presentation address
     const addr = if (paddr[0] == '[' and paddr[paddr.len - 1] == ']') v6: {
         const v6 = net.Ip6Address.parse(paddr[1 .. paddr.len - 1], port_) catch return .js_undefined;
-        break :v6 SocketAddress{ ._addr = .{ .sin6 = v6.sa } };
+        break :v6 SocketAddress.initIp6(v6.bytes, v6.port, v6.flow, v6.interface.index);
     } else v4: {
         const v4 = net.Ip4Address.parse(paddr, port_) catch return .js_undefined;
-        break :v4 SocketAddress{ ._addr = .{ .sin = v4.sa } };
+        break :v4 SocketAddress.initIp4(v4.bytes, v4.port);
     };
 
     return SocketAddress.new(addr).toJS(global);
@@ -311,6 +311,39 @@ fn deinit(this: *SocketAddress) void {
 pub fn finalize(this: *SocketAddress) void {
     jsc.markBinding(@src());
     this.deinit();
+}
+
+pub fn initIp4(bytes: [4]u8, port_: u16) SocketAddress {
+    return .{ ._addr = .v4(std.mem.nativeToBig(u16, port_), std.mem.bytesToValue(u32, &bytes)) };
+}
+
+pub fn initIp6(bytes: [16]u8, port_: u16, flowinfo: u32, scope_id: u32) SocketAddress {
+    return .{ ._addr = .v6(std.mem.nativeToBig(u16, port_), bytes, flowinfo, scope_id) };
+}
+
+pub fn fromPosix(address_: *const std.posix.sockaddr) ?SocketAddress {
+    return switch (address_.family) {
+        std.posix.AF.INET => .{ ._addr = .{ .sin = @as(*const sockaddr.in, @ptrCast(@alignCast(address_))).* } },
+        std.posix.AF.INET6 => .{ ._addr = .{ .sin6 = @as(*const sockaddr.in6, @ptrCast(@alignCast(address_))).* } },
+        else => null,
+    };
+}
+
+pub fn formatIp(this: *const SocketAddress, buf: []u8) []const u8 {
+    const addr_src: *const anyopaque = if (this.family() == .INET) @ptrCast(&this._addr.sin.addr) else @ptrCast(&this._addr.sin6.addr);
+    return std.mem.sliceTo(ares.ares_inet_ntop(this.family().int(), addr_src, buf.ptr, @intCast(buf.len)) orelse unreachable, 0);
+}
+
+pub fn address4(this: *const SocketAddress) u32 {
+    return this._addr.sin.addr;
+}
+
+pub fn address6(this: *const SocketAddress) [16]u8 {
+    return this._addr.sin6.addr;
+}
+
+pub fn scopeId(this: *const SocketAddress) u32 {
+    return this._addr.sin6.scope_id;
 }
 
 // =============================================================================
@@ -687,4 +720,4 @@ const CallFrame = jsc.CallFrame;
 const JSValue = jsc.JSValue;
 
 const std = @import("std");
-const net = std.net;
+const net = std.Io.net;

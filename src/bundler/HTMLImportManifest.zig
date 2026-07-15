@@ -101,7 +101,9 @@ pub fn writeEscapedJSON(index: u32, graph: *const Graph, linker_graph: *const Li
     const allocator = stack.allocator();
     var bytes = std.array_list.Managed(u8).init(allocator);
     defer bytes.deinit();
-    try write(index, graph, linker_graph, chunks, bytes.writer());
+    var bytes_writer = bun.ManagedWriter.init(&bytes);
+    try write(index, graph, linker_graph, chunks, bytes_writer.writer());
+    bytes_writer.finish();
     try bun.js_printer.writePreQuotedString(bytes.items, @TypeOf(writer), writer, '"', false, true, .utf8);
 }
 

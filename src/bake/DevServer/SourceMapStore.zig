@@ -191,7 +191,7 @@ pub const Entry = struct {
 
         if (bun.FeatureFlags.bake_debugging_features) if (dev.dump_dir) |dump_dir| {
             const rel_path_escaped = if (side == .client) "latest_chunk.js.map" else "latest_hmr.js.map";
-            dumpBundle(dump_dir, if (side == .client) .client else .server, rel_path_escaped, json_bytes, false) catch |err| {
+            dumpBundle(dev.vm.io, dump_dir, if (side == .client) .client else .server, rel_path_escaped, json_bytes, false) catch |err| {
                 bun.handleErrorReturnTrace(err, @errorReturnTrace());
                 Output.warn("Could not dump bundle: {}", .{err});
             };
@@ -210,8 +210,10 @@ pub const Entry = struct {
             return bun.strings.percentEncodeWrite(utf8_input, array_list);
         }
 
-        const writer = array_list.writer();
-        try bun.js_printer.writePreQuotedString(utf8_input, @TypeOf(writer), writer, '"', false, true, .utf8);
+        var managed_writer = bun.ManagedWriter.init(array_list);
+        defer managed_writer.finish();
+        const writer = managed_writer.writer();
+        bun.js_printer.writePreQuotedString(utf8_input, @TypeOf(writer), writer, '"', false, true, .utf8) catch return error.OutOfMemory;
     }
 
     fn joinVLQ(map: *const Entry, kind: ChunkKind, j: *StringJoiner, arena: Allocator, side: bake.Side) !void {

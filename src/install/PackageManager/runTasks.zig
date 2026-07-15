@@ -291,7 +291,7 @@ pub fn runTasks(
                         entry.value_ptr.* = .{ .manifest = manifest };
 
                         if (timestamp_this_tick == null) {
-                            timestamp_this_tick = @as(u32, @truncate(@as(u64, @intCast(@max(0, std.time.timestamp()))))) +| 300;
+                            timestamp_this_tick = @as(u32, @truncate(@as(u64, @intCast(@max(0, bun.realSeconds(manager.io)))))) +| 300;
                         }
 
                         entry.value_ptr.manifest.pkg.public_max_age = timestamp_this_tick.?;
@@ -299,6 +299,7 @@ pub fn runTasks(
                         if (manager.options.enable.manifest_cache) {
                             Npm.PackageManifest.Serializer.saveAsync(
                                 &entry.value_ptr.manifest,
+                                manager.io,
                                 manager.scopeForPackageName(name.slice()),
                                 manager.getTemporaryDirectory().handle,
                                 manager.getCacheDirectory(),
@@ -312,7 +313,7 @@ pub fn runTasks(
                         const dependency_list_entry = manager.task_queue.getEntry(task.task_id).?;
 
                         const dependency_list = dependency_list_entry.value_ptr.*;
-                        dependency_list_entry.value_ptr.* = .{};
+                        dependency_list_entry.value_ptr.* = .empty;
 
                         try manager.processDependencyList(
                             dependency_list,
@@ -633,7 +634,7 @@ pub fn runTasks(
 
                 const dependency_list_entry = manager.task_queue.getEntry(task.id).?;
                 const dependency_list = dependency_list_entry.value_ptr.*;
-                dependency_list_entry.value_ptr.* = .{};
+                dependency_list_entry.value_ptr.* = .empty;
 
                 try manager.processDependencyList(dependency_list, Ctx, extract_ctx, callbacks, install_peer);
 
@@ -755,7 +756,7 @@ pub fn runTasks(
                     var any_root = false;
                     var dependency_list_entry = manager.task_queue.getEntry(task.id) orelse break :handle_pkg;
                     var dependency_list = dependency_list_entry.value_ptr.*;
-                    dependency_list_entry.value_ptr.* = .{};
+                    dependency_list_entry.value_ptr.* = .empty;
 
                     defer {
                         dependency_list.deinit(manager.allocator);
@@ -798,7 +799,7 @@ pub fn runTasks(
                 ))) |dependency_list_entry| {
                     // Peer dependencies do not initiate any downloads of their own, thus need to be resolved here instead
                     const dependency_list = dependency_list_entry.value_ptr.*;
-                    dependency_list_entry.value_ptr.* = .{};
+                    dependency_list_entry.value_ptr.* = .empty;
 
                     try manager.processDependencyList(dependency_list, void, {}, {}, install_peer);
                 }
@@ -937,7 +938,7 @@ pub fn runTasks(
                     // Resolving!
                     const dependency_list_entry = manager.task_queue.getEntry(task.id).?;
                     const dependency_list = dependency_list_entry.value_ptr.*;
-                    dependency_list_entry.value_ptr.* = .{};
+                    dependency_list_entry.value_ptr.* = .empty;
 
                     try manager.processDependencyList(dependency_list, Ctx, extract_ctx, callbacks, install_peer);
                 }
@@ -1019,7 +1020,7 @@ pub fn runTasks(
                     var any_root = false;
                     var dependency_list_entry = manager.task_queue.getEntry(task.id) orelse break :handle_pkg;
                     var dependency_list = dependency_list_entry.value_ptr.*;
-                    dependency_list_entry.value_ptr.* = .{};
+                    dependency_list_entry.value_ptr.* = .empty;
 
                     defer {
                         dependency_list.deinit(manager.allocator);

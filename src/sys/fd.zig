@@ -92,20 +92,20 @@ pub const FD = packed struct(backing_int) {
         return windows_cached_stderr;
     }
 
-    pub fn fromStdFile(file: std.fs.File) FD {
+    pub fn fromStdFile(file: std.Io.File) FD {
         return .fromNative(file.handle);
     }
 
-    pub fn fromStdDir(dir: std.fs.Dir) FD {
-        return .fromNative(dir.fd);
+    pub fn fromStdDir(dir: std.Io.Dir) FD {
+        return .fromNative(dir.handle);
     }
 
-    pub fn stdFile(fd: FD) std.fs.File {
+    pub fn stdFile(fd: FD) std.Io.File {
+        return .{ .handle = fd.native(), .flags = .{ .nonblocking = false } };
+    }
+
+    pub fn stdDir(fd: FD) std.Io.Dir {
         return .{ .handle = fd.native() };
-    }
-
-    pub fn stdDir(fd: FD) std.fs.Dir {
-        return .{ .fd = fd.native() };
     }
 
     /// Perform different logic for each kind of windows file descriptor
@@ -416,8 +416,8 @@ pub const FD = packed struct(backing_int) {
                     // support the standard library functions (since they would
                     // likely have run the Zig compiler, and it's not the end of
                     // the world if this fails.
-                    const path = std.os.getFdPath(fd_native, &path_buf) catch |err| switch (err) {
-                        error.FileNotFound => {
+                    const path = bun.sys.getFdPath(fd, &path_buf).unwrap() catch |err| switch (err) {
+                        error.ENOENT, error.EBADF => {
                             try writer.writeAll("[BADF]");
                             break :print_with_path;
                         },
@@ -487,17 +487,17 @@ pub const FD = packed struct(backing_int) {
         return @enumFromInt(@as(backing_int, @bitCast(fd)));
     }
 
-    pub fn makePath(dir: FD, comptime T: type, subpath: []const T) !void {
+    pub fn makePath(dir: FD, io: std.Io, comptime T: type, subpath: []const T) !void {
         return switch (T) {
-            u8 => bun.makePath(dir.stdDir(), subpath),
-            u16 => bun.makePathW(dir.stdDir(), subpath),
+            u8 => bun.makePath(dir.stdDir(), io, subpath),
+            u16 => bun.makePathW(dir.stdDir(), io, subpath),
             else => @compileError("unexpected type"),
         };
     }
 
     // TODO: make our own version of deleteTree
-    pub fn deleteTree(dir: FD, subpath: []const u8) !void {
-        try dir.stdDir().deleteTree(subpath);
+    pub fn deleteTree(dir: FD, io: std.Io, subpath: []const u8) !void {
+        try dir.stdDir().deleteTree(io, subpath);
     }
 
     // The following functions are from bun.sys but with the 'f' prefix dropped

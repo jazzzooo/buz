@@ -22,7 +22,7 @@ pub const FileSystem = struct {
     dirname_store: *DirnameStore,
     filename_store: *FilenameStore,
 
-    threadlocal var tmpdir_handle: ?std.fs.Dir = null;
+    threadlocal var tmpdir_handle: ?std.Io.Dir = null;
 
     pub fn topLevelDirWithoutTrailingSlash(this: *const FileSystem) []const u8 {
         if (this.top_level_dir.len > 1 and this.top_level_dir[this.top_level_dir.len - 1] == std.fs.path.sep) {
@@ -32,7 +32,7 @@ pub const FileSystem = struct {
         }
     }
 
-    pub fn tmpdir(fs: *FileSystem) !std.fs.Dir {
+    pub fn tmpdir(fs: *FileSystem) !std.Io.Dir {
         if (tmpdir_handle == null) {
             tmpdir_handle = try fs.fs.openTmpDir();
         }
@@ -48,7 +48,7 @@ pub const FileSystem = struct {
 
     var tmpname_id_number = std.atomic.Value(u32).init(0);
     pub fn tmpname(extname: string, buf: []u8, hash: u64) std.fmt.BufPrintError![:0]u8 {
-        const hex_value = @as(u64, @truncate(@as(u128, @intCast(hash)) | @as(u128, @intCast(std.time.nanoTimestamp()))));
+        const hex_value = hash;
 
         return try std.mem.printSentinel(buf, ".{f}-{f}.{s}", .{
             bun.fmt.hexIntLower(hex_value),
@@ -598,7 +598,7 @@ pub const FileSystem = struct {
             return bun.env_var.BUN_TMPDIR.getNotEmpty() orelse platformTempDir();
         }
 
-        pub fn openTmpDir(_: *const RealFS) !std.fs.Dir {
+        pub fn openTmpDir(_: *const RealFS) !std.Io.Dir {
             if (comptime Environment.isWindows) {
                 return (try bun.sys.openDirAtWindowsA(bun.invalid_fd, tmpdirPath(), .{
                     .iterable = true,
@@ -630,7 +630,7 @@ pub const FileSystem = struct {
                         handle.stdDir(),
 
                         void,
-                        void{},
+                        {},
                     ) catch |err| {
                         existing.entries.data.clearAndFree(bun.default_allocator);
                         return this.readDirectoryError(existing.entries.dir, err) catch unreachable;
@@ -651,11 +651,11 @@ pub const FileSystem = struct {
             fd: bun.FD = bun.invalid_fd,
             dir_fd: bun.FD = bun.invalid_fd,
 
-            pub inline fn dir(this: *TmpfilePosix) std.fs.Dir {
+            pub inline fn dir(this: *TmpfilePosix) std.Io.Dir {
                 return this.dir_fd.stdDir();
             }
 
-            pub inline fn file(this: *TmpfilePosix) std.fs.File {
+            pub inline fn file(this: *TmpfilePosix) std.Io.File {
                 return this.fd.stdFile();
             }
 
@@ -695,11 +695,11 @@ pub const FileSystem = struct {
             fd: bun.FD = bun.invalid_fd,
             existing_path: []const u8 = "",
 
-            pub inline fn dir(_: *TmpfileWindows) std.fs.Dir {
+            pub inline fn dir(_: *TmpfileWindows) std.Io.Dir {
                 return Fs.FileSystem.instance.tmpdir();
             }
 
-            pub inline fn file(this: *TmpfileWindows) std.fs.File {
+            pub inline fn file(this: *TmpfileWindows) std.Io.File {
                 return this.fd.stdFile();
             }
 
@@ -843,10 +843,9 @@ pub const FileSystem = struct {
             Unusable,
         };
         pub const ModKey = struct {
-            inode: std.fs.File.INode = 0,
+            inode: std.Io.File.INode = 0,
             size: u64 = 0,
             mtime: i128 = 0,
-            mode: std.fs.File.Mode = 0,
 
             threadlocal var hash_name_buf: [1024]u8 = undefined;
 
@@ -885,10 +884,11 @@ pub const FileSystem = struct {
                 return bun.hash(&hash_bytes);
             }
 
-            pub fn generate(_: *RealFS, _: string, file: std.fs.File) anyerror!ModKey {
-                const stat = try file.stat();
+            pub fn generate(_: *RealFS, io: std.Io, _: string, file: std.Io.File) anyerror!ModKey {
+                const stat = try file.stat(io);
+                const mtime = stat.mtime.nanoseconds;
 
-                const seconds = @divTrunc(stat.mtime, @as(@TypeOf(stat.mtime), std.time.ns_per_s));
+                const seconds = @divTrunc(mtime, std.time.ns_per_s);
 
                 // We can't detect changes if the file system zeros out the modification time
                 if (seconds == 0 and std.time.ns_per_s == 0) {
@@ -896,35 +896,33 @@ pub const FileSystem = struct {
                 }
 
                 // Don't generate a modification key if the file is too new
-                const now = std.time.nanoTimestamp();
+                const now = std.Io.Clock.real.now(io).nanoseconds;
                 const now_seconds = @divTrunc(now, std.time.ns_per_s);
-                if (seconds > seconds or (seconds == now_seconds and stat.mtime > now)) {
+                if (seconds > now_seconds or (seconds == now_seconds and mtime > now)) {
                     return error.Unusable;
                 }
 
                 return ModKey{
                     .inode = stat.inode,
                     .size = stat.size,
-                    .mtime = stat.mtime,
-                    .mode = stat.mode,
-                    // .uid = stat.
+                    .mtime = mtime,
                 };
             }
             pub const SafetyGap = 3;
         };
 
-        pub fn modKeyWithFile(fs: *RealFS, path: string, file: anytype) anyerror!ModKey {
-            return try ModKey.generate(fs, path, file);
+        pub fn modKeyWithFile(fs: *RealFS, io: std.Io, path: string, file: anytype) anyerror!ModKey {
+            return try ModKey.generate(fs, io, path, file);
         }
 
-        pub fn modKey(fs: *RealFS, path: string) anyerror!ModKey {
-            var file = try std.fs.cwd().openFile(path, std.fs.File.OpenFlags{ .mode = .read_only });
+        pub fn modKey(fs: *RealFS, io: std.Io, path: string) anyerror!ModKey {
+            const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
             defer {
                 if (fs.needToCloseFiles()) {
-                    file.close();
+                    file.close(io);
                 }
             }
-            return try fs.modKeyWithFile(path, file);
+            return try fs.modKeyWithFile(io, path, file);
         }
 
         pub const EntriesOption = union(Tag) {
@@ -942,7 +940,7 @@ pub const FileSystem = struct {
             pub const Map = allocators.BSSMap(EntriesOption, Preallocate.Counts.dir_entry, false, 256, true);
         };
 
-        pub fn openDir(_: *RealFS, unsafe_dir_string: string) !std.fs.Dir {
+        pub fn openDir(_: *RealFS, unsafe_dir_string: string) !std.Io.Dir {
             const dirfd = if (Environment.isWindows)
                 bun.sys.openDirAtWindowsA(bun.invalid_fd, unsafe_dir_string, .{ .iterable = true, .no_follow = false, .read_only = true })
             else
@@ -961,7 +959,7 @@ pub const FileSystem = struct {
             prev_map: ?*DirEntry.EntryMap,
             _dir: string,
             generation: bun.Generation,
-            handle: std.fs.Dir,
+            handle: std.Io.Dir,
             comptime Iterator: type,
             iterator: Iterator,
         ) !DirEntry {
@@ -973,7 +971,7 @@ pub const FileSystem = struct {
             errdefer dir.deinit(allocator);
 
             if (store_fd) {
-                FileSystem.setMaxFd(handle.fd);
+                FileSystem.setMaxFd(bun.FD.fromStdDir(handle).native());
                 dir.fd = .fromStdDir(handle);
             }
 
@@ -983,7 +981,7 @@ pub const FileSystem = struct {
                 try dir.addEntry(prev_map, _entry, allocator, Iterator, iterator);
             }
 
-            debug("readdir({f}, {s}) = {d}", .{ printHandle(handle.fd), _dir, dir.data.count() });
+            debug("readdir({f}, {s}) = {d}", .{ printHandle(bun.FD.fromStdDir(handle).native()), _dir, dir.data.count() });
 
             return dir;
         }
@@ -1020,7 +1018,7 @@ pub const FileSystem = struct {
         pub fn readDirectory(
             fs: *RealFS,
             _dir: string,
-            _handle: ?std.fs.Dir,
+            _handle: ?std.Io.Dir,
             generation: bun.Generation,
             store_fd: bool,
         ) !*EntriesOption {
@@ -1040,7 +1038,7 @@ pub const FileSystem = struct {
         pub fn readDirectoryWithIterator(
             fs: *RealFS,
             dir_maybe_trail_slash: string,
-            maybe_handle: ?std.fs.Dir,
+            maybe_handle: ?std.Io.Dir,
             generation: bun.Generation,
             store_fd: bool,
             comptime Iterator: type,
@@ -1079,13 +1077,13 @@ pub const FileSystem = struct {
                 }
             }
 
-            var handle = maybe_handle orelse (fs.openDir(dir) catch |err| {
+            const handle = maybe_handle orelse (fs.openDir(dir) catch |err| {
                 return try fs.readDirectoryError(dir, err);
             });
 
             defer {
                 if (maybe_handle == null and (!store_fd or fs.needToCloseFiles())) {
-                    handle.close();
+                    bun.FD.fromStdDir(handle).close();
                 }
             }
 
@@ -1141,7 +1139,7 @@ pub const FileSystem = struct {
             fs: *RealFS,
             path: string,
             _size: ?usize,
-            file: std.fs.File,
+            file: std.Io.File,
             comptime use_shared_buffer: bool,
             shared_buffer: *MutableString,
             comptime stream: bool,
@@ -1163,7 +1161,7 @@ pub const FileSystem = struct {
             allocator: std.mem.Allocator,
             path: string,
             size_hint: ?usize,
-            std_file: std.fs.File,
+            std_file: std.Io.File,
             comptime use_shared_buffer: bool,
             shared_buffer: *MutableString,
             comptime stream: bool,
@@ -1325,7 +1323,7 @@ pub const FileSystem = struct {
 
             if (is_symlink) {
                 var file = try if (existing_fd != 0)
-                    std.fs.File{ .handle = existing_fd }
+                    std.Io.File{ .handle = existing_fd }
                 else if (store_fd)
                     std.fs.openFileAbsoluteZ(absolute_path, .{ .mode = .read_only })
                 else
@@ -1457,7 +1455,7 @@ pub const FileSystem = struct {
                 var file: bun.FD = if (existing_fd.unwrapValid()) |valid|
                     valid
                 else if (store_fd)
-                    .fromStdFile(try std.fs.openFileAbsoluteZ(absolute_path_c, .{ .mode = .read_only }))
+                    try bun.sys.openA(absolute_path_c, bun.O.RDONLY, 0).unwrap()
                 else
                     .fromStdFile(try bun.openFileForPath(absolute_path_c));
                 setMaxFd(file.native());
@@ -1469,9 +1467,8 @@ pub const FileSystem = struct {
                         cache.fd = file;
                     }
                 }
-                const file_stat = try file.stdFile().stat();
                 symlink = try file.getFdPath(&outpath);
-                file_kind = file_stat.kind;
+                file_kind = try bun.sys.File.from(file).kind().unwrap();
             }
 
             bun.assert(file_kind != .sym_link);

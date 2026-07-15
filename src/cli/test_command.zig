@@ -96,12 +96,17 @@ pub const JunitReporter = struct {
                 return null;
             };
 
-            var arraylist_writer = std.array_list.Managed(u8).init(bun.default_allocator);
-            escapeXml(hostname, arraylist_writer.writer()) catch {
+            var arraylist_writer = std.Io.Writer.Allocating.init(bun.default_allocator);
+            escapeXml(hostname, &arraylist_writer.writer) catch {
+                arraylist_writer.deinit();
                 this.hostname_value = "";
                 return null;
             };
-            this.hostname_value = arraylist_writer.items;
+            this.hostname_value = arraylist_writer.toOwnedSlice() catch {
+                arraylist_writer.deinit();
+                this.hostname_value = "";
+                return null;
+            };
         }
 
         if (this.hostname_value) |hostname| {
@@ -143,7 +148,7 @@ pub const JunitReporter = struct {
 
     pub fn init() *JunitReporter {
         return JunitReporter.new(
-            .{ .contents = .{}, .total_metrics = .{}, .suite_stack = .{} },
+            .{ .contents = .empty, .total_metrics = .{}, .suite_stack = .empty },
         );
     }
 
@@ -170,7 +175,19 @@ pub const JunitReporter = struct {
         }
     }
 
-    fn generatePropertiesList(this: *JunitReporter) !void {
+    fn appendEscaped(this: *JunitReporter, value: []const u8) bun.OOM!void {
+        var managed = bun.UnmanagedWriter.init(&this.contents, bun.default_allocator);
+        defer managed.finish();
+        escapeXml(value, managed.writer()) catch return error.OutOfMemory;
+    }
+
+    fn appendFmt(this: *JunitReporter, comptime fmt: []const u8, args: anytype) bun.OOM!void {
+        var managed = bun.UnmanagedWriter.init(&this.contents, bun.default_allocator);
+        defer managed.finish();
+        managed.writer().print(fmt, args) catch return error.OutOfMemory;
+    }
+
+    fn generatePropertiesList(this: *JunitReporter) bun.OOM!void {
         const PropertiesList = struct {
             ci: string,
             commit: string,
@@ -229,32 +246,33 @@ pub const JunitReporter = struct {
             return;
         }
 
-        var buffer = std.array_list.Managed(u8).init(bun.default_allocator);
-        var writer = buffer.writer();
+        var buffer = std.Io.Writer.Allocating.init(bun.default_allocator);
+        errdefer buffer.deinit();
+        const writer = &buffer.writer;
 
-        try writer.writeAll(
+        writer.writeAll(
             \\    <properties>
             \\
-        );
+        ) catch return error.OutOfMemory;
 
         if (properties.ci.len > 0) {
-            try writer.writeAll(
+            writer.writeAll(
                 \\      <property name="ci" value="
-            );
-            try escapeXml(properties.ci, writer);
-            try writer.writeAll("\" />\n");
+            ) catch return error.OutOfMemory;
+            escapeXml(properties.ci, writer) catch return error.OutOfMemory;
+            writer.writeAll("\" />\n") catch return error.OutOfMemory;
         }
         if (properties.commit.len > 0) {
-            try writer.writeAll(
+            writer.writeAll(
                 \\      <property name="commit" value="
-            );
-            try escapeXml(properties.commit, writer);
-            try writer.writeAll("\" />\n");
+            ) catch return error.OutOfMemory;
+            escapeXml(properties.commit, writer) catch return error.OutOfMemory;
+            writer.writeAll("\" />\n") catch return error.OutOfMemory;
         }
 
-        try writer.writeAll("    </properties>\n");
+        writer.writeAll("    </properties>\n") catch return error.OutOfMemory;
 
-        this.properties_list_to_repeat_in_every_test_suite = buffer.items;
+        this.properties_list_to_repeat_in_every_test_suite = try buffer.toOwnedSlice();
     }
 
     fn getIndent(depth: u32) []const u8 {
@@ -264,11 +282,11 @@ pub const JunitReporter = struct {
         return spaces[0..@min(total_spaces, spaces.len)];
     }
 
-    pub fn beginTestSuite(this: *JunitReporter, name: string) !void {
+    pub fn beginTestSuite(this: *JunitReporter, name: string) bun.OOM!void {
         return this.beginTestSuiteWithLine(name, 0, true);
     }
 
-    pub fn beginTestSuiteWithLine(this: *JunitReporter, name: string, line_number: u32, is_file_suite: bool) !void {
+    pub fn beginTestSuiteWithLine(this: *JunitReporter, name: string, line_number: u32, is_file_suite: bool) bun.OOM!void {
         if (this.contents.items.len == 0) {
             try this.contents.appendSlice(bun.default_allocator,
                 \\<?xml version="1.0" encoding="UTF-8"?>
@@ -283,21 +301,21 @@ pub const JunitReporter = struct {
         const indent = getIndent(this.current_depth);
         try this.contents.appendSlice(bun.default_allocator, indent);
         try this.contents.appendSlice(bun.default_allocator, "<testsuite name=\"");
-        try escapeXml(name, this.contents.writer(bun.default_allocator));
+        try this.appendEscaped(name);
         try this.contents.appendSlice(bun.default_allocator, "\"");
 
         if (is_file_suite) {
             try this.contents.appendSlice(bun.default_allocator, " file=\"");
-            try escapeXml(name, this.contents.writer(bun.default_allocator));
+            try this.appendEscaped(name);
             try this.contents.appendSlice(bun.default_allocator, "\"");
         } else if (this.current_file.len > 0) {
             try this.contents.appendSlice(bun.default_allocator, " file=\"");
-            try escapeXml(this.current_file, this.contents.writer(bun.default_allocator));
+            try this.appendEscaped(this.current_file);
             try this.contents.appendSlice(bun.default_allocator, "\"");
         }
 
         if (line_number > 0) {
-            try this.contents.writer(bun.default_allocator).print(" line=\"{d}\"", .{line_number});
+            try this.appendFmt(" line=\"{d}\"", .{line_number});
         }
 
         try this.contents.appendSlice(bun.default_allocator, " ");
@@ -329,7 +347,7 @@ pub const JunitReporter = struct {
         }
     }
 
-    pub fn endTestSuite(this: *JunitReporter) !void {
+    pub fn endTestSuite(this: *JunitReporter) bun.OOM!void {
         if (this.suite_stack.items.len == 0) return;
 
         this.current_depth -= 1;
@@ -395,23 +413,23 @@ pub const JunitReporter = struct {
         try this.contents.appendSlice(bun.default_allocator, indent);
         try this.contents.appendSlice(bun.default_allocator, "<testcase");
         try this.contents.appendSlice(bun.default_allocator, " name=\"");
-        try escapeXml(name, this.contents.writer(bun.default_allocator));
+        try this.appendEscaped(name);
         try this.contents.appendSlice(bun.default_allocator, "\" classname=\"");
-        try escapeXml(class_name, this.contents.writer(bun.default_allocator));
+        try this.appendEscaped(class_name);
         try this.contents.appendSlice(bun.default_allocator, "\"");
 
         const elapsed_seconds = elapsed_ms / std.time.ms_per_s;
-        try this.contents.writer(bun.default_allocator).print(" time=\"{f}\"", .{bun.fmt.trimmedPrecision(elapsed_seconds, 6)});
+        try this.appendFmt(" time=\"{f}\"", .{bun.fmt.trimmedPrecision(elapsed_seconds, 6)});
 
         try this.contents.appendSlice(bun.default_allocator, " file=\"");
-        try escapeXml(file, this.contents.writer(bun.default_allocator));
+        try this.appendEscaped(file);
         try this.contents.appendSlice(bun.default_allocator, "\"");
 
         if (line_number > 0) {
-            try this.contents.writer(bun.default_allocator).print(" line=\"{d}\"", .{line_number});
+            try this.appendFmt(" line=\"{d}\"", .{line_number});
         }
 
-        try this.contents.writer(bun.default_allocator).print(" assertions=\"{d}\"", .{assertions});
+        try this.appendFmt(" assertions=\"{d}\"", .{assertions});
 
         switch (status) {
             .pass => {
@@ -424,7 +442,7 @@ pub const JunitReporter = struct {
                 // TODO: add the failure message
                 // if (failure_message) |msg| {
                 //     try this.contents.appendSlice(bun.default_allocator, " message=\"");
-                //     try escapeXml(msg, this.contents.writer(bun.default_allocator));
+                //     try this.appendEscaped(msg);
                 //     try this.contents.appendSlice(bun.default_allocator, "\"");
                 // }
                 try this.contents.appendSlice(bun.default_allocator, ">\n");
@@ -439,7 +457,7 @@ pub const JunitReporter = struct {
                 }
                 try this.contents.appendSlice(bun.default_allocator, ">\n");
                 try this.contents.appendSlice(bun.default_allocator, indent);
-                try this.contents.writer(bun.default_allocator).print(
+                try this.appendFmt(
                     \\  <failure message="test marked with .failing() did not throw" type="AssertionError"/>
                     \\
                 , .{});
@@ -452,7 +470,7 @@ pub const JunitReporter = struct {
                 }
                 try this.contents.appendSlice(bun.default_allocator, ">\n");
                 try this.contents.appendSlice(bun.default_allocator, indent);
-                try this.contents.writer(bun.default_allocator).print(
+                try this.appendFmt(
                     \\  <failure message="Expected more assertions, but only received {d}" type="AssertionError"/>
                     \\
                 , .{assertions});
@@ -465,7 +483,7 @@ pub const JunitReporter = struct {
                 }
                 try this.contents.appendSlice(bun.default_allocator, ">\n");
                 try this.contents.appendSlice(bun.default_allocator, indent);
-                try this.contents.writer(bun.default_allocator).print(
+                try this.appendFmt(
                     \\  <failure message="TODO passed" type="AssertionError"/>
                     \\
                 , .{});
@@ -478,7 +496,7 @@ pub const JunitReporter = struct {
                 }
                 try this.contents.appendSlice(bun.default_allocator, ">\n");
                 try this.contents.appendSlice(bun.default_allocator, indent);
-                try this.contents.writer(bun.default_allocator).print(
+                try this.appendFmt(
                     \\  <failure message="Expected to have assertions, but none were run" type="AssertionError"/>
                     \\
                 , .{});
@@ -519,7 +537,7 @@ pub const JunitReporter = struct {
         }
     }
 
-    pub fn writeToFile(this: *JunitReporter, path: string) !void {
+    pub fn writeToFile(this: *JunitReporter, io: std.Io, path: string) !void {
         if (this.contents.items.len == 0) return;
 
         while (this.suite_stack.items.len > 0) {
@@ -533,7 +551,7 @@ pub const JunitReporter = struct {
             var stack_fallback_allocator: std.heap.BufferFirstAllocator = .init(&stack_fallback_allocator_buffer, arena.allocator());
             const allocator = stack_fallback_allocator.allocator();
             const metrics = this.total_metrics;
-            const elapsed_time = @as(f64, @floatFromInt(std.time.nanoTimestamp() - bun.start_time)) / std.time.ns_per_s;
+            const elapsed_time = @as(f64, @floatFromInt(bun.awakeNanoseconds(io) - bun.start_time)) / std.time.ns_per_s;
             const summary = try std.fmt.allocPrint(allocator,
                 \\tests="{d}" assertions="{d}" failures="{d}" skipped="{d}" time="{d}"
             , .{
@@ -570,6 +588,7 @@ pub const JunitReporter = struct {
 };
 
 pub const CommandLineReporter = struct {
+    io: std.Io,
     jest: TestRunner,
     last_dot: u32 = 0,
     prev_file: u64 = 0,
@@ -852,14 +871,16 @@ pub const CommandLineReporter = struct {
                     var concatenated_describe_scopes = std.array_list.Managed(u8).init(allocator);
 
                     {
-                        const initial_length = concatenated_describe_scopes.items.len;
+                        var scopes_writer = bun.ManagedWriter.init(&concatenated_describe_scopes);
+                        defer scopes_writer.finish();
+                        const initial_length = scopes_writer.allocating.written().len;
                         for (scopes) |scope| {
                             if (scope.base.name) |name| if (name.len > 0) {
-                                if (initial_length != concatenated_describe_scopes.items.len) {
-                                    bun.handleOom(concatenated_describe_scopes.appendSlice(" &gt; "));
+                                if (initial_length != scopes_writer.allocating.written().len) {
+                                    scopes_writer.writer().writeAll(" &gt; ") catch bun.outOfMemory();
                                 }
 
-                                bun.handleOom(escapeXml(name, concatenated_describe_scopes.writer()));
+                                escapeXml(name, scopes_writer.writer()) catch bun.outOfMemory();
                             };
                         }
                     }
@@ -979,7 +1000,7 @@ pub const CommandLineReporter = struct {
             if (files == 1) "" else "s",
         });
 
-        Output.printStartEnd(bun.start_time, std.time.nanoTimestamp());
+        Output.printStartEnd(bun.start_time, bun.awakeNanoseconds(this.io));
     }
 
     /// Writes the JUnit reporter output file if a JUnit reporter is active and
@@ -991,7 +1012,7 @@ pub const CommandLineReporter = struct {
                 if (junit.current_file.len > 0) {
                     junit.endTestSuite() catch {};
                 }
-                junit.writeToFile(outfile) catch {};
+                junit.writeToFile(this.io, outfile) catch {};
             }
         }
     }
@@ -1040,18 +1061,15 @@ pub const CommandLineReporter = struct {
         );
 
         const relative_dir = vm.transpiler.fs.top_level_dir;
-        const file = switch (bun.sys.File.openat(.cwd(), out_path, bun.O.CREAT | bun.O.WRONLY | bun.O.TRUNC | bun.O.CLOEXEC, 0o644)) {
-            .err => |e| {
-                Output.err(.lcovCoverageError, "failed to open coverage fragment {s}\n{f}", .{ out_path, e });
-                return error.OpenFailed;
-            },
-            .result => |f| f,
+        const file = std.Io.Dir.cwd().createFile(vm.io, out_path, .{}) catch |e| {
+            Output.err(.lcovCoverageError, "failed to open coverage fragment {s}: {s}", .{ out_path, @errorName(e) });
+            return error.OpenFailed;
         };
-        defer file.close();
+        defer file.close(vm.io);
         const buf = try bun.default_allocator.alloc(u8, 64 * 1024);
         defer bun.default_allocator.free(buf);
-        var buffered = file.writer().adaptToNewApi(buf);
-        const writer = &buffered.new_interface;
+        var buffered = file.writer(vm.io, buf);
+        const writer = &buffered.interface;
 
         for (byte_ranges.items) |*entry| {
             if (opts.ignore_patterns.len > 0) {
@@ -1173,39 +1191,18 @@ pub const CommandLineReporter = struct {
             bun.csprng(&base64_bytes);
             const tmpname = std.mem.printSentinel(&shortname_buf, ".lcov.info.{x}.tmp", .{&base64_bytes}, 0) catch unreachable;
             const path = bun.path.joinAbsStringBufZ(relative_dir, &lcov_name_buf, &.{ opts.reports_directory, tmpname }, .auto);
-            const file = bun.sys.File.openat(
-                .cwd(),
-                path,
-                bun.O.CREAT | bun.O.WRONLY | bun.O.TRUNC | bun.O.CLOEXEC,
-                0o644,
-            );
-
-            switch (file) {
-                .err => |err| {
-                    Output.err(.lcovCoverageError, "Failed to create lcov file", .{});
-                    Output.printError("\n{f}", .{err});
-                    Global.exit(1);
-                },
-                .result => |f| {
-                    const buffered = buffered_writer: {
-                        const writer = f.writer();
-                        // Heap-allocate the buffered writer because we want a stable memory address + 64 KB is kind of a lot.
-                        const buffer = try bun.default_allocator.alloc(u8, 64 * 1024);
-                        break :buffered_writer writer.adaptToNewApi(buffer);
-                    };
-
-                    break :brk .{
-                        f,
-                        path,
-                        buffered,
-                    };
-                },
-            }
+            const f = std.Io.Dir.cwd().createFile(vm.io, path, .{}) catch |err| {
+                Output.err(.lcovCoverageError, "Failed to create lcov file: {s}", .{@errorName(err)});
+                Global.exit(1);
+            };
+            // Heap-allocate the buffer because it is 64 KB and the writer needs a stable address.
+            const buffer = try bun.default_allocator.alloc(u8, 64 * 1024);
+            break :brk .{ f, path, f.writer(vm.io, buffer) };
         };
-        const lcov_writer = if (comptime reporters.lcov) &lcov_buffered_writer.new_interface;
+        const lcov_writer = if (comptime reporters.lcov) &lcov_buffered_writer.interface;
         errdefer {
             if (comptime reporters.lcov) {
-                lcov_file.close();
+                lcov_file.close(vm.io);
                 _ = bun.sys.unlink(
                     lcov_name,
                 );
@@ -1302,7 +1299,7 @@ pub const CommandLineReporter = struct {
 
         if (comptime reporters.lcov) {
             try lcov_writer.flush();
-            lcov_file.close();
+            lcov_file.close(vm.io);
             const cwd = bun.FD.cwd();
             bun.sys.moveFileZ(
                 cwd,
@@ -1420,6 +1417,7 @@ pub const TestCommand = struct {
             }
         }
         reporter.* = CommandLineReporter{
+            .io = ctx.io,
             .jest = TestRunner{
                 .allocator = ctx.allocator,
                 .default_timeout_ms = ctx.test_options.default_timeout_ms,
@@ -1434,6 +1432,7 @@ pub const TestCommand = struct {
                 .filter_regex = ctx.test_options.testFilterRegex(),
                 .snapshots = Snapshots{
                     .allocator = ctx.allocator,
+                    .io = ctx.io,
                     .update_snapshots = ctx.test_options.update_snapshots,
                     .file_buf = &snapshot_file_buf,
                     .values = &snapshot_values,
@@ -1464,6 +1463,7 @@ pub const TestCommand = struct {
         var vm = try jsc.VirtualMachine.init(
             .{
                 .allocator = ctx.allocator,
+                .io = ctx.io,
                 .args = ctx.args,
                 .log = ctx.log,
                 .env_loader = env_loader,
@@ -1725,7 +1725,7 @@ pub const TestCommand = struct {
             // runAllTests (separate concern; see O_EVTONLY comment
             // below).
             if (ctx.test_options.changed != null and vm.hot_reload == .watch) {
-                ChangedFilesFilter.initWatchTrigger(ctx.allocator);
+                ChangedFilesFilter.initWatchTrigger(ctx.io, ctx.allocator);
             }
 
             switch (vm.hot_reload) {
@@ -1852,7 +1852,7 @@ pub const TestCommand = struct {
                 }
                 if (search_count > 0) {
                     Output.prettyError("\n{d} files were searched ", .{search_count});
-                    Output.printStartEnd(ctx.start_time, std.time.nanoTimestamp());
+                    Output.printStartEnd(ctx.start_time, bun.awakeNanoseconds(ctx.io));
                 }
 
                 Output.prettyErrorln(
@@ -1993,7 +1993,7 @@ pub const TestCommand = struct {
                     summary.skipped_because_label,
                     if (summary.skipped_because_label == 1) "" else "s",
                 });
-                Output.printStartEnd(ctx.start_time, std.time.nanoTimestamp());
+                Output.printStartEnd(ctx.start_time, bun.awakeNanoseconds(ctx.io));
             }
         }
 

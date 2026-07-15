@@ -92,7 +92,7 @@ pub fn filter(
     var log = logger.Log.init(allocator);
     defer log.deinit();
 
-    var scan_transpiler = Transpiler.init(allocator, &log, ctx.args, vm.transpiler.env) catch |err| {
+    var scan_transpiler = Transpiler.init(allocator, ctx.io, &log, ctx.args, vm.transpiler.env) catch |err| {
         Output.errGeneric("Failed to initialize module graph scanner for --changed: {s}", .{@errorName(err)});
         Global.exit(1);
     };
@@ -148,7 +148,7 @@ pub fn filter(
         for (importers) |*list| list.deinit(allocator);
         allocator.free(importers);
     }
-    for (importers) |*list| list.* = .{};
+    for (importers) |*list| list.* = .empty;
 
     var graph_files: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer {
@@ -255,7 +255,7 @@ pub const trigger_file_env_var = "BUN_INTERNAL_TEST_CHANGED_TRIGGER_FILE";
 /// the hot-reloader collector to record changed paths. The collector
 /// and the path string intentionally live for the rest of the process;
 /// --watch exec()s on reload so nothing accumulates across restarts.
-pub fn initWatchTrigger(allocator: std.mem.Allocator) void {
+pub fn initWatchTrigger(io: std.Io, allocator: std.mem.Allocator) void {
     if (bun.Environment.isWindows) {
         // Windows --watch restarts via TerminateProcess + parent
         // respawn with the parent's (unchanged) env, so a setenv in
@@ -267,7 +267,7 @@ pub fn initWatchTrigger(allocator: std.mem.Allocator) void {
     const path: [:0]const u8 = if (bun.getenvZ(trigger_file_env_var)) |existing|
         bun.handleOom(allocator.dupeSentinel(u8, existing, 0))
     else brk: {
-        var rng = std.Random.DefaultPrng.init(@as(u64, @bitCast(std.time.milliTimestamp())) ^
+        var rng = std.Random.DefaultPrng.init(@as(u64, @bitCast(bun.realMilliseconds(io))) ^
             @as(u64, @intCast(std.c.getpid())));
         const tmpdir = bun.fs.FileSystem.RealFS.tmpdirPath();
         const fresh = bun.handleOom(std.fmt.allocPrintSentinel(

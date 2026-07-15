@@ -38,7 +38,7 @@ pub const AsyncModule = struct {
     };
 
     pub const Queue = struct {
-        map: Map = .{},
+        map: Map = .empty,
         scheduled: u32 = 0,
         concurrent_task_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 

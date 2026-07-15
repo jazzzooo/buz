@@ -1287,22 +1287,22 @@ fn buildConnectRequest(
     const allocator = bun.default_allocator;
 
     // Calculate size for the CONNECT request
-    var buf = std.array_list.Managed(u8).init(allocator);
+    var buf = std.Io.Writer.Allocating.init(allocator);
     errdefer buf.deinit();
-    const writer = buf.writer();
+    const writer = &buf.writer;
 
     // CONNECT host:port HTTP/1.1\r\n
-    try writer.print("CONNECT {s}:{d} HTTP/1.1\r\n", .{ target_host, target_port });
+    writer.print("CONNECT {s}:{d} HTTP/1.1\r\n", .{ target_host, target_port }) catch return error.OutOfMemory;
 
     // Host: host:port\r\n
-    try writer.print("Host: {s}:{d}\r\n", .{ target_host, target_port });
+    writer.print("Host: {s}:{d}\r\n", .{ target_host, target_port }) catch return error.OutOfMemory;
 
     // Proxy-Connection: Keep-Alive\r\n
-    try writer.writeAll("Proxy-Connection: Keep-Alive\r\n");
+    writer.writeAll("Proxy-Connection: Keep-Alive\r\n") catch return error.OutOfMemory;
 
     // Proxy-Authorization if provided
     if (proxy_authorization) |auth| {
-        try writer.print("Proxy-Authorization: {s}\r\n", .{auth});
+        writer.print("Proxy-Authorization: {s}\r\n", .{auth}) catch return error.OutOfMemory;
     }
 
     // Custom proxy headers
@@ -1316,12 +1316,12 @@ fn buildConnectRequest(
             if (proxy_authorization != null and strings.eqlCaseInsensitiveASCII(name, "proxy-authorization", true)) {
                 continue;
             }
-            try writer.print("{s}: {s}\r\n", .{ name, hdrs.asStr(values[idx]) });
+            writer.print("{s}: {s}\r\n", .{ name, hdrs.asStr(values[idx]) }) catch return error.OutOfMemory;
         }
     }
 
     // End of headers
-    try writer.writeAll("\r\n");
+    writer.writeAll("\r\n") catch return error.OutOfMemory;
 
     return buf.toOwnedSlice();
 }
@@ -1411,14 +1411,14 @@ fn buildRequestBody(
     const pico_headers = PicoHTTP.Headers{ .headers = headers_ };
 
     // Build extra headers string, skipping the ones we handle
-    var extra_headers_buf = std.array_list.Managed(u8).init(allocator);
+    var extra_headers_buf = std.Io.Writer.Allocating.init(allocator);
     defer extra_headers_buf.deinit();
-    const writer = extra_headers_buf.writer();
+    const writer = &extra_headers_buf.writer;
 
     // Add Authorization header from URL credentials if user didn't provide one
     if (!user_authorization) {
         if (target_authorization) |auth| {
-            try writer.print("Authorization: {s}\r\n", .{auth});
+            writer.print("Authorization: {s}\r\n", .{auth}) catch return error.OutOfMemory;
         }
     }
 
@@ -1433,7 +1433,7 @@ fn buildRequestBody(
         {
             continue;
         }
-        try writer.print("{s}: {s}\r\n", .{ name_slice, value });
+        writer.print("{s}: {s}\r\n", .{ name_slice, value }) catch return error.OutOfMemory;
     }
 
     const extensions_line: []const u8 = if (offer_permessage_deflate)
@@ -1455,7 +1455,7 @@ fn buildRequestBody(
                     "{f}" ++
                     "{s}" ++
                     "\r\n",
-                .{ pathname, h, extensions_line, pico_headers, extra_headers_buf.items },
+                .{ pathname, h, extensions_line, pico_headers, extra_headers_buf.written() },
             ),
             .expected_accept = expected_accept,
         };
@@ -1473,7 +1473,7 @@ fn buildRequestBody(
                 "{f}" ++
                 "{s}" ++
                 "\r\n",
-            .{ pathname, host_fmt, extensions_line, pico_headers, extra_headers_buf.items },
+            .{ pathname, host_fmt, extensions_line, pico_headers, extra_headers_buf.written() },
         ),
         .expected_accept = expected_accept,
     };

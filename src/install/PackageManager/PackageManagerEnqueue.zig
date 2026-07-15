@@ -97,7 +97,7 @@ pub fn enqueueTarballForDownload(
     const task_id = Task.Id.forTarball(url);
     var task_queue = try this.task_queue.getOrPut(this.allocator, task_id);
     if (!task_queue.found_existing) {
-        task_queue.value_ptr.* = .{};
+        task_queue.value_ptr.* = .empty;
     }
 
     try task_queue.value_ptr.append(
@@ -135,7 +135,7 @@ pub fn enqueueTarballForReading(
     const task_id = Task.Id.forTarball(path);
     var task_queue = this.task_queue.getOrPut(this.allocator, task_id) catch unreachable;
     if (!task_queue.found_existing) {
-        task_queue.value_ptr.* = .{};
+        task_queue.value_ptr.* = .empty;
     }
 
     task_queue.value_ptr.append(
@@ -173,7 +173,7 @@ pub fn enqueueGitForCheckout(
     const checkout_id = Task.Id.forGitCheckout(url, resolved);
     var checkout_queue = this.task_queue.getOrPut(this.allocator, checkout_id) catch unreachable;
     if (!checkout_queue.found_existing) {
-        checkout_queue.value_ptr.* = .{};
+        checkout_queue.value_ptr.* = .empty;
     }
 
     checkout_queue.value_ptr.append(
@@ -188,7 +188,7 @@ pub fn enqueueGitForCheckout(
     } else {
         var clone_queue = this.task_queue.getOrPut(this.allocator, clone_id) catch unreachable;
         if (!clone_queue.found_existing) {
-            clone_queue.value_ptr.* = .{};
+            clone_queue.value_ptr.* = .empty;
         }
 
         clone_queue.value_ptr.append(
@@ -247,7 +247,7 @@ pub fn enqueuePackageForDownload(
     const task_id = Task.Id.forNPMPackage(name, version);
     var task_queue = try this.task_queue.getOrPut(this.allocator, task_id);
     if (!task_queue.found_existing) {
-        task_queue.value_ptr.* = .{};
+        task_queue.value_ptr.* = .empty;
     }
 
     try task_queue.value_ptr.append(
@@ -891,7 +891,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                 const checkout_id = Task.Id.forGitCheckout(url, resolved);
 
                 var entry = this.task_queue.getOrPutContext(this.allocator, checkout_id, .{}) catch unreachable;
-                if (!entry.found_existing) entry.value_ptr.* = .{};
+                if (!entry.found_existing) entry.value_ptr.* = .empty;
                 if (this.lockfile.buffers.resolutions.items[id] == invalid_package_id) {
                     try entry.value_ptr.append(this.allocator, ctx);
                 }
@@ -916,7 +916,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                 )));
             } else {
                 var entry = this.task_queue.getOrPutContext(this.allocator, clone_id, .{}) catch unreachable;
-                if (!entry.found_existing) entry.value_ptr.* = .{};
+                if (!entry.found_existing) entry.value_ptr.* = .empty;
                 try entry.value_ptr.append(this.allocator, ctx);
 
                 if (dependency.behavior.isPeer()) {

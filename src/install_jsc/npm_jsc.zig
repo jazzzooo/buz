@@ -72,10 +72,10 @@ pub const ManifestBindings = struct {
         const registry = registry_str.toUTF8(bun.default_allocator);
         defer registry.deinit();
 
-        const manifest_file = std.fs.cwd().openFile(manifest_filename.slice(), .{}) catch |err| {
+        const manifest_file = std.Io.Dir.cwd().openFile(global.bunVM().io, manifest_filename.slice(), .{}) catch |err| {
             return global.throw("failed to open manifest file \"{s}\": {s}", .{ manifest_filename.slice(), @errorName(err) });
         };
-        defer manifest_file.close();
+        defer manifest_file.close(global.bunVM().io);
 
         const scope: npm.Registry.Scope = .{
             .url_hash = npm.Registry.Scope.hash(strings.withoutTrailingSlash(registry.slice())),
@@ -97,18 +97,24 @@ pub const ManifestBindings = struct {
         };
 
         var buf: std.ArrayListUnmanaged(u8) = .empty;
-        const writer = buf.writer(bun.default_allocator);
+        var writer_state = bun.UnmanagedWriter.init(&buf, bun.default_allocator);
+        var writer_finished = false;
+        defer if (!writer_finished) writer_state.finish();
+        const writer = writer_state.writer();
 
         // TODO: we can add more information. for now just versions is fine
 
-        try writer.print("{{\"name\":\"{s}\",\"versions\":[", .{package_manifest.name()});
+        writer.print("{{\"name\":\"{s}\",\"versions\":[", .{package_manifest.name()}) catch return error.OutOfMemory;
 
         for (package_manifest.versions, 0..) |version, i| {
             if (i == package_manifest.versions.len - 1)
-                try writer.print("\"{f}\"]}}", .{version.fmt(package_manifest.string_buf)})
+                writer.print("\"{f}\"]}}", .{version.fmt(package_manifest.string_buf)}) catch return error.OutOfMemory
             else
-                try writer.print("\"{f}\",", .{version.fmt(package_manifest.string_buf)});
+                writer.print("\"{f}\",", .{version.fmt(package_manifest.string_buf)}) catch return error.OutOfMemory;
         }
+
+        writer_state.finish();
+        writer_finished = true;
 
         var result = bun.String.borrowUTF8(buf.items);
         defer result.deref();

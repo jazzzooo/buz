@@ -119,7 +119,7 @@ pub const UserOptions = struct {
 pub const StringRefList = struct {
     strings: std.ArrayListUnmanaged(ZigString.Slice),
 
-    pub const empty: StringRefList = .{ .strings = .{} };
+    pub const empty: StringRefList = .{ .strings = .empty };
 
     pub fn track(al: *StringRefList, str: ZigString.Slice) []const u8 {
         bun.handleOom(al.strings.append(bun.default_allocator, str));
@@ -663,6 +663,7 @@ pub const Framework = struct {
     pub fn initTranspiler(
         framework: *Framework,
         arena: std.mem.Allocator,
+        io: std.Io,
         log: *bun.logger.Log,
         mode: Mode,
         renderer: Graph,
@@ -681,6 +682,7 @@ pub const Framework = struct {
         return initTranspilerWithOptions(
             framework,
             arena,
+            io,
             log,
             mode,
             renderer,
@@ -696,6 +698,7 @@ pub const Framework = struct {
     pub fn initTranspilerWithOptions(
         framework: *Framework,
         arena: std.mem.Allocator,
+        io: std.Io,
         log: *bun.logger.Log,
         mode: Mode,
         renderer: Graph,
@@ -719,6 +722,7 @@ pub const Framework = struct {
 
         out.* = try bun.Transpiler.init(
             arena,
+            io,
             log,
             std.mem.zeroes(bun.schema.api.TransformOptions),
             null,

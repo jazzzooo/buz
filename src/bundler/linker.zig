@@ -61,12 +61,12 @@ pub const Linker = struct {
         file_path: Fs.Path,
         fd: ?FileDescriptorType,
     ) !Fs.FileSystem.RealFS.ModKey {
-        var file: std.fs.File = if (fd) |_fd| _fd.stdFile() else try std.fs.cwd().openFile(file_path.text, .{ .mode = .read_only });
+        const file: std.Io.File = if (fd) |_fd| _fd.stdFile() else try std.Io.Dir.cwd().openFile(this.resolver.io, file_path.text, .{ .mode = .read_only });
         Fs.FileSystem.setMaxFd(file.handle);
-        const modkey = try Fs.FileSystem.RealFS.ModKey.generate(&this.fs.fs, file_path.text, file);
+        const modkey = try Fs.FileSystem.RealFS.ModKey.generate(&this.fs.fs, this.resolver.io, file_path.text, file);
 
         if (fd == null)
-            file.close();
+            file.close(this.resolver.io);
         return modkey;
     }
 

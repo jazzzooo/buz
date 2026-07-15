@@ -650,7 +650,8 @@ pub const ID = extern struct {
     kind: Kind.Big = .setTimeout,
 
     pub inline fn asyncID(this: ID) u64 {
-        return @bitCast(this);
+        return @as(u64, @as(u32, @bitCast(this.id))) |
+            (@as(u64, @intFromEnum(this.kind)) << 32);
     }
 
     pub fn repeats(this: ID) bool {

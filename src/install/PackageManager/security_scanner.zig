@@ -273,7 +273,7 @@ pub fn printSecurityAdvisories(manager: *PackageManager, results: *const Securit
     }
 }
 
-pub fn promptForWarnings() bool {
+pub fn promptForWarnings(io: std.Io) bool {
     const can_prompt = Output.isStdinTTY();
 
     if (!can_prompt) {
@@ -285,9 +285,9 @@ pub fn promptForWarnings() bool {
     Output.pretty("\n<yellow>Security warnings found.<r> Continue anyway? [y/N] ", .{});
     Output.flush();
 
-    var stdin = std.fs.File.stdin();
+    const stdin = std.Io.File.stdin();
     var reader_buffer: [1024]u8 = undefined;
-    var buffered = stdin.readerStreaming(&reader_buffer);
+    var buffered = stdin.readerStreaming(io, &reader_buffer);
     const reader = &buffered.interface;
 
     const first_byte = reader.takeByte() catch {
@@ -552,7 +552,11 @@ const JSONBuilder = struct {
 
     pub fn buildPackageJSON(this: JSONBuilder) ![]const u8 {
         var json_buf: std.ArrayList(u8) = .empty;
-        var writer = json_buf.writer(this.manager.allocator);
+        errdefer json_buf.deinit(this.manager.allocator);
+        var writer_state = bun.UnmanagedWriter.init(&json_buf, this.manager.allocator);
+        var writer_finished = false;
+        defer if (!writer_finished) writer_state.finish();
+        const writer = writer_state.writer();
 
         const pkgs = this.manager.lockfile.packages.slice();
         const pkg_names = pkgs.items(.name);
@@ -609,6 +613,8 @@ const JSONBuilder = struct {
         }
 
         try writer.writeAll("\n]");
+        writer_state.finish();
+        writer_finished = true;
         return json_buf.toOwnedSlice(this.manager.allocator);
     }
 };
@@ -628,7 +634,7 @@ fn attemptSecurityScanWithRetry(manager: *PackageManager, security_scanner: []co
         Output.prettyErrorln("<d>[SecurityProvider]<r> top_level_dir: '{s}'", .{FileSystem.instance.top_level_dir});
         Output.prettyErrorln("<d>[SecurityProvider]<r> original_cwd: '{s}'", .{original_cwd});
     }
-    const start_time = std.time.milliTimestamp();
+    const start_time: i64 = @intCast(@divFloor(bun.awakeNanoseconds(manager.io), std.time.ns_per_ms));
 
     const finder = ScannerFinder{ .manager = manager, .scanner_name = security_scanner };
     try finder.validateNotInWorkspaces();
@@ -729,8 +735,8 @@ pub const SecurityScanSubprocess = struct {
     pub const StaticPipeWriter = jsc.Subprocess.NewStaticPipeWriter(@This());
 
     pub fn spawn(this: *SecurityScanSubprocess) !void {
-        this.ipc_data = .{};
-        this.stderr_data = .{};
+        this.ipc_data = .empty;
+        this.stderr_data = .empty;
         this.ipc_reader.setParent(this);
 
         // Two extra pipes for communicating with the scanner subprocess:
@@ -786,7 +792,7 @@ pub const SecurityScanSubprocess = struct {
             .extra_fds = &extra_fds,
         };
 
-        var spawned = try (try bun.spawn.spawnProcess(&spawn_options, @ptrCast(argv), @ptrCast(std.os.environ.ptr))).unwrap();
+        var spawned = try (try bun.spawn.spawnProcess(&spawn_options, @ptrCast(argv), @ptrCast(@constCast(bun.environ.ptr)))).unwrap();
         defer spawned.extra_pipes.deinit();
 
         ipc_output_fds[1].close();
@@ -845,7 +851,7 @@ pub const SecurityScanSubprocess = struct {
             },
         };
 
-        var spawned = try (try bun.spawn.spawnProcess(&spawn_options, @ptrCast(argv), @ptrCast(std.os.environ.ptr))).unwrap();
+        var spawned = try (try bun.spawn.spawnProcess(&spawn_options, @ptrCast(argv), @ptrCast(@constCast(bun.environ.ptr)))).unwrap();
         defer spawned.extra_pipes.deinit();
 
         ipc_output_fds[1].close();
@@ -1108,7 +1114,7 @@ pub const SecurityScanSubprocess = struct {
         }
 
         // if we got here then we got a result message so we can continue like normal
-        const duration = std.time.milliTimestamp() - start_time;
+        const duration: i64 = @intCast(@divFloor(bun.awakeNanoseconds(this.manager.io), std.time.ns_per_ms) - start_time);
 
         if (this.manager.options.log_level == .verbose) {
             switch (status) {

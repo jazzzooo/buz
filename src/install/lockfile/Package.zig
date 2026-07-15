@@ -1985,7 +1985,7 @@ pub fn Package(comptime SemverIntType: type) type {
             package.dependencies.off = @as(u32, @truncate(off));
             package.dependencies.len = @as(u32, @truncate(total_dependencies_count));
 
-            package.resolutions = @as(@TypeOf(package.resolutions), @bitCast(package.dependencies));
+            package.resolutions = .{ .off = package.dependencies.off, .len = package.dependencies.len };
 
             @memset(lockfile.buffers.resolutions.items.ptr[off..total_len], invalid_package_id);
 
@@ -2130,11 +2130,11 @@ pub fn Package(comptime SemverIntType: type) type {
             ) !PackagesLoadResult {
                 var reader = stream.reader();
 
-                const list_len = try reader.readInt(u64, .little);
+                const list_len = try reader.takeInt(u64, .little);
                 if (list_len > std.math.maxInt(u32) - 1)
                     return error.@"Lockfile validation failed: list is impossibly long";
 
-                const input_alignment = try reader.readInt(u64, .little);
+                const input_alignment = try reader.takeInt(u64, .little);
 
                 var list = List{};
 
@@ -2144,7 +2144,7 @@ pub fn Package(comptime SemverIntType: type) type {
                     return error.@"Lockfile validation failed: alignment mismatch";
                 }
 
-                const field_count = try reader.readInt(u64, .little);
+                const field_count = try reader.takeInt(u64, .little);
                 switch (field_count) {
                     sizes.Types.len => {},
                     // "scripts" field is absent before v0.6.8
@@ -2155,12 +2155,12 @@ pub fn Package(comptime SemverIntType: type) type {
                     },
                 }
 
-                const begin_at = try reader.readInt(u64, .little);
-                const end_at = try reader.readInt(u64, .little);
+                const begin_at = try reader.takeInt(u64, .little);
+                const end_at = try reader.takeInt(u64, .little);
                 if (begin_at > end or end_at > end or begin_at > end_at) {
                     return error.@"Lockfile validation failed: invalid package list range";
                 }
-                stream.pos = begin_at;
+                stream.reader_state.seek = begin_at;
                 try list.ensureTotalCapacity(allocator, list_len);
 
                 var needs_update = false;
@@ -2222,10 +2222,10 @@ pub fn Package(comptime SemverIntType: type) type {
 
                     comptime assertNoUninitializedPadding(@TypeOf(value));
                     const bytes = std.mem.sliceAsBytes(value);
-                    const end_pos = stream.pos + bytes.len;
+                    const end_pos = stream.reader_state.seek + bytes.len;
                     if (end_pos <= end_at) {
-                        @memcpy(bytes, stream.buffer[stream.pos..][0..bytes.len]);
-                        stream.pos = end_pos;
+                        @memcpy(bytes, stream.buffer[stream.reader_state.seek..][0..bytes.len]);
+                        stream.reader_state.seek = end_pos;
                         if (comptime strings.eqlComptime(field_name, "meta")) {
                             // need to check if any values were created from an older version of bun
                             // (currently just `has_install_script`). If any are found, the values need

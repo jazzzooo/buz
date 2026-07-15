@@ -1735,64 +1735,66 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
             var end_list = std.array_list.Managed(u8).initCapacity(end_sfa.allocator(), 65536) catch unreachable;
             defer end_list.deinit();
             const end = end: {
-                const w = end_list.writer();
+                var end_writer = bun.ManagedWriter.init(&end_list);
+                const w = end_writer.writer();
                 switch (kind) {
                     .initial_response => {
                         if (comptime side == .server) @panic("unreachable");
-                        try w.writeAll("}, {\n  main: ");
+                        w.writeAll("}, {\n  main: ") catch return error.OutOfMemory;
                         const initial_response_entry_point = options.initial_response_entry_point;
                         if (initial_response_entry_point.len > 0) {
                             const relative_path_buf = bun.path_buffer_pool.get();
                             defer bun.path_buffer_pool.put(relative_path_buf);
-                            try bun.js_printer.writeJSONString(
+                            bun.js_printer.writeJSONString(
                                 g.owner().relativePath(relative_path_buf, initial_response_entry_point),
                                 @TypeOf(w),
                                 w,
                                 .utf8,
-                            );
+                            ) catch return error.OutOfMemory;
                         } else {
-                            try w.writeAll("null");
+                            w.writeAll("null") catch return error.OutOfMemory;
                         }
-                        try w.writeAll(",\n  bun: \"" ++ bun.Global.package_json_version_with_canary ++ "\"");
-                        try w.writeAll(",\n  generation: \"");
+                        w.writeAll(",\n  bun: \"" ++ bun.Global.package_json_version_with_canary ++ "\"") catch return error.OutOfMemory;
+                        w.writeAll(",\n  generation: \"") catch return error.OutOfMemory;
                         const generation: u32 = @intCast(options.script_id.get() >> 32);
-                        try w.print("{x}", .{std.mem.asBytes(&generation)});
-                        try w.writeAll("\",\n  version: \"");
-                        try w.writeAll(&g.owner().configuration_hash_key);
+                        w.print("{x}", .{std.mem.asBytes(&generation)}) catch return error.OutOfMemory;
+                        w.writeAll("\",\n  version: \"") catch return error.OutOfMemory;
+                        w.writeAll(&g.owner().configuration_hash_key) catch return error.OutOfMemory;
 
                         if (options.console_log) {
-                            try w.writeAll("\",\n  console: true");
+                            w.writeAll("\",\n  console: true") catch return error.OutOfMemory;
                         } else {
-                            try w.writeAll("\",\n  console: false");
+                            w.writeAll("\",\n  console: false") catch return error.OutOfMemory;
                         }
 
                         if (options.react_refresh_entry_point.len > 0) {
-                            try w.writeAll(",\n  refresh: ");
+                            w.writeAll(",\n  refresh: ") catch return error.OutOfMemory;
                             const relative_path_buf = bun.path_buffer_pool.get();
                             defer bun.path_buffer_pool.put(relative_path_buf);
-                            try bun.js_printer.writeJSONString(
+                            bun.js_printer.writeJSONString(
                                 g.owner().relativePath(relative_path_buf, options.react_refresh_entry_point),
                                 @TypeOf(w),
                                 w,
                                 .utf8,
-                            );
+                            ) catch return error.OutOfMemory;
                         }
-                        try w.writeAll("\n})");
+                        w.writeAll("\n})") catch return error.OutOfMemory;
                     },
                     .hmr_chunk => switch (side) {
                         .client => {
-                            try w.writeAll("}, \"");
-                            try w.writeAll(&std.fmt.bytesToHex(std.mem.asBytes(&options.script_id), .lower));
-                            try w.writeAll("\")");
+                            w.writeAll("}, \"") catch return error.OutOfMemory;
+                            w.writeAll(&std.fmt.bytesToHex(std.mem.asBytes(&options.script_id), .lower)) catch return error.OutOfMemory;
+                            w.writeAll("\")") catch return error.OutOfMemory;
                         },
-                        .server => try w.writeAll("})"),
+                        .server => w.writeAll("})") catch return error.OutOfMemory,
                     },
                 }
                 if (comptime side == .client) {
-                    try w.writeAll("\n//# sourceMappingURL=" ++ DevServer.client_prefix ++ "/");
-                    try w.writeAll(&std.fmt.bytesToHex(std.mem.asBytes(&options.script_id), .lower));
-                    try w.writeAll(".js.map\n");
+                    w.writeAll("\n//# sourceMappingURL=" ++ DevServer.client_prefix ++ "/") catch return error.OutOfMemory;
+                    w.writeAll(&std.fmt.bytesToHex(std.mem.asBytes(&options.script_id), .lower)) catch return error.OutOfMemory;
+                    w.writeAll(".js.map\n") catch return error.OutOfMemory;
                 }
+                end_writer.finish();
                 break :end end_list.items;
             };
 
@@ -1821,7 +1823,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
                     .initial_response => "latest_chunk.js",
                     .hmr_chunk => "latest_hmr.js",
                 };
-                DevServer.dumpBundle(dump_dir, switch (side) {
+                DevServer.dumpBundle(g.owner().vm.io, dump_dir, switch (side) {
                     .client => .client,
                     .server => .server,
                 }, rel_path_escaped, list.items[start..], false) catch |err| {

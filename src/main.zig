@@ -40,9 +40,12 @@ pub fn main(init: std.process.Init) void {
             &_bun.mimalloc.mi_calloc,
             &_bun.mimalloc.mi_free,
         );
-        _bun.handleOom(_bun.windows.env.convertEnvToWTF8());
-        environ = @ptrCast(std.os.environ.ptr);
-        _environ = @ptrCast(std.os.environ.ptr);
+    }
+
+    _bun.handleOom(_bun.initEnviron(init.minimal.environ, init.environ_map));
+    if (Environment.isWindows) {
+        environ = @ptrCast(_bun.environ.ptr);
+        _environ = @ptrCast(_bun.environ.ptr);
     }
 
     _bun.start_time = @intCast(std.Io.Clock.awake.now(init.io).nanoseconds);

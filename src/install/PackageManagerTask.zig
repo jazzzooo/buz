@@ -288,7 +288,7 @@ fn readAndExtract(
     log: *logger.Log,
 ) !ExtractData {
     const bytes = if (normalize)
-        try File.readFromUserInput(std.fs.cwd(), tarball_path, allocator).unwrap()
+        try File.readFromUserInput(std.Io.Dir.cwd(), tarball_path, allocator).unwrap()
     else
         try File.readFrom(bun.FD.cwd(), tarball_path, allocator).unwrap();
     defer allocator.free(bytes);

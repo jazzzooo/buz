@@ -65,13 +65,11 @@ pub const group = struct {
     pub fn beginMsg(comptime fmtt: []const u8, args: anytype) void {
         if (!getLogEnabled()) return;
 
-        var buf: [64]u8 = undefined;
-        var writer = std.fs.File.stdout().writerStreaming(&buf);
-
-        printIndent(&writer.interface);
-        writer.interface.print("\x1b[32m++ \x1b[0m", .{}) catch {};
-        writer.interface.print(fmtt ++ "\n", args) catch {};
-        writer.interface.flush() catch {};
+        const writer = bun.Output.writer();
+        printIndent(writer);
+        writer.print("\x1b[32m++ \x1b[0m", .{}) catch {};
+        writer.print(fmtt ++ "\n", args) catch {};
+        bun.Output.flush();
         indent += 1;
         last_was_start = true;
     }
@@ -79,21 +77,19 @@ pub const group = struct {
         if (!getLogEnabled()) return;
         indent -= 1;
         defer last_was_start = false;
-        if (last_was_start) return; //std.fs.File.stdout().writer().print("\x1b[A", .{}) catch {};
+        if (last_was_start) return; //std.Io.File.stdout().writer().print("\x1b[A", .{}) catch {};
 
-        var buf: [64]u8 = undefined;
-        var writer = std.fs.File.stdout().writerStreaming(&buf);
-        printIndent(&writer.interface);
-        writer.interface.print("\x1b[32m{s}\x1b[m\n", .{if (last_was_start) "+-" else "--"}) catch {};
-        writer.interface.flush() catch {};
+        const writer = bun.Output.writer();
+        printIndent(writer);
+        writer.print("\x1b[32m{s}\x1b[m\n", .{if (last_was_start) "+-" else "--"}) catch {};
+        bun.Output.flush();
     }
     pub fn log(comptime fmtt: []const u8, args: anytype) void {
         if (!getLogEnabled()) return;
-        var buf: [64]u8 = undefined;
-        var writer = std.fs.File.stdout().writerStreaming(&buf);
-        printIndent(&writer.interface);
-        writer.interface.print(fmtt ++ "\n", args) catch {};
-        writer.interface.flush() catch {};
+        const writer = bun.Output.writer();
+        printIndent(writer);
+        writer.print(fmtt ++ "\n", args) catch {};
+        bun.Output.flush();
         last_was_start = false;
     }
 };

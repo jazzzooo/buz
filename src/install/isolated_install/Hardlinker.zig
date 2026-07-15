@@ -1,17 +1,20 @@
 const Hardlinker = @This();
 
+io: std.Io,
 src_dir: FD,
 src: bun.AbsPath(.{ .sep = .auto, .unit = .os }),
 dest: bun.Path(.{ .sep = .auto, .unit = .os }),
 walker: Walker,
 
 pub fn init(
+    io: std.Io,
     folder_dir: FD,
     src: bun.AbsPath(.{ .sep = .auto, .unit = .os }),
     dest: bun.Path(.{ .sep = .auto, .unit = .os }),
     skip_dirnames: []const bun.OSPathSlice,
 ) OOM!Hardlinker {
     return .{
+        .io = io,
         .src_dir = folder_dir,
         .src = src,
         .dest = dest,
@@ -68,7 +71,7 @@ pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
 
             switch (entry.kind) {
                 .directory => {
-                    FD.cwd().makePath(u16, this.dest.slice()) catch {};
+                    FD.cwd().makePath(this.io, u16, this.dest.slice()) catch {};
                 },
                 .file => {
                     const destfile_path_buf = bun.w_path_buffer_pool.get();
@@ -111,7 +114,7 @@ pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
                                     const delete_tree_path = bun.strings.convertUTF16toUTF8InBuffer(delete_tree_buf, this.dest.slice()) catch {
                                         break :try_delete;
                                     };
-                                    FD.cwd().deleteTree(delete_tree_path) catch {};
+                                    FD.cwd().deleteTree(this.io, delete_tree_path) catch {};
                                 }
                                 switch (sys.link(u16, this.src.sliceZ(), destfile_path)) {
                                     .result => {},
@@ -135,7 +138,7 @@ pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
                                     return .initErr(link_err1);
                                 };
 
-                                FD.cwd().makePath(u16, dest_parent) catch {};
+                                FD.cwd().makePath(this.io, u16, dest_parent) catch {};
 
                                 switch (sys.link(u16, this.src.sliceZ(), destfile_path)) {
                                     .result => {},
@@ -164,7 +167,7 @@ pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
 
         switch (entry.kind) {
             .directory => {
-                FD.cwd().makePath(u8, this.dest.sliceZ()) catch {};
+                FD.cwd().makePath(this.io, u8, this.dest.sliceZ()) catch {};
             },
             .file => {
                 switch (sys.linkatZ(entry.dir, entry.basename, FD.cwd(), this.dest.sliceZ())) {
@@ -172,7 +175,7 @@ pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
                     .err => |link_err1| {
                         switch (link_err1.getErrno()) {
                             .EXIST => {
-                                FD.cwd().deleteTree(this.dest.slice()) catch {};
+                                FD.cwd().deleteTree(this.io, this.dest.slice()) catch {};
                                 switch (sys.linkatZ(entry.dir, entry.basename, FD.cwd(), this.dest.sliceZ())) {
                                     .result => {},
                                     .err => |link_err2| return .initErr(link_err2),
@@ -183,7 +186,7 @@ pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
                                     return .initErr(link_err1);
                                 };
 
-                                FD.cwd().makePath(u8, dest_parent) catch {};
+                                FD.cwd().makePath(this.io, u8, dest_parent) catch {};
                                 switch (sys.linkatZ(entry.dir, entry.basename, FD.cwd(), this.dest.sliceZ())) {
                                     .result => {},
                                     .err => |link_err2| return .initErr(link_err2),
@@ -202,6 +205,7 @@ pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
 }
 
 const Walker = @import("../../sys/walker_skippable.zig");
+const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;

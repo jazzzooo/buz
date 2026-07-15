@@ -70,7 +70,7 @@ pub fn AstMaybe(
                                 };
                                 bun.handleOom(p.module_scope.generated.append(p.allocator, new_item.ref.?));
 
-                                import_items.put(name, new_item) catch unreachable;
+                                import_items.put(p.allocator, name, new_item) catch unreachable;
                                 p.is_import_item.put(p.allocator, new_item.ref.?, {}) catch unreachable;
 
                                 var symbol = &p.symbols.items[new_item.ref.?.innerIndex()];

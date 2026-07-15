@@ -1,4 +1,5 @@
 pub const Symlinker = struct {
+    io: std.Io,
     dest: bun.Path(.{ .sep = .auto }),
     target: bun.RelPath(.{ .sep = .auto }),
     fallback_junction_target: bun.AbsPath(.{ .sep = .auto }),
@@ -30,7 +31,7 @@ pub const Symlinker = struct {
                                 return .success;
                             };
 
-                            FD.cwd().makePath(u8, dest_parent) catch {};
+                            FD.cwd().makePath(this.io, u8, dest_parent) catch {};
                             _ = this.symlink();
                             return .success;
                         },
@@ -47,11 +48,11 @@ pub const Symlinker = struct {
                                 return .initErr(symlink_err1);
                             };
 
-                            FD.cwd().makePath(u8, dest_parent) catch {};
+                            FD.cwd().makePath(this.io, u8, dest_parent) catch {};
                             return this.symlink();
                         },
                         .EXIST => {
-                            FD.cwd().deleteTree(this.dest.sliceZ()) catch {};
+                            FD.cwd().deleteTree(this.io, this.dest.sliceZ()) catch {};
                             return this.symlink();
                         },
                         else => .initErr(symlink_err1),
@@ -72,7 +73,7 @@ pub const Symlinker = struct {
                                         return .initErr(symlink_err);
                                     };
 
-                                    FD.cwd().makePath(u8, dest_parent) catch {};
+                                    FD.cwd().makePath(this.io, u8, dest_parent) catch {};
                                     return this.symlink();
                                 },
                                 else => .initErr(symlink_err),

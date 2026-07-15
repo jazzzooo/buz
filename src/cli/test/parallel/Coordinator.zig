@@ -6,6 +6,7 @@
 
 pub const Coordinator = struct {
     vm: *jsc.VirtualMachine,
+    start_time: i128,
     reporter: *CommandLineReporter,
     files: []const PathString,
     cwd: [:0]const u8,
@@ -99,7 +100,7 @@ pub const Coordinator = struct {
                 }
             }
         }
-        if (this.worker_tmpdir) |d| bun.FD.cwd().deleteTree(d) catch {};
+        if (this.worker_tmpdir) |d| bun.FD.cwd().deleteTree(this.vm.io, d) catch {};
         bun.Global.exit(130);
     }
 
@@ -127,7 +128,7 @@ pub const Coordinator = struct {
     fn maybeScaleUp(this: *Coordinator) void {
         if (this.spawned_count >= this.parallel_limit) return;
         if (this.bailed or !this.hasUndispatchedFiles()) return;
-        const now = std.time.milliTimestamp();
+        const now = bun.realMilliseconds(this.vm.io);
         for (this.workers[0..this.spawned_count]) |*w| {
             if (!w.alive) continue;
             if (w.inflight == null) return;

@@ -110,7 +110,7 @@ pub fn initFromLog(
     // for .client and .server, these are meant to be relative file paths
     owner_display_name: []const u8,
     messages: []const bun.logger.Msg,
-) !SerializedFailure {
+) bun.OOM!SerializedFailure {
     assert(messages.len > 0);
 
     // Avoid small re-allocations without requesting so much from the heap
@@ -118,17 +118,19 @@ pub fn initFromLog(
     var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, dev.allocator());
     var payload = std.array_list.Managed(u8).initCapacity(sfb.allocator(), 65536) catch
         unreachable; // enough space
-    const w = payload.writer();
+    var payload_writer = bun.ManagedWriter.init(&payload);
+    const w = payload_writer.writer();
 
-    try w.writeInt(u32, @bitCast(owner.encode()), .little);
+    w.writeInt(u32, @bitCast(owner.encode()), .little) catch return error.OutOfMemory;
 
     try writeString32(owner_display_name, w);
 
-    try w.writeInt(u32, @intCast(messages.len), .little);
+    w.writeInt(u32, @intCast(messages.len), .little) catch return error.OutOfMemory;
 
     for (messages) |*msg| {
         try writeLogMsg(msg, w);
     }
+    payload_writer.finish();
 
     // Avoid re-cloning if it was moved to the heap.
     const data = if (payload.items.ptr == sfb_buffer[0..].ptr)
@@ -141,32 +143,32 @@ pub fn initFromLog(
 
 // All "write" functions get a corresponding "read" function in ./client/error.ts
 
-const Writer = std.array_list.Managed(u8).Writer;
+const Writer = *std.Io.Writer;
 
-fn writeLogMsg(msg: *const bun.logger.Msg, w: Writer) !void {
-    try w.writeByte(switch (msg.kind) {
+fn writeLogMsg(msg: *const bun.logger.Msg, w: Writer) bun.OOM!void {
+    w.writeByte(switch (msg.kind) {
         inline else => |k| @intFromEnum(@field(ErrorKind, "bundler_log_" ++ @tagName(k))),
-    });
+    }) catch return error.OutOfMemory;
     try writeLogData(msg.data, w);
     const notes = msg.notes;
-    try w.writeInt(u32, @intCast(notes.len), .little);
+    w.writeInt(u32, @intCast(notes.len), .little) catch return error.OutOfMemory;
     for (notes) |note| {
         try writeLogData(note, w);
     }
 }
 
-fn writeLogData(data: bun.logger.Data, w: Writer) !void {
+fn writeLogData(data: bun.logger.Data, w: Writer) bun.OOM!void {
     try writeString32(data.text, w);
     if (data.location) |loc| {
         if (loc.line < 0) {
-            try w.writeInt(u32, 0, .little);
+            w.writeInt(u32, 0, .little) catch return error.OutOfMemory;
             return;
         }
         assert(loc.column >= 0); // zero based and not negative
 
-        try w.writeInt(i32, @intCast(loc.line), .little);
-        try w.writeInt(u32, @intCast(loc.column), .little);
-        try w.writeInt(u32, @intCast(loc.length), .little);
+        w.writeInt(i32, @intCast(loc.line), .little) catch return error.OutOfMemory;
+        w.writeInt(u32, @intCast(loc.column), .little) catch return error.OutOfMemory;
+        w.writeInt(u32, @intCast(loc.length), .little) catch return error.OutOfMemory;
 
         // TODO: syntax highlighted line text + give more context lines
         try writeString32(loc.line_text orelse "", w);
@@ -175,13 +177,13 @@ fn writeLogData(data: bun.logger.Data, w: Writer) !void {
         // in isolation, it would be impossible to reference any other file
         // in this Log. Thus, it is not serialized.
     } else {
-        try w.writeInt(u32, 0, .little);
+        w.writeInt(u32, 0, .little) catch return error.OutOfMemory;
     }
 }
 
-fn writeString32(data: []const u8, w: Writer) !void {
-    try w.writeInt(u32, @intCast(data.len), .little);
-    try w.writeAll(data);
+fn writeString32(data: []const u8, w: Writer) bun.OOM!void {
+    w.writeInt(u32, @intCast(data.len), .little) catch return error.OutOfMemory;
+    w.writeAll(data) catch return error.OutOfMemory;
 }
 
 // fn writeJsValue(value: JSValue, global: *jsc.JSGlobalObject, w: *Writer) !void {

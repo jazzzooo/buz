@@ -20,7 +20,7 @@ pub fn readFile(
     var paths = [_]string{ cwd, filename };
     const outpath = try std.fs.path.resolve(allocator, &paths);
     defer allocator.free(outpath);
-    var file = try bun.openFileZ(&try std.posix.toPosixPath(outpath), std.fs.File.OpenFlags{ .mode = .read_only });
+    var file = try bun.openFileZ(&try std.posix.toPosixPath(outpath), std.Io.Dir.OpenFileOptions{ .mode = .read_only });
     defer file.close();
     const size = try file.getEndPos();
     return try file.readToEndAlloc(allocator, size);

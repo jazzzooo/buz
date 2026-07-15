@@ -151,8 +151,7 @@ pub const Value = union(enum) {
         field_type: FieldType,
     ) AnyMySQLError.Error!Data {
         var buffer: [15]u8 = undefined; // Large enough for all fixed-size types
-        var stream = std.io.fixedBufferStream(&buffer);
-        var writer = stream.writer();
+        var writer = std.Io.Writer.fixed(&buffer);
         switch (this.*) {
             .null => return Data{ .empty = {} },
             .bool => |b| writer.writeByte(if (b) 1 else 0) catch undefined,
@@ -165,7 +164,7 @@ pub const Value = union(enum) {
             .float => |f| writer.writeInt(u32, @bitCast(f), .little) catch undefined,
             .double => |d| writer.writeInt(u64, @bitCast(d), .little) catch undefined,
             inline .date, .time => |d| {
-                stream.pos = d.toBinary(field_type, &buffer);
+                writer.end = d.toBinary(field_type, &buffer);
             },
             // .decimal => |dec| return try dec.toBinary(field_type),
             .string_data, .bytes_data => |data| return data,
@@ -173,7 +172,7 @@ pub const Value = union(enum) {
             .bytes => |b| return if (b.slice.len > 0) Data{ .temporary = b.slice.slice() } else Data{ .empty = {} },
         }
 
-        return try Data.create(buffer[0..stream.pos], bun.default_allocator);
+        return try Data.create(writer.buffered(), bun.default_allocator);
     }
 
     pub fn fromJS(value: JSC.JSValue, globalObject: *JSC.JSGlobalObject, field_type: FieldType, unsigned: bool, roots: *JSC.MarkedArgumentBuffer) AnyMySQLError.Error!Value {

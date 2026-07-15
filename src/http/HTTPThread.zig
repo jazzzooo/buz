@@ -380,7 +380,7 @@ fn drainQueuedShutdowns(this: *@This()) void {
             this.queued_shutdowns_lock.lock();
             defer this.queued_shutdowns_lock.unlock();
             const shutdowns = this.queued_shutdowns;
-            this.queued_shutdowns = .{};
+            this.queued_shutdowns = .empty;
             break :brk shutdowns;
         };
         defer queued_shutdowns.deinit(bun.default_allocator);
@@ -437,7 +437,7 @@ fn drainQueuedWrites(this: *@This()) void {
             this.queued_writes_lock.lock();
             defer this.queued_writes_lock.unlock();
             const writes = this.queued_writes;
-            this.queued_writes = .{};
+            this.queued_writes = .empty;
             break :brk writes;
         };
         defer queued_writes.deinit(bun.default_allocator);
@@ -485,7 +485,7 @@ fn drainQueuedHTTPResponseBodyDrains(this: *@This()) void {
             this.queued_response_body_drains_lock.lock();
             defer this.queued_response_body_drains_lock.unlock();
             const drains = this.queued_response_body_drains;
-            this.queued_response_body_drains = .{};
+            this.queued_response_body_drains = .empty;
             break :brk drains;
         };
         defer queued_response_body_drains.deinit(bun.default_allocator);
@@ -567,7 +567,7 @@ fn drainEvents(this: *@This()) void {
     this.has_pending_queued_abort = false;
     {
         var pending = this.deferred_tasks;
-        this.deferred_tasks = .{};
+        this.deferred_tasks = .empty;
         defer pending.deinit(bun.default_allocator);
         for (pending.items) |http| {
             if (http.client.signals.get(.aborted) or active < max) {
@@ -628,9 +628,9 @@ fn processEvents(this: *@This()) noreturn {
             }
         }
 
-        var start_time: i128 = 0;
+        var wait_timer: bun.SystemTimer = undefined;
         if (comptime Environment.isDebug) {
-            start_time = std.time.nanoTimestamp();
+            wait_timer = bun.SystemTimer.start() catch unreachable;
         }
         Output.flush();
 
@@ -649,8 +649,7 @@ fn processEvents(this: *@This()) noreturn {
 
         // this.loop.run();
         if (comptime Environment.isDebug) {
-            const end = std.time.nanoTimestamp();
-            threadlog("Waited {d}ns\n", .{@as(i64, @truncate(end - start_time))});
+            threadlog("Waited {d}ns\n", .{wait_timer.read()});
             Output.flush();
         }
     }

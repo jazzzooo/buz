@@ -3,7 +3,7 @@ const Options = @This();
 log_level: LogLevel = .default,
 global: bool = false,
 
-global_bin_dir: std.fs.Dir = bun.FD.invalid.stdDir(),
+global_bin_dir: std.Io.Dir = bun.FD.invalid.stdDir(),
 explicit_global_directory: string = "",
 /// destination directory to link bins into
 // must be a variable due to global installs and bunx
@@ -154,41 +154,41 @@ pub const Update = struct {
     peer: bool = false,
 };
 
-pub fn openGlobalDir(explicit_global_dir: string) !std.fs.Dir {
+pub fn openGlobalDir(io: std.Io, explicit_global_dir: string) !std.Io.Dir {
     if (bun.env_var.BUN_INSTALL_GLOBAL_DIR.get()) |home_dir| {
-        return try std.fs.cwd().makeOpenPath(home_dir, .{});
+        return try bun.MakePath.makeOpenPath(io, std.Io.Dir.cwd(), home_dir, .{});
     }
 
     if (explicit_global_dir.len > 0) {
-        return try std.fs.cwd().makeOpenPath(explicit_global_dir, .{});
+        return try bun.MakePath.makeOpenPath(io, std.Io.Dir.cwd(), explicit_global_dir, .{});
     }
 
     if (bun.env_var.BUN_INSTALL.get()) |home_dir| {
         var buf: bun.PathBuffer = undefined;
         var parts = [_]string{ "install", "global" };
         const path = Path.joinAbsStringBuf(home_dir, &buf, &parts, .auto);
-        return try std.fs.cwd().makeOpenPath(path, .{});
+        return try bun.MakePath.makeOpenPath(io, std.Io.Dir.cwd(), path, .{});
     }
 
     if (bun.env_var.XDG_CACHE_HOME.get() orelse bun.env_var.HOME.get()) |home_dir| {
         var buf: bun.PathBuffer = undefined;
         var parts = [_]string{ ".bun", "install", "global" };
         const path = Path.joinAbsStringBuf(home_dir, &buf, &parts, .auto);
-        return try std.fs.cwd().makeOpenPath(path, .{});
+        return try bun.MakePath.makeOpenPath(io, std.Io.Dir.cwd(), path, .{});
     }
 
     return error.@"No global directory found";
 }
 
-pub fn openGlobalBinDir(opts_: ?*const Api.BunInstall) !std.fs.Dir {
+pub fn openGlobalBinDir(io: std.Io, opts_: ?*const Api.BunInstall) !std.Io.Dir {
     if (bun.env_var.BUN_INSTALL_BIN.get()) |home_dir| {
-        return try std.fs.cwd().makeOpenPath(home_dir, .{});
+        return try bun.MakePath.makeOpenPath(io, std.Io.Dir.cwd(), home_dir, .{});
     }
 
     if (opts_) |opts| {
         if (opts.global_bin_dir) |home_dir| {
             if (home_dir.len > 0) {
-                return try std.fs.cwd().makeOpenPath(home_dir, .{});
+                return try bun.MakePath.makeOpenPath(io, std.Io.Dir.cwd(), home_dir, .{});
             }
         }
     }
@@ -199,7 +199,7 @@ pub fn openGlobalBinDir(opts_: ?*const Api.BunInstall) !std.fs.Dir {
             "bin",
         };
         const path = Path.joinAbsStringBuf(home_dir, &buf, &parts, .auto);
-        return try std.fs.cwd().makeOpenPath(path, .{});
+        return try bun.MakePath.makeOpenPath(io, std.Io.Dir.cwd(), path, .{});
     }
 
     if (bun.env_var.XDG_CACHE_HOME.get() orelse bun.env_var.HOME.get()) |home_dir| {
@@ -209,7 +209,7 @@ pub fn openGlobalBinDir(opts_: ?*const Api.BunInstall) !std.fs.Dir {
             "bin",
         };
         const path = Path.joinAbsStringBuf(home_dir, &buf, &parts, .auto);
-        return try std.fs.cwd().makeOpenPath(path, .{});
+        return try bun.MakePath.makeOpenPath(io, std.Io.Dir.cwd(), path, .{});
     }
 
     return error.@"Missing global bin directory: try setting $BUN_INSTALL";

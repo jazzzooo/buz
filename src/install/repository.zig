@@ -361,21 +361,16 @@ pub const Repository = extern struct {
 
         defer std_map.deinit();
 
-        const result = if (comptime Environment.isWindows)
-            try std.process.Child.run(.{
-                .allocator = allocator,
-                .argv = argv,
-                .env_map = std_map.get(),
-            })
-        else
-            try std.process.Child.run(.{
-                .allocator = allocator,
-                .argv = argv,
-                .env_map = std_map.get(),
-            });
+        const result = try std.process.run(allocator, PackageManager.get().io, .{
+            .argv = argv,
+            .environ_map = std_map.get(),
+        });
 
         switch (result.term) {
-            .Exited => |sig| if (sig == 0) return result.stdout else if (
+            .exited => |sig| if (sig == 0) {
+                allocator.free(result.stderr);
+                return result.stdout;
+            } else if (
             // remote: The page could not be found <-- for non git
             // remote: Repository not found. <-- for git
             // remote: fatal repository '<url>' does not exist <-- for git
@@ -389,6 +384,8 @@ pub const Repository = extern struct {
             else => {},
         }
 
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
         return error.InstallFailed;
     }
 
@@ -498,18 +495,19 @@ pub const Repository = extern struct {
         allocator: std.mem.Allocator,
         env: DotEnv.Map,
         log: *logger.Log,
-        cache_dir: std.fs.Dir,
+        cache_dir: std.Io.Dir,
         task_id: Install.Task.Id,
         name: string,
         url: string,
         attempt: u8,
-    ) !std.fs.Dir {
+    ) !std.Io.Dir {
         bun.analytics.Features.git_dependencies += 1;
+        const io = PackageManager.get().io;
         const folder_name = try std.mem.printSentinel(&tl_bufs.get().folder_name_buf, "{f}.git", .{
             bun.fmt.hexIntLower(task_id.get()),
         }, 0);
 
-        return if (cache_dir.openDirZ(folder_name, .{})) |dir| fetch: {
+        return if (cache_dir.openDir(io, folder_name, .{})) |dir| fetch: {
             const path = Path.joinAbsString(PackageManager.get().cache_directory_path, &.{folder_name}, .auto);
 
             _ = exec(
@@ -554,7 +552,7 @@ pub const Repository = extern struct {
                 return err;
             };
 
-            break :clone try cache_dir.openDirZ(folder_name, .{});
+            break :clone try cache_dir.openDir(io, folder_name, .{});
         };
     }
 
@@ -562,7 +560,7 @@ pub const Repository = extern struct {
         allocator: std.mem.Allocator,
         env: *DotEnv.Loader,
         log: *logger.Log,
-        repo_dir: std.fs.Dir,
+        repo_dir: std.Io.Dir,
         name: string,
         committish: string,
         task_id: Install.Task.Id,
@@ -596,13 +594,14 @@ pub const Repository = extern struct {
         allocator: std.mem.Allocator,
         env: DotEnv.Map,
         log: *logger.Log,
-        cache_dir: std.fs.Dir,
-        repo_dir: std.fs.Dir,
+        cache_dir: std.Io.Dir,
+        repo_dir: std.Io.Dir,
         name: string,
         url: string,
         resolved: string,
     ) !ExtractData {
         bun.analytics.Features.git_dependencies += 1;
+        const io = PackageManager.get().io;
         const bufs = tl_bufs.get();
         const folder_name = PackageManager.cachedGitFolderNamePrint(&bufs.folder_name_buf, resolved, null);
 
@@ -644,19 +643,19 @@ pub const Repository = extern struct {
                 return err;
             };
             var dir = try bun.openDir(cache_dir, folder_name);
-            dir.deleteTree(".git") catch {};
+            dir.deleteTree(io, ".git") catch {};
 
             if (resolved.len > 0) insert_tag: {
-                const git_tag = dir.createFileZ(".bun-tag", .{ .truncate = true }) catch break :insert_tag;
-                defer git_tag.close();
-                git_tag.writeAll(resolved) catch {
-                    dir.deleteFileZ(".bun-tag") catch {};
+                const git_tag = dir.createFile(io, ".bun-tag", .{ .truncate = true }) catch break :insert_tag;
+                defer git_tag.close(io);
+                git_tag.writeStreamingAll(io, resolved) catch {
+                    dir.deleteFile(io, ".bun-tag") catch {};
                 };
             }
 
             break :brk dir;
         };
-        defer package_dir.close();
+        defer package_dir.close(io);
 
         const json_file, const json_buf = bun.sys.File.readFileFrom(package_dir, "package.json", allocator).unwrap() catch |err| {
             if (err == error.ENOENT) {

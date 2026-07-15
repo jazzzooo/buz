@@ -473,7 +473,7 @@ pub fn processSubtree(
             .id = @as(Id, @truncate(builder.list.len)),
             .dependency_id = dependency_id,
         },
-        .dependencies = .{},
+        .dependencies = .empty,
     });
 
     const list_slice = builder.list.slice();

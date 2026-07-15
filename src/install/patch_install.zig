@@ -18,7 +18,7 @@ pub const BuntagHashBuf = [max_buntag_hash_buf_len]u8;
 
 pub const PatchTask = struct {
     manager: *PackageManager,
-    tempdir: std.fs.Dir,
+    tempdir: std.Io.Dir,
     project_dir: []const u8,
     callback: union(enum) {
         calc_hash: CalcPatchHash,
@@ -59,7 +59,7 @@ pub const PatchTask = struct {
         patchfilepath: []const u8,
         pkgname: String,
 
-        cache_dir: std.fs.Dir,
+        cache_dir: std.Io.Dir,
         cache_dir_subpath: stringZ,
         cache_dir_subpath_without_patch_hash: stringZ,
 
@@ -296,6 +296,7 @@ pub const PatchTask = struct {
         // 3. copy the unpatched files into temp dir
         var pkg_install: PackageInstall = .{
             .allocator = bun.default_allocator,
+            .io = this.manager.io,
             .cache_dir = this.callback.apply.cache_dir,
             .cache_dir_subpath = this.callback.apply.cache_dir_subpath_without_patch_hash,
             .destination_dir_subpath = tempdir_name,
@@ -385,6 +386,7 @@ pub const PatchTask = struct {
         );
 
         if (bun.sys.renameatConcurrently(
+            this.manager.io,
             .fromStdDir(system_tmpdir),
             path_in_tmpdir,
             .fromStdDir(this.callback.apply.cache_dir),

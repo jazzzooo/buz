@@ -14,7 +14,9 @@ pub fn BundleThread(CompletionStruct: type) type {
         const Self = @This();
 
         waker: bun.Async.Waker,
-        ready_event: std.Thread.ResetEvent,
+        ready_mutex: bun.Mutex,
+        ready_condition: bun.Condition,
+        ready: bool,
         queue: bun.UnboundedQueue(CompletionStruct, .next),
         generation: bun.Generation = 0,
 
@@ -23,12 +25,16 @@ pub fn BundleThread(CompletionStruct: type) type {
             .waker = undefined,
             .queue = .{},
             .generation = 0,
-            .ready_event = .{},
+            .ready_mutex = .{},
+            .ready_condition = .{},
+            .ready = false,
         };
 
         pub fn spawn(instance: *Self) !std.Thread {
+            instance.ready_mutex.lock();
+            defer instance.ready_mutex.unlock();
             const thread = try std.Thread.spawn(.{}, threadMain, .{instance});
-            instance.ready_event.wait();
+            while (!instance.ready) instance.ready_condition.wait(&instance.ready_mutex);
             return thread;
         }
 
@@ -72,7 +78,10 @@ pub fn BundleThread(CompletionStruct: type) type {
             instance.waker = bun.Async.Waker.init() catch @panic("Failed to create waker");
 
             // Unblock the calling thread so it can continue.
-            instance.ready_event.set();
+            instance.ready_mutex.lock();
+            instance.ready = true;
+            instance.ready_condition.signal();
+            instance.ready_mutex.unlock();
 
             var timer: bun.windows.libuv.Timer = undefined;
             if (bun.Environment.isWindows) {

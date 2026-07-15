@@ -422,7 +422,7 @@ fn openDestination(this: *TarballStream) !void {
     );
     this.tmpname = try this.allocator.dupeSentinel(u8, tmpname, 0);
 
-    this.dest = .fromStdDir(try bun.MakePath.makeOpenPath(tarball.temp_dir, this.tmpname, .{}));
+    this.dest = .fromStdDir(try bun.MakePath.makeOpenPath(this.package_manager.io, tarball.temp_dir, this.tmpname, .{}));
 }
 
 fn closeOutputFile(this: *TarballStream) void {
@@ -582,18 +582,18 @@ fn beginEntry(this: *TarballStream, entry: *lib.Archive.Entry) !void {
 
     switch (kind) {
         .directory => {
-            makeDirectory(entry, dest, path, path_slice);
+            makeDirectory(this.package_manager.io, entry, dest, path, path_slice);
             this.phase = .want_data;
             this.out_fd = null;
         },
         .sym_link => {
-            if (Environment.isPosix) makeSymlink(entry, dest, path, path_slice);
+            if (Environment.isPosix) makeSymlink(this.package_manager.io, entry, dest, path, path_slice);
             this.phase = .want_data;
             this.out_fd = null;
         },
         .file => {
             const mode: bun.Mode = if (comptime Environment.isWindows) 0 else @intCast(entry.perm() | 0o666);
-            const fd = try openOutputFile(dest, path, path_slice, mode);
+            const fd = try openOutputFile(this.package_manager.io, dest, path, path_slice, mode);
             this.entry_count += 1;
 
             if (comptime Environment.isLinux) {
@@ -616,6 +616,7 @@ fn beginEntry(this: *TarballStream, entry: *lib.Archive.Entry) !void {
 }
 
 fn openOutputFile(
+    io: std.Io,
     dest_fd: bun.FD,
     path: [:0]bun.OSPathChar,
     path_slice: bun.OSPathSlice,
@@ -627,7 +628,7 @@ fn openOutputFile(
             .result => |fd| fd,
             .err => |e| switch (e.errno) {
                 @intFromEnum(bun.sys.E.PERM), @intFromEnum(bun.sys.E.NOENT) => brk: {
-                    dest_fd.makePath(u16, bun.Dirname.dirname(u16, path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
+                    dest_fd.makePath(io, u16, bun.Dirname.dirname(u16, path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
                     break :brk try bun.sys.openatWindows(dest_fd, path, flags, 0).unwrap();
                 },
                 else => return bun.errnoToZigErr(e.errno),
@@ -638,7 +639,7 @@ fn openOutputFile(
         .result => |fd| fd,
         .err => |e| switch (e.getErrno()) {
             .ACCES, .NOENT => brk: {
-                dest_fd.makePath(u8, std.fs.path.dirname(path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
+                dest_fd.makePath(io, u8, std.fs.path.dirname(path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
                 break :brk try bun.sys.openat(dest_fd, path, flags, mode).unwrap();
             },
             else => return bun.errnoToZigErr(e.errno),
@@ -647,6 +648,7 @@ fn openOutputFile(
 }
 
 fn makeDirectory(
+    io: std.Io,
     entry: *lib.Archive.Entry,
     dest_fd: bun.FD,
     path: [:0]bun.OSPathChar,
@@ -659,14 +661,14 @@ fn makeDirectory(
     if ((mode & 0o40) != 0) mode |= 0o10;
     if ((mode & 0o4) != 0) mode |= 0o1;
     if (comptime Environment.isWindows) {
-        dest_fd.makePath(u16, path) catch {};
+        dest_fd.makePath(io, u16, path) catch {};
     } else {
         switch (bun.sys.mkdiratZ(dest_fd, path, @intCast(mode))) {
             .result => {},
             .err => |e| switch (e.getErrno()) {
                 .EXIST, .NOTDIR => {},
                 else => {
-                    dest_fd.makePath(u8, std.fs.path.dirname(path_slice) orelse return) catch {};
+                    dest_fd.makePath(io, u8, std.fs.path.dirname(path_slice) orelse return) catch {};
                     _ = bun.sys.mkdiratZ(dest_fd, path, 0o777);
                 },
             },
@@ -675,6 +677,7 @@ fn makeDirectory(
 }
 
 fn makeSymlink(
+    io: std.Io,
     entry: *lib.Archive.Entry,
     dest_fd: bun.FD,
     path: [:0]bun.OSPathChar,
@@ -692,7 +695,7 @@ fn makeSymlink(
     }
     bun.sys.symlinkat(target, dest_fd, path).unwrap() catch |err| switch (err) {
         error.EPERM, error.ENOENT => {
-            dest_fd.makePath(u8, std.fs.path.dirname(path_slice) orelse return) catch {};
+            dest_fd.makePath(io, u8, std.fs.path.dirname(path_slice) orelse return) catch {};
             bun.sys.symlinkat(target, dest_fd, path).unwrap() catch {};
         },
         else => {},
@@ -800,7 +803,7 @@ fn finish(this: *TarballStream) void {
             d.close();
             this.dest = null;
         }
-        task.request.extract.tarball.temp_dir.deleteTree(this.tmpname) catch {};
+        task.request.extract.tarball.temp_dir.deleteTree(this.package_manager.io, this.tmpname) catch {};
     }
 
     this.deinit();

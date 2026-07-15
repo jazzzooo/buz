@@ -454,7 +454,8 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
 
             // Explicitly use `this.allocator` and *not* the arena
             var bb = std.array_list.Managed(u8).init(this.allocator);
-            const bb_writer = bb.writer();
+            var bb_writer_state = bun.ManagedWriter.init(&bb);
+            const bb_writer = bb_writer_state.writer();
 
             Fallback.renderBackend(
                 arena_allocator,
@@ -462,6 +463,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                 @TypeOf(bb_writer),
                 bb_writer,
             ) catch unreachable;
+            bb_writer_state.finish();
             if (this.resp == null or this.resp.?.tryEnd(bb.items, bb.items.len, this.shouldCloseConnection())) {
                 bb.clearAndFree();
                 this.detachResponse();
@@ -1740,7 +1742,8 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
 
                             var bb = std.array_list.Managed(u8).init(allocator);
                             defer bb.clearAndFree();
-                            const bb_writer = bb.writer();
+                            var bb_writer_state = bun.ManagedWriter.init(&bb);
+                            const bb_writer = bb_writer_state.writer();
 
                             Fallback.renderBackend(
                                 allocator,
@@ -1748,6 +1751,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                                 @TypeOf(bb_writer),
                                 bb_writer,
                             ) catch unreachable;
+                            bb_writer_state.finish();
 
                             if (req.resp) |resp| {
                                 _ = resp.write(bb.items);
@@ -2489,7 +2493,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                         };
                         // }
                     }
-                    this.request_body_buf = .{};
+                    this.request_body_buf = .empty;
 
                     if (old == .Locked) {
                         var loop = vm.eventLoop();
@@ -2519,7 +2523,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
             // This means we have received part of the body but not the whole thing
             if (this.request_body_buf.items.len > 0) {
                 var emptied = this.request_body_buf;
-                this.request_body_buf = .{};
+                this.request_body_buf = .empty;
                 return .{
                     .owned = .{
                         .list = emptied.toManaged(this.allocator),

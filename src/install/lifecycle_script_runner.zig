@@ -106,7 +106,7 @@ pub const LifecycleScriptSubprocess = struct {
             bun.assertWithLocation(flags & bun.O.NONBLOCK != 0, @src());
 
             const stat = bun.sys.fstat(fd).unwrap() catch @panic("Failed to fstat");
-            bun.assertWithLocation(std.posix.S.ISSOCK(stat.mode), @src());
+            bun.assertWithLocation(std.posix.S.ISSOCK(@intCast(stat.mode)), @src());
         }
     }
 
@@ -535,7 +535,8 @@ pub const LifecycleScriptSubprocess = struct {
             const dirname = std.fs.path.dirname(this.scripts.cwd) orelse break :try_delete_dir;
             const basename = std.fs.path.basename(this.scripts.cwd);
             const dir = bun.openDirAbsolute(dirname) catch break :try_delete_dir;
-            dir.deleteTree(basename) catch break :try_delete_dir;
+            defer dir.close(this.manager.io);
+            dir.deleteTree(this.manager.io, basename) catch break :try_delete_dir;
         }
 
         this.deinit();

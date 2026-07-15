@@ -3105,9 +3105,9 @@ pub fn StyleSheet(comptime AtRule: type) type {
         pub fn empty(allocator: Allocator) This {
             return This{
                 .rules = .{},
-                .sources = .{},
-                .source_map_urls = .{},
-                .license_comments = .{},
+                .sources = .empty,
+                .source_map_urls = .empty,
+                .license_comments = .empty,
                 .options = ParserOptions.default(allocator, null),
                 .composes = .{},
             };

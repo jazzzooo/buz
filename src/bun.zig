@@ -563,6 +563,54 @@ pub fn clone(item: anytype, allocator: std.mem.Allocator) !@TypeOf(item) {
 pub const LinearFifo = @import("./collections/linear_fifo.zig").LinearFifo;
 pub const LinearFifoBufferType = @import("./collections/linear_fifo.zig").LinearFifoBufferType;
 
+/// Temporarily exposes a managed byte list through the native `std.Io.Writer`
+/// interface. Call `finish` before reading or deinitializing the list.
+pub const ManagedWriter = struct {
+    list: *std.array_list.Managed(u8),
+    allocating: std.Io.Writer.Allocating,
+
+    pub fn init(list: *std.array_list.Managed(u8)) ManagedWriter {
+        var unmanaged: std.ArrayList(u8) = .{ .items = list.items, .capacity = list.capacity };
+        const allocator = list.allocator;
+        list.items = &.{};
+        list.capacity = 0;
+        return .{
+            .list = list,
+            .allocating = .fromArrayList(allocator, &unmanaged),
+        };
+    }
+
+    pub fn writer(this: *ManagedWriter) *std.Io.Writer {
+        return &this.allocating.writer;
+    }
+
+    pub fn finish(this: *ManagedWriter) void {
+        const unmanaged = this.allocating.toArrayList();
+        this.list.items = unmanaged.items;
+        this.list.capacity = unmanaged.capacity;
+    }
+};
+
+pub const UnmanagedWriter = struct {
+    list: *std.ArrayList(u8),
+    allocating: std.Io.Writer.Allocating,
+
+    pub fn init(list: *std.ArrayList(u8), allocator: std.mem.Allocator) UnmanagedWriter {
+        return .{
+            .list = list,
+            .allocating = .fromArrayList(allocator, list),
+        };
+    }
+
+    pub fn writer(this: *UnmanagedWriter) *std.Io.Writer {
+        return &this.allocating.writer;
+    }
+
+    pub fn finish(this: *UnmanagedWriter) void {
+        this.list.* = this.allocating.toArrayList();
+    }
+};
+
 /// hash a string
 pub fn hash(content: []const u8) u64 {
     return std.hash.Wyhash.hash(0, content);
@@ -816,7 +864,20 @@ pub const simdutf = @import("./simdutf_sys/simdutf.zig");
 
 pub var start_time: i128 = 0;
 
-pub fn openFileZ(pathZ: [:0]const u8, open_flags: std.fs.File.OpenFlags) !std.fs.File {
+pub var environ: []const [*:0]u8 = &.{};
+var owned_environ_block: ?std.process.Environ.PosixBlock = null;
+
+pub fn initEnviron(init_environ: std.process.Environ, environ_map: *const std.process.Environ.Map) OOM!void {
+    if (comptime Environment.isPosix) {
+        environ = @ptrCast(init_environ.block.view().slice);
+    } else {
+        const block = try environ_map.createPosixBlock(default_allocator, .{});
+        owned_environ_block = block;
+        environ = @ptrCast(block.view().slice);
+    }
+}
+
+pub fn openFileZ(pathZ: [:0]const u8, open_flags: std.Io.Dir.OpenFileOptions) !std.Io.File {
     var flags: i32 = 0;
     switch (open_flags.mode) {
         .read_only => flags |= O.RDONLY,
@@ -825,10 +886,10 @@ pub fn openFileZ(pathZ: [:0]const u8, open_flags: std.fs.File.OpenFlags) !std.fs
     }
 
     const res = try sys.open(pathZ, flags, 0).unwrap();
-    return std.fs.File{ .handle = res.cast() };
+    return std.Io.File{ .handle = res.cast(), .flags = .{ .nonblocking = false } };
 }
 
-pub fn openFile(path_: []const u8, open_flags: std.fs.File.OpenFlags) !std.fs.File {
+pub fn openFile(path_: []const u8, open_flags: std.Io.Dir.OpenFileOptions) !std.Io.File {
     if (comptime Environment.isWindows) {
         var flags: i32 = 0;
         switch (open_flags.mode) {
@@ -844,7 +905,7 @@ pub fn openFile(path_: []const u8, open_flags: std.fs.File.OpenFlags) !std.fs.Fi
     return try openFileZ(&try std.posix.toPosixPath(path_), open_flags);
 }
 
-pub fn openDir(dir: std.fs.Dir, path_: [:0]const u8) !std.fs.Dir {
+pub fn openDir(dir: std.Io.Dir, path_: [:0]const u8) !std.Io.Dir {
     if (comptime Environment.isWindows) {
         const res = try sys.openDirAtWindowsA(.fromStdDir(dir), path_, .{ .iterable = true, .can_rename_or_delete = true, .read_only = true }).unwrap();
         return res.stdDir();
@@ -854,13 +915,13 @@ pub fn openDir(dir: std.fs.Dir, path_: [:0]const u8) !std.fs.Dir {
     }
 }
 
-pub fn openDirNoRenamingOrDeletingWindows(dir: FD, path_: [:0]const u8) !std.fs.Dir {
+pub fn openDirNoRenamingOrDeletingWindows(dir: FD, path_: [:0]const u8) !std.Io.Dir {
     if (comptime !Environment.isWindows) @compileError("use openDir!");
     const res = try sys.openDirAtWindowsA(dir, path_, .{ .iterable = true, .can_rename_or_delete = false, .read_only = true }).unwrap();
     return res.stdDir();
 }
 
-pub fn openDirA(dir: std.fs.Dir, path_: []const u8) !std.fs.Dir {
+pub fn openDirA(dir: std.Io.Dir, path_: []const u8) !std.Io.Dir {
     if (comptime Environment.isWindows) {
         const res = try sys.openDirAtWindowsA(.fromStdDir(dir), path_, .{ .iterable = true, .can_rename_or_delete = true, .read_only = true }).unwrap();
         return res.stdDir();
@@ -884,7 +945,7 @@ pub fn openDirForIterationOSPath(dir: FD, path_: []const OSPathChar) sys.Maybe(F
     return sys.openatA(dir, path_, O.DIRECTORY | O.CLOEXEC | O.RDONLY, 0);
 }
 
-pub fn openDirAbsolute(path_: []const u8) !std.fs.Dir {
+pub fn openDirAbsolute(path_: []const u8) !std.Io.Dir {
     const fd = if (comptime Environment.isWindows)
         try sys.openDirAtWindowsA(invalid_fd, path_, .{ .iterable = true, .can_rename_or_delete = true, .read_only = true }).unwrap()
     else
@@ -893,7 +954,7 @@ pub fn openDirAbsolute(path_: []const u8) !std.fs.Dir {
     return fd.stdDir();
 }
 
-pub fn openDirAbsoluteNotForDeletingOrRenaming(path_: []const u8) !std.fs.Dir {
+pub fn openDirAbsoluteNotForDeletingOrRenaming(path_: []const u8) !std.Io.Dir {
     const fd = if (comptime Environment.isWindows)
         try sys.openDirAtWindowsA(invalid_fd, path_, .{ .iterable = true, .can_rename_or_delete = false, .read_only = true }).unwrap()
     else
@@ -1217,24 +1278,6 @@ pub const c_ares = @import("./cares_sys/c_ares.zig");
 pub const URL = @import("./url/url.zig").URL;
 pub const FormData = @import("./runtime/webcore/FormData.zig").FormData;
 
-var needs_proc_self_workaround: bool = false;
-
-/// TODO: move to bun.sys
-// This is our "polyfill" when /proc/self/fd is not available it's only
-// necessary on linux because other platforms don't have an optional
-// /proc/self/fd
-fn getFdPathViaCWD(fd: std.posix.fd_t, buf: *bun.PathBuffer) ![]u8 {
-    const prev_fd = try std.posix.openatZ(std.Io.Dir.cwd().handle, ".", .{ .DIRECTORY = true }, 0);
-    var needs_chdir = false;
-    defer {
-        if (needs_chdir) std.posix.fchdir(prev_fd) catch unreachable;
-        std.posix.close(prev_fd);
-    }
-    try std.posix.fchdir(fd);
-    needs_chdir = true;
-    return getcwd(buf);
-}
-
 pub fn getcwd(buf: []u8) ![]u8 {
     return sys.getcwd(buf).unwrap();
 }
@@ -1245,44 +1288,9 @@ pub fn getcwdAlloc(allocator: std.mem.Allocator) ![:0]u8 {
     return allocator.dupeSentinel(u8, temp_slice, 0);
 }
 
-/// TODO: move to bun.sys and add a method onto FD
 /// Get the absolute path to a file descriptor.
-/// On Linux, when `/proc/self/fd` is not available, this function will attempt to use `fchdir` and `getcwd` to get the path instead.
 pub fn getFdPath(fd: FD, buf: *bun.PathBuffer) ![]u8 {
-    if (comptime Environment.isWindows) {
-        var wide_buf: WPathBuffer = undefined;
-        const wide_slice = try windows.GetFinalPathNameByHandle(fd.native(), .{}, wide_buf[0..]);
-        const res = strings.copyUTF16IntoUTF8(buf[0..], wide_slice);
-        return buf[0..res.written];
-    }
-
-    if (comptime Environment.allow_assert) {
-        // We need a way to test that the workaround is working
-        // but we don't want to do this check in a release build
-        const ProcSelfWorkAroundForDebugging = struct {
-            pub var has_checked = false;
-        };
-
-        if (!ProcSelfWorkAroundForDebugging.has_checked) {
-            ProcSelfWorkAroundForDebugging.has_checked = true;
-            needs_proc_self_workaround = bun.env_var.BUN_NEEDS_PROC_SELF_WORKAROUND.get();
-        }
-    } else if (comptime !Environment.isLinux) {
-        return try std.os.getFdPath(fd.native(), buf);
-    }
-
-    if (needs_proc_self_workaround) {
-        return getFdPathViaCWD(fd.native(), buf);
-    }
-
-    return std.os.getFdPath(fd.native(), buf) catch |err| {
-        if (err == error.FileNotFound and !needs_proc_self_workaround) {
-            needs_proc_self_workaround = true;
-            return getFdPathViaCWD(fd.native(), buf);
-        }
-
-        return err;
-    };
+    return sys.getFdPath(fd, buf).unwrap();
 }
 
 /// TODO: move to bun.sys and add a method onto FD
@@ -1479,8 +1487,8 @@ pub fn reloadProcess(
     }
 
     const environ_slice = std.mem.span(std.c.environ);
-    const environ = allocator.allocSentinel(?[*:0]const u8, environ_slice.len, null) catch unreachable;
-    for (environ_slice, environ) |src, *dest| {
+    const envp_copy = allocator.allocSentinel(?[*:0]const u8, environ_slice.len, null) catch unreachable;
+    for (environ_slice, envp_copy) |src, *dest| {
         if (src == null) {
             dest.* = null;
         } else {
@@ -1495,7 +1503,7 @@ pub fn reloadProcess(
     const newargv = @as([*:null]?[*:0]const u8, @ptrCast(dupe_argv.ptr));
 
     // we clone envp so that the memory address of environment variables isn't the same as the libc one
-    const envp = @as([*:null]?[*:0]const u8, @ptrCast(environ.ptr));
+    const envp = @as([*:null]?[*:0]const u8, @ptrCast(envp_copy.ptr));
 
     // macOS doesn't have CLOEXEC, so we must go through posix_spawn
     if (comptime Environment.isMac) {
@@ -1534,16 +1542,16 @@ pub fn reloadProcess(
         }
     } else if (comptime Environment.isPosix) {
         if (comptime Environment.isLinux or Environment.isFreeBSD) on_before_reload_process_linux();
-        const err = std.posix.execveZ(
+        const err = sys.execve(
             exec_path,
             newargv,
             envp,
         );
         if (may_return) {
-            Output.errGeneric("Failed to reload process: {s}", .{@errorName(err)});
+            Output.errGeneric("Failed to reload process: {s}", .{@tagName(err)});
             return;
         }
-        Output.panic("Unexpected error while reloading: {s}", .{@errorName(err)});
+        Output.panic("Unexpected error while reloading: {s}", .{@tagName(err)});
     } else {
         @compileError("unsupported platform for reloadProcess");
     }
@@ -1768,30 +1776,18 @@ pub fn HiveRef(comptime T: type, comptime capacity: u16) type {
 pub const tracy = @import("./perf/tracy.zig");
 pub const trace = tracy.trace;
 
-pub fn openFileForPath(file_path: [:0]const u8) !std.fs.File {
-    if (Environment.isWindows)
-        return std.fs.cwd().openFileZ(file_path, .{});
-
+pub fn openFileForPath(file_path: [:0]const u8) !std.Io.File {
     const O_PATH = if (comptime Environment.isLinux) O.PATH else O.RDONLY;
     const flags: u32 = O.CLOEXEC | O.NOCTTY | O_PATH;
-
-    const fd = try std.posix.openZ(file_path, O.toPacked(flags), 0);
-    return std.fs.File{
-        .handle = fd,
-    };
+    const fd = try sys.open(file_path, @intCast(flags), 0).unwrap();
+    return fd.stdFile();
 }
 
-pub fn openDirForPath(file_path: [:0]const u8) !std.fs.Dir {
-    if (Environment.isWindows)
-        return std.fs.cwd().openDirZ(file_path, .{});
-
+pub fn openDirForPath(file_path: [:0]const u8) !std.Io.Dir {
     const O_PATH = if (comptime Environment.isLinux) O.PATH else O.RDONLY;
     const flags: u32 = O.CLOEXEC | O.NOCTTY | O.DIRECTORY | O_PATH;
-
-    const fd = try std.posix.openZ(file_path, O.toPacked(flags), 0);
-    return std.fs.Dir{
-        .fd = fd,
-    };
+    const fd = try sys.open(file_path, @intCast(flags), 0).unwrap();
+    return fd.stdDir();
 }
 
 pub const Generation = u16;
@@ -2154,13 +2150,13 @@ pub inline fn serializableInto(comptime T: type, init: anytype) T {
     return result.*;
 }
 
-/// Like std.fs.Dir.makePath except instead of infinite looping on dangling
+/// Like std.Io.Dir.makePath except instead of infinite looping on dangling
 /// symlink, it deletes the symlink and tries again.
-pub fn makePath(dir: std.fs.Dir, sub_path: []const u8) !void {
-    var it = try std.fs.path.componentIterator(sub_path);
+pub fn makePath(dir: std.Io.Dir, io_: std.Io, sub_path: []const u8) !void {
+    var it = std.fs.path.componentIterator(sub_path);
     var component = it.last() orelse return;
     while (true) {
-        dir.makeDir(component.path) catch |err| switch (err) {
+        dir.createDir(io_, component.path, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {
                 var path_buf2: [MAX_PATH_BYTES * 2]u8 = undefined;
                 copy(u8, &path_buf2, component.path);
@@ -2171,7 +2167,7 @@ pub fn makePath(dir: std.fs.Dir, sub_path: []const u8) !void {
                 const is_dir = S.ISDIR(@intCast(result.mode));
                 // dangling symlink
                 if (!is_dir) {
-                    dir.deleteTree(component.path) catch {};
+                    dir.deleteTree(io_, component.path) catch {};
                     continue;
                 }
             },
@@ -2185,14 +2181,14 @@ pub fn makePath(dir: std.fs.Dir, sub_path: []const u8) !void {
     }
 }
 
-/// Like std.fs.Dir.makePath except instead of infinite looping on dangling
+/// Like std.Io.Dir.makePath except instead of infinite looping on dangling
 /// symlink, it deletes the symlink and tries again.
-pub fn makePathW(dir: std.fs.Dir, sub_path: []const u16) !void {
+pub fn makePathW(dir: std.Io.Dir, io_: std.Io, sub_path: []const u16) !void {
     // was going to copy/paste makePath and use all W versions but they didn't all exist
     // and this buffer was needed anyway
     var buf: PathBuffer = undefined;
     const buf_len = simdutf.convert.utf16.to.utf8.le(sub_path, &buf);
-    return makePath(dir, buf[0..buf_len]);
+    return makePath(dir, io_, buf[0..buf_len]);
 }
 
 pub const Async = @import("async");
@@ -2239,7 +2235,7 @@ pub const MakePath = struct {
     /// Opens the dir if the path already exists and is a directory.
     /// This function is not atomic, and if it returns an error, the file system may
     /// have been modified regardless.
-    fn makeOpenPathAccessMaskW(self: std.fs.Dir, comptime T: type, sub_path: []const T, access_mask: u32, no_follow: bool) !std.fs.Dir {
+    fn makeOpenPathAccessMaskW(io_: std.Io, self: std.Io.Dir, comptime T: type, sub_path: []const T, access_mask: u32, no_follow: bool) !std.Io.Dir {
         const Iterator = std.fs.path.ComponentIterator(.windows, T);
         var it = try Iterator.init(sub_path);
         // If there are no components in the path, then create a dummy component with the full path.
@@ -2250,13 +2246,13 @@ pub const MakePath = struct {
 
         while (true) {
             const sub_path_w = if (comptime T == u16)
-                try w.wToPrefixedFileW(self.fd,
+                try w.wToPrefixedFileW(self.handle,
                     // TODO: report this bug
                     // they always copy it
                     // it doesn't need to be [:0]const u16
                     @ptrCast(component.path))
             else
-                try w.sliceToPrefixedFileW(self.fd, component.path);
+                try w.sliceToPrefixedFileW(self.handle, component.path);
             var result = makeOpenDirAccessMaskW(self, sub_path_w.span().ptr, access_mask, .{
                 .no_follow = no_follow,
                 .create_disposition = w.FILE_OPEN_IF,
@@ -2270,7 +2266,7 @@ pub const MakePath = struct {
 
             component = it.next() orelse return result;
             // Don't leak the intermediate file handles
-            result.close();
+            result.close(io_);
         }
     }
     const MakeOpenDirAccessMaskWOptions = struct {
@@ -2278,9 +2274,9 @@ pub const MakePath = struct {
         create_disposition: u32,
     };
 
-    fn makeOpenDirAccessMaskW(self: std.fs.Dir, sub_path_w: [*:0]const u16, access_mask: u32, flags: MakeOpenDirAccessMaskWOptions) !std.fs.Dir {
-        var result = std.fs.Dir{
-            .fd = undefined,
+    fn makeOpenDirAccessMaskW(self: std.Io.Dir, sub_path_w: [*:0]const u16, access_mask: u32, flags: MakeOpenDirAccessMaskWOptions) !std.Io.Dir {
+        var result = std.Io.Dir{
+            .handle = undefined,
         };
 
         const path_len_bytes = @as(u16, @intCast(std.mem.sliceTo(sub_path_w, 0).len * 2));
@@ -2291,7 +2287,7 @@ pub const MakePath = struct {
         };
         var attr = w.OBJECT_ATTRIBUTES{
             .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
-            .RootDirectory = if (std.fs.path.isAbsoluteWindowsW(sub_path_w)) null else self.fd,
+            .RootDirectory = if (std.fs.path.isAbsoluteWindowsW(sub_path_w)) null else self.handle,
             .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
             .ObjectName = &nt_name,
             .SecurityDescriptor = null,
@@ -2300,7 +2296,7 @@ pub const MakePath = struct {
         const open_reparse_point: w.DWORD = if (flags.no_follow) w.FILE_OPEN_REPARSE_POINT else 0x0;
         var status: w.IO_STATUS_BLOCK = undefined;
         const rc = w.ntdll.NtCreateFile(
-            &result.fd,
+            &result.handle,
             access_mask,
             &attr,
             &status,
@@ -2328,9 +2324,10 @@ pub const MakePath = struct {
         }
     }
 
-    pub fn makeOpenPath(self: std.fs.Dir, sub_path: anytype, opts: std.fs.Dir.OpenOptions) !std.fs.Dir {
+    pub fn makeOpenPath(io_: std.Io, self: std.Io.Dir, sub_path: anytype, opts: std.Io.Dir.OpenOptions) !std.Io.Dir {
         if (comptime Environment.isWindows) {
             return makeOpenPathAccessMaskW(
+                io_,
                 self,
                 std.meta.Elem(@TypeOf(sub_path)),
                 sub_path,
@@ -2343,23 +2340,23 @@ pub const MakePath = struct {
             );
         }
 
-        return self.makeOpenPath(sub_path, opts);
+        return self.createDirPathOpen(io_, sub_path, .{ .open_options = opts });
     }
 
-    /// copy/paste of `std.fs.Dir.makePath` and related functions and modified to support u16 slices.
+    /// copy/paste of `std.Io.Dir.makePath` and related functions and modified to support u16 slices.
     /// inside `MakePath` scope to make deleting later easier.
     /// TODO(dylan-conway) delete `MakePath`
-    pub fn makePath(comptime T: type, self: std.fs.Dir, sub_path: []const T) !void {
+    pub fn makePath(io_: std.Io, comptime T: type, self: std.Io.Dir, sub_path: []const T) !void {
         if (Environment.isWindows) {
-            var dir = try makeOpenPath(self, sub_path, .{});
-            dir.close();
+            var dir = try makeOpenPath(io_, self, sub_path, .{});
+            dir.close(io_);
             return;
         }
 
         var it = try componentIterator(T, sub_path);
         var component = it.last() orelse return;
         while (true) {
-            std.fs.Dir.makeDir(self, component.path) catch |err| switch (err) {
+            std.Io.Dir.createDir(self, io_, component.path, .default_dir) catch |err| switch (err) {
                 error.PathAlreadyExists => {
                     // TODO stat the file and return an error if it's not a directory
                     // this is important because otherwise a dangling symlink
@@ -2764,11 +2761,11 @@ pub fn runtimeEmbedFile(
         var once = bun.once(load);
 
         fn load() [:0]const u8 {
-            return std.fs.cwd().readFileAllocOptions(
-                default_allocator,
+            return std.Io.Dir.cwd().readFileAllocOptions(
+                Output.applicationIo(),
                 abs_path,
-                std.math.maxInt(usize),
-                null,
+                default_allocator,
+                .unlimited,
                 .fromByteUnits(@alignOf(u8)),
                 '\x00',
             ) catch |e| {

@@ -546,7 +546,7 @@ pub fn registerMacro(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFram
         return globalObject.throw("Macro must be a function", .{});
     }
 
-    const get_or_put_result = VirtualMachine.get().macros.getOrPut(id) catch unreachable;
+    const get_or_put_result = VirtualMachine.get().macros.getOrPut(bun.default_allocator, id) catch unreachable;
     if (get_or_put_result.found_existing) {
         get_or_put_result.value_ptr.*.?.value().unprotect();
     }
@@ -1690,8 +1690,7 @@ pub const JSZlib = struct {
                     defer reader.deinit();
                     return globalThis.throwValue(ZigString.init(reader.errorMessage() orelse "Zlib returned an error").toErrorInstance(globalThis));
                 };
-                reader.list = .{ .items = reader.list.items };
-                reader.list.capacity = reader.list.items.len;
+                reader.list = .{ .items = reader.list.items, .capacity = reader.list.items.len };
                 reader.list_ptr = &reader.list;
 
                 var array_buffer = jsc.ArrayBuffer.fromBytes(reader.list.items, .Uint8Array);

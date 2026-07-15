@@ -238,7 +238,7 @@ pub const Installer = struct {
             var staging: bun.AbsPath(.{ .sep = .auto }) = .init();
             defer staging.deinit();
             this.appendGlobalStoreEntryPath(&staging, entry_id, .staging);
-            FD.cwd().deleteTree(staging.slice()) catch {};
+            FD.cwd().deleteTree(this.manager.io, staging.slice()) catch {};
         }
 
         // attempt deleting the package so the next install will install it again
@@ -607,6 +607,7 @@ pub const Installer = struct {
                                     installer.appendStorePath(&dest, this.entry_id);
 
                                     var hardlinker: Hardlinker = try .init(
+                                        installer.manager.io,
                                         folder_dir,
                                         src,
                                         dest,
@@ -672,6 +673,7 @@ pub const Installer = struct {
                                     installer.appendStorePath(&dest, this.entry_id);
 
                                     var file_copier: FileCopier = try .init(
+                                        installer.manager.io,
                                         folder_dir,
                                         src_path,
                                         dest,
@@ -766,7 +768,7 @@ pub const Installer = struct {
                         var staging: bun.AbsPath(.{ .sep = .auto }) = .init();
                         defer staging.deinit();
                         installer.appendGlobalStoreEntryPath(&staging, this.entry_id, .staging);
-                        FD.cwd().deleteTree(staging.slice()) catch {};
+                        FD.cwd().deleteTree(installer.manager.io, staging.slice()) catch {};
                     }
 
                     var cached_package_dir: ?FD = null;
@@ -844,6 +846,7 @@ pub const Installer = struct {
                             src.appendJoin(pkg_cache_dir_subpath.slice());
 
                             var hardlinker: Hardlinker = try .init(
+                                installer.manager.io,
                                 cached_package_dir.?,
                                 src,
                                 dest_subpath,
@@ -911,6 +914,7 @@ pub const Installer = struct {
                             src_path.append(pkg_cache_dir_subpath.slice());
 
                             var file_copier: FileCopier = try .init(
+                                installer.manager.io,
                                 cached_package_dir.?,
                                 src_path,
                                 dest_subpath,
@@ -1005,6 +1009,7 @@ pub const Installer = struct {
                         defer target.deinit();
 
                         const symlinker: Symlinker = .{
+                            .io = installer.manager.io,
                             .dest = dest,
                             .target = target,
                             .fallback_junction_target = dep_store_path,
@@ -1243,6 +1248,7 @@ pub const Installer = struct {
                     }
 
                     var bin_linker: Bin.Linker = .{
+                        .io = installer.manager.io,
                         .bin = bin,
                         .global_bin_path = installer.manager.options.bin_path,
                         .package_name = strings.StringOrTinyString.init(dep_name),
@@ -1422,19 +1428,25 @@ pub const Installer = struct {
         var version_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer version_buf.deinit(bun.default_allocator);
 
-        var writer = version_buf.writer(this.lockfile.allocator);
-        try writer.print("{s}@", .{pkg_name.slice(string_buf)});
+        var writer_state = bun.UnmanagedWriter.init(&version_buf, this.lockfile.allocator);
+        var writer_finished = false;
+        defer if (!writer_finished) writer_state.finish();
+        const writer = writer_state.writer();
+        writer.print("{s}@", .{pkg_name.slice(string_buf)}) catch return error.OutOfMemory;
 
         switch (pkg_res.tag) {
             .workspace => {
                 if (this.lockfile.workspace_versions.get(pkg_name_hash)) |workspace_version| {
-                    try writer.print("{f}", .{workspace_version.fmt(string_buf)});
+                    writer.print("{f}", .{workspace_version.fmt(string_buf)}) catch return error.OutOfMemory;
                 }
             },
             else => {
-                try writer.print("{f}", .{pkg_res.fmt(string_buf, .posix)});
+                writer.print("{f}", .{pkg_res.fmt(string_buf, .posix)}) catch return error.OutOfMemory;
             },
         }
+
+        writer_state.finish();
+        writer_finished = true;
 
         const name_and_version_hash = String.Builder.stringHash(version_buf.items);
 
@@ -1493,6 +1505,7 @@ pub const Installer = struct {
         this.appendStorePath(&full_target, entry_id);
 
         const symlinker: Symlinker = .{
+            .io = this.manager.io,
             .dest = hidden_hoisted_node_modules,
             .target = target,
             .fallback_junction_target = full_target,
@@ -1622,6 +1635,7 @@ pub const Installer = struct {
             }
 
             var bin_linker: Bin.Linker = .{
+                .io = this.manager.io,
                 .bin = bin,
                 .global_bin_path = this.manager.options.bin_path,
                 .package_name = package_name,
@@ -1709,7 +1723,7 @@ pub const Installer = struct {
             .result => return .success,
             .err => |err| {
                 if (!isRenameCollision(err)) {
-                    FD.cwd().deleteTree(staging.slice()) catch {};
+                    FD.cwd().deleteTree(this.manager.io, staging.slice()) catch {};
                     return .initErr(err);
                 }
                 // Under --force, the existing entry may be the corrupt one
@@ -1728,25 +1742,25 @@ pub const Installer = struct {
                         bun.fastRandom(),
                     });
                     if (sys.renameat(FD.cwd(), final.sliceZ(), FD.cwd(), old.sliceZ()).asErr()) |swap_err| {
-                        FD.cwd().deleteTree(staging.slice()) catch {};
+                        FD.cwd().deleteTree(this.manager.io, staging.slice()) catch {};
                         return .initErr(swap_err);
                     }
                     switch (sys.renameat(FD.cwd(), staging.sliceZ(), FD.cwd(), final.sliceZ())) {
                         .result => {
-                            FD.cwd().deleteTree(old.slice()) catch {};
+                            FD.cwd().deleteTree(this.manager.io, old.slice()) catch {};
                             return .success;
                         },
                         .err => |publish_err| {
                             // Another --force install raced us in the window
                             // between swap-out and publish. Theirs is fresh
                             // too; clean up both temp trees.
-                            FD.cwd().deleteTree(staging.slice()) catch {};
-                            FD.cwd().deleteTree(old.slice()) catch {};
+                            FD.cwd().deleteTree(this.manager.io, staging.slice()) catch {};
+                            FD.cwd().deleteTree(this.manager.io, old.slice()) catch {};
                             return if (isRenameCollision(publish_err)) .success else .initErr(publish_err);
                         },
                     }
                 }
-                FD.cwd().deleteTree(staging.slice()) catch {};
+                FD.cwd().deleteTree(this.manager.io, staging.slice()) catch {};
                 // A concurrent install renamed first; both writers produced
                 // the same content-addressed bytes, so theirs is as good as
                 // ours.
@@ -1804,7 +1818,7 @@ pub const Installer = struct {
             .err => |err| switch (err.getErrno()) {
                 .NOENT => {
                     if (dest.dirname()) |parent| {
-                        FD.cwd().makePath(u8, parent) catch {};
+                        FD.cwd().makePath(this.manager.io, u8, parent) catch {};
                     }
                 },
                 .EXIST => {
@@ -1829,7 +1843,7 @@ pub const Installer = struct {
                             _ = sys.unlink(dest.sliceZ());
                         }
                     } else {
-                        FD.cwd().deleteTree(dest.slice()) catch {};
+                        FD.cwd().deleteTree(this.manager.io, dest.slice()) catch {};
                     }
                 },
                 else => return .initErr(err),

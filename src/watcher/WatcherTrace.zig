@@ -29,14 +29,14 @@ pub fn writeEvents(watcher: *Watcher, events: []Watcher.WatchEvent, changed_file
     const file = trace_file orelse return;
 
     var buffer: [4096]u8 = undefined;
-    var buffered = file.writer().adaptToNewApi(&buffer);
-    defer buffered.new_interface.flush() catch |err| {
+    var buffered = file.bufferedWriter(&buffer);
+    defer buffered.interface.flush() catch |err| {
         bun.Output.err(err, "Failed to flush watcher trace file", .{});
     };
-    const writer = &buffered.new_interface;
+    const writer = &buffered.interface;
 
     // Get current timestamp
-    const timestamp = std.time.milliTimestamp();
+    const timestamp = bun.timespec.realNow().ms();
 
     // Write: { "timestamp": number, "files": { ... } }
     writer.writeAll("{\"timestamp\":") catch return;

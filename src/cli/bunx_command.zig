@@ -271,7 +271,7 @@ pub const BunxCommand = struct {
                     switch (rc) {
                         .SUCCESS => {
                             const time = std.os.windows.fromSysTime(info.LastWriteTime);
-                            const now = std.time.nanoTimestamp();
+                            const now = std.Io.Clock.real.now(transpiler.io).nanoseconds;
                             break :is_stale (now - time > nanoseconds_cache_valid);
                         },
                         // treat failures to stat as stale
@@ -279,14 +279,14 @@ pub const BunxCommand = struct {
                     }
                 } else {
                     const stat = target_package_json.stat().unwrap() catch break :is_stale true;
-                    break :is_stale std.time.timestamp() - stat.mtime().sec > seconds_cache_valid;
+                    break :is_stale bun.realSeconds(transpiler.io) - stat.mtime().sec > seconds_cache_valid;
                 }
             };
 
             if (is_stale) {
                 _ = target_package_json.close();
                 // If delete fails, oh well. Hope installation takes care of it.
-                std.fs.cwd().deleteTree(tempdir_name) catch {};
+                std.Io.Dir.cwd().deleteTree(transpiler.io, tempdir_name) catch {};
                 return error.NeedToInstall;
             }
             _ = target_package_json.close();
@@ -618,19 +618,16 @@ pub const BunxCommand = struct {
                             switch (rc) {
                                 .SUCCESS => {
                                     const time = std.os.windows.fromSysTime(info.LastWriteTime);
-                                    const now = std.time.nanoTimestamp();
+                                    const now = std.Io.Clock.real.now(this_transpiler.io).nanoseconds;
                                     break :is_stale (now - time > nanoseconds_cache_valid);
                                 },
                                 // treat failures to stat as stale
                                 else => break :is_stale true,
                             }
                         } else {
-                            var stat: std.posix.Stat = undefined;
-                            const rc = std.c.stat(destination, &stat);
-                            if (rc != 0) {
-                                break :is_stale true;
-                            }
-                            break :is_stale std.time.timestamp() - stat.mtime().sec > seconds_cache_valid;
+                            var stat_path_buf: bun.PathBuffer = undefined;
+                            const stat = bun.sys.stat(bun.path.z(destination, &stat_path_buf)).unwrap() catch break :is_stale true;
+                            break :is_stale bun.realSeconds(this_transpiler.io) - stat.mtime().sec > seconds_cache_valid;
                         }
                     };
 
@@ -736,13 +733,14 @@ pub const BunxCommand = struct {
             Global.exit(1);
         }
 
-        const bunx_install_dir = try std.fs.cwd().makeOpenPath(bunx_cache_dir, .{});
+        const bunx_install_dir = try bun.MakePath.makeOpenPath(this_transpiler.io, std.Io.Dir.cwd(), bunx_cache_dir, .{});
+        defer bunx_install_dir.close(this_transpiler.io);
 
         create_package_json: {
             // create package.json, but only if it doesn't exist
-            var package_json = bunx_install_dir.createFileZ("package.json", .{ .truncate = true }) catch break :create_package_json;
-            defer package_json.close();
-            package_json.writeAll("{}\n") catch {};
+            const package_json = bunx_install_dir.createFile(this_transpiler.io, "package.json", .{ .truncate = true }) catch break :create_package_json;
+            defer package_json.close(this_transpiler.io);
+            package_json.writeStreamingAll(this_transpiler.io, "{}\n") catch {};
         }
 
         var args = bun.BoundedArray([]const u8, 8).fromSlice(&.{

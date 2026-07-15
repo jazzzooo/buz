@@ -37,9 +37,9 @@ fn prepareCssAstsForChunkImpl(c: *LinkerContext, chunk: *Chunk, allocator: std.m
                     }
                     var ast = bun.css.BundlerStyleSheet{
                         .rules = rules,
-                        .sources = .{},
-                        .source_map_urls = .{},
-                        .license_comments = .{},
+                        .sources = .empty,
+                        .source_map_urls = .empty,
+                        .license_comments = .empty,
                         .options = bun.css.ParserOptions.default(allocator, null),
                         .composes = .{},
                     };
@@ -69,9 +69,9 @@ fn prepareCssAstsForChunkImpl(c: *LinkerContext, chunk: *Chunk, allocator: std.m
 
                             const ast_import = bun.css.BundlerStyleSheet{
                                 .options = bun.css.ParserOptions.default(allocator, null),
-                                .license_comments = .{},
-                                .sources = .{},
-                                .source_map_urls = .{},
+                                .license_comments = .empty,
+                                .sources = .empty,
+                                .source_map_urls = .empty,
                                 .rules = rules: {
                                     var rules = bun.css.BundlerCssRuleList{};
                                     var import_rule = bun.css.ImportRule{
@@ -134,9 +134,9 @@ fn prepareCssAstsForChunkImpl(c: *LinkerContext, chunk: *Chunk, allocator: std.m
                             }) catch |err| bun.handleOom(err);
                             break :rules rules;
                         },
-                        .sources = .{},
-                        .source_map_urls = .{},
-                        .license_comments = .{},
+                        .sources = .empty,
+                        .source_map_urls = .empty,
+                        .license_comments = .empty,
                         .options = bun.css.ParserOptions.default(allocator, null),
                         .composes = .{},
                     };
@@ -247,7 +247,7 @@ fn wrapRulesWithConditions(
                     continue;
                 } else {
                     // Generate "@layer foo;" instead of "@layer foo {}"
-                    ast.rules.v = .{};
+                    ast.rules.v = .empty;
                     do_block_rule = false;
                 }
             }

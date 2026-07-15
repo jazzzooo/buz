@@ -235,8 +235,18 @@ pub const PatchFile = struct {
         // to use the arena
         const use_arena: bool = stat.size <= PAGE_SIZE;
         const file_alloc = if (use_arena) arena.allocator() else bun.default_allocator;
-        const filebuf = patch_dir.stdDir().readFileAlloc(file_alloc, file_path, 1024 * 1024 * 1024 * 4) catch return .{ .err = bun.sys.Error.fromCode(.INVAL, .read).withPath(file_path) };
-        defer file_alloc.free(filebuf);
+        const patch_file = switch (bun.sys.File.openat(patch_dir, file_path, bun.O.RDONLY, 0)) {
+            .result => |file| file,
+            .err => |err| return .{ .err = err.withPath(file_path) },
+        };
+        defer patch_file.close();
+        var read_result = patch_file.readToEnd(file_alloc);
+        if (read_result.err) |err| {
+            read_result.bytes.deinit();
+            return .{ .err = err.withPath(file_path) };
+        }
+        defer read_result.bytes.deinit();
+        const filebuf = read_result.bytes.items;
 
         var file_line_count: usize = 0;
         const lines_count = brk: {
@@ -1232,57 +1242,21 @@ pub fn gitDiffInternal(
         allocator.free(new_folder);
     };
 
-    var child_proc = std.process.Child.init(
-        &[_][]const u8{
-            "git",
-            "-c",
-            "core.safecrlf=false",
-            "diff",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-            "--ignore-cr-at-eol",
-            "--irreversible-delete",
-            "--full-index",
-            "--no-index",
-            old_folder,
-            new_folder,
-        },
-        allocator,
-    );
-    // unfortunately, git diff returns non-zero exit codes even when it succeeds.
-    // we have to check that stderr was not empty to know if it failed
-    child_proc.stdout_behavior = .Pipe;
-    child_proc.stderr_behavior = .Pipe;
-    var map = std.process.EnvMap.init(allocator);
-    defer map.deinit();
-    if (bun.env_var.PATH.get()) |v| try map.put("PATH", v);
-    try map.put("GIT_CONFIG_NOSYSTEM", "1");
-    try map.put("HOME", "");
-    try map.put("XDG_CONFIG_HOME", "");
-    try map.put("USERPROFILE", "");
+    var cwd_buf: bun.PathBuffer = undefined;
+    const cwd_slice = try bun.getcwd(&cwd_buf);
+    const cwd = try allocator.dupeSentinel(u8, cwd_slice, 0);
+    defer allocator.free(cwd);
 
-    child_proc.env_map = &map;
-    var stdout: std.ArrayListUnmanaged(u8) = .empty;
-    var stderr: std.ArrayListUnmanaged(u8) = .empty;
-    var deinit_stdout = true;
-    var deinit_stderr = true;
-    defer {
-        if (deinit_stdout) stdout.deinit(allocator);
-        if (deinit_stderr) stderr.deinit(allocator);
-    }
-    try child_proc.spawn();
-    try child_proc.collectOutput(allocator, &stdout, &stderr, 1024 * 1024 * 4);
-    _ = try child_proc.wait();
-    if (stderr.items.len > 0) {
-        deinit_stderr = false;
-        return .{ .err = stderr.toManaged(allocator) };
-    }
-
-    debug("Before postprocess: {s}\n", .{stdout.items});
-    var stdout_managed = stdout.toManaged(allocator);
-    try gitDiffPostprocess(&stdout_managed, old_folder, new_folder);
-    deinit_stdout = false;
-    return .{ .result = stdout_managed };
+    var git_buf: bun.PathBuffer = undefined;
+    const git = bun.which(&git_buf, bun.env_var.PATH.get() orelse "", cwd, "git") orelse return error.FileNotFound;
+    var event_loop: jsc.AnyEventLoop = .{ .js = jsc.VirtualMachine.get().eventLoop() };
+    const options = spawnOpts(old_folder, new_folder, cwd, git, &event_loop);
+    var spawn_result = switch (try bun.spawnSync(&options)) {
+        .result => |result| result,
+        .err => |err| return err.toZigErr(),
+    };
+    defer spawn_result.deinit();
+    return diffPostProcess(&spawn_result, old_folder, new_folder);
 }
 
 /// Now we need to do the equivalent of these regex subtitutions.

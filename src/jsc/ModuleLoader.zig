@@ -176,6 +176,7 @@ pub fn transpileSourceCode(
             }
 
             var cache = jsc.RuntimeTranspilerCache{
+                .io = jsc_vm.io,
                 .output_code_allocator = allocator,
                 .sourcemap_allocator = bun.default_allocator,
                 .esm_record_allocator = bun.default_allocator,
@@ -806,8 +807,8 @@ pub fn transpileSourceCode(
                 if (!jsc_vm.origin.isEmpty()) {
                     var buf = bun.handleOom(MutableString.init2048(jsc_vm.allocator));
                     defer buf.deinit();
-                    var writer = buf.writer();
-                    jsc.API.Bun.getPublicPath(specifier, jsc_vm.origin, @TypeOf(&writer), &writer);
+                    const writer = buf.writer();
+                    jsc.API.Bun.getPublicPath(specifier, jsc_vm.origin, @TypeOf(writer), writer);
                     break :brk try bun.String.createUTF8ForJS(globalObject.?, buf.slice());
                 }
 

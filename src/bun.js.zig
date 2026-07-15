@@ -42,6 +42,7 @@ pub const Run = struct {
         run = .{
             .vm = try VirtualMachine.initWithModuleGraph(.{
                 .allocator = arena.allocator(),
+                .io = ctx.io,
                 .log = ctx.log,
                 .args = ctx.args,
                 .graph = graph_ptr,
@@ -145,6 +146,7 @@ pub const Run = struct {
         // this is a hack: make dummy bundler so we can use its `.runEnvLoader()` function to populate environment variables probably should split out the functionality
         var bundle = try bun.Transpiler.init(
             ctx.allocator,
+            ctx.io,
             ctx.log,
             try @import("./jsc/config.zig").configureTransformOptionsForBunVM(ctx.allocator, ctx.args),
             null,
@@ -180,6 +182,7 @@ pub const Run = struct {
             .vm = try VirtualMachine.init(
                 .{
                     .allocator = arena.allocator(),
+                    .io = ctx.io,
                     .log = ctx.log,
                     .args = ctx.args,
                     .store_fd = ctx.debug.hot_reload != .none,

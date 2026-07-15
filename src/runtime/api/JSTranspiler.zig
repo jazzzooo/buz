@@ -689,6 +689,7 @@ pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
     const log = &config.log;
     this.transpiler = Transpiler.Transpiler.init(
         bun.default_allocator,
+        globalThis.bunVM().io,
         log,
         config.transform,
         jsc.VirtualMachine.get().transpiler.env,
@@ -747,7 +748,7 @@ pub fn deinit(this: *JSTranspiler) void {
     this.transpiler.log.clearAndFree();
     this.scan_pass_result.named_imports.deinit(this.scan_pass_result.import_records.allocator);
     this.scan_pass_result.import_records.deinit();
-    this.scan_pass_result.used_symbols.deinit();
+    this.scan_pass_result.used_symbols.deinit(this.scan_pass_result.import_records.allocator);
     if (this.buffer_writer != null) {
         this.buffer_writer.?.buffer.deinit();
     }

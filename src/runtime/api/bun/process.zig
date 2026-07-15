@@ -2811,7 +2811,7 @@ pub const sync = struct {
             _ = std.posix.prctl(.SET_PDEATHSIG, .{0}) catch {};
         }
         defer if (ppid > 1) {
-            _ = std.posix.prctl(.SET_PDEATHSIG, .{std.posix.SIG.KILL}) catch {};
+            _ = std.posix.prctl(.SET_PDEATHSIG, .{@intFromEnum(std.posix.SIG.KILL)}) catch {};
         };
         if (ppid > 1 and std.c.getppid() != ppid)
             bun.Global.exit(bun.ParentDeathWatchdog.exit_code);

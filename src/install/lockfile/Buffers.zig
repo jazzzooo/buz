@@ -82,7 +82,7 @@ pub fn readArray(stream: *Stream, allocator: Allocator, comptime ArrayList: type
     const PointerType = std.meta.Child(@TypeOf(arraylist.items.ptr));
 
     var reader = stream.reader();
-    const start_pos = try reader.readInt(u64, .little);
+    const start_pos = try reader.takeInt(u64, .little);
 
     // If its 0xDEADBEEF, then that means the value was never written in the lockfile.
     if (start_pos == 0xDEADBEEF) {
@@ -96,11 +96,11 @@ pub fn readArray(stream: *Stream, allocator: Allocator, comptime ArrayList: type
     }
 
     // We shouldn't be going backwards.
-    if (start_pos < (stream.pos -| @sizeOf(u64))) {
+    if (start_pos < (stream.reader_state.seek -| @sizeOf(u64))) {
         return error.CorruptLockfile;
     }
 
-    const end_pos = try reader.readInt(u64, .little);
+    const end_pos = try reader.takeInt(u64, .little);
 
     // If its 0xDEADBEEF, then that means the value was never written in the lockfile.
     // That shouldn't happen.
@@ -124,7 +124,7 @@ pub fn readArray(stream: *Stream, allocator: Allocator, comptime ArrayList: type
     }
 
     const byte_len = end_pos - start_pos;
-    stream.pos = end_pos;
+    stream.reader_state.seek = end_pos;
 
     if (byte_len == 0) return ArrayList{
         .items = &[_]PointerType{},

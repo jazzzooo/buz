@@ -530,7 +530,7 @@ pub const NumberRenamer = struct {
         renamer.number_scope_pool = .init(renamer.arena.allocator());
         renamer.root.name_counts = root_names;
         if (comptime Environment.allow_assert and !Environment.isWindows) {
-            if (std.posix.getenv("BUN_DUMP_SYMBOLS") != null)
+            if (bun.getenvZ("BUN_DUMP_SYMBOLS") != null)
                 symbols.dump();
         }
 

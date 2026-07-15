@@ -46,7 +46,7 @@ pub fn byteLength(this: *const Command) usize {
 pub fn serialize(this: *const Command, allocator: std.mem.Allocator) ![]u8 {
     var buf = try std.Io.Writer.Allocating.initCapacity(allocator, this.byteLength());
     errdefer buf.deinit();
-    try this.write(&buf.writer);
+    this.write(&buf.writer) catch return error.OutOfMemory;
     return try buf.toOwnedSlice();
 }
 

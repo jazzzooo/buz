@@ -828,8 +828,7 @@ pub inline fn nodeFS(this: *VirtualMachine) *Node.fs.NodeFS {
     return this.node_fs orelse brk: {
         this.node_fs = bun.default_allocator.create(Node.fs.NodeFS) catch unreachable;
         this.node_fs.?.* = Node.fs.NodeFS{
-            // only used when standalone module graph is enabled
-            .vm = if (this.standalone_module_graph != null) this else null,
+            .vm = this,
         };
         break :brk this.node_fs.?;
     };
@@ -949,7 +948,7 @@ pub fn onExit(this: *VirtualMachine) void {
     while (rare_data.cleanup_hooks.items.len > 0) {
         var hooks = rare_data.cleanup_hooks;
         defer hooks.deinit(bun.default_allocator);
-        rare_data.cleanup_hooks = .{};
+        rare_data.cleanup_hooks = .empty;
         for (hooks.items) |hook| {
             hook.execute();
         }
@@ -1107,6 +1106,7 @@ pub fn initWithModuleGraph(
     const log = opts.log.?;
     const transpiler = try Transpiler.init(
         allocator,
+        opts.io,
         log,
         opts.args,
         null,
@@ -1233,6 +1233,7 @@ pub fn init(opts: Options) !*VirtualMachine {
     console.init(Output.rawErrorWriter(), Output.rawWriter());
     const transpiler = try Transpiler.init(
         allocator,
+        opts.io,
         log,
         try Config.configureTransformOptionsForBunVM(allocator, opts.args),
         opts.env_loader,
@@ -1405,6 +1406,7 @@ pub fn initWorker(
     console.init(Output.rawErrorWriter(), Output.rawWriter());
     const transpiler = try Transpiler.init(
         allocator,
+        opts.io,
         log,
         try Config.configureTransformOptionsForBunVM(allocator, opts.args),
         opts.env_loader,
@@ -1504,6 +1506,7 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
     console.init(Output.rawErrorWriter(), Output.rawWriter());
     const transpiler = try Transpiler.init(
         allocator,
+        opts.io,
         log,
         try Config.configureTransformOptionsForBunVM(allocator, opts.args),
         opts.env_loader,

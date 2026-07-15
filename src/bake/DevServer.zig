@@ -225,7 +225,7 @@ active_websocket_connections: std.AutoHashMapUnmanaged(*HmrSocket, void),
 
 // Debugging
 
-dump_dir: if (bun.FeatureFlags.bake_debugging_features) ?std.fs.Dir else void,
+dump_dir: if (bun.FeatureFlags.bake_debugging_features) ?std.Io.Dir else void,
 /// Reference count to number of active sockets with the incremental_visualizer enabled.
 emit_incremental_visualizer_events: u32,
 /// Reference count to number of active sockets with the memory_visualizer enabled.
@@ -298,14 +298,14 @@ pub fn init(options: Options) bun.JSOOM!*DevServer {
 
     var dump_dir = if (bun.FeatureFlags.bake_debugging_features)
         if (options.dump_sources) |dir|
-            std.fs.cwd().makeOpenPath(dir, .{}) catch |err| dir: {
+            bun.MakePath.makeOpenPath(options.vm.io, std.Io.Dir.cwd(), dir, .{}) catch |err| dir: {
                 bun.handleErrorReturnTrace(err, @errorReturnTrace());
                 Output.warn("Could not open directory for dumping sources: {}", .{err});
                 break :dir null;
             }
         else
             null;
-    errdefer if (bun.FeatureFlags.bake_debugging_features) if (dump_dir) |*dir| dir.close();
+    errdefer if (bun.FeatureFlags.bake_debugging_features) if (dump_dir) |*dir| dir.close(options.vm.io);
 
     const separate_ssr_graph = if (options.framework.server_components) |sc| sc.separate_ssr_graph else false;
 
@@ -395,11 +395,12 @@ pub fn init(options: Options) bun.JSOOM!*DevServer {
     // This causes a memory leak, but the allocator is otherwise used on multiple threads.
     const transpiler_allocator = bun.default_allocator;
 
-    dev.framework.initTranspiler(transpiler_allocator, &dev.log, .development, .server, &dev.server_transpiler, &dev.bundler_options.server) catch |err|
+    dev.framework.initTranspiler(transpiler_allocator, dev.vm.io, &dev.log, .development, .server, &dev.server_transpiler, &dev.bundler_options.server) catch |err|
         return global.throwError(err, generic_action);
     dev.server_transpiler.options.dev_server = dev;
     dev.framework.initTranspiler(
         transpiler_allocator,
+        dev.vm.io,
         &dev.log,
         .development,
         .client,
@@ -413,7 +414,7 @@ pub fn init(options: Options) bun.JSOOM!*DevServer {
     dev.client_transpiler.resolver.watcher = dev.bun_watcher.getResolveWatcher();
 
     if (separate_ssr_graph) {
-        dev.framework.initTranspiler(transpiler_allocator, &dev.log, .development, .ssr, &dev.ssr_transpiler, &dev.bundler_options.ssr) catch |err|
+        dev.framework.initTranspiler(transpiler_allocator, dev.vm.io, &dev.log, .development, .ssr, &dev.ssr_transpiler, &dev.bundler_options.ssr) catch |err|
             return global.throwError(err, generic_action);
         dev.ssr_transpiler.options.dev_server = dev;
         dev.ssr_transpiler.resolver.watcher = dev.bun_watcher.getResolveWatcher();
@@ -625,7 +626,7 @@ pub fn deinit(dev: *DevServer) void {
             dev.vm.timer.remove(&dev.memory_visualizer_timer),
         .graph_safety_lock = dev.graph_safety_lock.lock(),
         .bun_watcher = dev.bun_watcher.deinit(true),
-        .dump_dir = if (bun.FeatureFlags.bake_debugging_features) if (dev.dump_dir) |*dir| dir.close(),
+        .dump_dir = if (bun.FeatureFlags.bake_debugging_features) if (dev.dump_dir) |*dir| dir.close(dev.vm.io),
         .log = dev.log.deinit(),
         .server_fetch_function_callback = dev.server_fetch_function_callback.deinit(),
         .server_register_update_callback = dev.server_register_update_callback.deinit(),
@@ -1632,11 +1633,12 @@ fn generateJavaScriptCodeForHTMLFile(
     const sfa = sfa_state.allocator();
     var array = bun.handleOom(std.ArrayListUnmanaged(u8).initCapacity(sfa, 65536));
     defer array.deinit(sfa);
-    const w = array.writer(sfa);
+    var array_writer = bun.UnmanagedWriter.init(&array, sfa);
+    const w = array_writer.writer();
 
-    try w.writeAll("  ");
-    try bun.js_printer.writeJSONString(input_file_sources[index.get()].path.pretty, @TypeOf(w), w, .utf8);
-    try w.writeAll(": [ [");
+    w.writeAll("  ") catch return error.OutOfMemory;
+    bun.js_printer.writeJSONString(input_file_sources[index.get()].path.pretty, @TypeOf(w), w, .utf8) catch return error.OutOfMemory;
+    w.writeAll(": [ [") catch return error.OutOfMemory;
     var any = false;
     for (import_records[index.get()].slice()) |import| {
         if (import.source_index.isValid()) {
@@ -1650,16 +1652,17 @@ fn generateJavaScriptCodeForHTMLFile(
         }
         if (!any) {
             any = true;
-            try w.writeAll("\n");
+            w.writeAll("\n") catch return error.OutOfMemory;
         }
-        try w.writeAll("    ");
-        try bun.js_printer.writeJSONString(import.path.pretty, @TypeOf(w), w, .utf8);
-        try w.writeAll(", 0,\n");
+        w.writeAll("    ") catch return error.OutOfMemory;
+        bun.js_printer.writeJSONString(import.path.pretty, @TypeOf(w), w, .utf8) catch return error.OutOfMemory;
+        w.writeAll(", 0,\n") catch return error.OutOfMemory;
     }
     if (any) {
-        try w.writeAll("  ");
+        w.writeAll("  ") catch return error.OutOfMemory;
     }
-    try w.writeAll("], [], [], () => {}, false],\n");
+    w.writeAll("], [], [], () => {}, false],\n") catch return error.OutOfMemory;
+    array_writer.finish();
 
     // Avoid-recloning if it is was moved to the heap
     return if (array.items.ptr == sfa_state_buffer[0..].ptr)
@@ -1971,7 +1974,7 @@ pub fn prepareAndLogResolutionFailures(dev: *DevServer) !void {
     }
 }
 
-fn indexFailures(dev: *DevServer) !void {
+fn indexFailures(dev: *DevServer) bun.OOM!void {
     // After inserting failures into the IncrementalGraphs, they are traced to their routes.
     var sfa_state_buffer: [65536]u8 = undefined;
     var sfa_state: std.heap.BufferFirstAllocator = .init(&sfa_state_buffer, dev.allocator());
@@ -1992,17 +1995,18 @@ fn indexFailures(dev: *DevServer) !void {
         var payload = try std.array_list.Managed(u8).initCapacity(sfa, total_len);
         defer payload.deinit();
         payload.appendAssumeCapacity(MessageId.errors.char());
-        const w = payload.writer();
+        var payload_writer = bun.ManagedWriter.init(&payload);
+        const w = payload_writer.writer();
 
-        try w.writeInt(u32, @intCast(dev.incremental_result.failures_removed.items.len), .little);
+        w.writeInt(u32, @intCast(dev.incremental_result.failures_removed.items.len), .little) catch return error.OutOfMemory;
 
         for (dev.incremental_result.failures_removed.items) |removed| {
-            try w.writeInt(u32, @bitCast(removed.getOwner().encode()), .little);
+            w.writeInt(u32, @bitCast(removed.getOwner().encode()), .little) catch return error.OutOfMemory;
             removed.deinit(dev);
         }
 
         for (dev.incremental_result.failures_added.items) |added| {
-            try w.writeAll(added.data);
+            w.writeAll(added.data) catch return error.OutOfMemory;
 
             switch (added.getOwner()) {
                 .none, .route => unreachable,
@@ -2027,20 +2031,23 @@ fn indexFailures(dev: *DevServer) !void {
             dev.routeBundlePtr(index).server_state = .possible_bundling_failures;
         }
 
+        payload_writer.finish();
         dev.publish(.errors, payload.items, .binary);
     } else if (dev.incremental_result.failures_removed.items.len > 0) {
         var payload = try std.array_list.Managed(u8).initCapacity(sfa, @sizeOf(MessageId) + @sizeOf(u32) + dev.incremental_result.failures_removed.items.len * @sizeOf(u32));
         defer payload.deinit();
         payload.appendAssumeCapacity(MessageId.errors.char());
-        const w = payload.writer();
+        var payload_writer = bun.ManagedWriter.init(&payload);
+        const w = payload_writer.writer();
 
-        try w.writeInt(u32, @intCast(dev.incremental_result.failures_removed.items.len), .little);
+        w.writeInt(u32, @intCast(dev.incremental_result.failures_removed.items.len), .little) catch return error.OutOfMemory;
 
         for (dev.incremental_result.failures_removed.items) |removed| {
-            try w.writeInt(u32, @bitCast(removed.getOwner().encode()), .little);
+            w.writeInt(u32, @bitCast(removed.getOwner().encode()), .little) catch return error.OutOfMemory;
             removed.deinit(dev);
         }
 
+        payload_writer.finish();
         dev.publish(.errors, payload.items, .binary);
     }
 
@@ -2633,7 +2640,10 @@ pub fn finalizeBundle(
     hot_update_payload.appendAssumeCapacity(MessageId.hot_update.char());
 
     // The writer used for the hot_update payload
-    const w = hot_update_payload.writer();
+    var hot_update_writer = bun.ManagedWriter.init(&hot_update_payload);
+    var hot_update_writer_finished = false;
+    errdefer if (!hot_update_writer_finished) hot_update_writer.finish();
+    const w = hot_update_writer.writer();
 
     // It was discovered that if a tree falls with nobody around it, it does not
     // make any sound. Let's avoid writing into `w` if no sockets are open.
@@ -2674,10 +2684,10 @@ pub fn finalizeBundle(
         while (it.next()) |bundled_route_index| {
             const bundle = &dev.route_bundles.items[bundled_route_index];
             if (bundle.active_viewers == 0) continue;
-            try w.writeInt(i32, @intCast(bundled_route_index), .little);
+            w.writeInt(i32, @intCast(bundled_route_index), .little) catch return error.OutOfMemory;
         }
     }
-    try w.writeInt(i32, -1, .little);
+    w.writeInt(i32, -1, .little) catch return error.OutOfMemory;
 
     // When client component roots get updated, the `client_components_affected`
     // list contains the server side versions of these roots. These roots are
@@ -2758,7 +2768,7 @@ pub fn finalizeBundle(
                 }
             }
             if (route_bundle.active_viewers == 0 or !will_hear_hot_update) continue;
-            try w.writeInt(i32, @intCast(i), .little);
+            w.writeInt(i32, @intCast(i), .little) catch return error.OutOfMemory;
 
             // If no edges were changed, then it is impossible to
             // change the list of CSS files.
@@ -2768,30 +2778,30 @@ pub fn finalizeBundle(
                 try dev.traceAllRouteImports(route_bundle, &gts, .find_css);
                 const css_ids = dev.client_graph.current_css_files.items;
 
-                try w.writeInt(i32, @intCast(css_ids.len), .little);
+                w.writeInt(i32, @intCast(css_ids.len), .little) catch return error.OutOfMemory;
                 for (css_ids) |css_id| {
-                    try w.writeAll(&std.fmt.bytesToHex(std.mem.asBytes(&css_id), .lower));
+                    w.writeAll(&std.fmt.bytesToHex(std.mem.asBytes(&css_id), .lower)) catch return error.OutOfMemory;
                 }
             } else {
-                try w.writeInt(i32, -1, .little);
+                w.writeInt(i32, -1, .little) catch return error.OutOfMemory;
             }
         }
     }
-    try w.writeInt(i32, -1, .little);
+    w.writeInt(i32, -1, .little) catch return error.OutOfMemory;
 
     const css_chunks = result.cssChunks();
     if (will_hear_hot_update) {
         if (dev.client_graph.current_chunk_len > 0 or css_chunks.len > 0) {
             // Send CSS mutations
             const asset_values = dev.assets.files.values();
-            try w.writeInt(u32, @intCast(css_chunks.len), .little);
+            w.writeInt(u32, @intCast(css_chunks.len), .little) catch return error.OutOfMemory;
             const sources = bv2.graph.input_files.items(.source);
             for (css_chunks) |chunk| {
                 const key = sources[chunk.entry_point.source_index].path.keyForIncrementalGraph();
-                try w.writeAll(&std.fmt.bytesToHex(std.mem.asBytes(&bun.hash(key)), .lower));
+                w.writeAll(&std.fmt.bytesToHex(std.mem.asBytes(&bun.hash(key)), .lower)) catch return error.OutOfMemory;
                 const css_data = asset_values[chunk.entry_point.entry_point_id].blob.InternalBlob.bytes.items;
-                try w.writeInt(u32, @intCast(css_data.len), .little);
-                try w.writeAll(css_data);
+                w.writeInt(u32, @intCast(css_data.len), .little) catch return error.OutOfMemory;
+                w.writeAll(css_data) catch return error.OutOfMemory;
             }
 
             // Send the JS chunk
@@ -2834,9 +2844,11 @@ pub fn finalizeBundle(
                     },
                     .shared => |entry| entry,
                 };
-                try w.writeInt(u32, entry.overlapping_memory_cost, .little);
+                w.writeInt(u32, entry.overlapping_memory_cost, .little) catch return error.OutOfMemory;
 
                 // Build and send the source chunk
+                hot_update_writer.finish();
+                hot_update_writer_finished = true;
                 try dev.client_graph.takeJSBundleToList(&hot_update_payload, &.{
                     .kind = .hmr_chunk,
                     .script_id = script_id,
@@ -2844,9 +2856,10 @@ pub fn finalizeBundle(
                 });
             }
         } else {
-            try w.writeInt(i32, 0, .little);
+            w.writeInt(i32, 0, .little) catch return error.OutOfMemory;
         }
 
+        if (!hot_update_writer_finished) hot_update_writer.finish();
         dev.publish(.hot_update, hot_update_payload.items, .binary);
         had_sent_hmr_event = true;
     }
@@ -3303,7 +3316,7 @@ fn getOrPutRouteBundle(dev: *DevServer, route: RouteBundle.UnresolvedIndex) !Rou
                 } };
             },
         },
-        .client_script_generation = std.crypto.random.int(u32),
+        .client_script_generation = @truncate(bun.fastRandom()),
         .server_state = .unqueued,
         .client_bundle = null,
         .active_viewers = 0,
@@ -3525,15 +3538,15 @@ pub const IncrementalResult = struct {
     failures_added: ArrayListUnmanaged(SerializedFailure),
 
     pub const empty: IncrementalResult = .{
-        .framework_routes_affected = .{},
-        .html_routes_soft_affected = .{},
-        .html_routes_hard_affected = .{},
+        .framework_routes_affected = .empty,
+        .html_routes_soft_affected = .empty,
+        .html_routes_hard_affected = .empty,
         .had_adjusted_edges = false,
-        .failures_removed = .{},
-        .failures_added = .{},
-        .client_components_added = .{},
-        .client_components_removed = .{},
-        .client_components_affected = .{},
+        .failures_removed = .empty,
+        .failures_added = .empty,
+        .client_components_added = .empty,
+        .client_components_removed = .empty,
+        .client_components_affected = .empty,
     };
 
     fn reset(result: *IncrementalResult) void {
@@ -3616,20 +3629,20 @@ pub const ChunkKind = enum(u1) {
 pub const SerializedFailure = @import("./DevServer/SerializedFailure.zig");
 
 // For debugging, it is helpful to be able to see bundles.
-pub fn dumpBundle(dump_dir: std.fs.Dir, graph: bake.Graph, rel_path: []const u8, chunk: []const u8, wrap: bool) !void {
+pub fn dumpBundle(io: std.Io, dump_dir: std.Io.Dir, graph: bake.Graph, rel_path: []const u8, chunk: []const u8, wrap: bool) !void {
     const buf = bun.path_buffer_pool.get();
     defer bun.path_buffer_pool.put(buf);
     const name = bun.path.joinAbsStringBuf("/", buf, &.{
         @tagName(graph),
         rel_path,
     }, .auto)[1..];
-    var inner_dir = try dump_dir.makeOpenPath(bun.Dirname.dirname(u8, name).?, .{});
-    defer inner_dir.close();
+    var inner_dir = try bun.MakePath.makeOpenPath(io, dump_dir, bun.Dirname.dirname(u8, name).?, .{});
+    defer inner_dir.close(io);
 
-    const file = try inner_dir.createFile(bun.path.basename(name), .{});
-    defer file.close();
+    const file = try inner_dir.createFile(io, bun.path.basename(name), .{});
+    defer file.close(io);
     var file_buffer: [1024]u8 = undefined;
-    var file_writer = file.writerStreaming(&file_buffer);
+    var file_writer = file.writerStreaming(io, &file_buffer);
     const bufw = &file_writer.interface;
 
     if (!bun.strings.hasSuffixComptime(rel_path, ".map")) {
@@ -3638,7 +3651,7 @@ pub fn dumpBundle(dump_dir: std.fs.Dir, graph: bake.Graph, rel_path: []const u8,
             @tagName(graph),
         });
         try bufw.print("// Bundled at {d}, Bun " ++ bun.Global.package_json_version_with_canary ++ "\n", .{
-            std.time.nanoTimestamp(),
+            bun.timespec.realNow().nsSigned(),
         });
     }
 
@@ -3656,7 +3669,7 @@ pub fn dumpBundle(dump_dir: std.fs.Dir, graph: bake.Graph, rel_path: []const u8,
     try bufw.flush();
 }
 
-pub noinline fn dumpBundleForChunk(dev: *DevServer, dump_dir: std.fs.Dir, side: bake.Side, key: []const u8, code: []const u8, wrap: bool, is_ssr_graph: bool) void {
+pub noinline fn dumpBundleForChunk(dev: *DevServer, dump_dir: std.Io.Dir, side: bake.Side, key: []const u8, code: []const u8, wrap: bool, is_ssr_graph: bool) void {
     const cwd = dev.root;
     var a: bun.PathBuffer = undefined;
     var b: [bun.MAX_PATH_BYTES * 2]u8 = undefined;
@@ -3664,7 +3677,7 @@ pub noinline fn dumpBundleForChunk(dev: *DevServer, dump_dir: std.fs.Dir, side: 
     const size = std.mem.replacementSize(u8, rel_path, ".." ++ std.fs.path.sep_str, "_.._" ++ std.fs.path.sep_str);
     _ = std.mem.replace(u8, rel_path, ".." ++ std.fs.path.sep_str, "_.._" ++ std.fs.path.sep_str, &b);
     const rel_path_escaped = b[0..size];
-    dumpBundle(dump_dir, switch (side) {
+    dumpBundle(dev.vm.io, dump_dir, switch (side) {
         .client => .client,
         .server => if (is_ssr_graph) .ssr else .server,
     }, rel_path_escaped, code, wrap) catch |err| {
@@ -3719,7 +3732,9 @@ pub fn emitMemoryVisualizerMessage(dev: *DevServer) void {
 }
 
 pub fn writeMemoryVisualizerMessage(dev: *DevServer, payload: *std.array_list.Managed(u8)) !void {
-    const w = payload.writer();
+    var payload_writer = bun.ManagedWriter.init(payload);
+    defer payload_writer.finish();
+    const w = payload_writer.writer();
     const Fields = extern struct {
         incremental_graph_client: u32,
         incremental_graph_server: u32,
@@ -3748,7 +3763,7 @@ pub fn writeMemoryVisualizerMessage(dev: *DevServer, payload: *std.array_list.Ma
         .process_used = @truncate(bun.sys.selfProcessMemoryUsage() orelse 0),
         .system_used = @truncate(system_total -| bun.api.node.os.freemem()),
         .system_total = @truncate(system_total),
-    });
+    }, .little);
 
     // SourceMapStore is easy to leak refs in.
     {
@@ -3774,7 +3789,9 @@ pub fn writeMemoryVisualizerMessage(dev: *DevServer, payload: *std.array_list.Ma
 
 pub fn writeVisualizerMessage(dev: *DevServer, payload: *std.array_list.Managed(u8)) !void {
     payload.appendAssumeCapacity(MessageId.visualizer.char());
-    const w = payload.writer();
+    var payload_writer = bun.ManagedWriter.init(payload);
+    defer payload_writer.finish();
+    const w = payload_writer.writer();
 
     inline for (
         [2]bake.Side{ .client, .server },
@@ -4265,8 +4282,8 @@ fn dumpStateDueToCrash(dev: *DevServer) !void {
 
     // being conservative about how much stuff is put on the stack.
     var filepath_buf: [@min(4096, bun.MAX_PATH_BYTES)]u8 = undefined;
-    const filepath = std.mem.printSentinel(&filepath_buf, "incremental-graph-crash-dump.{d}.html", .{std.time.timestamp()}, 0) catch "incremental-graph-crash-dump.html";
-    const file = std.fs.cwd().createFileZ(filepath, .{}) catch |err| {
+    const filepath = std.mem.printSentinel(&filepath_buf, "incremental-graph-crash-dump.{d}.html", .{bun.timespec.realNow().sec}, 0) catch "incremental-graph-crash-dump.html";
+    const file = bun.sys.File.open(filepath, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o644).unwrap() catch |err| {
         bun.handleErrorReturnTrace(err, @errorReturnTrace());
         Output.warn("Could not open file for dumping incremental graph: {}", .{err});
         return;
@@ -4279,8 +4296,8 @@ fn dumpStateDueToCrash(dev: *DevServer) !void {
         const i = (std.mem.lastIndexOf(u8, visualizer, "<script>") orelse unreachable) + "<script>".len;
         break :brk .{ visualizer[0..i], visualizer[i..] };
     };
-    try file.writeAll(start);
-    try file.writeAll("\nlet inlinedData = Uint8Array.from(atob(\"");
+    try file.writeAll(start).unwrap();
+    try file.writeAll("\nlet inlinedData = Uint8Array.from(atob(\"").unwrap();
 
     var sfb_buffer: [4096]u8 = undefined;
     var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, dev.allocator());
@@ -4291,11 +4308,11 @@ fn dumpStateDueToCrash(dev: *DevServer) !void {
     var buf: [bun.base64.encodeLenFromSize(4096)]u8 = undefined;
     var it = std.mem.window(u8, payload.items, 4096, 4096);
     while (it.next()) |chunk| {
-        try file.writeAll(buf[0..bun.base64.encode(&buf, chunk)]);
+        try file.writeAll(buf[0..bun.base64.encode(&buf, chunk)]).unwrap();
     }
 
-    try file.writeAll("\"), c => c.charCodeAt(0));\n");
-    try file.writeAll(end);
+    try file.writeAll("\"), c => c.charCodeAt(0));\n").unwrap();
+    try file.writeAll(end).unwrap();
 
     Output.note("Dumped incremental bundler graph to {f}", .{bun.fmt.quote(filepath)});
 }
@@ -4463,10 +4480,10 @@ const UnrefSourceMapRequest = struct {
 };
 
 pub fn readString32(reader: anytype, alloc: Allocator) ![]const u8 {
-    const len = try reader.readInt(u32, .little);
+    const len = try reader.takeInt(u32, .little);
     const memory = try alloc.alloc(u8, len);
     errdefer alloc.free(memory);
-    try reader.readNoEof(memory);
+    try reader.readSliceAll(memory);
     return memory;
 }
 

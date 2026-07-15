@@ -1577,7 +1577,8 @@ pub const BundleV2 = struct {
 
         this.waitForParse();
 
-        minify_duration.* = @as(u64, @intCast(@divTrunc(@as(i64, @truncate(std.time.nanoTimestamp())) - @as(i64, @truncate(bun.cli.start_time)), @as(i64, std.time.ns_per_ms))));
+        const minify_end: i128 = @intCast(std.Io.Clock.awake.now(this.transpiler.io).nanoseconds);
+        minify_duration.* = @intCast(@divTrunc(minify_end - bun.cli.start_time, std.time.ns_per_ms));
         source_code_size.* = this.source_code_length;
 
         if (this.transpiler.log.hasErrors()) {
@@ -2222,7 +2223,7 @@ pub const BundleV2 = struct {
         {
             // We do this first to make it harder for any dangling pointers to data to be used in there.
             var on_parse_finalizers = this.finalizers;
-            this.finalizers = .{};
+            this.finalizers = .empty;
             for (on_parse_finalizers.items) |finalizer| {
                 finalizer.call();
             }
@@ -2332,12 +2333,12 @@ pub const BundleV2 = struct {
         const outdir = this.linker.resolver.opts.output_dir;
         if (this.linker.options.metafile_json_path.len > 0) {
             if (metafile) |mf| {
-                try writeMetafileOutput(&output_files, outdir, this.linker.options.metafile_json_path, mf, .@"metafile-json");
+                try writeMetafileOutput(this.transpiler.io, &output_files, outdir, this.linker.options.metafile_json_path, mf, .@"metafile-json");
             }
         }
         if (this.linker.options.metafile_markdown_path.len > 0) {
             if (metafile_markdown) |md| {
-                try writeMetafileOutput(&output_files, outdir, this.linker.options.metafile_markdown_path, md, .@"metafile-markdown");
+                try writeMetafileOutput(this.transpiler.io, &output_files, outdir, this.linker.options.metafile_markdown_path, md, .@"metafile-markdown");
             }
         }
 
@@ -2351,6 +2352,7 @@ pub const BundleV2 = struct {
     /// Writes a metafile (JSON or markdown) to disk and appends it to the output_files list.
     /// Metafile paths are relative to outdir, like all other output files.
     fn writeMetafileOutput(
+        io: std.Io,
         output_files: *std.array_list.Managed(options.OutputFile),
         outdir: []const u8,
         file_path: []const u8,
@@ -2359,16 +2361,16 @@ pub const BundleV2 = struct {
     ) !void {
         if (outdir.len > 0) {
             // Open the output directory
-            var root_dir = bun.FD.cwd().stdDir().makeOpenPath(outdir, .{}) catch |err| {
+            var root_dir = bun.MakePath.makeOpenPath(io, bun.FD.cwd().stdDir(), outdir, .{}) catch |err| {
                 bun.Output.warn("Failed to open output directory '{s}': {s}", .{ outdir, @errorName(err) });
                 return;
             };
-            defer root_dir.close();
+            defer root_dir.close(io);
 
             // Create parent directories if needed (relative to outdir)
             if (std.fs.path.dirname(file_path)) |parent| {
                 if (parent.len > 0) {
-                    root_dir.makePath(parent) catch {};
+                    bun.makePath(root_dir, io, parent) catch {};
                 }
             }
 
@@ -4369,7 +4371,7 @@ pub const DevServerOutput = struct {
 };
 
 pub fn generateUniqueKey() u64 {
-    const key = std.crypto.random.int(u64) & @as(u64, 0x0FFFFFFF_FFFFFFFF);
+    const key = bun.fastRandom() & @as(u64, 0x0FFFFFFF_FFFFFFFF);
     // without this check, putting unique_key in an object key would
     // sometimes get converted to an identifier. ensuring it starts
     // with a number forces that optimization off.

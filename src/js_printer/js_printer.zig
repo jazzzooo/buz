@@ -338,12 +338,12 @@ pub fn writePreQuotedString(text_in: []const u8, comptime Writer: type, writer: 
         }
     }
 }
-pub fn quoteForJSON(text: []const u8, bytes: *MutableString, comptime ascii_only: bool) !void {
+pub fn quoteForJSON(text: []const u8, bytes: *MutableString, comptime ascii_only: bool) bun.OOM!void {
     const writer = bytes.writer();
 
     try bytes.growIfNeeded(estimateLengthForUTF8(text, ascii_only, '"'));
     try bytes.appendChar('"');
-    try writePreQuotedString(text, @TypeOf(writer), writer, '"', ascii_only, true, .utf8);
+    writePreQuotedString(text, @TypeOf(writer), writer, '"', ascii_only, true, .utf8) catch return error.OutOfMemory;
     bytes.appendChar('"') catch unreachable;
 }
 
@@ -6107,7 +6107,11 @@ pub fn printAst(
     if (opts.runtime_transpiler_cache) |cache| {
         var srlz_res = std.array_list.Managed(u8).init(bun.default_allocator);
         defer srlz_res.deinit();
-        if (have_module_info) try opts.module_info.?.asDeserialized().serialize(srlz_res.writer());
+        if (have_module_info) {
+            var serialized_writer = bun.ManagedWriter.init(&srlz_res);
+            try opts.module_info.?.asDeserialized().serialize(serialized_writer.writer());
+            serialized_writer.finish();
+        }
         cache.put(printer.writer.ctx.getWritten(), if (source_maps_chunk) |chunk| chunk.buffer.list.items else "", srlz_res.items);
     }
 
@@ -6383,7 +6387,12 @@ pub fn serializeModuleInfo(module_info: ?*analyze_transpiled_module.ModuleInfo) 
     const deserialized = mi.asDeserialized();
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(bun.default_allocator);
-    deserialized.serialize(buf.writer(bun.default_allocator)) catch return null;
+    var writer_state = bun.UnmanagedWriter.init(&buf, bun.default_allocator);
+    var writer_finished = false;
+    defer if (!writer_finished) writer_state.finish();
+    deserialized.serialize(writer_state.writer()) catch return null;
+    writer_state.finish();
+    writer_finished = true;
     return buf.toOwnedSlice(bun.default_allocator) catch null;
 }
 

@@ -191,7 +191,7 @@ pub const GetAddrInfo = struct {
     };
 
     pub const Result = struct {
-        address: std.net.Address,
+        address: bun.api.socket.SocketAddress,
         ttl: i32 = 0,
 
         pub const List = std.array_list.Managed(Result);
@@ -230,7 +230,7 @@ pub const GetAddrInfo = struct {
 
         pub fn fromAddrInfo(addrinfo: *std.c.addrinfo) ?Result {
             return Result{
-                .address = std.net.Address.initPosix(@alignCast(addrinfo.addr orelse return null)),
+                .address = bun.api.socket.SocketAddress.fromPosix(@alignCast(addrinfo.addr orelse return null)) orelse return null,
                 // no TTL in POSIX getaddrinfo()
                 .ttl = 0,
             };
@@ -239,38 +239,9 @@ pub const GetAddrInfo = struct {
         pub const toJS = options_jsc.resultToJS;
     };
 };
-pub fn addressToString(address: *const std.net.Address) bun.OOM!bun.String {
-    switch (address.any.family) {
-        std.posix.AF.INET => {
-            var self = address.in;
-            const bytes = @as(*const [4]u8, @ptrCast(&self.sa.addr));
-            return String.createFormat("{}.{}.{}.{}", .{
-                bytes[0],
-                bytes[1],
-                bytes[2],
-                bytes[3],
-            });
-        },
-        std.posix.AF.INET6 => {
-            var stack_buffer: [512]u8 = undefined;
-            var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, default_allocator);
-            const allocator = stack.allocator();
-            var out = try std.fmt.allocPrint(allocator, "{f}", .{address.*});
-            defer allocator.free(out);
-            // TODO: this is a hack, fix it
-            // This removes [.*]:port
-            //              ^  ^^^^^^
-            return String.cloneLatin1(out[1 .. out.len - 1 - std.fmt.count("{d}", .{address.in6.getPort()}) - 1]);
-        },
-        std.posix.AF.UNIX => {
-            if (comptime std.net.has_unix_sockets) {
-                return String.cloneLatin1(&address.un.path);
-            }
-
-            return String.empty;
-        },
-        else => return String.empty,
-    }
+pub fn addressToString(address: *const bun.api.socket.SocketAddress) bun.OOM!bun.String {
+    var buf: [512]u8 = undefined;
+    return String.cloneLatin1(address.formatIp(&buf));
 }
 
 pub const addressToJS = options_jsc.addressToJS;

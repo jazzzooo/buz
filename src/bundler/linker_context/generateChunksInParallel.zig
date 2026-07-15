@@ -258,7 +258,10 @@ pub fn generateChunksInParallel(
             var chunk_naming: ?[]const u8 = null;
             var asset_naming: ?[]const u8 = null;
 
-            const writer = msg.writer();
+            var writer_state = bun.ManagedWriter.init(&msg);
+            var writer_finished = false;
+            defer if (!writer_finished) writer_state.finish();
+            const writer = writer_state.writer();
             try writer.print("Multiple files share the same output path\n", .{});
 
             const kinds = c.graph.files.items(.entry_point_kind);
@@ -282,6 +285,8 @@ pub fn generateChunksInParallel(
                 }
             }
 
+            writer_state.finish();
+            writer_finished = true;
             try c.log.addError(null, Logger.Loc.Empty, try msg.toOwnedSlice());
 
             inline for (.{

@@ -40,6 +40,7 @@ pub const ReplCommand = struct {
         // Initialize the VM
         const vm = try jsc.VirtualMachine.init(.{
             .allocator = arena.allocator(),
+            .io = ctx.io,
             .log = ctx.log,
             .args = ctx.args,
             .store_fd = false,

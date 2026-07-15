@@ -27,7 +27,7 @@ pub fn installHoistedPackages(
 
     if (log_level.showProgress()) {
         progress.supports_ansi_escape_codes = Output.enable_ansi_colors_stderr;
-        root_node = progress.start("", 0);
+        root_node = progress.start(this.io, "", 0);
         download_node = root_node.start(ProgressStrings.download(), 0);
 
         install_node = root_node.start(ProgressStrings.install(), this.lockfile.buffers.hoisted_dependencies.items.len);
@@ -54,7 +54,7 @@ pub fn installHoistedPackages(
     const node_modules_folder = brk: {
         // Attempt to open the existing node_modules folder
         switch (bun.sys.openatOSPath(cwd, bun.OSPathLiteral("node_modules"), bun.O.DIRECTORY | bun.O.RDONLY, 0o755)) {
-            .result => |fd| break :brk std.fs.Dir{ .fd = fd.cast() },
+            .result => |fd| break :brk fd.stdDir(),
             .err => {},
         }
 
@@ -179,7 +179,7 @@ pub fn installHoistedPackages(
                     const trees = bun.handleOom(this.allocator.alloc(TreeContext, this.lockfile.buffers.trees.items.len));
                     for (0..this.lockfile.buffers.trees.items.len) |i| {
                         trees[i] = .{
-                            .binaries = Bin.PriorityQueue.init(this.allocator, .{
+                            .binaries = Bin.PriorityQueue.initContext(.{
                                 .dependencies = &this.lockfile.buffers.dependencies,
                                 .string_buf = &this.lockfile.buffers.string_bytes,
                             }),

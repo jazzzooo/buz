@@ -22,7 +22,7 @@ pub fn main() !void {
 
     const in = brk: {
         const in_path = args.next() orelse @panic("missing argument");
-        const in = try std.fs.cwd().openFile(in_path, .{});
+        const in = try std.Io.Dir.cwd().openFile(in_path, .{});
         defer in.close();
         break :brk try in.readToEndAllocOptions(gpa, std.math.maxInt(u32), null, .fromByteUnits(1), 0);
     };
@@ -59,7 +59,7 @@ pub fn main() !void {
         i = end_of_line;
     }
     try w.writeAll(in[i..]);
-    try std.fs.cwd().writeFile(.{
+    try std.Io.Dir.cwd().writeFile(.{
         .sub_path = args.next() orelse @panic("missing argument"),
         .data = out.items,
     });

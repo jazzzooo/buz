@@ -359,7 +359,7 @@ pub const StandaloneModuleGraph = struct {
         return bytes[ptr.offset..][0..ptr.length :0];
     }
 
-    pub fn toBytes(allocator: std.mem.Allocator, prefix: []const u8, output_files: []const bun.options.OutputFile, output_format: bun.options.Format, compile_exec_argv: []const u8, flags: Flags) ![]u8 {
+    pub fn toBytes(allocator: std.mem.Allocator, io: std.Io, prefix: []const u8, output_files: []const bun.options.OutputFile, output_format: bun.options.Format, compile_exec_argv: []const u8, flags: Flags) ![]u8 {
         var serialize_trace = bun.perf.trace("StandaloneModuleGraph.serialize");
         defer serialize_trace.end();
 
@@ -497,7 +497,7 @@ pub const StandaloneModuleGraph = struct {
 
                     // Scoped block to handle dump failures without skipping module emission
                     dump: {
-                        const file = bun.sys.File.makeOpen(dest_z, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o664).unwrap() catch |err| {
+                        const file = bun.sys.File.makeOpen(io, dest_z, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o664).unwrap() catch |err| {
                             Output.prettyErrorln("<r><red>error<r><d>:<r> failed to open {s}: {s}", .{ dest_path, @errorName(err) });
                             break :dump;
                         };
@@ -639,9 +639,9 @@ pub const StandaloneModuleGraph = struct {
         }
     };
 
-    pub fn inject(bytes: []const u8, self_exe: [:0]const u8, inject_options: InjectOptions, target: *const CompileTarget) bun.FD {
+    pub fn inject(io: std.Io, bytes: []const u8, self_exe: [:0]const u8, inject_options: InjectOptions, target: *const CompileTarget) bun.FD {
         var buf: bun.PathBuffer = undefined;
-        var zname: [:0]const u8 = bun.fs.FileSystem.tmpname("bun-build", &buf, @as(u64, @bitCast(std.time.milliTimestamp()))) catch |err| {
+        var zname: [:0]const u8 = bun.fs.FileSystem.tmpname("bun-build", &buf, @as(u64, @bitCast(bun.realMilliseconds(io)))) catch |err| {
             Output.prettyErrorln("<r><red>error<r><d>:<r> failed to get temporary file name: {s}", .{@errorName(err)});
             return bun.invalid_fd;
         };
@@ -811,15 +811,14 @@ pub const StandaloneModuleGraph = struct {
                 }
 
                 var file = bun.sys.File{ .handle = cloned_executable_fd };
-                const writer = file.writer();
                 var buffer: [512 * 1024]u8 = undefined;
-                var buffered_writer = writer.adaptToNewApi(&buffer);
-                macho_file.buildAndSign(&buffered_writer.new_interface) catch |err| {
+                var buffered_writer = file.bufferedWriter(&buffer);
+                macho_file.buildAndSign(&buffered_writer.interface) catch |err| {
                     Output.prettyErrorln("Error writing standalone module graph: {}", .{err});
                     cleanup(zname, cloned_executable_fd);
                     return bun.invalid_fd;
                 };
-                buffered_writer.new_interface.flush() catch |err| {
+                buffered_writer.interface.flush() catch |err| {
                     Output.prettyErrorln("Error flushing standalone module graph: {}", .{err});
                     cleanup(zname, cloned_executable_fd);
                     return bun.invalid_fd;
@@ -860,8 +859,8 @@ pub const StandaloneModuleGraph = struct {
                 }
 
                 var file = bun.sys.File{ .handle = cloned_executable_fd };
-                const writer = file.writer();
-                pe_file.write(writer) catch |err| {
+                var writer = file.writer();
+                pe_file.write(&writer) catch |err| {
                     Output.prettyErrorln("Error writing PE file: {}", .{err});
                     cleanup(zname, cloned_executable_fd);
                     return bun.invalid_fd;
@@ -1038,14 +1037,14 @@ pub const StandaloneModuleGraph = struct {
 
     pub const CompileTarget = @import("../options_types/CompileTarget.zig");
 
-    pub fn download(allocator: std.mem.Allocator, target: *const CompileTarget, env: *bun.DotEnv.Loader) ![:0]const u8 {
+    pub fn download(allocator: std.mem.Allocator, io: std.Io, target: *const CompileTarget, env: *bun.DotEnv.Loader) ![:0]const u8 {
         var exe_path_buf: bun.PathBuffer = undefined;
         var version_str_buf: [1024]u8 = undefined;
         const version_str = try std.mem.printSentinel(&version_str_buf, "{}", .{target}, 0);
         var needs_download: bool = true;
         const dest_z = target.exePath(&exe_path_buf, version_str, env, &needs_download);
         if (needs_download) {
-            target.downloadToPath(env, allocator, dest_z) catch |err| {
+            target.downloadToPath(io, env, allocator, dest_z) catch |err| {
                 // For CLI, provide detailed error messages and exit
                 switch (err) {
                     error.TargetNotFound => {
@@ -1090,8 +1089,9 @@ pub const StandaloneModuleGraph = struct {
     pub fn toExecutable(
         target: *const CompileTarget,
         allocator: std.mem.Allocator,
+        io: std.Io,
         output_files: []const bun.options.OutputFile,
-        root_dir: std.fs.Dir,
+        root_dir: std.Io.Dir,
         module_prefix: []const u8,
         outfile: []const u8,
         env: *bun.DotEnv.Loader,
@@ -1101,7 +1101,7 @@ pub const StandaloneModuleGraph = struct {
         self_exe_path: ?[]const u8,
         flags: Flags,
     ) !CompileResult {
-        const bytes = toBytes(allocator, module_prefix, output_files, output_format, compile_exec_argv, flags) catch |err| {
+        const bytes = toBytes(allocator, io, module_prefix, output_files, output_format, compile_exec_argv, flags) catch |err| {
             return CompileResult.failFmt("failed to generate module graph bytes: {s}", .{@errorName(err)});
         };
         if (bytes.len == 0) return CompileResult.fail(.no_output_files);
@@ -1124,7 +1124,7 @@ pub const StandaloneModuleGraph = struct {
             const dest_z = target.exePath(&exe_path_buf, version_str, env, &needs_download);
 
             if (needs_download) {
-                target.downloadToPath(env, allocator, dest_z) catch |err| {
+                target.downloadToPath(io, env, allocator, dest_z) catch |err| {
                     return switch (err) {
                         error.TargetNotFound => CompileResult.failFmt("Target platform '{f}' is not available for download. Check if this version of Bun supports this target.", .{target}),
                         error.NetworkError => CompileResult.failFmt("Network error downloading executable for '{f}'. Check your internet connection and proxy settings.", .{target}),
@@ -1145,6 +1145,7 @@ pub const StandaloneModuleGraph = struct {
         };
 
         var fd = inject(
+            io,
             bytes,
             self_exe,
             windows_options,
@@ -1439,7 +1440,10 @@ pub const StandaloneModuleGraph = struct {
         arena: std.mem.Allocator,
         json_source: []const u8,
     ) !void {
-        const out = header_list.writer();
+        var out_state = bun.ManagedWriter.init(header_list);
+        var out_finished = false;
+        defer if (!out_finished) out_state.finish();
+        const out = out_state.writer();
         const json_src = bun.logger.Source.initPathString("sourcemap.json", json_source);
         var log = bun.logger.Log.init(arena);
         defer log.deinit();
@@ -1529,6 +1533,8 @@ pub const StandaloneModuleGraph = struct {
 
         try out.writeAll(map_blob);
 
+        out_state.finish();
+        out_finished = true;
         bun.assert(header_list.items.len == string_payload_start_location);
     }
 };

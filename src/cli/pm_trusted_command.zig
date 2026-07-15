@@ -12,7 +12,7 @@ pub const DefaultTrustedCommand = struct {
 };
 
 pub const UntrustedCommand = struct {
-    pub fn exec(ctx: Command.Context, pm: *PackageManager, args: [][:0]u8) !void {
+    pub fn exec(ctx: Command.Context, pm: *PackageManager, args: []const [:0]const u8) !void {
         _ = args;
         Output.prettyError("<r><b>bun pm untrusted <r><d>v" ++ Global.package_json_version_with_sha ++ "<r>\n\n", .{});
         Output.flush();
@@ -158,7 +158,7 @@ pub const TrustCommand = struct {
         }
     }
 
-    pub fn exec(ctx: Command.Context, pm: *PackageManager, args: [][:0]u8) !void {
+    pub fn exec(ctx: Command.Context, pm: *PackageManager, args: []const [:0]const u8) !void {
         Output.prettyError("<r><b>bun pm trust <r><d>v" ++ Global.package_json_version_with_sha ++ "<r>\n", .{});
         Output.flush();
 
@@ -224,11 +224,11 @@ pub const TrustCommand = struct {
             defer node_modules_path_save.restore();
             node_modules_path.append(node_modules.relative_path);
 
-            var node_modules_dir = bun.openDir(std.fs.cwd(), node_modules.relative_path) catch |err| {
-                if (err == error.ENOENT) continue;
+            const node_modules_dir = std.Io.Dir.cwd().openDir(ctx.io, node_modules.relative_path, .{}) catch |err| {
+                if (err == error.FileNotFound) continue;
                 return err;
             };
-            defer node_modules_dir.close();
+            defer node_modules_dir.close(ctx.io);
 
             for (node_modules.dependencies) |dep_id| {
                 if (untrusted_dep_ids.contains(dep_id)) {
@@ -273,7 +273,7 @@ pub const TrustCommand = struct {
 
                         // even if it is skipped we still add to scripts_at_depth for logging later
                         const entry = try scripts_at_depth.getOrPut(ctx.allocator, node_modules.depth);
-                        if (!entry.found_existing) entry.value_ptr.* = .{};
+                        if (!entry.found_existing) entry.value_ptr.* = .empty;
                         try entry.value_ptr.append(ctx.allocator, .{
                             .package_id = package_id,
                             .scripts_list = scripts_list,
@@ -300,7 +300,7 @@ pub const TrustCommand = struct {
 
         if (pm.options.log_level.showProgress()) {
             progress.supports_ansi_escape_codes = Output.enable_ansi_colors_stderr;
-            root_node = progress.start("", 0);
+            root_node = progress.start(ctx.io, "", 0);
 
             scripts_node = root_node.start(PackageManager.ProgressStrings.script(), scripts_count);
             pm.scripts_node = &scripts_node;
@@ -347,7 +347,9 @@ pub const TrustCommand = struct {
             progress.* = .{};
         }
 
-        const package_json_contents = try pm.root_package_json_file.readToEndAlloc(ctx.allocator, try pm.root_package_json_file.getEndPos());
+        var package_json_read_buffer: [4096]u8 = undefined;
+        var package_json_reader = pm.root_package_json_file.reader(ctx.io, &package_json_read_buffer);
+        const package_json_contents = try package_json_reader.interface.allocRemaining(ctx.allocator, .unlimited);
         defer ctx.allocator.free(package_json_contents);
 
         const package_json_source = logger.Source.initPathString(PackageManager.root_package_json_path, package_json_contents);
@@ -412,9 +414,9 @@ pub const TrustCommand = struct {
 
         const new_package_json_contents = package_json_writer.ctx.writtenWithoutTrailingZero();
 
-        try pm.root_package_json_file.pwriteAll(new_package_json_contents, 0);
-        std.posix.ftruncate(pm.root_package_json_file.handle, new_package_json_contents.len) catch {};
-        pm.root_package_json_file.close();
+        try pm.root_package_json_file.writePositionalAll(ctx.io, new_package_json_contents, 0);
+        pm.root_package_json_file.setLength(ctx.io, new_package_json_contents.len) catch {};
+        pm.root_package_json_file.close(ctx.io);
 
         if (comptime Environment.allow_assert) {
             bun.assertWithLocation(total_scripts_ran > 0, @src());
@@ -427,7 +429,7 @@ pub const TrustCommand = struct {
             if (total_packages_with_scripts > 1) "s" else "",
         });
 
-        Output.printStartEndStdout(bun.start_time, std.time.nanoTimestamp());
+        Output.printStartEndStdout(ctx.start_time, bun.awakeNanoseconds(ctx.io));
         Output.print("\n", .{});
 
         if (total_skipped_packages > 0) {

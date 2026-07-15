@@ -53,7 +53,7 @@ pub fn main() !void {
     defer alloc.free(t.stage3);
 
     var buf: [4096]u8 = undefined;
-    var stdout_file = std.fs.File.stdout().writer(&buf);
+    var stdout_file = std.Io.File.stdout().writer(&buf);
     const stdout = &stdout_file.interface;
 
     // Write header

@@ -205,7 +205,7 @@ pub fn terminateAllAndWait(timeout_ms: u64) void {
     // register B after we release the mutex, and B's `requested_terminate`
     // was never set. Sweeping is O(outstanding) and `requested_terminate`
     // is a swap, so re-sweeping already-terminated entries is cheap.
-    var timer = bun.SystemTimer.start() catch null;
+    var timer: ?bun.SystemTimer = bun.SystemTimer.start() catch null;
     const deadline_ns = timeout_ms * std.time.ns_per_ms;
     while (true) {
         {
@@ -512,6 +512,7 @@ fn startVM(this: *WebWorker) !void {
     }
 
     var vm = try jsc.VirtualMachine.initWorker(this, .{
+        .io = this.parent.io,
         .allocator = allocator,
         .args = transform_options,
         .env_loader = loader,

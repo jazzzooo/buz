@@ -18,6 +18,10 @@ pub var terminal_size: std.posix.winsize = .{
     .ypixel = 0,
 };
 
+pub fn applicationIo() Source.IoType {
+    return application_io;
+}
+
 pub const Source = struct {
     pub const StreamType = if (Environment.isWasm) []u8 else File;
     pub const IoType = if (Environment.isWasm) void else std.Io;
@@ -264,7 +268,7 @@ pub const Source = struct {
             buffered_stdin = .init(stdin, &stdin_buffer);
 
             if (comptime Environment.isDebug or Environment.enable_logs) {
-                initScopedDebugWriterAtStartup();
+                initScopedDebugWriterAtStartup(io);
             }
         }
 
@@ -1305,13 +1309,13 @@ pub fn enableScopedDebugWriter() void {
 
 extern "c" fn getpid() c_int;
 
-pub fn initScopedDebugWriterAtStartup() void {
+pub fn initScopedDebugWriterAtStartup(io: std.Io) void {
     bun.debugAssert(source_set);
 
     if (bun.env_var.BUN_DEBUG.get()) |path| {
         if (path.len > 0 and !strings.eql(path, "0") and !strings.eql(path, "false")) {
             if (std.fs.path.dirname(path)) |dir| {
-                std.fs.cwd().makePath(dir) catch {};
+                bun.makePath(std.Io.Dir.cwd(), io, dir) catch {};
             }
 
             // do not use libuv through this code path, since it might not be initialized yet.
@@ -1321,11 +1325,9 @@ pub fn initScopedDebugWriterAtStartup() void {
             const path_fmt = std.mem.replaceOwned(u8, bun.default_allocator, path, "{pid}", pid) catch @panic("failed to allocate path");
             defer bun.default_allocator.free(path_fmt);
 
-            const fd: bun.FD = .fromStdFile(std.fs.cwd().createFile(path_fmt, .{
-                .mode = if (Environment.isPosix) 0o644 else 0,
-            }) catch |open_err| {
+            const fd = bun.sys.openA(path_fmt, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, if (Environment.isPosix) 0o644 else 0).unwrap() catch |open_err| {
                 panic("Failed to open file for debug output: {s} ({s})", .{ @errorName(open_err), path });
-            });
+            };
             _ = fd.truncate(0); // windows
             ScopedDebugWriter.scoped_file = .{ .handle = fd };
             return;

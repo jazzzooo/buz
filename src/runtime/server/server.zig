@@ -124,7 +124,7 @@ pub const AnyRoute = union(enum) {
             return route;
         }
 
-        var methods = HTTP.Method.Optional{ .method = .initEmpty() };
+        var methods = HTTP.Method.Optional{ .method = .init(.{}) };
         methods.insert(.GET);
         methods.insert(.HEAD);
 

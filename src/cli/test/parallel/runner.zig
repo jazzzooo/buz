@@ -39,13 +39,13 @@ pub fn runAsCoordinator(
     if (Output.enable_ansi_colors_stderr) {
         bun.handleOom(vm.transpiler.env.map.put("FORCE_COLOR", "1"));
     }
-    defer if (worker_tmpdir) |d| bun.FD.cwd().deleteTree(d) catch {};
+    defer if (worker_tmpdir) |d| bun.FD.cwd().deleteTree(ctx.io, d) catch {};
     if (ctx.test_options.reporters.junit or coverage_opts.enabled) {
         const dir = try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/bun-test-worker-{d}", .{
             bun.fs.FileSystem.RealFS.getDefaultTempDir(),
             if (bun.Environment.isWindows) std.os.windows.GetCurrentProcessId() else std.c.getpid(),
         }, 0);
-        bun.FD.cwd().makePath(u8, dir) catch |e| {
+        bun.FD.cwd().makePath(ctx.io, u8, dir) catch |e| {
             Output.err(e, "failed to create worker temp dir {s}", .{dir});
             bun.Global.exit(1);
         };
@@ -90,6 +90,7 @@ pub fn runAsCoordinator(
 
     var coord = Coordinator{
         .vm = vm,
+        .start_time = ctx.start_time,
         .reporter = reporter,
         .files = sorted,
         .cwd = bun.fs.FileSystem.instance.top_level_dir,
@@ -133,7 +134,7 @@ pub fn runAsCoordinator(
     }
     if (coverage_opts.enabled) {
         switch (Output.enable_ansi_colors_stderr) {
-            inline else => |colors| aggregate.mergeCoverageFragments(coord.coverage_fragments.items, coverage_opts, colors),
+            inline else => |colors| aggregate.mergeCoverageFragments(ctx.io, coord.coverage_fragments.items, coverage_opts, colors),
         }
     }
     return true;
@@ -400,7 +401,7 @@ fn workerFlushAggregates(reporter: *CommandLineReporter, vm: *jsc.VirtualMachine
         if (reporter.reporters.junit) |junit| {
             const path = bun.handleOom(std.fmt.allocPrintSentinel(bun.default_allocator, "{s}/w{d}.xml", .{ dir, id }, 0));
             if (junit.current_file.len > 0) junit.endTestSuite() catch {};
-            if (junit.writeToFile(path)) |_| {
+            if (junit.writeToFile(ctx.io, path)) |_| {
                 worker_frame.begin(.junit_file);
                 worker_frame.str(path);
                 cmds.send(worker_frame.finish());

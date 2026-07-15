@@ -164,7 +164,7 @@ pub fn initPending(loader: Loader, pending: resolver.Result) OutputFile {
     };
 }
 
-pub fn initFile(file: std.fs.File, pathname: string, size: usize) OutputFile {
+pub fn initFile(file: std.Io.File, pathname: string, size: usize) OutputFile {
     return .{
         .loader = .file,
         .src_path = Fs.Path.init(pathname),
@@ -173,7 +173,7 @@ pub fn initFile(file: std.fs.File, pathname: string, size: usize) OutputFile {
     };
 }
 
-pub fn initFileWithDir(file: std.fs.File, pathname: string, size: usize, dir: std.fs.Dir) OutputFile {
+pub fn initFileWithDir(file: std.Io.File, pathname: string, size: usize, dir: std.Io.Dir) OutputFile {
     var res = initFile(file, pathname, size);
     res.value.copy.dir_handle = .fromStdDir(dir);
     return res;
@@ -199,9 +199,9 @@ pub const Options = struct {
             data: []const u8,
         },
         file: struct {
-            file: std.fs.File,
+            file: std.Io.File,
             size: usize,
-            dir: std.fs.Dir,
+            dir: std.Io.Dir,
         },
         saved: usize,
     },
@@ -248,7 +248,7 @@ pub fn init(options: Options) OutputFile {
     };
 }
 
-pub fn writeToDisk(f: OutputFile, root_dir: std.fs.Dir, root_dir_path: []const u8) !void {
+pub fn writeToDisk(f: OutputFile, io: std.Io, root_dir: std.Io.Dir, root_dir_path: []const u8) !void {
     switch (f.value) {
         .noop => {},
         .saved => {
@@ -260,7 +260,7 @@ pub fn writeToDisk(f: OutputFile, root_dir: std.fs.Dir, root_dir_path: []const u
                 rel_path = resolve_path.relative(root_dir_path, f.dest_path);
                 if (std.fs.path.dirname(rel_path)) |parent| {
                     if (parent.len > root_dir_path.len) {
-                        try root_dir.makePath(parent);
+                        try root_dir.createDirPath(io, parent);
                     }
                 }
             }
@@ -286,7 +286,7 @@ pub fn writeToDisk(f: OutputFile, root_dir: std.fs.Dir, root_dir_path: []const u
             try f.moveTo(root_dir_path, value.pathname, .fromStdDir(root_dir));
         },
         .copy => |value| {
-            try f.copyTo(root_dir_path, value.pathname, .fromStdDir(root_dir));
+            try f.copyTo(io, root_dir_path, value.pathname, .fromStdDir(root_dir));
         },
         .pending => unreachable,
     }
@@ -296,10 +296,10 @@ pub fn moveTo(file: *const OutputFile, _: string, rel_path: []const u8, dir: Fil
     try bun.sys.moveFileZ(file.value.move.dir, std.mem.sliceTo(&(try std.posix.toPosixPath(file.value.move.getPathname())), 0), dir, std.mem.sliceTo(&(try std.posix.toPosixPath(rel_path)), 0));
 }
 
-pub fn copyTo(file: *const OutputFile, _: string, rel_path: []const u8, dir: FileDescriptorType) !void {
-    const fd_out = bun.FD.fromStdFile(try dir.stdDir().createFile(rel_path, .{}));
+pub fn copyTo(file: *const OutputFile, io: std.Io, _: string, rel_path: []const u8, dir: FileDescriptorType) !void {
+    const fd_out = bun.FD.fromStdFile(try dir.stdDir().createFile(io, rel_path, .{}));
     var do_close = false;
-    const fd_in = bun.FD.fromStdFile(try std.fs.cwd().openFile(file.src_path.text, .{ .mode = .read_only }));
+    const fd_in = bun.FD.fromStdFile(try std.Io.Dir.cwd().openFile(io, file.src_path.text, .{ .mode = .read_only }));
 
     if (Environment.isWindows) {
         do_close = Fs.FileSystem.instance.fs.needToCloseFiles();

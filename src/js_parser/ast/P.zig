@@ -6796,7 +6796,7 @@ pub fn NewParser_(
                 .current_scope = scope,
                 .module_scope = scope,
                 .scopes_in_order = scope_order,
-                .needs_jsx_import = if (comptime only_scan_imports_and_do_not_visit) false else NeedsJSXType{},
+                .needs_jsx_import = if (comptime only_scan_imports_and_do_not_visit) false else {},
                 .lexer = lexer,
 
                 // Only enable during bundling, when not bundling CJS

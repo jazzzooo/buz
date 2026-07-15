@@ -63,7 +63,7 @@ pub const MachoFile = struct {
 
         var iter = self.iterator();
 
-        while (iter.next()) |entry| {
+        while (try iter.next()) |entry| {
             const cmd = entry.hdr;
             switch (cmd.cmd) {
                 .SEGMENT_64 => {
@@ -85,8 +85,8 @@ pub const MachoFile = struct {
                                     // Update segment with proper sizes and alignment
                                     self.segment.vmsize = alignVmsize(aligned_size, blob_alignment);
                                     self.segment.filesize = aligned_size;
-                                    self.segment.maxprot = macho.PROT.READ | macho.PROT.WRITE;
-                                    self.segment.initprot = macho.PROT.READ | macho.PROT.WRITE;
+                                    self.segment.maxprot = .{ .READ = true, .WRITE = true };
+                                    self.segment.initprot = .{ .READ = true, .WRITE = true };
 
                                     self.section = .{
                                         .sectname = SECTNAME,
@@ -265,7 +265,7 @@ pub const MachoFile = struct {
             .linkedit_filesize = new_linkedit_filesize,
         };
 
-        while (iter.next()) |entry| {
+        while (try iter.next()) |entry| {
             const cmd = entry.hdr;
             const cmd_ptr: [*]u8 = @constCast(entry.data.ptr);
 
@@ -326,8 +326,9 @@ pub const MachoFile = struct {
 
     pub fn iterator(self: *const MachoFile) macho.LoadCommandIterator {
         return .{
-            .buffer = self.data.items[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds],
+            .next_index = 0,
             .ncmds = self.header.ncmds,
+            .r = std.Io.Reader.fixed(self.data.items[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds]),
         };
     }
 
@@ -339,7 +340,7 @@ pub const MachoFile = struct {
         var iter = self.iterator();
         var prev_end: u64 = 0;
 
-        while (iter.next()) |entry| {
+        while (try iter.next()) |entry| {
             const cmd = entry.hdr;
             if (cmd.cmd == .SEGMENT_64) {
                 const seg = entry.cast(macho.segment_command_64).?;
@@ -355,7 +356,12 @@ pub const MachoFile = struct {
         if (self.header.cputype == macho.CPU_TYPE_ARM64 and !bun.feature_flag.BUN_NO_CODESIGN_MACHO_BINARY.get()) {
             var data = std.array_list.Managed(u8).init(self.allocator);
             defer data.deinit();
-            try self.build(data.writer());
+            var writer_state = bun.ManagedWriter.init(&data);
+            var writer_finished = false;
+            defer if (!writer_finished) writer_state.finish();
+            try self.build(writer_state.writer());
+            writer_state.finish();
+            writer_finished = true;
             var signer = try MachoSigner.init(self.allocator, data.items);
             defer signer.deinit();
             try signer.sign(writer);
@@ -390,13 +396,14 @@ pub const MachoFile = struct {
             var linkedit_seg = std.mem.zeroes(macho.segment_command_64);
 
             var it = macho.LoadCommandIterator{
+                .next_index = 0,
                 .ncmds = header.ncmds,
-                .buffer = obj[header_size..][0..header.sizeofcmds],
+                .r = std.Io.Reader.fixed(obj[header_size..][0..header.sizeofcmds]),
             };
 
             // First pass: find segments to establish bounds
-            while (it.next()) |cmd| {
-                if (cmd.cmd() == .SEGMENT_64) {
+            while (try it.next()) |cmd| {
+                if (cmd.hdr.cmd == .SEGMENT_64) {
                     const seg = cmd.cast(macho.segment_command_64).?;
 
                     // Store segment info
@@ -416,13 +423,14 @@ pub const MachoFile = struct {
 
             // Reset iterator
             it = macho.LoadCommandIterator{
+                .next_index = 0,
                 .ncmds = header.ncmds,
-                .buffer = obj[header_size..][0..header.sizeofcmds],
+                .r = std.Io.Reader.fixed(obj[header_size..][0..header.sizeofcmds]),
             };
 
             // Second pass: find code signature
-            while (it.next()) |cmd| {
-                switch (cmd.cmd()) {
+            while (try it.next()) |cmd| {
+                switch (cmd.hdr.cmd) {
                     .CODE_SIGNATURE => {
                         const cs = cmd.cast(macho.linkedit_data_command).?;
                         sig_off = cs.dataoff;
@@ -539,11 +547,12 @@ pub const MachoFile = struct {
 
             // Ensure space for signature
             try self.data.resize(aligned_sig_off + total_sig_size);
+            const signature_buffer = self.data.items[self.sig_off..];
             self.data.items.len = self.sig_off;
             @memset(self.data.unusedCapacitySlice(), 0);
 
             // Position writer at signature offset
-            var sig_writer = self.data.writer();
+            var sig_writer = std.Io.Writer.fixed(signature_buffer);
 
             // Write signature components
             try sig_writer.writeAll(mem.asBytes(&super_blob));

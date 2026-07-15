@@ -474,11 +474,11 @@ pub const Chunk = struct {
                                         break :brk piece_chunk.final_rel_path;
                                     },
                                     .html_import => {
-                                        var fixed_buffer_stream = std.io.fixedBufferStream(remain);
-                                        const writer = fixed_buffer_stream.writer();
+                                        var writer_state = std.Io.Writer.fixed(remain);
+                                        const writer = &writer_state;
 
                                         HTMLImportManifest.writeEscapedJSON(index, graph, linker_graph, chunks, writer) catch unreachable;
-                                        remain = remain[fixed_buffer_stream.pos..];
+                                        remain = remain[writer.end..];
 
                                         if (enable_source_map_shifts) {
                                             shift.before.advance(chunk.unique_key);

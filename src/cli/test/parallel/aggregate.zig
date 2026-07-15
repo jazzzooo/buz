@@ -19,10 +19,7 @@ pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *c
     var totals: struct { tests: u32 = 0, failures: u32 = 0, skipped: u32 = 0 } = .{};
 
     for (coord.junit_fragments.items) |path| {
-        const file = switch (bun.sys.File.readFrom(bun.FD.cwd(), path, bun.default_allocator)) {
-            .result => |r| r,
-            .err => continue,
-        };
+        const file = std.Io.Dir.cwd().readFileAlloc(coord.vm.io, path, bun.default_allocator, .unlimited) catch continue;
         defer bun.default_allocator.free(file);
         // Each fragment is a full <testsuites> document; extract its header
         // attributes for the merged totals and its body for the inner suites.
@@ -41,47 +38,45 @@ pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *c
         bun.handleOom(body.append(bun.default_allocator, '\n'));
     }
 
-    for (coord.crashed_files.items) |idx| {
-        const rel = coord.relPath(idx);
-        const w = body.writer(bun.default_allocator);
-        bun.handleOom(w.writeAll("  <testsuite name=\""));
-        bun.handleOom(test_command.escapeXml(rel, w));
-        bun.handleOom(w.writeAll("\" tests=\"1\" assertions=\"0\" failures=\"1\" skipped=\"0\" time=\"0\">\n    <testcase name=\"(worker crashed)\" classname=\""));
-        bun.handleOom(test_command.escapeXml(rel, w));
-        bun.handleOom(w.writeAll(
-            \\">
-            \\      <failure message="worker process crashed before reporting results"></failure>
-            \\    </testcase>
-            \\  </testsuite>
-            \\
-        ));
-        totals.tests += 1;
-        totals.failures += 1;
+    {
+        var body_writer_state = bun.UnmanagedWriter.init(&body, bun.default_allocator);
+        const w = body_writer_state.writer();
+        for (coord.crashed_files.items) |idx| {
+            const rel = coord.relPath(idx);
+            w.writeAll("  <testsuite name=\"") catch bun.outOfMemory();
+            test_command.escapeXml(rel, w) catch bun.outOfMemory();
+            w.writeAll("\" tests=\"1\" assertions=\"0\" failures=\"1\" skipped=\"0\" time=\"0\">\n    <testcase name=\"(worker crashed)\" classname=\"") catch bun.outOfMemory();
+            test_command.escapeXml(rel, w) catch bun.outOfMemory();
+            w.writeAll(
+                \\">
+                \\      <failure message="worker process crashed before reporting results"></failure>
+                \\    </testcase>
+                \\  </testsuite>
+                \\
+            ) catch bun.outOfMemory();
+            totals.tests += 1;
+            totals.failures += 1;
+        }
+        body_writer_state.finish();
     }
 
     var contents: std.ArrayListUnmanaged(u8) = .empty;
     defer contents.deinit(bun.default_allocator);
-    const elapsed_time = @as(f64, @floatFromInt(std.time.nanoTimestamp() - bun.start_time)) / std.time.ns_per_s;
-    bun.handleOom(contents.writer(bun.default_allocator).print(
-        \\<?xml version="1.0" encoding="UTF-8"?>
-        \\<testsuites name="bun test" tests="{d}" assertions="{d}" failures="{d}" skipped="{d}" time="{d}">
-        \\
-    , .{ totals.tests, summary.expectations, totals.failures, totals.skipped, elapsed_time }));
+    const elapsed_time = @as(f64, @floatFromInt(bun.awakeNanoseconds(coord.vm.io) - coord.start_time)) / std.time.ns_per_s;
+    {
+        var contents_writer_state = bun.UnmanagedWriter.init(&contents, bun.default_allocator);
+        contents_writer_state.writer().print(
+            \\<?xml version="1.0" encoding="UTF-8"?>
+            \\<testsuites name="bun test" tests="{d}" assertions="{d}" failures="{d}" skipped="{d}" time="{d}">
+            \\
+        , .{ totals.tests, summary.expectations, totals.failures, totals.skipped, elapsed_time }) catch bun.outOfMemory();
+        contents_writer_state.finish();
+    }
     bun.handleOom(contents.appendSlice(bun.default_allocator, body.items));
     bun.handleOom(contents.appendSlice(bun.default_allocator, "</testsuites>\n"));
 
-    const out_z = bun.handleOom(bun.default_allocator.dupeSentinel(u8, outfile, 0));
-    defer bun.default_allocator.free(out_z);
-    switch (bun.sys.File.openat(.cwd(), out_z, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o664)) {
-        .err => |err| Output.err(error.JUnitReportFailed, "Failed to write JUnit report to {s}\n{f}", .{ outfile, err }),
-        .result => |fd| {
-            defer _ = fd.close();
-            switch (bun.sys.File.writeAll(fd, contents.items)) {
-                .err => |err| Output.err(error.JUnitReportFailed, "Failed to write JUnit report to {s}\n{f}", .{ outfile, err }),
-                .result => {},
-            }
-        },
-    }
+    std.Io.Dir.cwd().writeFile(coord.vm.io, .{ .sub_path = outfile, .data = contents.items }) catch |err|
+        Output.err(error.JUnitReportFailed, "Failed to write JUnit report to {s}: {s}", .{ outfile, @errorName(err) });
 }
 
 const FileCoverage = struct {
@@ -103,7 +98,7 @@ const FileCoverage = struct {
 /// emit per-function FN/FNDA records yet, so disjoint per-worker function hits
 /// can't be unioned; this under-reports % Funcs when workers cover different
 /// functions of the same file. The non-parallel path has the same FN/FNDA gap.
-pub fn mergeCoverageFragments(paths: []const []const u8, opts: *TestCommand.CodeCoverageOptions, comptime enable_colors: bool) void {
+pub fn mergeCoverageFragments(io: std.Io, paths: []const []const u8, opts: *TestCommand.CodeCoverageOptions, comptime enable_colors: bool) void {
     var arena_state = std.heap.ArenaAllocator.init(bun.default_allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -111,10 +106,7 @@ pub fn mergeCoverageFragments(paths: []const []const u8, opts: *TestCommand.Code
     var by_file: bun.StringArrayHashMap(FileCoverage) = .empty;
 
     for (paths) |path| {
-        const data = switch (bun.sys.File.readFrom(bun.FD.cwd(), path, arena)) {
-            .result => |r| r,
-            .err => continue,
-        };
+        const data = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch continue;
         var cur: ?*FileCoverage = null;
         var lines = std.mem.splitScalar(u8, data, '\n');
         while (lines.next()) |raw| {
@@ -164,13 +156,11 @@ pub fn mergeCoverageFragments(paths: []const []const u8, opts: *TestCommand.Code
         });
         var path_buf: bun.PathBuffer = undefined;
         const out_path = bun.path.joinAbsStringBufZ(bun.fs.FileSystem.instance.top_level_dir, &path_buf, &.{ opts.reports_directory, "lcov.info" }, .auto);
-        switch (bun.sys.File.openat(.cwd(), out_path, bun.O.CREAT | bun.O.WRONLY | bun.O.TRUNC | bun.O.CLOEXEC, 0o644)) {
-            .err => |e| Output.err(.lcovCoverageError, "Failed to write merged lcov.info\n{f}", .{e}),
-            .result => |f| {
-                defer f.close();
+        if (std.Io.Dir.cwd().createFile(io, out_path, .{})) |f| {
+                defer f.close(io);
                 const buf = bun.handleOom(arena.alloc(u8, 64 * 1024));
-                var bw = f.writer().adaptToNewApi(buf);
-                const w = &bw.new_interface;
+                var bw = f.writer(io, buf);
+                const w = &bw.interface;
                 for (by_file.values()) |*fc| {
                     const sorted = bun.handleOom(arena.dupe(u32, fc.da.keys()));
                     std.sort.pdq(u32, sorted, {}, std.sort.asc(u32));
@@ -179,8 +169,7 @@ pub fn mergeCoverageFragments(paths: []const []const u8, opts: *TestCommand.Code
                     w.print("LF:{d}\nLH:{d}\nend_of_record\n", .{ fc.da.count(), fc.lh() }) catch {};
                 }
                 w.flush() catch {};
-            },
-        }
+        } else |e| Output.err(.lcovCoverageError, "Failed to write merged lcov.info: {s}", .{@errorName(e)});
     }
 
     const base = opts.fractions;

@@ -19,7 +19,7 @@ pub const WalkerEntry = struct {
     dir: FD,
     basename: OSPathSliceZ,
     path: OSPathSliceZ,
-    kind: std.fs.Dir.Entry.Kind,
+    kind: std.Io.File.Kind,
 };
 
 const StackItem = struct {
@@ -47,7 +47,7 @@ pub fn next(self: *Walker) bun.sys.Maybe(?WalkerEntry) {
                         (if (base.kind == .unknown and self.resolve_unknown_entry_types) brk: {
                             const dir_fd = top.iter.iter.dir;
                             break :brk switch (bun.sys.lstatat(dir_fd, base.name.sliceAssumeZ())) {
-                                .result => |stat_buf| bun.sys.kindFromMode(stat_buf.mode),
+                                .result => |stat_buf| bun.sys.kindFromMode(@intCast(stat_buf.mode)),
                                 .err => continue, // skip entries we can't stat
                             };
                         } else base.kind)

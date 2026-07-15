@@ -9,6 +9,7 @@ pub const MacroContext = struct {
     pub const MacroMap = std.array_hash_map.Auto(i32, Macro);
 
     resolver: *Resolver,
+    io: std.Io,
     env: *DotEnv.Loader,
     macros: MacroMap,
     remap: MacroRemap,
@@ -23,6 +24,7 @@ pub const MacroContext = struct {
         return MacroContext{
             .macros = .empty,
             .resolver = &transpiler.resolver,
+            .io = transpiler.io,
             .env = transpiler.env,
             .remap = transpiler.options.macro_remap,
         };
@@ -97,6 +99,7 @@ pub const MacroContext = struct {
         if (!macro_entry.found_existing) {
             macro_entry.value_ptr.* = Macro.init(
                 default_allocator,
+                this.io,
                 this.resolver,
                 input_specifier,
                 log,
@@ -161,6 +164,7 @@ disabled: bool = false,
 
 pub fn init(
     _: std.mem.Allocator,
+    io: std.Io,
     resolver: *Resolver,
     input_specifier: []const u8,
     log: *logger.Log,
@@ -180,6 +184,7 @@ pub fn init(
 
         var _vm = try JavaScript.VirtualMachine.init(.{
             .allocator = default_allocator,
+            .io = io,
             .args = resolver.opts.transform_options,
             .log = log,
             .is_main_thread = false,

@@ -661,7 +661,7 @@ pub fn installIsolatedPackages(
 
             const dedupe_entry = try dedupe.getOrPut(lockfile.allocator, pkg_id);
             if (!dedupe_entry.found_existing) {
-                dedupe_entry.value_ptr.* = .{};
+                dedupe_entry.value_ptr.* = .empty;
             } else {
                 const curr_peers = node_peers[entry.node_id.get()];
                 const curr_dep_id = node_dep_ids[entry.node_id.get()];
@@ -729,7 +729,14 @@ pub fn installIsolatedPackages(
                     hasher.update(pkg_name.slice(string_buf));
                     const pkg_res = pkg_resolutions[peer_ids.pkg_id];
                     res_fmt_buf.clearRetainingCapacity();
-                    try res_fmt_buf.writer().print("{f}", .{pkg_res.fmt(string_buf, .posix)});
+                    {
+                        var writer_state = bun.ManagedWriter.init(&res_fmt_buf);
+                        var writer_finished = false;
+                        defer if (!writer_finished) writer_state.finish();
+                        writer_state.writer().print("{f}", .{pkg_res.fmt(string_buf, .posix)}) catch return error.OutOfMemory;
+                        writer_state.finish();
+                        writer_finished = true;
+                    }
                     hasher.update(res_fmt_buf.items);
                 }
                 break :peer_hash .from(hasher.final());
@@ -858,15 +865,11 @@ pub fn installIsolatedPackages(
     // also eligible. The second condition matters because dep symlinks live
     // inside the global entry; baking a project-local path (workspace, folder)
     // into a shared directory would break for every other consumer.
-    const WyhashWriter = struct {
-        hasher: *std.hash.Wyhash,
-        const E = error{};
-        pub fn writer(self: *@This()) std.io.GenericWriter(*@This(), E, write) {
-            return .{ .context = self };
-        }
-        fn write(self: *@This(), bytes: []const u8) E!usize {
-            self.hasher.update(bytes);
-            return bytes.len;
+    const HashFormat = struct {
+        fn update(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash, value: anytype) OOM!void {
+            const bytes = try std.fmt.allocPrint(allocator, "{f}", .{value});
+            defer allocator.free(bytes);
+            hasher.update(bytes);
         }
     };
 
@@ -996,9 +999,7 @@ pub fn installIsolatedPackages(
                     // uninitialized stack bytes into the hash.
                     top.hasher = .init(0x9E3779B97F4A7C15);
                     {
-                        var hw: WyhashWriter = .{ .hasher = &top.hasher };
-                        var w = hw.writer();
-                        w.print("{f}", .{Store.Entry.fmtStorePath(id, &store, lockfile)}) catch unreachable;
+                        try HashFormat.update(manager.allocator, &top.hasher, Store.Entry.fmtStorePath(id, &store, lockfile));
                     }
                     // The store path for `.npm` is just `name@version`, which
                     // is *not* unique across registries (an enterprise proxy
@@ -1149,9 +1150,7 @@ pub fn installIsolatedPackages(
                             const m = members[0];
                             if (entry_hashes[m] != 0) {
                                 var sub: std.hash.Wyhash = .init(0x9E3779B97F4A7C15);
-                                var hw: WyhashWriter = .{ .hasher = &sub };
-                                var w_ = hw.writer();
-                                w_.print("{f}", .{Store.Entry.fmtStorePath(.from(m), &store, lockfile)}) catch unreachable;
+                                try HashFormat.update(manager.allocator, &sub, Store.Entry.fmtStorePath(.from(m), &store, lockfile));
                                 sub.update(std.mem.asBytes(&pkg_metas[node_pkg_ids[entry_node_ids[m].get()]].integrity));
                                 var poisoned = false;
                                 for (entry_dependencies[m].slice()) |dep| {
@@ -1186,9 +1185,7 @@ pub fn installIsolatedPackages(
                             for (members) |m| {
                                 if (entry_hashes[m] == 0) any_ineligible = true;
                                 var sub: std.hash.Wyhash = .init(0);
-                                var hw: WyhashWriter = .{ .hasher = &sub };
-                                var w_ = hw.writer();
-                                w_.print("{f}", .{Store.Entry.fmtStorePath(.from(m), &store, lockfile)}) catch unreachable;
+                                try HashFormat.update(manager.allocator, &sub, Store.Entry.fmtStorePath(.from(m), &store, lockfile));
                                 sub.update(std.mem.asBytes(&pkg_metas[node_pkg_ids[entry_node_ids[m].get()]].integrity));
                                 try member_sub.append(manager.allocator, sub.final());
                                 for (entry_dependencies[m].slice()) |dep| {
@@ -1424,7 +1421,7 @@ pub fn installIsolatedPackages(
 
         if (manager.options.log_level.showProgress()) {
             progress.supports_ansi_escape_codes = Output.enable_ansi_colors_stderr;
-            root_node = progress.start("", 0);
+            root_node = progress.start(manager.io, "", 0);
             download_node = root_node.start(ProgressStrings.download(), 0);
             install_node = root_node.start(ProgressStrings.install(), store.entries.len);
             scripts_node = root_node.start(ProgressStrings.script(), 0);

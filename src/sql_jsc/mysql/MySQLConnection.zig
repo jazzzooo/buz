@@ -317,7 +317,7 @@ pub fn readAndProcessData(this: *MySQLConnection, data: []const u8) !void {
             if (err != error.ShortRead) {
                 if (comptime bun.Environment.allow_assert) {
                     if (@errorReturnTrace()) |trace| {
-                        debug("Error: {s}\n{f}", .{ @errorName(err), trace });
+                        debug("Error: {s} (trace 0x{x})", .{ @errorName(err), @intFromPtr(trace) });
                     }
                 }
                 return err;
@@ -996,7 +996,7 @@ fn handleResultSetOK(this: *MySQLConnection, request: *JSMySQLQuery, statement: 
 }
 
 fn getJSConnection(this: *MySQLConnection) *JSMySQLConnection {
-    return @fieldParentPtr("#connection", this);
+    return @fieldParentPtr("connection", this);
 }
 
 fn handleResultSet(this: *MySQLConnection, comptime Context: type, reader: NewReader(Context), header_length: u24) !void {

@@ -134,7 +134,7 @@ pub const ModuleInfoDeserialized = struct {
     pub fn serialize(self: *const ModuleInfoDeserialized, writer: anytype) !void {
         try writer.writeInt(u32, @truncate(self.record_kinds.len), .little);
         try writer.writeAll(std.mem.sliceAsBytes(self.record_kinds));
-        try writer.writeByteNTimes(0, (4 - (self.record_kinds.len % 4)) % 4); // alignment padding
+        try writer.splatByteAll(0, (4 - (self.record_kinds.len % 4)) % 4); // alignment padding
 
         try writer.writeInt(u32, @truncate(self.buffer.len), .little);
         try writer.writeAll(std.mem.sliceAsBytes(self.buffer));
@@ -144,7 +144,7 @@ pub const ModuleInfoDeserialized = struct {
         try writer.writeAll(std.mem.sliceAsBytes(self.requested_modules_values));
 
         try writer.writeByte(@bitCast(self.flags));
-        try writer.writeByteNTimes(0, 3); // alignment padding
+        try writer.splatByteAll(0, 3); // alignment padding
 
         try writer.writeInt(u32, @truncate(self.strings_lens.len), .little);
         try writer.writeAll(std.mem.sliceAsBytes(self.strings_lens));
@@ -254,10 +254,10 @@ pub const ModuleInfo = struct {
     fn init(allocator: std.mem.Allocator, is_typescript: bool) ModuleInfo {
         return .{
             .gpa = allocator,
-            .strings_map = .{},
-            .strings_buf = .{},
-            .strings_lens = .{},
-            .exported_names = .{},
+            .strings_map = .empty,
+            .strings_buf = .empty,
+            .strings_lens = .empty,
+            .exported_names = .empty,
             .requested_modules = std.array_hash_map.Auto(StringID, FetchParameters).empty,
             .buffer = .empty,
             .record_kinds = .empty,

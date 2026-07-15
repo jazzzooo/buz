@@ -44,16 +44,16 @@ pub fn scopeForPackageName(this: *const PackageManager, name: string) *const Npm
 
 pub fn getInstalledVersionsFromDiskCache(this: *PackageManager, tags_buf: *std.array_list.Managed(u8), package_name: []const u8, allocator: std.mem.Allocator) !std.array_list.Managed(Semver.Version) {
     var list = std.array_list.Managed(Semver.Version).init(allocator);
-    var dir = this.getCacheDirectory().openDir(package_name, .{
+    var dir = this.getCacheDirectory().openDir(this.io, package_name, .{
         .iterate = true,
     }) catch |err| switch (err) {
-        error.FileNotFound, error.NotDir, error.AccessDenied, error.DeviceBusy => return list,
+        error.FileNotFound, error.NotDir, error.AccessDenied => return list,
         else => return err,
     };
-    defer dir.close();
+    defer dir.close(this.io);
     var iter = dir.iterate();
 
-    while (try iter.next()) |entry| {
+    while (try iter.next(this.io)) |entry| {
         if (entry.kind != .directory and entry.kind != .sym_link) continue;
         const name = entry.name;
         const sliced = SlicedString.init(name, name);

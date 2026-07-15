@@ -416,6 +416,7 @@ pub fn print(
                 printed_installed_update_request = true;
 
                 var iterator = Bin.NamesIterator{
+                    .io = manager.io,
                     .bin = bin,
                     .package_name = name,
                     .string_buffer = string_buf,

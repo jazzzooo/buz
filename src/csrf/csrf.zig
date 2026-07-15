@@ -74,7 +74,7 @@ pub fn generate(
     bun.csprng(&nonce);
 
     // Current timestamp in milliseconds
-    const timestamp = std.time.milliTimestamp();
+    const timestamp = bun.timespec.realNow().ms();
     const timestamp_u64: u64 = @bitCast(@as(i64, timestamp));
 
     // Write timestamp to out_buffer
@@ -158,7 +158,7 @@ pub fn verify(options: VerifyOptions) bool {
     const timestamp = std.mem.readInt(u64, decoded[0..8], .big);
 
     // Check if token has expired
-    const current_time = @as(u64, @bitCast(std.time.milliTimestamp()));
+    const current_time = @as(u64, @bitCast(bun.timespec.realNow().ms()));
     // Extract expires_in (last 8 bytes)
     const expires_in = std.mem.readInt(u64, decoded[24..32], .big);
     {

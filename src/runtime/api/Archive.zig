@@ -536,6 +536,7 @@ const ExtractContext = struct {
     };
 
     store: *jsc.WebCore.Blob.Store,
+    io: std.Io,
     path: []const u8,
     glob_patterns: ?[]const []const u8,
     result: Result = .{ .err = error.ReadError },
@@ -544,6 +545,7 @@ const ExtractContext = struct {
         // If we have glob patterns, use filtered extraction
         if (this.glob_patterns != null) {
             const count = extractToDiskFiltered(
+                this.io,
                 this.store.sharedView(),
                 this.path,
                 this.glob_patterns,
@@ -553,6 +555,7 @@ const ExtractContext = struct {
 
         // Otherwise use the fast path without filtering
         const count = libarchive.Archiver.extractToDisk(
+            this.io,
             this.store.sharedView(),
             this.path,
             null,
@@ -593,6 +596,7 @@ fn startExtractTask(
 
     const task = try ExtractTask.create(globalThis, .{
         .store = store,
+        .io = globalThis.bunVM().io,
         .path = path_copy,
         .glob_patterns = glob_patterns,
     });
@@ -989,6 +993,7 @@ fn matchGlobPatterns(patterns: []const []const u8, pathname: []const u8) bool {
 /// Extract archive to disk with glob pattern filtering.
 /// Supports negative patterns with "!" prefix (e.g., "!node_modules/**").
 fn extractToDiskFiltered(
+    io: std.Io,
     file_buffer: []const u8,
     root: []const u8,
     glob_patterns: ?[]const []const u8,
@@ -1004,7 +1009,7 @@ fn extractToDiskFiltered(
 
     // Open/create target directory using bun.sys
     const cwd = bun.FD.cwd();
-    cwd.makePath(u8, root) catch {};
+    cwd.makePath(io, u8, root) catch {};
     const dir_fd: bun.FD = brk: {
         if (std.fs.path.isAbsolute(root)) {
             break :brk bun.sys.openA(root, bun.O.RDONLY | bun.O.DIRECTORY, 0).unwrap() catch return error.OpenError;
@@ -1035,7 +1040,7 @@ fn extractToDiskFiltered(
 
         switch (kind) {
             .directory => {
-                dir_fd.makePath(u8, pathname) catch |err| switch (err) {
+                dir_fd.makePath(io, u8, pathname) catch |err| switch (err) {
                     // Directory already exists - don't count as extracted
                     error.PathAlreadyExists => continue,
                     else => continue,
@@ -1053,7 +1058,7 @@ fn extractToDiskFiltered(
 
                 // Create parent directories if needed (ignore expected errors)
                 if (std.fs.path.dirname(pathname)) |parent_dir| {
-                    dir_fd.makePath(u8, parent_dir) catch |err| switch (err) {
+                    dir_fd.makePath(io, u8, parent_dir) catch |err| switch (err) {
                         // Expected: directory already exists
                         error.PathAlreadyExists => {},
                         // Permission errors: skip this file, will fail at openat
@@ -1121,7 +1126,7 @@ fn extractToDiskFiltered(
                         switch (err) {
                             error.EPERM, error.ENOENT => {
                                 if (std.fs.path.dirname(pathname)) |parent| {
-                                    dir_fd.makePath(u8, parent) catch {};
+                                    dir_fd.makePath(io, u8, parent) catch {};
                                 }
                                 _ = bun.sys.symlinkat(link_target, dir_fd, pathname).unwrap() catch continue;
                             },

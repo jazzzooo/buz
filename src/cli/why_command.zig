@@ -291,10 +291,7 @@ pub const WhyCommand = struct {
                     dependents_entry.value_ptr.* = std.array_list.Managed(DependentInfo).init(arena_allocator);
                 }
 
-                var dep_version_buf = std.array_list.Managed(u8).init(arena_allocator);
-                defer dep_version_buf.deinit();
-                try dep_version_buf.writer().print("{f}", .{packages.items(.resolution)[pkg_idx].fmt(string_bytes, .auto)});
-                const dep_pkg_version = try arena_allocator.dupe(u8, dep_version_buf.items);
+                const dep_pkg_version = try std.fmt.allocPrint(arena_allocator, "{f}", .{packages.items(.resolution)[pkg_idx].fmt(string_bytes, .auto)});
 
                 const spec = try arena_allocator.dupe(u8, dependency.version.literal.slice(string_bytes));
 
@@ -321,10 +318,7 @@ pub const WhyCommand = struct {
 
             if (!glob.matchesName(pkg_name, package_pattern)) continue;
 
-            var version_buf = std.array_list.Managed(u8).init(ctx.allocator);
-            defer version_buf.deinit();
-            try version_buf.writer().print("{f}", .{packages.items(.resolution)[pkg_idx].fmt(string_bytes, .auto)});
-            const version = try ctx.allocator.dupe(u8, version_buf.items);
+            const version = try std.fmt.allocPrint(ctx.allocator, "{f}", .{packages.items(.resolution)[pkg_idx].fmt(string_bytes, .auto)});
 
             if (!glob.matchesVersion(version)) continue;
 

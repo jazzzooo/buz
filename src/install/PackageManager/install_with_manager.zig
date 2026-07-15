@@ -691,7 +691,7 @@ pub fn installWithManager(
                         Output.pretty("<red>Installation aborted due to fatal security advisories<r>\n", .{});
                         Global.exit(1);
                     } else if (results.hasWarnings()) {
-                        if (!security_scanner.promptForWarnings()) {
+                        if (!security_scanner.promptForWarnings(manager.io)) {
                             Global.exit(1);
                         }
                     }
@@ -813,7 +813,7 @@ pub fn installWithManager(
                 manager.lockfile.packages.len,
                 if (manager.lockfile.packages.len == 1) "" else "s",
             });
-            Output.printStartEndStdout(ctx.start_time, std.time.nanoTimestamp());
+            Output.printStartEndStdout(ctx.start_time, bun.awakeNanoseconds(manager.io));
             Output.pretty("\n", .{});
         }
         Output.flush();
@@ -907,7 +907,7 @@ pub fn installWithManager(
         var node: *Progress.Node = undefined;
         if (log_level.showProgress()) {
             manager.progress.supports_ansi_escape_codes = Output.enable_ansi_colors_stderr;
-            node = manager.progress.start("Saving yarn.lock", 0);
+            node = manager.progress.start(manager.io, "Saving yarn.lock", 0);
             manager.progress.refresh();
         } else if (log_level != .silent) {
             Output.prettyErrorln("Saved yarn.lock", .{});
@@ -1006,7 +1006,7 @@ fn printInstallSummary(
                 ),
             );
             Output.pretty("<green>{d}<r> package{s}<r> installed ", .{ pkgs_installed, if (pkgs_installed == 1) "" else "s" });
-            Output.printStartEndStdout(ctx.start_time, std.time.nanoTimestamp());
+            Output.printStartEndStdout(ctx.start_time, bun.awakeNanoseconds(this.io));
             printed_timestamp = true;
             printBlockedPackagesInfo(install_summary, this.options.global);
 
@@ -1021,7 +1021,7 @@ fn printInstallSummary(
             }
 
             Output.pretty("<r><b>{d}<r> package{s} removed ", .{ this.summary.remove, if (this.summary.remove == 1) "" else "s" });
-            Output.printStartEndStdout(ctx.start_time, std.time.nanoTimestamp());
+            Output.printStartEndStdout(ctx.start_time, bun.awakeNanoseconds(this.io));
             printed_timestamp = true;
             printBlockedPackagesInfo(install_summary, this.options.global);
         } else if (install_summary.skipped > 0 and install_summary.fail == 0 and this.update_requests.len == 0) {
@@ -1034,7 +1034,7 @@ fn printInstallSummary(
                         count,
                         if (count == 1) "" else "s",
                     });
-                    Output.printStartEndStdout(ctx.start_time, std.time.nanoTimestamp());
+                    Output.printStartEndStdout(ctx.start_time, bun.awakeNanoseconds(this.io));
                 }
                 printed_timestamp = true;
                 printBlockedPackagesInfo(install_summary, this.options.global);
@@ -1043,7 +1043,7 @@ fn printInstallSummary(
                     install_summary.skipped,
                     if (install_summary.skipped == 1) "" else "s",
                 });
-                Output.printStartEndStdout(ctx.start_time, std.time.nanoTimestamp());
+                Output.printStartEndStdout(ctx.start_time, bun.awakeNanoseconds(this.io));
                 printed_timestamp = true;
                 printBlockedPackagesInfo(install_summary, this.options.global);
             }
@@ -1057,7 +1057,7 @@ fn printInstallSummary(
 
     if (this.options.do.summary) {
         if (!printed_timestamp) {
-            Output.printStartEndStdout(ctx.start_time, std.time.nanoTimestamp());
+            Output.printStartEndStdout(ctx.start_time, bun.awakeNanoseconds(this.io));
             Output.prettyln("<d> done<r>", .{});
             printed_timestamp = true;
         }
