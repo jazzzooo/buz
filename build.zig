@@ -53,7 +53,8 @@ const BunBuildOptions = struct {
     lto: bool,
     override_no_export_cpp_apis: bool,
     android_ndk_sysroot: ?[]const u8 = null,
-    freebsd_sysroot: ?[]const u8 = null,
+    freebsd_sysroot_x86_64: ?[]const u8 = null,
+    freebsd_sysroot_aarch64: ?[]const u8 = null,
 
     cached_options_module: ?*Module = null,
     windows_shim: ?WindowsShim = null,
@@ -65,6 +66,14 @@ const BunBuildOptions = struct {
 
     pub fn shouldEmbedCode(opts: *const BunBuildOptions) bool {
         return opts.optimize != .Debug or opts.codegen_embed;
+    }
+
+    pub fn freebsdSysroot(opts: *const BunBuildOptions) ?[]const u8 {
+        return switch (opts.arch) {
+            .x86_64 => opts.freebsd_sysroot_x86_64,
+            .aarch64 => opts.freebsd_sysroot_aarch64,
+            else => null,
+        };
     }
 
     pub fn buildOptionsModule(this: *BunBuildOptions, b: *Build) *Module {
@@ -220,10 +229,17 @@ pub fn build(b: *Build) !void {
     // headers, so translate-c needs the FreeBSD sysroot. The obj's
     // linkLibC() gets FreeBSD libc via `zig build --libc <file>`. On a
     // native FreeBSD host the system root is the sysroot.
-    const freebsd_sysroot = b.option([]const u8, "freebsd_sysroot", "FreeBSD sysroot (extracted base.txz) for translate-c headers") orelse
+    const freebsd_sysroot = b.option([]const u8, "freebsd_sysroot", "FreeBSD sysroot (extracted base.txz) for the current target") orelse
         if (os == .freebsd and builtin.os.tag == .freebsd) "/" else null;
-    if (os == .freebsd and freebsd_sysroot == null) {
-        std.debug.panic("-Dfreebsd_sysroot is required when cross-compiling to FreeBSD (zig does not bundle FreeBSD libc headers)", .{});
+    const freebsd_sysroot_x86_64 = b.option([]const u8, "freebsd_sysroot_x86_64", "FreeBSD amd64 sysroot for multi-target checks") orelse freebsd_sysroot;
+    const freebsd_sysroot_aarch64 = b.option([]const u8, "freebsd_sysroot_aarch64", "FreeBSD arm64 sysroot for multi-target checks") orelse freebsd_sysroot;
+    const target_freebsd_sysroot = switch (arch) {
+        .x86_64 => freebsd_sysroot_x86_64,
+        .aarch64 => freebsd_sysroot_aarch64,
+        else => null,
+    };
+    if (os == .freebsd and target_freebsd_sysroot == null) {
+        std.debug.panic("a FreeBSD sysroot for the target architecture is required when cross-compiling", .{});
     }
 
     var build_options = BunBuildOptions{
@@ -267,7 +283,8 @@ pub fn build(b: *Build) !void {
         .enable_tinycc = b.option(bool, "enable_tinycc", "Enable TinyCC for FFI JIT compilation") orelse true,
         .use_mimalloc = b.option(bool, "use_mimalloc", "Use mimalloc as default allocator") orelse false,
         .android_ndk_sysroot = android_ndk_sysroot,
-        .freebsd_sysroot = freebsd_sysroot,
+        .freebsd_sysroot_x86_64 = freebsd_sysroot_x86_64,
+        .freebsd_sysroot_aarch64 = freebsd_sysroot_aarch64,
     };
 
     // zig build obj
@@ -450,7 +467,7 @@ pub fn build(b: *Build) !void {
     // FreeBSD libc headers). Skip step creation entirely when none was
     // passed, so plain `zig build check` doesn't try to construct a
     // translate-c step that would panic.
-    if (freebsd_sysroot != null) {
+    if (freebsd_sysroot_x86_64 != null and freebsd_sysroot_aarch64 != null) {
         {
             const step = b.step("check-freebsd", "Check for semantic analysis errors on FreeBSD");
             addMultiCheck(b, step, build_options, &.{
@@ -691,7 +708,8 @@ fn addMultiCheck(
                 .use_mimalloc = root_build_options.use_mimalloc,
                 .override_no_export_cpp_apis = root_build_options.override_no_export_cpp_apis,
                 .android_ndk_sysroot = root_build_options.android_ndk_sysroot,
-                .freebsd_sysroot = root_build_options.freebsd_sysroot,
+                .freebsd_sysroot_x86_64 = root_build_options.freebsd_sysroot_x86_64,
+                .freebsd_sysroot_aarch64 = root_build_options.freebsd_sysroot_aarch64,
             };
 
             var obj = addBunObject(b, &options);
@@ -757,7 +775,9 @@ fn getTranslateC(b: *Build, initial_target: std.Build.ResolvedTarget, optimize: 
     if (target.result.os.tag == .freebsd) {
         const sysroot = freebsd_sysroot orelse
             std.debug.panic("translate-c for FreeBSD requires -Dfreebsd_sysroot", .{});
-        translate_c.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include", .{sysroot}) });
+        // Prefer the requested release's headers over Zig's generic FreeBSD
+        // header set so translated ABI layouts come from the actual sysroot.
+        translate_c.addIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include", .{sysroot}) });
     }
 
     if (target.result.os.tag == .windows) {
@@ -919,7 +939,7 @@ fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions) void {
 
     mod.addImport("build_options", opts.buildOptionsModule(b));
 
-    const translate_c = getTranslateC(b, opts.target, opts.optimize, opts.android_ndk_sysroot, opts.freebsd_sysroot);
+    const translate_c = getTranslateC(b, opts.target, opts.optimize, opts.android_ndk_sysroot, opts.freebsdSysroot());
     mod.addImport("translated-c-headers", b.createModule(.{ .root_source_file = translate_c }));
 
     const zlib_internal_path = switch (os) {

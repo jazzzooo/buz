@@ -20,6 +20,21 @@
 #define _GNU_SOURCE
 #endif
 
+#if FREEBSD
+// <sys/time.h> contains static inline arithmetic helpers that translate-c
+// cannot emit as valid Zig. The translated declarations only need its public
+// structure layouts, so provide those through their leaf headers and
+// keep dependent headers from expanding the inline implementation.
+#include <sys/types.h>
+#include <sys/_timespec.h>
+#include <sys/_timeval.h>
+struct itimerval {
+  struct timeval it_interval;
+  struct timeval it_value;
+};
+#define _SYS_TIME_H_
+#endif
+
 // OnBeforeParseResult, etc...
 #include "../packages/bun-native-bundler-plugin-api/bundler_plugin.h"
 
@@ -71,7 +86,6 @@ int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize
 #include <sys/mount.h>
 #include <sys/resource.h>
 #include <sys/sysctl.h>
-#include <sys/time.h>
 #include <sys/umtx.h>
 #include <sys/user.h>
 #include <sys/utsname.h>
