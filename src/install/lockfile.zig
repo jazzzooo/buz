@@ -726,8 +726,8 @@ pub fn cleanWithLogger(
 
     // Clone workspace_paths and workspace_versions at the end.
     if (old.workspace_paths.count() > 0 or old.workspace_versions.count() > 0) {
-        try new.workspace_paths.ensureTotalCapacity(z_allocator, old.workspace_paths.count());
-        try new.workspace_versions.ensureTotalCapacity(z_allocator, old.workspace_versions.count());
+        try new.workspace_paths.ensureTotalCapacity(old.allocator, old.workspace_paths.count());
+        try new.workspace_versions.ensureTotalCapacity(old.allocator, old.workspace_versions.count());
 
         var workspace_paths_builder = new.stringBuilder();
 
@@ -768,7 +768,7 @@ pub fn cleanWithLogger(
             old.workspace_paths.keys(),
         );
 
-        try new.workspace_versions.ensureTotalCapacity(z_allocator, old.workspace_versions.count());
+        try new.workspace_versions.ensureTotalCapacity(old.allocator, old.workspace_versions.count());
         new.workspace_versions.entries.len = old.workspace_versions.entries.len;
         for (versions, new.workspace_versions.values()) |src, *dest| {
             dest.* = src.append(old.buffers.string_bytes.items, @TypeOf(&workspace_paths_builder), &workspace_paths_builder);
@@ -781,8 +781,8 @@ pub fn cleanWithLogger(
 
         workspace_paths_builder.clamp();
 
-        try new.workspace_versions.reIndex(z_allocator);
-        try new.workspace_paths.reIndex(z_allocator);
+        try new.workspace_versions.reIndex(old.allocator);
+        try new.workspace_paths.reIndex(old.allocator);
     }
 
     // When you run `"bun add react"
@@ -2206,7 +2206,6 @@ const assert = bun.assert;
 const default_allocator = bun.default_allocator;
 const logger = bun.logger;
 const strings = bun.strings;
-const z_allocator = bun.z_allocator;
 const Bitset = bun.bit_set.DynamicBitSetUnmanaged;
 const File = bun.sys.File;
 
