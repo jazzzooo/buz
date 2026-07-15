@@ -3,7 +3,7 @@ const InternalState = @This();
 // TODO: reduce the size of this struct
 // Many of these fields can be moved to a packed struct and use less space
 
-response_message_buffer: MutableString = undefined,
+response_message_buffer: MutableString = .initEmpty(bun.default_allocator),
 /// pending response is the temporary storage for the response headers, url and status code
 /// this uses shared_response_headers_buf to store the headers
 /// this will be turned null once the metadata is cloned
@@ -24,7 +24,7 @@ decompressor: Decompressor = .{ .none = {} },
 stage: Stage = Stage.pending,
 /// This is owned by the user and should not be freed here
 body_out_str: ?*MutableString = null,
-compressed_body: MutableString = undefined,
+compressed_body: MutableString = .initEmpty(bun.default_allocator),
 content_length: ?usize = null,
 total_body_received: usize = 0,
 request_body: []const u8 = "",
