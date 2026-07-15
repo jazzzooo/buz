@@ -166,8 +166,7 @@ fn prepareCssAstsForChunkImpl(c: *LinkerContext, chunk: *Chunk, allocator: std.m
                         // `c.graph.ast.items(.css)`. We MUST NOT mutate that
                         // buffer in place — a second import of the same
                         // source_index would observe the compacted prefix and
-                        // drop rules. Instead we either reslice the copied
-                        // header (fast path) or build a fresh rules list.
+                        // drop rules. Instead we build a fresh rules list.
                         //
                         // Regression: #28914
                         const original_rules = ast.rules.v.items;
@@ -188,18 +187,7 @@ fn prepareCssAstsForChunkImpl(c: *LinkerContext, chunk: *Chunk, allocator: std.m
                         if (dropped == 0) {
                             // Prefix is all "@layer" (or empty). Nothing to
                             // strip — leave `ast.rules.v` untouched.
-                        } else if (layer_count == 0) {
-                            // Fast path: no "@layer" statements to preserve,
-                            // reslice the copied header forward. This does
-                            // not touch the backing array.
-                            const tail = original_rules[prefix_end..];
-                            ast.rules.v = .{
-                                .items = tail,
-                                .capacity = ast.rules.v.capacity - (original_rules.len - tail.len),
-                            };
                         } else {
-                            // Interleaved case: allocate a fresh rules list
-                            // so we don't mutate the shared backing array.
                             // Preserve the "@layer" statements from the
                             // prefix and append the remaining tail.
                             var new_rules = bun.css.BundlerCssRuleList{};
