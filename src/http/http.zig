@@ -2342,6 +2342,7 @@ fn sendProgressUpdateWithoutStageCheck(this: *HTTPClient, comptime is_ssl: bool,
             NewHTTPContext(is_ssl).closeSocket(socket);
         }
 
+        out_str.* = .initEmpty(body.allocator);
         this.state.reset(this.allocator);
         this.state.response_stage = .done;
         this.state.request_stage = .done;
@@ -2377,6 +2378,7 @@ fn sendProgressUpdateMultiplexed(this: *HTTPClient) void {
     const callback = this.result_callback;
     if (is_done) {
         this.unregisterAbortTracker();
+        out_str.* = .initEmpty(body.allocator);
         this.state.reset(this.allocator);
         this.state.response_stage = .done;
         this.state.request_stage = .done;
