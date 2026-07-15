@@ -1011,12 +1011,13 @@ pub const PackageInstall = struct {
                                 head2[entry.path.len + (head2.len - to_copy_into2.len)] = 0;
                                 const target: [:0]u8 = head2[0 .. entry.path.len + head2.len - to_copy_into2.len :0];
 
-                                const destination_fd = bun.FD.fromStdDir(destination_dir);
-                                if (bun.sys.symlinkat(target, destination_fd, entry.path).asErr()) |err| {
-                                    if (err.getErrno() != .EXIST) return err.toZigErr();
-                                    bun.sys.unlinkat(destination_fd, entry.path).unwrap() catch {};
-                                    try bun.sys.symlinkat(entry.basename, destination_fd, entry.path).unwrap();
-                                }
+                                destination_dir.symLink(io, target, entry.path, .{}) catch |err| switch (err) {
+                                    error.PathAlreadyExists => {
+                                        destination_dir.deleteFile(io, entry.path) catch {};
+                                        try destination_dir.symLink(io, target, entry.path, .{});
+                                    },
+                                    else => return err,
+                                };
 
                                 real_file_count += 1;
                             },
@@ -1097,16 +1098,7 @@ pub const PackageInstall = struct {
             if (Environment.isWindows) &state.buf else {},
             if (Environment.isWindows) state.to_copy_buf2 else to_copy_buf2,
             if (Environment.isWindows) &state.buf2 else &buf2,
-        ) catch |err| {
-            if (comptime Environment.isWindows) {
-                if (err == error.FailedToCopyFile) {
-                    return Result.fail(err, .copying_files, @errorReturnTrace());
-                }
-            } else if (err == error.NotSameFileSystem or err == error.ENXIO) {
-                return err;
-            }
-            return Result.fail(err, .copying_files, @errorReturnTrace());
-        };
+        ) catch |err| return Result.fail(err, .copying_files, @errorReturnTrace());
 
         return .success;
     }
