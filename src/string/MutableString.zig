@@ -2,6 +2,8 @@ const MutableString = @This();
 
 allocator: Allocator,
 list: std.ArrayListUnmanaged(u8),
+writer_state: std.Io.Writer = .{ .vtable = &.{ .drain = writerDrain }, .buffer = &.{} },
+writer_error: ?Allocator.Error = null,
 
 pub fn init2048(allocator: Allocator) Allocator.Error!MutableString {
     return MutableString.init(allocator, 2048);
@@ -11,11 +13,23 @@ pub fn clone(self: *MutableString) Allocator.Error!MutableString {
     return MutableString.initCopy(self.allocator, self.list.items);
 }
 
-pub const Writer = std.Io.GenericWriter(*@This(), Allocator.Error, MutableString.writeAll);
-pub fn writer(self: *MutableString) Writer {
-    return Writer{
-        .context = self,
+pub const Writer = std.Io.Writer;
+pub fn writer(self: *MutableString) *Writer {
+    self.writer_state.end = 0;
+    self.writer_error = null;
+    return &self.writer_state;
+}
+
+fn writerDrain(interface: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+    const self: *MutableString = @fieldParentPtr("writer_state", interface);
+    const count = std.Io.Writer.countSplat(data, splat);
+    self.list.ensureUnusedCapacity(self.allocator, count) catch |err| {
+        self.writer_error = err;
+        return error.WriteFailed;
     };
+    for (data[0 .. data.len - 1]) |bytes| self.list.appendSliceAssumeCapacity(bytes);
+    for (0..splat) |_| self.list.appendSliceAssumeCapacity(data[data.len - 1]);
+    return count;
 }
 
 pub fn isEmpty(this: *const MutableString) bool {
@@ -316,10 +330,25 @@ pub const BufferedWriter = struct {
     context: *MutableString,
     buffer: [max]u8 = undefined,
     pos: usize = 0,
+    interface: std.Io.Writer = .{ .vtable = &.{ .drain = drain }, .buffer = &.{} },
+    writer_error: ?Allocator.Error = null,
 
     const max = 2048;
 
-    pub const Writer = std.Io.GenericWriter(*BufferedWriter, Allocator.Error, BufferedWriter.writeAll);
+    pub const Writer = std.Io.Writer;
+
+    fn drain(interface: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const this: *BufferedWriter = @fieldParentPtr("interface", interface);
+        for (data[0 .. data.len - 1]) |bytes| _ = this.writeAll(bytes) catch |err| {
+            this.writer_error = err;
+            return error.WriteFailed;
+        };
+        for (0..splat) |_| _ = this.writeAll(data[data.len - 1]) catch |err| {
+            this.writer_error = err;
+            return error.WriteFailed;
+        };
+        return std.Io.Writer.countSplat(data, splat);
+    }
 
     inline fn remain(this: *BufferedWriter) []u8 {
         return this.buffer[this.pos..];
@@ -450,8 +479,10 @@ pub const BufferedWriter = struct {
         }
     }
 
-    pub fn writer(this: *BufferedWriter) BufferedWriter.Writer {
-        return BufferedWriter.Writer{ .context = this };
+    pub fn writer(this: *BufferedWriter) *BufferedWriter.Writer {
+        this.interface.end = 0;
+        this.writer_error = null;
+        return &this.interface;
     }
 };
 

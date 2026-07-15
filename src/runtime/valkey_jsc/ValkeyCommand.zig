@@ -44,10 +44,10 @@ pub fn byteLength(this: *const Command) usize {
 }
 
 pub fn serialize(this: *const Command, allocator: std.mem.Allocator) ![]u8 {
-    var buf = try std.array_list.Managed(u8).initCapacity(allocator, this.byteLength());
+    var buf = try std.Io.Writer.Allocating.initCapacity(allocator, this.byteLength());
     errdefer buf.deinit();
-    try this.write(buf.writer());
-    return buf.items;
+    try this.write(&buf.writer);
+    return try buf.toOwnedSlice();
 }
 
 /// Command stored in offline queue when disconnected

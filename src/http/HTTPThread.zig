@@ -88,19 +88,12 @@ pub const RequestBodyBuffer = union(enum) {
         }
     }
 
-    pub fn toArrayList(this: *@This()) std.array_list.Managed(u8) {
+    pub fn toWriter(this: *@This()) std.Io.Writer.Allocating {
         return switch (this.*) {
-            .heap => |heap| brk: {
-                var arraylist = std.array_list.Managed(u8).fromOwnedSlice(heap.fixed_buffer_allocator.allocator(), &heap.buffer);
-                arraylist.items.len = 0;
-                break :brk arraylist;
-            },
+            .heap => |heap| .initOwnedSlice(heap.fixed_buffer_allocator.allocator(), &heap.buffer),
             .stack => |*stack| brk: {
                 stack.allocator_state = .init(&stack.buffer, bun.default_allocator);
-                break :brk std.array_list.Managed(u8).initCapacity(
-                    stack.allocator_state.allocator(),
-                    stack.buffer.len,
-                ) catch unreachable;
+                break :brk .initOwnedSlice(stack.allocator_state.allocator(), &stack.buffer);
             },
         };
     }

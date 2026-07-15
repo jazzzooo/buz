@@ -41,6 +41,10 @@ pub fn BoundedArrayAligned(
         const Self = @This();
         buffer: [buffer_capacity]T align(alignment.toByteUnits()) = undefined,
         len: Length = 0,
+        writer_state: if (T == u8) std.Io.Writer else void = if (T == u8)
+            .{ .vtable = &.{ .drain = writerDrain }, .buffer = &.{} }
+        else
+            {},
 
         const Length = std.math.ByteAlignedInt(std.math.IntFittingRange(0, buffer_capacity));
 
@@ -278,22 +282,23 @@ pub fn BoundedArrayAligned(
             @memset(self.slice()[old_len..self.len], value);
         }
 
-        pub const Writer = if (T != u8)
-            @compileError("The Writer interface is only defined for BoundedArray(u8, ...) " ++
-                "but the given type is BoundedArray(" ++ @typeName(T) ++ ", ...)")
-        else
-            std.io.GenericWriter(*Self, error{Overflow}, appendWrite);
+        pub const Writer = std.Io.Writer;
 
         /// Initializes a writer which will write into the array.
-        pub fn writer(self: *Self) Writer {
-            return .{ .context = self };
+        pub fn writer(self: *Self) *Writer {
+            if (comptime T != u8) @compileError("The Writer interface is only defined for BoundedArray(u8, ...)");
+            self.writer_state.end = 0;
+            return &self.writer_state;
         }
 
-        /// Same as `appendSlice` except it returns the number of bytes written, which is always the same
-        /// as `m.len`. The purpose of this function existing is to match `std.io.GenericWriter` API.
-        fn appendWrite(self: *Self, m: []const u8) error{Overflow}!usize {
-            try self.appendSlice(m);
-            return m.len;
+        fn writerDrain(interface: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+            if (comptime T != u8) unreachable;
+            const self: *Self = @fieldParentPtr("writer_state", interface);
+            const count = std.Io.Writer.countSplat(data, splat);
+            if (count > buffer_capacity - self.len) return error.WriteFailed;
+            for (data[0 .. data.len - 1]) |bytes| self.appendSliceAssumeCapacity(bytes);
+            for (0..splat) |_| self.appendSliceAssumeCapacity(data[data.len - 1]);
+            return count;
         }
     };
 }

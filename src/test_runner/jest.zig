@@ -348,16 +348,16 @@ fn consumeArg(
     should_write: bool,
     str_idx: *usize,
     args_idx: *usize,
-    array_list: *std.array_list.Managed(u8),
+    array_list: *std.Io.Writer.Allocating,
     arg: *const JSValue,
     fallback: []const u8,
 ) !void {
     if (should_write) {
         const owned_slice = try arg.toSliceOrNull(globalThis);
         defer owned_slice.deinit();
-        bun.handleOom(array_list.appendSlice(owned_slice.slice()));
+        array_list.writer.writeAll(owned_slice.slice()) catch return error.OutOfMemory;
     } else {
-        bun.handleOom(array_list.appendSlice(fallback));
+        array_list.writer.writeAll(fallback) catch return error.OutOfMemory;
     }
     str_idx.* += 1;
     args_idx.* += 1;
@@ -367,7 +367,7 @@ fn consumeArg(
 pub fn formatLabel(globalThis: *JSGlobalObject, label: string, function_args: []const jsc.JSValue, test_idx: usize, allocator: std.mem.Allocator) !string {
     var idx: usize = 0;
     var args_idx: usize = 0;
-    var list = bun.handleOom(std.array_list.Managed(u8).initCapacity(allocator, label.len));
+    var list = bun.handleOom(std.Io.Writer.Allocating.initCapacity(allocator, label.len));
     defer list.deinit();
 
     while (idx < label.len) {
@@ -403,11 +403,11 @@ pub fn formatLabel(globalThis: *JSGlobalObject, label: string, function_args: []
                     if (value.isString()) {
                         const owned_slice = try value.toSliceOrNull(globalThis);
                         defer owned_slice.deinit();
-                        bun.handleOom(list.appendSlice(owned_slice.slice()));
+                        list.writer.writeAll(owned_slice.slice()) catch bun.outOfMemory();
                     } else {
                         var formatter = jsc.ConsoleObject.Formatter{ .globalThis = globalThis, .quote_strings = true };
                         defer formatter.deinit();
-                        bun.handleOom(list.writer().print("{f}", .{value.toFmt(&formatter)}));
+                        list.writer.print("{f}", .{value.toFmt(&formatter)}) catch bun.outOfMemory();
                     }
                     idx = var_end;
                     continue;
@@ -418,8 +418,8 @@ pub fn formatLabel(globalThis: *JSGlobalObject, label: string, function_args: []
                 }
             }
 
-            bun.handleOom(list.append('$'));
-            bun.handleOom(list.appendSlice(label[var_start..var_end]));
+            list.writer.writeByte('$') catch bun.outOfMemory();
+            list.writer.writeAll(label[var_start..var_end]) catch bun.outOfMemory();
             idx = var_end;
         } else if (char == '%' and (idx + 1 < label.len) and !(args_idx >= function_args.len)) {
             const current_arg = function_args[args_idx];
@@ -444,7 +444,7 @@ pub fn formatLabel(globalThis: *JSGlobalObject, label: string, function_args: []
                     try current_arg.jsonStringifyFast(globalThis, &str);
                     const owned_slice = bun.handleOom(str.toOwnedSlice(allocator));
                     defer allocator.free(owned_slice);
-                    bun.handleOom(list.appendSlice(owned_slice));
+                    list.writer.writeAll(owned_slice) catch bun.outOfMemory();
                     idx += 1;
                     args_idx += 1;
                 },
@@ -452,25 +452,25 @@ pub fn formatLabel(globalThis: *JSGlobalObject, label: string, function_args: []
                     var formatter = jsc.ConsoleObject.Formatter{ .globalThis = globalThis, .quote_strings = true };
                     defer formatter.deinit();
                     const value_fmt = current_arg.toFmt(&formatter);
-                    bun.handleOom(list.writer().print("{f}", .{value_fmt}));
+                    list.writer.print("{f}", .{value_fmt}) catch bun.outOfMemory();
                     idx += 1;
                     args_idx += 1;
                 },
                 '#' => {
                     const test_index_str = bun.handleOom(std.fmt.allocPrint(allocator, "{d}", .{test_idx}));
                     defer allocator.free(test_index_str);
-                    bun.handleOom(list.appendSlice(test_index_str));
+                    list.writer.writeAll(test_index_str) catch bun.outOfMemory();
                     idx += 1;
                 },
                 '%' => {
-                    bun.handleOom(list.append('%'));
+                    list.writer.writeByte('%') catch bun.outOfMemory();
                     idx += 1;
                 },
                 else => {
                     // ignore unrecognized fmt
                 },
             }
-        } else bun.handleOom(list.append(char));
+        } else list.writer.writeByte(char) catch bun.outOfMemory();
         idx += 1;
     }
 

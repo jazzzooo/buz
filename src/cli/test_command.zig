@@ -878,12 +878,9 @@ pub const CommandLineReporter = struct {
     }
 
     pub fn handleTestCompleted(buntest: *bun_test.BunTest, sequence: *bun_test.Execution.ExecutionSequence, test_entry: *bun_test.ExecutionEntry, elapsed_ns: u64) void {
-        var output_buf: std.ArrayListUnmanaged(u8) = .empty;
-        defer output_buf.deinit(buntest.gpa);
-
-        const initial_length = output_buf.items.len;
-        const base_writer = output_buf.writer(buntest.gpa);
-        var writer = base_writer;
+        var output_buf = std.Io.Writer.Allocating.init(buntest.gpa);
+        defer output_buf.deinit();
+        const writer = &output_buf.writer;
 
         switch (sequence.result) {
             inline else => |result| {
@@ -907,14 +904,14 @@ pub const CommandLineReporter = struct {
                     } else {
                         buntest.bun_test_root.onBeforePrint();
 
-                        writeTestStatusLine(result, &writer);
+                        writeTestStatusLine(result, writer);
                         const dim = switch (comptime result.basicResult()) {
                             .todo => if (bun.jsc.Jest.Jest.runner) |runner| !runner.run_todo else true,
                             .skip, .pending => true,
                             .pass, .fail => false,
                         };
                         switch (dim) {
-                            inline else => |dim_comptime| printTestLine(result, sequence, test_entry, elapsed_ns, &writer, dim_comptime),
+                            inline else => |dim_comptime| printTestLine(result, sequence, test_entry, elapsed_ns, writer, dim_comptime),
                         }
                     }
                 }
@@ -923,7 +920,7 @@ pub const CommandLineReporter = struct {
             },
         }
 
-        const formatted_line = output_buf.items[initial_length..];
+        const formatted_line = output_buf.written();
         if (buntest.reporter != null and buntest.reporter.?.worker_ipc_file_idx != null) {
             ParallelRunner.workerEmitTestDone(buntest.reporter.?.worker_ipc_file_idx.?, formatted_line);
         } else {
@@ -933,9 +930,9 @@ pub const CommandLineReporter = struct {
         var this: *CommandLineReporter = buntest.reporter orelse return; // command line reporter is missing! uh oh!
 
         if (!this.reporters.dots and !this.reporters.only_failures) switch (sequence.result.basicResult()) {
-            .skip => bun.handleOom(this.skips_to_repeat_buf.appendSlice(bun.default_allocator, output_buf.items[initial_length..])),
-            .todo => bun.handleOom(this.todos_to_repeat_buf.appendSlice(bun.default_allocator, output_buf.items[initial_length..])),
-            .fail => bun.handleOom(this.failures_to_repeat_buf.appendSlice(bun.default_allocator, output_buf.items[initial_length..])),
+            .skip => bun.handleOom(this.skips_to_repeat_buf.appendSlice(bun.default_allocator, formatted_line)),
+            .todo => bun.handleOom(this.todos_to_repeat_buf.appendSlice(bun.default_allocator, formatted_line)),
+            .fail => bun.handleOom(this.failures_to_repeat_buf.appendSlice(bun.default_allocator, formatted_line)),
             .pass, .pending => {},
         };
 

@@ -147,7 +147,7 @@ const State = struct {
     event_loop: *bun.jsc.MiniEventLoop,
     remaining_scripts: usize = 0,
     // buffer for batched output
-    draw_buf: std.array_list.Managed(u8) = std.array_list.Managed(u8).init(bun.default_allocator),
+    draw_buf: std.Io.Writer.Allocating = .init(bun.default_allocator),
     last_lines_written: usize = 0,
     pretty_output: bool,
     shell_bin: [:0]const u8,
@@ -174,7 +174,7 @@ const State = struct {
                 if (std.mem.indexOfScalar(u8, content, '\n')) |i| {
                     try handle.buffer.appendSlice(content[0 .. i + 1]);
                     content = content[i + 1 ..];
-                    try this.draw_buf.writer().print("{s} {s}: {s}", .{ handle.config.package_name, handle.config.script_name, handle.buffer.items });
+                    try this.draw_buf.writer.print("{s} {s}: {s}", .{ handle.config.package_name, handle.config.script_name, handle.buffer.items });
                     handle.buffer.clearRetainingCapacity();
                 } else {
                     try handle.buffer.appendSlice(content);
@@ -183,7 +183,7 @@ const State = struct {
             }
             while (std.mem.indexOfScalar(u8, content, '\n')) |i| {
                 const line = content[0 .. i + 1];
-                try this.draw_buf.writer().print("{s} {s}: {s}", .{ handle.config.package_name, handle.config.script_name, line });
+                try this.draw_buf.writer.print("{s} {s}: {s}", .{ handle.config.package_name, handle.config.script_name, line });
                 content = content[i + 1 ..];
             }
             if (content.len > 0) {
@@ -212,16 +212,16 @@ const State = struct {
             this.draw_buf.clearRetainingCapacity();
             // flush any remaining buffer
             if (handle.buffer.items.len > 0) {
-                try this.draw_buf.writer().print("{s}: {s}\n", .{ handle.config.package_name, handle.buffer.items });
+                try this.draw_buf.writer.print("{s}: {s}\n", .{ handle.config.package_name, handle.buffer.items });
                 handle.buffer.clearRetainingCapacity();
             }
             // print exit status
             switch (handle.process.?.status) {
                 .exited => |exited| {
-                    try this.draw_buf.writer().print("{s} {s}: Exited with code {d}\n", .{ handle.config.package_name, handle.config.script_name, exited.code });
+                    try this.draw_buf.writer.print("{s} {s}: Exited with code {d}\n", .{ handle.config.package_name, handle.config.script_name, exited.code });
                 },
                 .signaled => |signal| {
-                    try this.draw_buf.writer().print("{s} {s}: Signaled with code {s}\n", .{ handle.config.package_name, handle.config.script_name, @tagName(signal) });
+                    try this.draw_buf.writer.print("{s} {s}: Signaled with code {s}\n", .{ handle.config.package_name, handle.config.script_name, @tagName(signal) });
                 },
                 else => {},
             }
@@ -259,13 +259,13 @@ const State = struct {
     fn redraw(this: *This, is_abort: bool) !void {
         if (!this.pretty_output) return;
         this.draw_buf.clearRetainingCapacity();
-        try this.draw_buf.appendSlice(Output.synchronized_start);
+        try this.draw_buf.writer.writeAll(Output.synchronized_start);
         if (this.last_lines_written > 0) {
             // move cursor to the beginning of the line and clear it
-            try this.draw_buf.appendSlice("\x1b[0G\x1b[K");
+            try this.draw_buf.writer.writeAll("\x1b[0G\x1b[K");
             for (0..this.last_lines_written) |_| {
                 // move cursor up and clear the line
-                try this.draw_buf.appendSlice("\x1b[1A\x1b[K");
+                try this.draw_buf.writer.writeAll("\x1b[1A\x1b[K");
             }
         }
         for (this.handles) |*handle| {
@@ -273,9 +273,9 @@ const State = struct {
             const elide_lines = if (is_abort) null else handle.config.elide_count orelse 10;
             const e = elide(handle.buffer.items, elide_lines);
 
-            try this.draw_buf.writer().print(fmt("<b>{s}<r> {s} $ <d>{s}<r>\n"), .{ handle.config.package_name, handle.config.script_name, handle.config.script_content });
+            try this.draw_buf.writer.print(fmt("<b>{s}<r> {s} $ <d>{s}<r>\n"), .{ handle.config.package_name, handle.config.script_name, handle.config.script_content });
             if (e.elided_count > 0) {
-                try this.draw_buf.writer().print(
+                try this.draw_buf.writer.print(
                     fmt("<cyan>│<r> <d>[{d} lines elided]<r>\n"),
                     .{e.elided_count},
                 );
@@ -283,54 +283,54 @@ const State = struct {
             var content = e.content;
             while (std.mem.indexOfScalar(u8, content, '\n')) |i| {
                 const line = content[0 .. i + 1];
-                try this.draw_buf.appendSlice(fmt("<cyan>│<r> "));
-                try this.draw_buf.appendSlice(line);
+                try this.draw_buf.writer.writeAll(fmt("<cyan>│<r> "));
+                try this.draw_buf.writer.writeAll(line);
                 content = content[i + 1 ..];
             }
             if (content.len > 0) {
-                try this.draw_buf.appendSlice(fmt("<cyan>│<r> "));
-                try this.draw_buf.appendSlice(content);
-                try this.draw_buf.append('\n');
+                try this.draw_buf.writer.writeAll(fmt("<cyan>│<r> "));
+                try this.draw_buf.writer.writeAll(content);
+                try this.draw_buf.writer.writeByte('\n');
             }
-            try this.draw_buf.appendSlice(fmt("<cyan>└─<r> "));
+            try this.draw_buf.writer.writeAll(fmt("<cyan>└─<r> "));
             if (handle.process) |proc| {
                 switch (proc.status) {
-                    .running => try this.draw_buf.appendSlice(fmt("<cyan>Running...<r>\n")),
+                    .running => try this.draw_buf.writer.writeAll(fmt("<cyan>Running...<r>\n")),
                     .exited => |exited| {
                         if (exited.code == 0) {
                             if (handle.start_time != null and handle.end_time != null) {
                                 const duration = handle.end_time.? -| handle.start_time.?;
                                 const ms = @as(f64, @floatFromInt(duration)) / 1_000_000.0;
                                 if (ms > 1000.0) {
-                                    try this.draw_buf.writer().print(fmt("<cyan>Done in {d:.2} s<r>\n"), .{ms / 1_000.0});
+                                    try this.draw_buf.writer.print(fmt("<cyan>Done in {d:.2} s<r>\n"), .{ms / 1_000.0});
                                 } else {
-                                    try this.draw_buf.writer().print(fmt("<cyan>Done in {d:.0} ms<r>\n"), .{ms});
+                                    try this.draw_buf.writer.print(fmt("<cyan>Done in {d:.0} ms<r>\n"), .{ms});
                                 }
                             } else {
-                                try this.draw_buf.appendSlice(fmt("<cyan>Done<r>\n"));
+                                try this.draw_buf.writer.writeAll(fmt("<cyan>Done<r>\n"));
                             }
                         } else {
-                            try this.draw_buf.writer().print(fmt("<red>Exited with code {d}<r>\n"), .{exited.code});
+                            try this.draw_buf.writer.print(fmt("<red>Exited with code {d}<r>\n"), .{exited.code});
                         }
                     },
                     .signaled => |code| {
                         if (code == .SIGINT) {
-                            try this.draw_buf.writer().print(fmt("<red>Interrupted<r>\n"), .{});
+                            try this.draw_buf.writer.print(fmt("<red>Interrupted<r>\n"), .{});
                         } else {
-                            try this.draw_buf.writer().print(fmt("<red>Signaled with code {s}<r>\n"), .{@tagName(code)});
+                            try this.draw_buf.writer.print(fmt("<red>Signaled with code {s}<r>\n"), .{@tagName(code)});
                         }
                     },
                     .err => {
-                        try this.draw_buf.appendSlice(fmt("<red>Error<r>\n"));
+                        try this.draw_buf.writer.writeAll(fmt("<red>Error<r>\n"));
                     },
                 }
             } else {
-                try this.draw_buf.writer().print(fmt("<cyan><d>Waiting for {d} other script(s)<r>\n"), .{handle.remaining_dependencies});
+                try this.draw_buf.writer.print(fmt("<cyan><d>Waiting for {d} other script(s)<r>\n"), .{handle.remaining_dependencies});
             }
         }
-        try this.draw_buf.appendSlice(Output.synchronized_end);
+        try this.draw_buf.writer.writeAll(Output.synchronized_end);
         this.last_lines_written = 0;
-        for (this.draw_buf.items) |c| {
+        for (this.draw_buf.written()) |c| {
             if (c == '\n') {
                 this.last_lines_written += 1;
             }
@@ -339,7 +339,8 @@ const State = struct {
     }
 
     fn flushDrawBuf(this: *This) void {
-        std.fs.File.stdout().writeAll(this.draw_buf.items) catch {};
+        Output.writer().writeAll(this.draw_buf.written()) catch {};
+        Output.flush();
     }
 
     pub fn abort(this: *This) void {

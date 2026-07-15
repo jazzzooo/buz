@@ -26,7 +26,10 @@ fn dumpBtjsTraceDebugImpl() [*:0]const u8 {
     // std.log.info("jsc_llint_begin: {x}", .{@intFromPtr(&jsc_llint_begin)});
     // std.log.info("jsc_llint_end: {x}", .{@intFromPtr(&jsc_llint_end)});
 
-    const tty_config = std.io.tty.detectConfig(std.fs.File.stdout());
+    const tty_config: std.Io.Terminal = .{
+        .writer = w,
+        .mode = if (bun.Output.enable_ansi_colors_stdout) .escape_codes else .no_color,
+    };
 
     var context: std.debug.ThreadContext = undefined;
     const has_context = std.debug.getContext(&context);
@@ -63,7 +66,7 @@ fn dumpBtjsTraceDebugImpl() [*:0]const u8 {
     }).ptr);
 }
 
-fn printSourceAtAddress(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Writer, address: usize, tty_config: std.io.tty.Config, fp: usize) !void {
+fn printSourceAtAddress(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Writer, address: usize, tty_config: std.Io.Terminal, fp: usize) !void {
     if (!bun.Environment.isDebug) unreachable;
     const module = debug_info.getModuleForAddress(address) catch |err| switch (err) {
         error.MissingDebugInfo, error.InvalidDebugInfo => return printUnknownSource(debug_info, out_stream, address, tty_config),
@@ -89,9 +92,9 @@ fn printSourceAtAddress(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Wri
     const frame: *const bun.jsc.CallFrame = @ptrFromInt(fp);
     if (do_llint) {
         const srcloc = frame.getCallerSrcLoc(bun.jsc.VirtualMachine.get().global);
-        try tty_config.setColor(out_stream, .bold);
+        try tty_config.setColor(.bold);
         try out_stream.print("{f}:{d}:{d}: ", .{ srcloc.str, srcloc.line, srcloc.column });
-        try tty_config.setColor(out_stream, .reset);
+        try tty_config.setColor(.reset);
     }
 
     try printLineInfo(
@@ -107,14 +110,14 @@ fn printSourceAtAddress(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Wri
     if (do_llint) {
         const desc = frame.describeFrame();
         try out_stream.print("    {s}\n    ", .{desc});
-        try tty_config.setColor(out_stream, .green);
+        try tty_config.setColor(.green);
         try out_stream.writeAll("^");
-        try tty_config.setColor(out_stream, .reset);
+        try tty_config.setColor(.reset);
         try out_stream.writeAll("\n");
     }
 }
 
-fn printUnknownSource(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Writer, address: usize, tty_config: std.io.tty.Config) !void {
+fn printUnknownSource(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Writer, address: usize, tty_config: std.Io.Terminal) !void {
     if (!bun.Environment.isDebug) unreachable;
     const module_name = debug_info.getModuleNameForAddress(address);
     return printLineInfo(
@@ -134,14 +137,14 @@ fn printLineInfo(
     address: usize,
     symbol_name: []const u8,
     compile_unit_name: []const u8,
-    tty_config: std.io.tty.Config,
+    tty_config: std.Io.Terminal,
     comptime printLineFromFile: anytype,
     do_llint: bool,
 ) !void {
     if (!bun.Environment.isDebug) unreachable;
 
     nosuspend {
-        try tty_config.setColor(out_stream, .bold);
+        try tty_config.setColor(.bold);
 
         if (source_location) |*sl| {
             try out_stream.print("{s}:{d}:{d}", .{ sl.file_name, sl.line, sl.column });
@@ -149,11 +152,11 @@ fn printLineInfo(
             try out_stream.writeAll("???:?:?");
         }
 
-        try tty_config.setColor(out_stream, .reset);
+        try tty_config.setColor(.reset);
         if (!do_llint or source_location != null) try out_stream.writeAll(": ");
-        try tty_config.setColor(out_stream, .dim);
+        try tty_config.setColor(.dim);
         try out_stream.print("0x{x} in {s} ({s})", .{ address, symbol_name, compile_unit_name });
-        try tty_config.setColor(out_stream, .reset);
+        try tty_config.setColor(.reset);
         try out_stream.writeAll("\n");
 
         // Show the matching source code line if possible
@@ -164,9 +167,9 @@ fn printLineInfo(
                     const space_needed = @as(usize, @intCast(sl.column - 1));
 
                     try out_stream.splatByteAll(' ', space_needed);
-                    try tty_config.setColor(out_stream, .green);
+                    try tty_config.setColor(.green);
                     try out_stream.writeAll("^");
-                    try tty_config.setColor(out_stream, .reset);
+                    try tty_config.setColor(.reset);
                 }
                 try out_stream.writeAll("\n");
             } else |err| switch (err) {
@@ -235,7 +238,7 @@ fn printLineFromFileAnyOs(out_stream: *std.Io.Writer, source_location: std.debug
     }
 }
 
-fn printLastUnwindError(it: *std.debug.StackIterator, debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Writer, tty_config: std.io.tty.Config) void {
+fn printLastUnwindError(it: *std.debug.StackIterator, debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Writer, tty_config: std.Io.Terminal) void {
     if (!bun.Environment.isDebug) unreachable;
     if (!std.debug.have_ucontext) return;
     if (it.getLastError()) |unwind_error| {
@@ -243,17 +246,17 @@ fn printLastUnwindError(it: *std.debug.StackIterator, debug_info: *std.debug.Sel
     }
 }
 
-fn printUnwindError(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Writer, address: usize, err: std.debug.UnwindError, tty_config: std.io.tty.Config) !void {
+fn printUnwindError(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Writer, address: usize, err: std.debug.UnwindError, tty_config: std.Io.Terminal) !void {
     if (!bun.Environment.isDebug) unreachable;
 
     const module_name = debug_info.getModuleNameForAddress(address) orelse "???";
-    try tty_config.setColor(out_stream, .dim);
+    try tty_config.setColor(.dim);
     if (err == error.MissingDebugInfo) {
         try out_stream.print("Unwind information for `{s}:0x{x}` was not available, trace may be incomplete\n\n", .{ module_name, address });
     } else {
         try out_stream.print("Unwind error at address `{s}:0x{x}` ({}), trace may be incomplete\n\n", .{ module_name, address, err });
     }
-    try tty_config.setColor(out_stream, .reset);
+    try tty_config.setColor(.reset);
 }
 
 const bun = @import("bun");

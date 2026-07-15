@@ -610,18 +610,17 @@ pub const MatchedRoute = struct {
         globalThis: *jsc.JSGlobalObject,
     ) jsc.JSValue {
         var buf: bun.PathBuffer = undefined;
-        var stream = std.io.fixedBufferStream(&buf);
-        var writer = stream.writer();
+        var writer = std.Io.Writer.fixed(&buf);
         jsc.API.Bun.getPublicPathWithAssetPrefix(
             this.route.file_path,
             if (this.base_dir) |base_dir| base_dir.slice() else jsc.VirtualMachine.get().transpiler.fs.top_level_dir,
             if (this.origin) |origin| URL.parse(origin.slice()) else URL{},
             if (this.asset_prefix) |prefix| prefix.slice() else "",
-            @TypeOf(&writer),
+            *std.Io.Writer,
             &writer,
             .posix,
         );
-        return ZigString.init(buf[0..writer.context.pos])
+        return ZigString.init(buf[0..writer.end])
             .withEncoding()
             .toJS(globalThis);
     }

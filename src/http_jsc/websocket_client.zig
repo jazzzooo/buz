@@ -1705,8 +1705,8 @@ const Copy = union(enum) {
                 bun.assert(@as(usize, encode_into_result.written) == content_byte_len);
                 bun.assert(@as(usize, encode_into_result.read) == utf16.len);
                 header.len = WebsocketHeader.packLength(encode_into_result.written);
-                var fib = std.io.fixedBufferStream(buf);
-                header.writeHeader(fib.writer(), encode_into_result.written) catch unreachable;
+                var writer = std.Io.Writer.fixed(buf);
+                header.writeHeader(&writer, encode_into_result.written) catch unreachable;
 
                 Mask.fill(globalThis, buf[mask_offset..][0..4], to_mask[0..content_byte_len], to_mask[0..content_byte_len]);
             },
@@ -1718,14 +1718,14 @@ const Copy = union(enum) {
                 bun.assert(@as(usize, encode_into_result.read) == latin1.len);
 
                 header.len = WebsocketHeader.packLength(encode_into_result.written);
-                var fib = std.io.fixedBufferStream(buf);
-                header.writeHeader(fib.writer(), encode_into_result.written) catch unreachable;
+                var writer = std.Io.Writer.fixed(buf);
+                header.writeHeader(&writer, encode_into_result.written) catch unreachable;
                 Mask.fill(globalThis, buf[mask_offset..][0..4], to_mask[0..content_byte_len], to_mask[0..content_byte_len]);
             },
             .bytes => |bytes| {
                 header.len = WebsocketHeader.packLength(bytes.len);
-                var fib = std.io.fixedBufferStream(buf);
-                header.writeHeader(fib.writer(), bytes.len) catch unreachable;
+                var writer = std.Io.Writer.fixed(buf);
+                header.writeHeader(&writer, bytes.len) catch unreachable;
                 Mask.fill(globalThis, buf[mask_offset..][0..4], to_mask[0..content_byte_len], bytes);
             },
             .raw => unreachable,
@@ -1762,8 +1762,8 @@ const Copy = union(enum) {
 
         bun.assert(WebsocketHeader.frameSizeIncludingMask(content_byte_len) == buf.len);
 
-        var fib = std.io.fixedBufferStream(buf);
-        header.writeHeader(fib.writer(), content_byte_len) catch unreachable;
+        var writer = std.Io.Writer.fixed(buf);
+        header.writeHeader(&writer, content_byte_len) catch unreachable;
 
         Mask.fill(globalThis, buf[mask_offset..][0..4], to_mask[0..content_byte_len], compressed_data);
     }

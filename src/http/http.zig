@@ -1424,10 +1424,10 @@ const InitialRequestPayloadResult = struct {
 noinline fn sendInitialRequestPayload(this: *HTTPClient, comptime is_first_call: bool, comptime is_ssl: bool, socket: NewHTTPContext(is_ssl).HTTPSocket) !InitialRequestPayloadResult {
     var request_body_buffer = this.getRequestBodySendBuffer();
     defer request_body_buffer.deinit();
-    var temporary_send_buffer = request_body_buffer.toArrayList();
+    var temporary_send_buffer = request_body_buffer.toWriter();
     defer temporary_send_buffer.deinit();
 
-    const writer = &temporary_send_buffer.writer();
+    const writer = &temporary_send_buffer.writer;
 
     const request = this.buildRequest(this.state.original_request_body.len());
 
@@ -1456,17 +1456,16 @@ noinline fn sendInitialRequestPayload(this: *HTTPClient, comptime is_first_call:
         );
     }
 
-    const headers_len = temporary_send_buffer.items.len;
-    assert(temporary_send_buffer.items.len == writer.context.items.len);
-    if (this.state.request_body.len > 0 and temporary_send_buffer.capacity - temporary_send_buffer.items.len > 0 and !this.flags.proxy_tunneling) {
-        var remain = temporary_send_buffer.items.ptr[temporary_send_buffer.items.len..temporary_send_buffer.capacity];
+    const headers_len = writer.end;
+    if (this.state.request_body.len > 0 and writer.buffer.len - writer.end > 0 and !this.flags.proxy_tunneling) {
+        const remain = writer.buffer[writer.end..];
         const wrote = @min(remain.len, this.state.request_body.len);
         assert(wrote > 0);
         @memcpy(remain[0..wrote], this.state.request_body[0..wrote]);
-        temporary_send_buffer.items.len += wrote;
+        writer.end += wrote;
     }
 
-    const to_send = temporary_send_buffer.items[this.state.request_sent_len..];
+    const to_send = writer.buffer[this.state.request_sent_len..writer.end];
     if (comptime Environment.allow_assert) {
         assert(!socket.isShutdown());
         assert(!socket.isClosed());
@@ -1775,9 +1774,9 @@ pub fn onWritable(this: *HTTPClient, comptime is_first_call: bool, comptime is_s
                 var stack_buffer_storage: [1024 * 16]u8 = undefined;
                 var stack_buffer: std.heap.BufferFirstAllocator = .init(&stack_buffer_storage, bun.default_allocator);
                 const allocator = stack_buffer.allocator();
-                var temporary_send_buffer = std.array_list.Managed(u8).initCapacity(allocator, stack_buffer_storage.len) catch unreachable;
+                var temporary_send_buffer = std.Io.Writer.Allocating.initCapacity(allocator, stack_buffer_storage.len) catch unreachable;
                 defer temporary_send_buffer.deinit();
-                const writer = &temporary_send_buffer.writer();
+                const writer = &temporary_send_buffer.writer;
 
                 const request = this.buildRequest(this.state.request_body.len);
                 writeRequest(
@@ -1789,17 +1788,16 @@ pub fn onWritable(this: *HTTPClient, comptime is_first_call: bool, comptime is_s
                     return;
                 };
 
-                const headers_len = temporary_send_buffer.items.len;
-                assert(temporary_send_buffer.items.len == writer.context.items.len);
-                if (this.state.request_body.len > 0 and temporary_send_buffer.capacity - temporary_send_buffer.items.len > 0) {
-                    var remain = temporary_send_buffer.items.ptr[temporary_send_buffer.items.len..temporary_send_buffer.capacity];
+                const headers_len = writer.end;
+                if (this.state.request_body.len > 0 and writer.buffer.len - writer.end > 0) {
+                    const remain = writer.buffer[writer.end..];
                     const wrote = @min(remain.len, this.state.request_body.len);
                     assert(wrote > 0);
                     @memcpy(remain[0..wrote], this.state.request_body[0..wrote]);
-                    temporary_send_buffer.items.len += wrote;
+                    writer.end += wrote;
                 }
 
-                const to_send = temporary_send_buffer.items[this.state.request_sent_len..];
+                const to_send = writer.buffer[this.state.request_sent_len..writer.end];
                 if (comptime Environment.allow_assert) {
                     assert(!socket.isShutdown());
                     assert(!socket.isClosed());

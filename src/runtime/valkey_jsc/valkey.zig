@@ -166,6 +166,8 @@ pub const ValkeyClient = struct {
     // Buffer management
     write_buffer: bun.OffsetByteList = .{},
     read_buffer: bun.OffsetByteList = .{},
+    writer_state: std.Io.Writer = .{ .vtable = &.{ .drain = writerDrain }, .buffer = &.{} },
+    writer_error: ?protocol.RedisError = null,
 
     /// In-flight commands, after the data has been written to the network socket
     in_flight: Command.PromisePair.Queue,
@@ -945,8 +947,8 @@ pub const ValkeyClient = struct {
             .args = .{ .raw = hello_args },
         };
 
-        hello_cmd.write(this.writer()) catch |err| {
-            try this.fail("Failed to write HELLO command", err);
+        hello_cmd.write(this.writer()) catch {
+            try this.fail("Failed to write HELLO command", this.writer_error orelse error.OutOfMemory);
             return;
         };
 
@@ -958,8 +960,8 @@ pub const ValkeyClient = struct {
                 .command = "SELECT",
                 .args = .{ .raw = &[_][]const u8{db_str} },
             };
-            select_cmd.write(this.writer()) catch |err| {
-                try this.fail("Failed to write SELECT command", err);
+            select_cmd.write(this.writer()) catch {
+                try this.fail("Failed to write SELECT command", this.writer_error orelse error.OutOfMemory);
                 return;
             };
             this.flags.is_selecting_db_internal = true;
@@ -1158,8 +1160,23 @@ pub const ValkeyClient = struct {
     }
 
     /// Get a writer for the connected socket
-    pub fn writer(this: *ValkeyClient) std.Io.GenericWriter(*ValkeyClient, protocol.RedisError, write) {
-        return .{ .context = this };
+    pub fn writer(this: *ValkeyClient) *std.Io.Writer {
+        this.writer_state.end = 0;
+        this.writer_error = null;
+        return &this.writer_state;
+    }
+
+    fn writerDrain(interface: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const this: *ValkeyClient = @fieldParentPtr("writer_state", interface);
+        for (data[0 .. data.len - 1]) |bytes| _ = this.write(bytes) catch |err| {
+            this.writer_error = err;
+            return error.WriteFailed;
+        };
+        for (0..splat) |_| _ = this.write(data[data.len - 1]) catch |err| {
+            this.writer_error = err;
+            return error.WriteFailed;
+        };
+        return std.Io.Writer.countSplat(data, splat);
     }
 
     /// Write data to the socket buffer

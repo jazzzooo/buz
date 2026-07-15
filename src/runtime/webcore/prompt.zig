@@ -169,7 +169,7 @@ pub const prompt = struct {
                 return error.StreamTooLong;
             }
 
-            const byte: u8 = try reader.readByte();
+            const byte: u8 = try reader.takeByte();
 
             if (byte == delimiter) {
                 return;
@@ -187,7 +187,7 @@ pub const prompt = struct {
         delimiter: u8,
     ) !void {
         while (true) {
-            const byte: u8 = try reader.readByte();
+            const byte: u8 = try reader.takeByte();
 
             if (byte == delimiter) {
                 return;
@@ -267,7 +267,7 @@ pub const prompt = struct {
         // 7. Pause while waiting for the user's response.
         const reader = bun.Output.buffered_stdin.reader();
         var second_byte: ?u8 = null;
-        const first_byte = reader.readByte() catch {
+        const first_byte = reader.takeByte() catch {
             // 8. Let result be null if the user aborts, or otherwise the string
             //    that the user responded with.
             return .null;
@@ -278,7 +278,7 @@ pub const prompt = struct {
             //    that the user responded with.
             return default;
         } else if (first_byte == '\r') {
-            const second = reader.readByte() catch return .null;
+            const second = reader.takeByte() catch return .null;
             second_byte = second;
             if (second == '\n') return default;
         }

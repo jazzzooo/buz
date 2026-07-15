@@ -327,8 +327,7 @@ pub const ShellLsTask = struct {
 
         if (!this.opts.list_directories) {
             if (this.print_directory) {
-                const writer = this.output.writer();
-                bun.handleOom(writer.print("{s}:\n", .{this.path}));
+                this.appendOutputFmt("{s}:\n", .{this.path});
             }
 
             var iterator = DirIterator.iterate(fd, .u8);
@@ -355,9 +354,21 @@ pub const ShellLsTask = struct {
             return;
         }
 
-        const writer = this.output.writer();
-        bun.handleOom(writer.print("{s}\n", .{this.path}));
+        this.appendOutputFmt("{s}\n", .{this.path});
         return;
+    }
+
+    fn appendOutputFmt(this: *@This(), comptime fmt: []const u8, args: anytype) void {
+        var unmanaged: std.ArrayList(u8) = .{ .items = this.output.items, .capacity = this.output.capacity };
+        this.output.items = &.{};
+        this.output.capacity = 0;
+        var allocating = std.Io.Writer.Allocating.fromArrayList(this.output.allocator, &unmanaged);
+        defer {
+            unmanaged = allocating.toArrayList();
+            this.output.items = unmanaged.items;
+            this.output.capacity = unmanaged.capacity;
+        }
+        allocating.writer.print(fmt, args) catch bun.outOfMemory();
     }
 
     fn shouldSkipEntry(this: *@This(), name: [:0]const u8) bool {
@@ -395,14 +406,11 @@ pub const ShellLsTask = struct {
         const stat = switch (stat_result) {
             .err => {
                 // If stat fails, just output the name with placeholders
-                const writer = this.output.writer();
-                bun.handleOom(writer.print("?????????? ? ? ? ?            ? {s}\n", .{name}));
+                this.appendOutputFmt("?????????? ? ? ? ?            ? {s}\n", .{name});
                 return;
             },
             .result => |s| s,
         };
-
-        const writer = this.output.writer();
 
         // File type and permissions
         const mode: u32 = @intCast(stat.mode);
@@ -423,7 +431,7 @@ pub const ShellLsTask = struct {
         const mtime = stat.mtime();
         const time_str = formatTime(@intCast(mtime.sec), this.now_secs);
 
-        bun.handleOom(writer.print("{c}{s} {d: >3} {d: >5} {d: >5} {d: >8} {s} {s}\n", .{
+        this.appendOutputFmt("{c}{s} {d: >3} {d: >5} {d: >5} {d: >8} {s} {s}\n", .{
             file_type,
             &perms,
             nlink,
@@ -432,7 +440,7 @@ pub const ShellLsTask = struct {
             size,
             &time_str,
             name,
-        }));
+        });
     }
 
     fn getFileTypeChar(mode: u32) u8 {

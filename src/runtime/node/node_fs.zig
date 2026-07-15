@@ -6667,7 +6667,7 @@ pub const NodeFS = struct {
 
             defer {
                 _ = Syscall.ftruncate(dest_fd, @as(i64, @intCast(@as(u63, @truncate(wrote)))));
-                _ = Syscall.fchmod(dest_fd, stat_.mode);
+                _ = Syscall.fchmod(dest_fd, @intCast(stat_.mode));
                 dest_fd.close();
             }
 

@@ -195,11 +195,11 @@ pub const EncodedPattern = struct {
 
     pub fn initFromParts(parts: []const Part, allocator: Allocator) !EncodedPattern {
         const slice = try allocator.alloc(u8, patternSerializedLength(parts));
-        var s = std.io.fixedBufferStream(slice);
+        var writer = std.Io.Writer.fixed(slice);
         for (parts) |part|
-            part.writeAsSerialized(s.writer()) catch
+            part.writeAsSerialized(&writer) catch
                 unreachable; // enough space
-        bun.assert(s.pos == s.buffer.len);
+        bun.assert(writer.end == writer.buffer.len);
         return .{ .data = slice };
     }
 
@@ -254,8 +254,8 @@ pub const EncodedPattern = struct {
         // multiple hash calls on small chunks. Allocation is not needed
         // since the upper bound is known (file path limits)
         var stack_space: [std.fs.max_path_bytes * 2]u8 = undefined;
-        var stream = std.io.fixedBufferStream(&stack_space);
-        const w = stream.writer();
+        var writer = std.Io.Writer.fixed(&stack_space);
+        const w = &writer;
         var it = k.iterate();
         while (it.next()) |item| switch (item) {
             .text => |text| {
@@ -269,7 +269,7 @@ pub const EncodedPattern = struct {
             // groups are completely unobservable
             .group => continue,
         };
-        return bun.hash(stream.getWritten());
+        return bun.hash(writer.buffered());
     }
 
     fn matches(p: EncodedPattern, path: []const u8, params: *MatchedParams) bool {
@@ -429,7 +429,7 @@ pub const Part = union(enum(u3)) {
         try writer.writeAll("\"");
     }
 
-    fn toStringForInternalUse(part: Part, writer: anytype) !void {
+    fn toStringForInternalUse(part: Part, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (part) {
             .text => |text| try writer.print("/{s}", .{text}),
             .param => |param_name| try writer.print("/:{s}", .{param_name}),
@@ -1103,17 +1103,17 @@ fn scanInner(
                                 try EncodedPattern.initFromParts(parsed.parts, fr.pattern_string_arena.allocator())
                             else static_route: {
                                 const allocation = try fr.pattern_string_arena.allocator().alloc(u8, static_total_len);
-                                var s = std.io.fixedBufferStream(allocation);
+                                var writer = std.Io.Writer.fixed(allocation);
                                 for (parsed.parts) |part|
                                     switch (part) {
                                         .text => |data| {
-                                            _ = s.write("/") catch unreachable;
-                                            _ = s.write(data) catch unreachable;
+                                            writer.writeAll("/") catch unreachable;
+                                            writer.writeAll(data) catch unreachable;
                                         },
                                         .group => {},
                                         .param, .catch_all, .catch_all_optional => unreachable,
                                     };
-                                bun.assert(s.getWritten().len == allocation.len);
+                                bun.assert(writer.end == allocation.len);
                                 break :static_route StaticPattern{ .route_path = allocation };
                             };
 
@@ -1339,10 +1339,11 @@ pub const JSFrameworkRouter = struct {
         } orelse
             return .null;
 
-        var rendered = try std.array_list.Managed(u8).initCapacity(alloc, filepath.slice().len);
-        for (parsed.parts) |part| try part.toStringForInternalUse(rendered.writer());
+        var rendered = try std.Io.Writer.Allocating.initCapacity(alloc, filepath.slice().len);
+        defer rendered.deinit();
+        for (parsed.parts) |part| part.toStringForInternalUse(&rendered.writer) catch return error.OutOfMemory;
 
-        var out = bun.String.init(rendered.items);
+        var out = bun.String.init(rendered.written());
         const obj = JSValue.createEmptyObject(global, 2);
         obj.put(global, "kind", try bun.String.static(@tagName(parsed.kind)).toJS(global));
         obj.put(global, "pattern", try out.transferToJS(global));
@@ -1350,19 +1351,19 @@ pub const JSFrameworkRouter = struct {
     }
 
     fn encodedPatternToJS(global: *JSGlobalObject, pattern: EncodedPattern, temp_allocator: Allocator) !JSValue {
-        var rendered = try std.array_list.Managed(u8).initCapacity(temp_allocator, pattern.data.len);
+        var rendered = try std.Io.Writer.Allocating.initCapacity(temp_allocator, pattern.data.len);
         defer rendered.deinit();
         var it = pattern.iterate();
-        while (it.next()) |part| try part.toStringForInternalUse(rendered.writer());
-        var str = bun.String.cloneUTF8(rendered.items);
+        while (it.next()) |part| part.toStringForInternalUse(&rendered.writer) catch return error.OutOfMemory;
+        var str = bun.String.cloneUTF8(rendered.written());
         return try str.transferToJS(global);
     }
 
     fn partToJS(global: *JSGlobalObject, part: Part, temp_allocator: Allocator) !JSValue {
-        var rendered = std.array_list.Managed(u8).init(temp_allocator);
+        var rendered = std.Io.Writer.Allocating.init(temp_allocator);
         defer rendered.deinit();
-        try part.toStringForInternalUse(rendered.writer());
-        var str = bun.String.cloneUTF8(rendered.items);
+        part.toStringForInternalUse(&rendered.writer) catch return error.OutOfMemory;
+        var str = bun.String.cloneUTF8(rendered.written());
         return try str.transferToJS(global);
     }
 

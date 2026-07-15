@@ -670,20 +670,21 @@ pub fn enqueueFmt(
     comptime fmt: []const u8,
     args: anytype,
 ) Yield {
-    var buf_writer = this.buf.writer(bun.default_allocator);
-    const start = this.buf.items.len;
-    bun.handleOom(buf_writer.print(fmt, args));
+    var allocating = std.Io.Writer.Allocating.fromArrayList(bun.default_allocator, &this.buf);
+    defer this.buf = allocating.toArrayList();
+    const start = allocating.written().len;
+    allocating.writer.print(fmt, args) catch bun.outOfMemory();
 
     const childptr = if (@TypeOf(ptr) == ChildPtr) ptr else ChildPtr.init(ptr);
     if (this.handleBrokenPipe(childptr)) |yield| return yield;
 
-    const end = this.buf.items.len;
+    const end = allocating.written().len;
     const writer: Writer = .{
         .ptr = childptr,
         .len = end - start,
         .bytelist = bytelist,
     };
-    log("IOWriter(0x{x}, fd={f}) enqueue(0x{x} {s}, {s})", .{ @intFromPtr(this), this.fd, @intFromPtr(writer.rawPtr()), @tagName(writer.ptr.ptr.tag()), this.buf.items[start..end] });
+    log("IOWriter(0x{x}, fd={f}) enqueue(0x{x} {s}, {s})", .{ @intFromPtr(this), this.fd, @intFromPtr(writer.rawPtr()), @tagName(writer.ptr.ptr.tag()), allocating.written()[start..end] });
     this.writers.append(writer);
     return this.enqueueInternal();
 }

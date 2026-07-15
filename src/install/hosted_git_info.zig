@@ -97,10 +97,10 @@ pub const HostedGitInfo = struct {
         input: []const u8,
     ) error{ OutOfMemory, InvalidURL }![]const u8 {
         const writable = sb.writable();
-        var stream = std.io.fixedBufferStream(writable);
+        var writer = std.Io.Writer.fixed(writable);
         const decoded_len = PercentEncoding.decode(
-            @TypeOf(stream.writer()),
-            stream.writer(),
+            *std.Io.Writer,
+            &writer,
             input,
         ) catch {
             return error.InvalidURL;
@@ -1380,10 +1380,10 @@ const HostProvider = enum {
 
                     const user_slice = blk: {
                         const writable = sb.writable();
-                        var stream = std.io.fixedBufferStream(writable);
+                        var writer = std.Io.Writer.fixed(writable);
                         const decoded_len = PercentEncoding.decode(
-                            @TypeOf(stream.writer()),
-                            stream.writer(),
+                            *std.Io.Writer,
+                            &writer,
                             user_part,
                         ) catch return null;
                         sb.len += decoded_len;
@@ -1391,10 +1391,10 @@ const HostProvider = enum {
                     };
                     const project_slice = blk: {
                         const writable = sb.writable();
-                        var stream = std.io.fixedBufferStream(writable);
+                        var writer = std.Io.Writer.fixed(writable);
                         const decoded_len = PercentEncoding.decode(
-                            @TypeOf(stream.writer()),
-                            stream.writer(),
+                            *std.Io.Writer,
+                            &writer,
                             project,
                         ) catch return null;
                         sb.len += decoded_len;
@@ -1402,10 +1402,10 @@ const HostProvider = enum {
                     };
                     const committish_slice = if (committish) |c| blk: {
                         const writable = sb.writable();
-                        var stream = std.io.fixedBufferStream(writable);
+                        var writer = std.Io.Writer.fixed(writable);
                         const decoded_len = PercentEncoding.decode(
-                            @TypeOf(stream.writer()),
-                            stream.writer(),
+                            *std.Io.Writer,
+                            &writer,
                             c,
                         ) catch return null;
                         sb.len += decoded_len;

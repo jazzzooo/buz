@@ -188,6 +188,7 @@ pub const PasswordObject = struct {
     // This is purposely simple because nobody asked to make it more complicated
     pub fn hash(
         allocator: std.mem.Allocator,
+        io: std.Io,
         password: []const u8,
         algorithm: Algorithm.Value,
     ) HashError![]const u8 {
@@ -209,7 +210,7 @@ pub const PasswordObject = struct {
                 // we don't expose this option
                 // but since it parses from phc format, it's possible that it will be set
                 // eventually we should do something that about that.
-                const out_bytes = try pwhash.argon2.strHash(password, hash_options, &outbuf);
+                const out_bytes = try pwhash.argon2.strHash(password, hash_options, &outbuf, io);
                 return try allocator.dupe(u8, out_bytes);
             },
             .bcrypt => |cost| {
@@ -235,7 +236,7 @@ pub const PasswordObject = struct {
                     .allocator = allocator,
                     .encoding = .crypt,
                 };
-                const out_bytes = try pwhash.bcrypt.strHash(password_to_use, hash_options, outbuf_slice);
+                const out_bytes = try pwhash.bcrypt.strHash(password_to_use, hash_options, outbuf_slice, io);
                 return try allocator.dupe(u8, out_bytes);
             },
         }
@@ -243,6 +244,7 @@ pub const PasswordObject = struct {
 
     pub fn verify(
         allocator: std.mem.Allocator,
+        io: std.Io,
         password: []const u8,
         previous_hash: []const u8,
         algorithm: ?Algorithm,
@@ -253,6 +255,7 @@ pub const PasswordObject = struct {
 
         return verifyWithAlgorithm(
             allocator,
+            io,
             password,
             previous_hash,
             algorithm orelse Algorithm.get(previous_hash) orelse return error.UnsupportedAlgorithm,
@@ -261,13 +264,14 @@ pub const PasswordObject = struct {
 
     pub fn verifyWithAlgorithm(
         allocator: std.mem.Allocator,
+        io: std.Io,
         password: []const u8,
         previous_hash: []const u8,
         algorithm: Algorithm,
     ) HashError!bool {
         switch (algorithm) {
             .argon2id, .argon2d, .argon2i => {
-                pwhash.argon2.strVerify(previous_hash, password, .{ .allocator = allocator }) catch |err| {
+                pwhash.argon2.strVerify(previous_hash, password, .{ .allocator = allocator }, io) catch |err| {
                     if (err == error.PasswordVerificationFailed) {
                         return false;
                     }
@@ -333,6 +337,7 @@ pub const JSPasswordObject = struct {
 
     const HashJob = struct {
         algorithm: PasswordObject.Algorithm.Value,
+        io: std.Io,
         password: []const u8,
         promise: jsc.JSPromise.Strong,
         event_loop: *jsc.EventLoop,
@@ -393,8 +398,8 @@ pub const JSPasswordObject = struct {
             bun.destroy(this);
         }
 
-        pub fn getValue(password: []const u8, algorithm: PasswordObject.Algorithm.Value) Result.Value {
-            const value = PasswordObject.hash(bun.default_allocator, password, algorithm) catch |err| {
+        pub fn getValue(io: std.Io, password: []const u8, algorithm: PasswordObject.Algorithm.Value) Result.Value {
+            const value = PasswordObject.hash(bun.default_allocator, io, password, algorithm) catch |err| {
                 return Result.Value{ .err = err };
             };
             return Result.Value{ .hash = value };
@@ -404,7 +409,7 @@ pub const JSPasswordObject = struct {
             var this: *HashJob = @fieldParentPtr("task", task);
 
             var result = Result.new(.{
-                .value = getValue(this.password, this.algorithm),
+                .value = getValue(this.io, this.password, this.algorithm),
                 .task = undefined,
                 .promise = this.promise,
                 .global = this.global,
@@ -423,7 +428,7 @@ pub const JSPasswordObject = struct {
         assert(password.len > 0); // caller must check
 
         if (comptime sync) {
-            const value = HashJob.getValue(password, algorithm);
+            const value = HashJob.getValue(globalObject.bunVM().io, password, algorithm);
             switch (value) {
                 .err => {
                     const error_instance = value.toErrorInstance(globalObject);
@@ -442,6 +447,7 @@ pub const JSPasswordObject = struct {
 
         var job = HashJob.new(.{
             .algorithm = algorithm,
+            .io = globalObject.bunVM().io,
             .password = password,
             .promise = promise,
             .event_loop = globalObject.bunVM().eventLoop(),
@@ -457,7 +463,7 @@ pub const JSPasswordObject = struct {
         assert(password.len > 0); // caller must check
 
         if (comptime sync) {
-            const value = VerifyJob.getValue(password, prev_hash, algorithm);
+            const value = VerifyJob.getValue(globalObject.bunVM().io, password, prev_hash, algorithm);
             switch (value) {
                 .err => {
                     const error_instance = value.toErrorInstance(globalObject);
@@ -475,6 +481,7 @@ pub const JSPasswordObject = struct {
 
         const job = VerifyJob.new(.{
             .algorithm = algorithm,
+            .io = globalObject.bunVM().io,
             .password = password,
             .prev_hash = prev_hash,
             .promise = promise,
@@ -546,6 +553,7 @@ pub const JSPasswordObject = struct {
 
     const VerifyJob = struct {
         algorithm: ?PasswordObject.Algorithm = null,
+        io: std.Io,
         password: []const u8,
         prev_hash: []const u8,
         promise: jsc.JSPromise.Strong,
@@ -608,8 +616,8 @@ pub const JSPasswordObject = struct {
             bun.destroy(this);
         }
 
-        pub fn getValue(password: []const u8, prev_hash: []const u8, algorithm: ?PasswordObject.Algorithm) Result.Value {
-            const pass = PasswordObject.verify(bun.default_allocator, password, prev_hash, algorithm) catch |err| {
+        pub fn getValue(io: std.Io, password: []const u8, prev_hash: []const u8, algorithm: ?PasswordObject.Algorithm) Result.Value {
+            const pass = PasswordObject.verify(bun.default_allocator, io, password, prev_hash, algorithm) catch |err| {
                 return Result.Value{ .err = err };
             };
             return Result.Value{ .pass = pass };
@@ -619,7 +627,7 @@ pub const JSPasswordObject = struct {
             var this: *VerifyJob = @fieldParentPtr("task", task);
 
             var result = Result.new(.{
-                .value = getValue(this.password, this.prev_hash, this.algorithm),
+                .value = getValue(this.io, this.password, this.prev_hash, this.algorithm),
                 .task = undefined,
                 .promise = this.promise,
                 .global = this.global,

@@ -79,10 +79,11 @@ pub fn createUTF8ForJS(globalObject: *jsc.JSGlobalObject, utf8_slice: []const u8
 
 pub fn createFormatForJS(globalObject: *jsc.JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) bun.JSError!jsc.JSValue {
     jsc.markBinding(@src());
-    var builder = std.array_list.Managed(u8).init(bun.default_allocator);
+    var builder = std.Io.Writer.Allocating.init(bun.default_allocator);
     defer builder.deinit();
-    bun.handleOom(builder.writer().print(fmt, args));
-    return bun.cpp.BunString__createUTF8ForJS(globalObject, builder.items.ptr, builder.items.len);
+    builder.writer.print(fmt, args) catch bun.outOfMemory();
+    const written = builder.written();
+    return bun.cpp.BunString__createUTF8ForJS(globalObject, written.ptr, written.len);
 }
 
 pub fn parseDate(this: *String, globalObject: *jsc.JSGlobalObject) bun.JSError!f64 {

@@ -214,7 +214,7 @@ pub fn serialize(this: *Store, comptime Writer: type, writer: Writer) !void {
 
             switch (file.pathlike) {
                 .fd => |fd| {
-                    try writer.writeStruct(fd);
+                    try writer.writeStruct(fd, .little);
                 },
                 .path => |path| {
                     const path_slice = path.slice();

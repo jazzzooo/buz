@@ -1307,7 +1307,7 @@ pub const PosixSpawnResult = struct {
                         // That would cause Zombie processes to accumulate.
                         else => {
                             while (true) {
-                                var status: u32 = 0;
+                                var status: i32 = 0;
                                 const rc = std.os.linux.wait4(this.pid, &status, 0, null);
 
                                 switch (bun.sys.getErrno(rc)) {

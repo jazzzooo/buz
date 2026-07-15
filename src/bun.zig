@@ -2826,19 +2826,19 @@ const SelfExePath = struct {
     // This deliberately stays small; the previous implementation used the same
     // POSIX-sized buffer and reported an error for unusually long paths.
     var value: [4096 + 1]u8 = undefined;
-    var len: usize = 0;
+    var path_len: usize = 0;
     var lock: Mutex = .{};
 
     fn load(io_: std.Io) ![:0]u8 {
-        len = try std.process.executablePath(io_, &value);
-        value[len] = 0;
+        path_len = try std.process.executablePath(io_, &value);
+        value[path_len] = 0;
         set = true;
-        return value[0..len :0];
+        return value[0..path_len :0];
     }
 };
 
 pub fn selfExePath() ![:0]u8 {
-    if (SelfExePath.set) return SelfExePath.value[0..SelfExePath.len :0];
+    if (SelfExePath.set) return SelfExePath.value[0..SelfExePath.path_len :0];
     return error.SelfExePathNotInitialized;
 }
 

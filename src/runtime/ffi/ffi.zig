@@ -755,16 +755,16 @@ pub const FFI = struct {
         var tcc_state: ?*TCC.State = compile_c.compile(globalThis) catch |err| {
             switch (err) {
                 error.DeferredErrors => {
-                    var combined = std.array_list.Managed(u8).init(bun.default_allocator);
+                    var combined = std.Io.Writer.Allocating.init(bun.default_allocator);
                     defer combined.deinit();
-                    var writer = combined.writer();
-                    bun.handleOom(writer.print("{d} errors while compiling {s}\n", .{ compile_c.deferred_errors.items.len, if (compile_c.current_file_for_errors.len > 0) compile_c.current_file_for_errors else compile_c.source.first() }));
+                    const writer = &combined.writer;
+                    writer.print("{d} errors while compiling {s}\n", .{ compile_c.deferred_errors.items.len, if (compile_c.current_file_for_errors.len > 0) compile_c.current_file_for_errors else compile_c.source.first() }) catch bun.outOfMemory();
 
                     for (compile_c.deferred_errors.items) |deferred_error| {
-                        bun.handleOom(writer.print("{s}\n", .{deferred_error}));
+                        writer.print("{s}\n", .{deferred_error}) catch bun.outOfMemory();
                     }
 
-                    return globalThis.throw("{s}", .{combined.items});
+                    return globalThis.throw("{s}", .{combined.written()});
                 },
                 error.JSError => |e| return e,
                 error.OutOfMemory => |e| return e,
@@ -975,9 +975,9 @@ pub const FFI = struct {
             strs.deinit();
         }
         for (symbols.values()) |*function| {
-            var arraylist = std.array_list.Managed(u8).init(allocator);
-            var writer = arraylist.writer();
-            function.printSourceCode(&writer) catch {
+            var arraylist = std.Io.Writer.Allocating.init(allocator);
+            defer arraylist.deinit();
+            function.printSourceCode(&arraylist.writer) catch {
                 // an error while generating source code
                 for (symbols.keys()) |key| {
                     allocator.free(@constCast(key));
@@ -989,7 +989,7 @@ pub const FFI = struct {
                 symbols.clearAndFree(allocator);
                 return ZigString.init("Error while printing code").toErrorInstance(global);
             };
-            strs.appendAssumeCapacity(bun.String.cloneUTF8(arraylist.items));
+            strs.appendAssumeCapacity(bun.String.cloneUTF8(arraylist.written()));
         }
 
         const ret = try bun.String.toJSArray(global, strs.items);
@@ -1540,11 +1540,10 @@ pub const FFI = struct {
         const tcc_options = "-std=c11 -nostdlib -Wl,--export-all-symbols" ++ if (Environment.isDebug) " -g" else "";
 
         pub fn compile(this: *Function, napiEnv: ?*napi.NapiEnv) !void {
-            var source_code = std.array_list.Managed(u8).init(this.allocator);
-            var source_code_writer = source_code.writer();
-            try this.printSourceCode(&source_code_writer);
+            var source_code = std.Io.Writer.Allocating.init(this.allocator);
+            try this.printSourceCode(&source_code.writer);
 
-            try source_code.append(0);
+            try source_code.writer.writeByte(0);
             defer source_code.deinit();
             const state = TCC.State.init(Function, .{
                 .options = tcc_options,
@@ -1568,7 +1567,7 @@ pub const FFI = struct {
 
             CompilerRT.define(state);
 
-            state.compileString(@ptrCast(source_code.items)) catch {
+            state.compileString(@ptrCast(source_code.written())) catch {
                 this.fail("Failed to compile source code");
                 return;
             };

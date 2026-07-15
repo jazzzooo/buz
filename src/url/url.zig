@@ -638,8 +638,9 @@ pub const QueryStringMap = struct {
 
         // this over-allocates
         // TODO: refactor this to support multiple slices instead of copying the whole thing
-        var buf = try std.array_list.Managed(u8).initCapacity(allocator, estimated_str_len);
-        var writer = buf.writer();
+        var buf = try std.Io.Writer.Allocating.initCapacity(allocator, estimated_str_len);
+        errdefer buf.deinit();
+        const writer = &buf.writer;
         var buf_writer_pos: u32 = 0;
 
         const Writer = @TypeOf(writer);
@@ -650,7 +651,7 @@ pub const QueryStringMap = struct {
 
             name.length = @as(u32, @truncate(name_slice.len));
             name.offset = buf_writer_pos;
-            try writer.writeAll(name_slice);
+            writer.writeAll(name_slice) catch return error.OutOfMemory;
             buf_writer_pos += @as(u32, @truncate(name_slice.len));
 
             const name_hash: u64 = bun.hash(name_slice);
@@ -674,7 +675,7 @@ pub const QueryStringMap = struct {
                 name.length = PercentEncoding.decode(Writer, writer, scanner.query.query_string[name.offset..][0..name.length]) catch continue;
                 name.offset = buf_writer_pos;
                 buf_writer_pos += name.length;
-                name_hash = bun.hash(buf.items[name.offset..][0..name.length]);
+                name_hash = bun.hash(buf.written()[name.offset..][0..name.length]);
             } else {
                 name_hash = bun.hash(result.rawName(scanner.query.query_string));
                 if (std.mem.indexOfScalar(u64, list_slice.items(.name_hash), name_hash)) |index| {
@@ -700,11 +701,11 @@ pub const QueryStringMap = struct {
             list.appendAssumeCapacity(Param{ .name = name, .value = value, .name_hash = name_hash });
         }
 
-        buf.expandToCapacity();
+        const owned = try buf.toOwnedSlice();
         return QueryStringMap{
             .list = list,
-            .buffer = buf.items,
-            .slice = buf.items[0..buf_writer_pos],
+            .buffer = owned,
+            .slice = owned[0..buf_writer_pos],
             .allocator = allocator,
         };
     }
@@ -753,8 +754,9 @@ pub const QueryStringMap = struct {
             };
         }
 
-        var buf = try std.array_list.Managed(u8).initCapacity(allocator, estimated_str_len);
-        const writer = buf.writer();
+        var buf = try std.Io.Writer.Allocating.initCapacity(allocator, estimated_str_len);
+        errdefer buf.deinit();
+        const writer = &buf.writer;
         var buf_writer_pos: u32 = 0;
 
         var list_slice = list.slice();
@@ -767,7 +769,7 @@ pub const QueryStringMap = struct {
                 name.length = PercentEncoding.decode(Writer, writer, query_string[name.offset..][0..name.length]) catch continue;
                 name.offset = buf_writer_pos;
                 buf_writer_pos += name.length;
-                name_hash = bun.hash(buf.items[name.offset..][0..name.length]);
+                name_hash = bun.hash(buf.written()[name.offset..][0..name.length]);
             } else {
                 name_hash = bun.hash(result.rawName(query_string));
                 if (std.mem.indexOfScalar(u64, list_slice.items(.name_hash), name_hash)) |index| {
@@ -786,11 +788,11 @@ pub const QueryStringMap = struct {
             list.appendAssumeCapacity(Param{ .name = name, .value = value, .name_hash = name_hash });
         }
 
-        buf.expandToCapacity();
+        const owned = try buf.toOwnedSlice();
         return QueryStringMap{
             .list = list,
-            .buffer = buf.items,
-            .slice = buf.items[0..buf_writer_pos],
+            .buffer = owned,
+            .slice = owned[0..buf_writer_pos],
             .allocator = allocator,
         };
     }
@@ -818,9 +820,8 @@ pub const PercentEncoding = struct {
         const buf = try allocator.alloc(u8, input.len);
         errdefer allocator.free(buf);
 
-        var stream = std.io.fixedBufferStream(buf);
-        const writer = stream.writer();
-        const len = try decode(@TypeOf(writer), writer, input);
+        var writer = std.Io.Writer.fixed(buf);
+        const len = try decode(*std.Io.Writer, &writer, input);
 
         return buf[0..len];
     }

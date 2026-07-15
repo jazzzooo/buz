@@ -1588,7 +1588,7 @@ fn NewPrinter(
                 '"' => writePreQuotedString(text, @TypeOf(writer), writer, '"', ascii_only, false, .utf8),
                 '`' => writePreQuotedString(text, @TypeOf(writer), writer, '`', ascii_only, false, .utf8),
                 else => unreachable,
-            }) catch |err| switch (err) {};
+            }) catch unreachable;
         }
         pub fn printStringCharactersUTF16(e: *Printer, text: []const u16, quote: u8) void {
             const slice = std.mem.sliceAsBytes(text);
@@ -1599,7 +1599,7 @@ fn NewPrinter(
                 '"' => writePreQuotedString(slice, @TypeOf(writer), writer, '"', ascii_only, false, .utf16),
                 '`' => writePreQuotedString(slice, @TypeOf(writer), writer, '`', ascii_only, false, .utf16),
                 else => unreachable,
-            }) catch |err| switch (err) {};
+            }) catch unreachable;
         }
 
         pub fn isUnboundEvalIdentifier(p: *Printer, value: Expr) bool {
@@ -5621,6 +5621,7 @@ pub fn NewWriter(
     return struct {
         const Self = @This();
         ctx: ContextType,
+        std_writer: std.Io.Writer = .{ .vtable = &.{ .drain = stdWriterDrain }, .buffer = &.{} },
         written: i32 = -1,
         // Used by the printer
         prev_char: u8 = 0,
@@ -5634,12 +5635,16 @@ pub fn NewWriter(
             };
         }
 
-        pub fn stdWriter(self: *Self) std.Io.GenericWriter(*Self, error{}, stdWriterWrite) {
-            return .{ .context = self };
+        pub fn stdWriter(self: *Self) *std.Io.Writer {
+            self.std_writer.end = 0;
+            return &self.std_writer;
         }
-        pub fn stdWriterWrite(self: *Self, bytes: []const u8) error{}!usize {
-            self.print([]const u8, bytes);
-            return bytes.len;
+
+        fn stdWriterDrain(interface: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+            const self: *Self = @fieldParentPtr("std_writer", interface);
+            for (data[0 .. data.len - 1]) |bytes| self.print([]const u8, bytes);
+            for (0..splat) |_| self.print([]const u8, data[data.len - 1]);
+            return std.Io.Writer.countSplat(data, splat);
         }
 
         pub fn isCopyFileRangeSupported() bool {

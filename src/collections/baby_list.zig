@@ -385,9 +385,16 @@ pub fn BabyList(comptime Type: type) type {
         ) OOM!void {
             if ((comptime safety_checks) and this.len == this.cap) this.assertOwned();
             var list_ = this.listManaged(allocator);
-            const writer = list_.writer();
-            try writer.print(fmt, args);
-            this.update(list_);
+            var unmanaged: std.ArrayList(u8) = .{ .items = list_.items, .capacity = list_.capacity };
+            list_ = .init(allocator);
+            var allocating = std.Io.Writer.Allocating.fromArrayList(allocator, &unmanaged);
+            defer {
+                unmanaged = allocating.toArrayList();
+                list_.items = unmanaged.items;
+                list_.capacity = unmanaged.capacity;
+                this.update(list_);
+            }
+            allocating.writer.print(fmt, args) catch return error.OutOfMemory;
         }
 
         /// This method is available only for `BabyList(u8)`.

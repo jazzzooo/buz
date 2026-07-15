@@ -853,14 +853,14 @@ fn doResolveWithArgs(ctx: *jsc.JSGlobalObject, specifier: bun.String, from: bun.
         var stack_buffer: [1024]u8 = undefined;
         var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, ctx.allocator());
         const allocator = stack.allocator();
-        var arraylist = std.array_list.Managed(u8).initCapacity(allocator, 1024) catch unreachable;
+        var arraylist = std.Io.Writer.Allocating.initCapacity(allocator, 1024) catch unreachable;
         defer arraylist.deinit();
-        try arraylist.writer().print("{f}{f}", .{
+        arraylist.writer.print("{f}{f}", .{
             errorable.result.value,
             query_string,
-        });
+        }) catch return error.OutOfMemory;
 
-        return ZigString.initUTF8(arraylist.items).toJS(ctx);
+        return ZigString.initUTF8(arraylist.written()).toJS(ctx);
     }
 
     return errorable.result.value.toJS(ctx);

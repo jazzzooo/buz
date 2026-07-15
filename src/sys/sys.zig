@@ -3182,7 +3182,7 @@ pub fn getFdPath(fd: bun.FD, out_buffer: *bun.PathBuffer) Maybe([]u8) {
 pub fn mmap(
     ptr: ?[*]align(page_size_min) u8,
     length: usize,
-    prot: u32,
+    prot: std.posix.PROT,
     flags: std.posix.MAP,
     fd: bun.FD,
     offset: u64,
@@ -3216,7 +3216,7 @@ pub fn mmapFile(path: [:0]const u8, flags: std.c.MAP, wanted_size: ?usize, offse
 
     if (wanted_size) |size_| size = @min(size, size_);
 
-    const map = switch (mmap(null, size, @as(u32, @bitCast(posix.PROT{ .READ = true, .WRITE = true })), flags, fd, offset)) {
+    const map = switch (mmap(null, size, .{ .READ = true, .WRITE = true }, flags, fd, offset)) {
         .result => |map| map,
 
         .err => |err| {

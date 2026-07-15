@@ -736,7 +736,7 @@ pub const JSValue = enum(i64) {
         defer buf.deinit();
 
         var writer = buf.writer();
-        try writer.print(fmt, args);
+        writer.print(fmt, args) catch return error.OutOfMemory;
         return String.init(buf.slice()).toJS(globalThis);
     }
 
@@ -750,7 +750,7 @@ pub const JSValue = enum(i64) {
 
         var writer = buf.writer();
         switch (Output.enable_ansi_colors_stderr) {
-            inline else => |enabled| try writer.print(Output.prettyFmt(fmt, enabled), args),
+            inline else => |enabled| writer.print(Output.prettyFmt(fmt, enabled), args) catch return error.OutOfMemory,
         }
         return String.init(buf.slice()).toJS(globalThis);
     }
