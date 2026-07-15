@@ -2455,15 +2455,17 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 const Output = bun.Output;
 const strings = bun.strings;
-const libuv = bun.windows.libuv;
+const DynLib = if (Environment.isWindows) WindowsDynLib else std.DynLib;
 
-const DynLib = struct {
+const WindowsDynLib = struct {
+    const libuv = bun.windows.libuv;
+
     inner: libuv.uv_lib_t,
 
-    fn open(path: []const u8) !DynLib {
+    fn open(path: []const u8) !WindowsDynLib {
         const path_z = try bun.default_allocator.dupeSentinel(u8, path, 0);
         defer bun.default_allocator.free(path_z);
-        var result: DynLib = undefined;
+        var result: WindowsDynLib = undefined;
         if (libuv.uv_dlopen(path_z.ptr, &result.inner) != 0) return error.OpenFailed;
         return result;
     }
