@@ -339,7 +339,7 @@ pub const FFI = struct {
 
             var pathbuf: [bun.MAX_PATH_BYTES]u8 = undefined;
 
-            if (CompilerRT.dir()) |compiler_rt_dir| {
+            if (CompilerRT.dir(globalThis.bunVM().io)) |compiler_rt_dir| {
                 state.addSysIncludePath(compiler_rt_dir) catch {
                     debug("TinyCC failed to add sysinclude path", .{});
                 };
@@ -2335,9 +2335,8 @@ const CompilerRT = struct {
         pub const @"varargs.h" = "// empty";
     };
 
-    fn createCompilerRTDir() void {
+    fn createCompilerRTDir(io: std.Io) void {
         const tmpdir = Fs.FileSystem.instance.tmpdir() catch return;
-        const io = VirtualMachine.get().io;
         var bunCC = bun.MakePath.makeOpenPath(io, tmpdir, "bun-cc", .{}) catch return;
         defer bunCC.close(io);
 
@@ -2353,8 +2352,8 @@ const CompilerRT = struct {
     }
     var create_compiler_rt_dir_once = bun.once(createCompilerRTDir);
 
-    pub fn dir() ?[:0]const u8 {
-        create_compiler_rt_dir_once.call(.{});
+    pub fn dir(io: std.Io) ?[:0]const u8 {
+        create_compiler_rt_dir_once.call(.{io});
         if (compiler_rt_dir.len == 0) return null;
         return compiler_rt_dir;
     }

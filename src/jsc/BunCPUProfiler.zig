@@ -19,7 +19,7 @@ pub fn startCPUProfiler(vm: *jsc.VM) void {
     Bun__startCPUProfiler(vm);
 }
 
-pub fn stopAndWriteProfile(vm: *jsc.VM, config: CPUProfilerConfig) !void {
+pub fn stopAndWriteProfile(io: std.Io, vm: *jsc.VM, config: CPUProfilerConfig) !void {
     var json_string: bun.String = .empty;
     var text_string: bun.String = .empty;
 
@@ -34,16 +34,16 @@ pub fn stopAndWriteProfile(vm: *jsc.VM, config: CPUProfilerConfig) !void {
 
     // Write JSON format if requested and not empty
     if (config.json_format and !json_string.isEmpty()) {
-        try writeProfileToFile(json_string, config, false);
+        try writeProfileToFile(io, json_string, config, false);
     }
 
     // Write text format if requested and not empty
     if (config.md_format and !text_string.isEmpty()) {
-        try writeProfileToFile(text_string, config, true);
+        try writeProfileToFile(io, text_string, config, true);
     }
 }
 
-fn writeProfileToFile(profile_string: bun.String, config: CPUProfilerConfig, is_md_format: bool) !void {
+fn writeProfileToFile(io: std.Io, profile_string: bun.String, config: CPUProfilerConfig, is_md_format: bool) !void {
     const profile_slice = profile_string.toUTF8(bun.default_allocator);
     defer profile_slice.deinit();
 
@@ -67,7 +67,7 @@ fn writeProfileToFile(profile_string: bun.String, config: CPUProfilerConfig, is_
         const errno = err.getErrno();
         if (errno == .NOENT or errno == .PERM or errno == .ACCES) {
             if (config.dir.len > 0) {
-                bun.FD.cwd().makePath(jsc.VirtualMachine.get().io, u8, config.dir) catch {};
+                bun.FD.cwd().makePath(io, u8, config.dir) catch {};
                 // Retry write
                 const retry_result = bun.sys.File.writeFile(bun.FD.cwd(), output_path_os, profile_slice.slice());
                 if (retry_result.asErr()) |_| {
