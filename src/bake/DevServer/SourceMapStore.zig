@@ -73,10 +73,10 @@ pub const Entry = struct {
         return entry.source_contents[0..entry.file_paths.len];
     }
 
-    pub fn renderMappings(map: Entry, kind: ChunkKind, arena: Allocator, gpa: Allocator) ![]u8 {
+    pub fn renderMappings(map: Entry, io: std.Io, kind: ChunkKind, arena: Allocator, gpa: Allocator) ![]u8 {
         var j: StringJoiner = .{ .allocator = arena };
         j.pushStatic("AAAA");
-        try joinVLQ(&map, kind, &j, arena, .client);
+        try joinVLQ(&map, io, kind, &j, arena, .client);
         return j.done(gpa);
     }
 
@@ -184,7 +184,7 @@ pub const Entry = struct {
         j.pushStatic(
             \\],"names":[],"mappings":"AAAA
         );
-        try joinVLQ(map, kind, &j, arena, side);
+        try joinVLQ(map, dev.vm.io, kind, &j, arena, side);
 
         const json_bytes = try j.doneWithEnd(gpa, "\"}");
         errdefer @compileError("last try should be the final alloc");
@@ -216,12 +216,12 @@ pub const Entry = struct {
         bun.js_printer.writePreQuotedString(utf8_input, @TypeOf(writer), writer, '"', false, true, .utf8) catch return error.OutOfMemory;
     }
 
-    fn joinVLQ(map: *const Entry, kind: ChunkKind, j: *StringJoiner, arena: Allocator, side: bake.Side) !void {
+    fn joinVLQ(map: *const Entry, io: std.Io, kind: ChunkKind, j: *StringJoiner, arena: Allocator, side: bake.Side) !void {
         _ = side;
         const map_files = map.files.slice();
 
         const runtime: bake.HmrRuntime = switch (kind) {
-            .initial_response => bun.bake.getHmrRuntime(.client),
+            .initial_response => bun.bake.getHmrRuntime(io, .client),
             .hmr_chunk => comptime .init("self[Symbol.for(\"bun:hmr\")]({\n"),
         };
 
@@ -516,13 +516,13 @@ pub const GetResult = struct {
 
 /// This is used in exactly one place: remapping errors.
 /// In that function, an arena allows reusing memory between different source maps
-pub fn getParsedSourceMap(store: *Self, script_id: Key, arena: Allocator, gpa: Allocator) ?GetResult {
+pub fn getParsedSourceMap(store: *Self, io: std.Io, script_id: Key, arena: Allocator, gpa: Allocator) ?GetResult {
     const index = store.entries.getIndex(script_id) orelse
         return null; // source map was collected.
     const entry = &store.entries.values()[index];
 
     const script_id_decoded: SourceId = @bitCast(script_id.get());
-    const vlq_bytes = bun.handleOom(entry.renderMappings(script_id_decoded.kind, arena, arena));
+    const vlq_bytes = bun.handleOom(entry.renderMappings(io, script_id_decoded.kind, arena, arena));
 
     switch (SourceMap.Mapping.parse(
         gpa,

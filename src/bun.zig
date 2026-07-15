@@ -2748,6 +2748,7 @@ const RuntimeEmbedRoot = enum {
 /// iteration on files, as this skips the Zig compiler. Once Zig gains good
 /// incremental support, the non-eager cases can be deleted.
 pub fn runtimeEmbedFile(
+    io_: std.Io,
     comptime root: RuntimeEmbedRoot,
     comptime sub_path: []const u8,
 ) [:0]const u8 {
@@ -2762,9 +2763,9 @@ pub fn runtimeEmbedFile(
     const static = struct {
         var once = bun.once(load);
 
-        fn load() [:0]const u8 {
+        fn load(runtime_io: std.Io) [:0]const u8 {
             return std.Io.Dir.cwd().readFileAllocOptions(
-                Output.applicationIo(),
+                runtime_io,
                 abs_path,
                 default_allocator,
                 .unlimited,
@@ -2788,7 +2789,7 @@ pub fn runtimeEmbedFile(
         default_allocator.free(static.once.payload);
     }
 
-    return static.once.call(.{});
+    return static.once.call(.{io_});
 }
 
 pub inline fn markWindowsOnly() if (Environment.isWindows) void else noreturn {

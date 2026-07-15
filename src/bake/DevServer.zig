@@ -441,8 +441,8 @@ pub fn init(options: Options) bun.JSOOM!*DevServer {
                 Output.panic("unhandled {}", .{e})).unwrap() catch |e|
                 Output.panic("unhandled {}", .{e});
             bun.writeAnyToHasher(&hash, stat.mtime());
-            hash.update(bake.getHmrRuntime(.client).code);
-            hash.update(bake.getHmrRuntime(.server).code);
+            hash.update(bake.getHmrRuntime(dev.vm.io, .client).code);
+            hash.update(bake.getHmrRuntime(dev.vm.io, .server).code);
         } else {
             hash.update(bun.Environment.git_sha_short);
         }
@@ -771,7 +771,7 @@ pub const memoryCostArrayList = MemoryCost.memoryCostArrayList;
 pub const memoryCostSlice = MemoryCost.memoryCostSlice;
 
 fn initServerRuntime(dev: *DevServer) void {
-    const runtime = bun.String.static(bun.bake.getHmrRuntime(.server).code);
+    const runtime = bun.String.static(bun.bake.getHmrRuntime(dev.vm.io, .server).code);
 
     const interface = c.BakeLoadInitialServerCode(
         @ptrCast(dev.vm.global),
@@ -1000,27 +1000,27 @@ inline fn redirectHandler(comptime path: []const u8, comptime is_ssl: bool) fn (
     }.handle;
 }
 
-fn onIncrementalVisualizer(_: *DevServer, _: *Request, resp: AnyResponse) void {
-    resp.corked(onIncrementalVisualizerCorked, .{resp});
+fn onIncrementalVisualizer(dev: *DevServer, _: *Request, resp: AnyResponse) void {
+    resp.corked(onIncrementalVisualizerCorked, .{ dev, resp });
 }
 
-fn onIncrementalVisualizerCorked(resp: AnyResponse) void {
+fn onIncrementalVisualizerCorked(dev: *DevServer, resp: AnyResponse) void {
     const code = if (Environment.codegen_embed)
         @embedFile("incremental_visualizer.html")
     else
-        bun.runtimeEmbedFile(.src_eager, "bake/incremental_visualizer.html");
+        bun.runtimeEmbedFile(dev.vm.io, .src_eager, "bake/incremental_visualizer.html");
     resp.end(code, false);
 }
 
-fn onMemoryVisualizer(_: *DevServer, _: *Request, resp: AnyResponse) void {
-    resp.corked(onMemoryVisualizerCorked, .{resp});
+fn onMemoryVisualizer(dev: *DevServer, _: *Request, resp: AnyResponse) void {
+    resp.corked(onMemoryVisualizerCorked, .{ dev, resp });
 }
 
-fn onMemoryVisualizerCorked(resp: AnyResponse) void {
+fn onMemoryVisualizerCorked(dev: *DevServer, resp: AnyResponse) void {
     const code = if (Environment.codegen_embed)
         @embedFile("memory_visualizer.html")
     else
-        bun.runtimeEmbedFile(.src_eager, "bake/memory_visualizer.html");
+        bun.runtimeEmbedFile(dev.vm.io, .src_eager, "bake/memory_visualizer.html");
     resp.end(code, false);
 }
 
@@ -3408,7 +3408,7 @@ fn sendSerializedFailures(
         try buf.appendSlice(pre ++ @embedFile("bake-codegen/bake.error.js") ++ post);
     } else {
         try buf.appendSlice(pre);
-        try buf.appendSlice(bun.runtimeEmbedFile(.codegen_eager, "bake.error.js"));
+        try buf.appendSlice(bun.runtimeEmbedFile(dev.vm.io, .codegen_eager, "bake.error.js"));
         try buf.appendSlice(post);
     }
 

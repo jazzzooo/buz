@@ -9,19 +9,19 @@ comptime {
 pub const FallbackModule = struct {
     path: Fs.Path,
     package_json: *const PackageJSON,
-    code: *const fn () string,
+    code: *const fn (std.Io) string,
 
     // This workaround exists to allow bun.runtimeEmbedFile to work.
     // Using `@embedFile` forces you to wait for the Zig build to finish in
     // debug builds, even when you only changed JS builtins.
-    fn createSourceCodeGetter(comptime code_path: string) *const fn () string {
+    fn createSourceCodeGetter(comptime code_path: string) *const fn (std.Io) string {
         const Getter = struct {
-            fn get() string {
+            fn get(io: std.Io) string {
                 if (bun.Environment.codegen_embed) {
                     return @embedFile(code_path);
                 }
 
-                return bun.runtimeEmbedFile(.codegen, code_path);
+                return bun.runtimeEmbedFile(io, .codegen, code_path);
             }
         };
 
@@ -74,7 +74,7 @@ pub const Map = bun.ComptimeStringMap(FallbackModule, .{
     .{ "zlib", FallbackModule.init("zlib") },
 });
 
-pub fn contentsFromPath(path: string) ?string {
+pub fn contentsFromPath(io: std.Io, path: string) ?string {
     if (Environment.allow_assert)
         bun.assert(bun.strings.hasPrefixComptime(path, import_path));
 
@@ -82,7 +82,7 @@ pub fn contentsFromPath(path: string) ?string {
     module_name = module_name[0 .. std.mem.indexOfScalar(u8, module_name, '/') orelse module_name.len];
 
     if (Map.get(module_name)) |mod| {
-        return mod.code();
+        return mod.code(io);
     }
 
     return null;

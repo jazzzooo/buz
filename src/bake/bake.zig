@@ -53,7 +53,7 @@ pub const UserOptions = struct {
                         },
                     };
 
-                    const framework = try Framework.react(alloc);
+                    const framework = try Framework.react(global.bunVM().io, alloc);
 
                     return UserOptions{
                         .arena = arena,
@@ -255,7 +255,7 @@ pub const Framework = struct {
     /// Depends on externally provided React
     ///
     /// $ bun i react@experimental react-dom@experimental react-refresh@experimental react-server-dom-bun
-    pub fn react(arena: std.mem.Allocator) !Framework {
+    pub fn react(io: std.Io, arena: std.mem.Allocator) !Framework {
         return .{
             .is_built_in_react = true,
             .server_components = .{
@@ -287,9 +287,9 @@ pub const Framework = struct {
                 .{ .code = @embedFile("./bun-framework-react/ssr.tsx") },
             } else &.{
                 // Cannot use .import because resolution must happen from the user's POV
-                .{ .code = bun.runtimeEmbedFile(.src, "bake/bun-framework-react/client.tsx") },
-                .{ .code = bun.runtimeEmbedFile(.src, "bake/bun-framework-react/server.tsx") },
-                .{ .code = bun.runtimeEmbedFile(.src, "bake/bun-framework-react/ssr.tsx") },
+                .{ .code = bun.runtimeEmbedFile(io, .src, "bake/bun-framework-react/client.tsx") },
+                .{ .code = bun.runtimeEmbedFile(io, .src, "bake/bun-framework-react/server.tsx") },
+                .{ .code = bun.runtimeEmbedFile(io, .src, "bake/bun-framework-react/ssr.tsx") },
             }) catch |err| bun.handleOom(err),
         };
     }
@@ -309,7 +309,7 @@ pub const Framework = struct {
         var fw: Framework = Framework.none;
 
         if (file_system_router_types.len > 0) {
-            fw = try react(arena);
+            fw = try react(resolver.io, arena);
             arena.free(fw.file_system_router_types);
             fw.file_system_router_types = file_system_router_types;
         }
@@ -324,7 +324,7 @@ pub const Framework = struct {
                 if (Environment.codegen_embed)
                     .{ .code = @embedFile("node-fallbacks/react-refresh.js") }
                 else
-                    .{ .code = bun.runtimeEmbedFile(.codegen, "node-fallbacks/react-refresh.js") },
+                    .{ .code = bun.runtimeEmbedFile(resolver.io, .codegen, "node-fallbacks/react-refresh.js") },
             );
         }
 
@@ -447,11 +447,11 @@ pub const Framework = struct {
             // Deprecated
             if (str.eqlComptime("react-server-components")) {
                 bun.Output.warn("deprecation notice: 'react-server-components' will be renamed to 'react'", .{});
-                return Framework.react(arena);
+                return Framework.react(global.bunVM().io, arena);
             }
 
             if (str.eqlComptime("react")) {
-                return Framework.react(arena);
+                return Framework.react(global.bunVM().io, arena);
             }
         }
 
@@ -856,7 +856,7 @@ pub const HmrRuntime = struct {
     }
 };
 
-pub fn getHmrRuntime(side: Side) callconv(bun.callconv_inline) HmrRuntime {
+pub fn getHmrRuntime(io: std.Io, side: Side) callconv(bun.callconv_inline) HmrRuntime {
     return if (Environment.codegen_embed)
         switch (side) {
             .client => .init(@embedFile("bake-codegen/bake.client.js")),
@@ -864,9 +864,9 @@ pub fn getHmrRuntime(side: Side) callconv(bun.callconv_inline) HmrRuntime {
         }
     else
         .init(switch (side) {
-            .client => bun.runtimeEmbedFile(.codegen_eager, "bake.client.js"),
+            .client => bun.runtimeEmbedFile(io, .codegen_eager, "bake.client.js"),
             // server runtime is loaded once, so it is pointless to make this eager.
-            .server => bun.runtimeEmbedFile(.codegen, "bake.server.js"),
+            .server => bun.runtimeEmbedFile(io, .codegen, "bake.server.js"),
         });
 }
 

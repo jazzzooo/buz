@@ -257,7 +257,7 @@ pub fn transpileSourceCode(
             }
 
             if (is_node_override) {
-                if (node_fallbacks.contentsFromPath(specifier)) |code| {
+                if (node_fallbacks.contentsFromPath(jsc_vm.io, specifier)) |code| {
                     const fallback_path = Fs.Path.initWithNamespace(specifier, "node");
                     fallback_source = logger.Source{ .path = fallback_path, .contents = code };
                     parse_options.virtual_source = &fallback_source;
@@ -1163,7 +1163,7 @@ fn getHardcodedModule(jsc_vm: *VirtualMachine, specifier: bun.String, hardcoded:
         },
         .@"bun:wrap" => .{
             .allocator = null,
-            .source_code = String.init(Runtime.Runtime.sourceCode()),
+            .source_code = String.init(Runtime.Runtime.sourceCode(jsc_vm.io)),
             .specifier = specifier,
             .source_url = specifier,
         },

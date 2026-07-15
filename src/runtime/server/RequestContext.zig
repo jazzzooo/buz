@@ -458,6 +458,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
             const bb_writer = bb_writer_state.writer();
 
             Fallback.renderBackend(
+                this.server.?.globalThis.bunVM().io,
                 arena_allocator,
                 fallback_container,
                 @TypeOf(bb_writer),
@@ -1746,6 +1747,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                             const bb_writer = bb_writer_state.writer();
 
                             Fallback.renderBackend(
+                                server.globalThis.bunVM().io,
                                 allocator,
                                 fallback_container,
                                 @TypeOf(bb_writer),

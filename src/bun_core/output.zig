@@ -18,10 +18,6 @@ pub var terminal_size: std.posix.winsize = .{
     .ypixel = 0,
 };
 
-pub fn applicationIo() Source.IoType {
-    return application_io;
-}
-
 pub const Source = struct {
     pub const StreamType = if (Environment.isWasm) []u8 else File;
     pub const IoType = if (Environment.isWasm) void else std.Io;

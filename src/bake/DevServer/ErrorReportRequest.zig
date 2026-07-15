@@ -115,6 +115,7 @@ pub fn runWithBody(ctx: *ErrorReportRequest, body: []const u8, r: AnyResponse) !
         if (!gop.found_existing) {
             defer _ = source_map_arena.reset(.retain_capacity);
             const psm = ctx.dev.source_maps.getParsedSourceMap(
+                ctx.dev.vm.io,
                 id,
                 source_map_arena.allocator(), // arena for parsing
                 temp_alloc, // store results into first arena

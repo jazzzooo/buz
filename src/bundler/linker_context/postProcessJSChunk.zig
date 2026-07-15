@@ -366,7 +366,7 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *ThreadPool.Worker, chu
 
     switch (c.options.output_format) {
         .internal_bake_dev => {
-            const start = bun.bake.getHmrRuntime(if (c.options.target.isServerSide()) .server else .client);
+            const start = bun.bake.getHmrRuntime(c.resolver.io, if (c.options.target.isServerSide()) .server else .client);
             j.pushStatic(start.code);
             line_offset.advance(start.code);
         },

@@ -51,25 +51,25 @@ pub const Fallback = struct {
         };
     };
 
-    pub inline fn errorJS() string {
+    pub inline fn errorJS(io: std.Io) string {
         return if (Environment.codegen_embed)
             @embedFile("bun-error/index.js")
         else
-            bun.runtimeEmbedFile(.codegen, "bun-error/index.js");
+            bun.runtimeEmbedFile(io, .codegen, "bun-error/index.js");
     }
 
-    pub inline fn errorCSS() string {
+    pub inline fn errorCSS(io: std.Io) string {
         return if (Environment.codegen_embed)
             @embedFile("bun-error/bun-error.css")
         else
-            bun.runtimeEmbedFile(.codegen, "bun-error/bun-error.css");
+            bun.runtimeEmbedFile(io, .codegen, "bun-error/bun-error.css");
     }
 
-    pub inline fn fallbackDecoderJS() string {
+    pub inline fn fallbackDecoderJS(io: std.Io) string {
         return if (Environment.codegen_embed)
             @embedFile("fallback-decoder.js")
         else
-            bun.runtimeEmbedFile(.codegen, "fallback-decoder.js");
+            bun.runtimeEmbedFile(io, .codegen, "fallback-decoder.js");
     }
 
     pub const version_hash = @import("build_options").fallback_html_version;
@@ -86,6 +86,7 @@ pub const Fallback = struct {
     }
 
     pub fn render(
+        io: std.Io,
         allocator: std.mem.Allocator,
         msg: *const api.FallbackMessageContainer,
         preload: string,
@@ -102,12 +103,13 @@ pub const Fallback = struct {
         try writer.print(HTMLTemplate, PrintArgs{
             .blob = Base64FallbackMessage{ .msg = msg, .allocator = allocator },
             .preload = preload,
-            .fallback = fallbackDecoderJS(),
+            .fallback = fallbackDecoderJS(io),
             .entry_point = entry_point,
         });
     }
 
     pub fn renderBackend(
+        io: std.Io,
         allocator: std.mem.Allocator,
         msg: *const api.FallbackMessageContainer,
         comptime WriterType: type,
@@ -122,24 +124,24 @@ pub const Fallback = struct {
         };
         try writer.print(HTMLBackendTemplate, PrintArgs{
             .blob = Base64FallbackMessage{ .msg = msg, .allocator = allocator },
-            .bun_error_css = errorCSS(),
-            .bun_error = errorJS(),
+            .bun_error_css = errorCSS(io),
+            .bun_error = errorJS(io),
             .bun_error_page_css = "",
-            .fallback = fallbackDecoderJS(),
+            .fallback = fallbackDecoderJS(io),
         });
     }
 };
 
 pub const Runtime = struct {
-    pub fn sourceCode() string {
+    pub fn sourceCode(io: std.Io) string {
         return if (Environment.codegen_embed)
             @embedFile("runtime.out.js")
         else
-            bun.runtimeEmbedFile(.codegen, "runtime.out.js");
+            bun.runtimeEmbedFile(io, .codegen, "runtime.out.js");
     }
 
-    pub fn versionHash() u32 {
-        const hash = bun.Wyhash11.hash(0, sourceCode());
+    pub fn versionHash(io: std.Io) u32 {
+        const hash = bun.Wyhash11.hash(0, sourceCode(io));
         return @truncate(hash);
     }
 

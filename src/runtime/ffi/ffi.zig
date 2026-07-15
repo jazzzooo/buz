@@ -1386,6 +1386,7 @@ pub const FFI = struct {
             .return_type = return_type,
             .threadsafe = threadsafe,
             .allocator = allocator,
+            .io = global.bunVM().io,
         };
 
         if (try value.get(global, "ptr")) |ptr| {
@@ -1445,6 +1446,7 @@ pub const FFI = struct {
         step: Step = Step{ .pending = {} },
         threadsafe: bool = false,
         allocator: Allocator,
+        io: std.Io = undefined,
 
         pub var lib_dirZ: [*:0]const u8 = "";
 
@@ -1513,11 +1515,11 @@ pub const FFI = struct {
             }
         }
 
-        pub fn ffiHeader() string {
+        pub fn ffiHeader(this: *const Function) string {
             return if (Environment.codegen_embed)
                 @embedFile("./FFI.h")
             else
-                bun.runtimeEmbedFile(.src, "runtime/ffi/FFI.h");
+                bun.runtimeEmbedFile(this.io, .src, "runtime/ffi/FFI.h");
         }
 
         pub fn handleTCCError(ctx: ?*Function, message: [*c]const u8) callconv(.c) void {
@@ -1717,7 +1719,7 @@ pub const FFI = struct {
                 }
             }
 
-            try writer.writeAll(ffiHeader());
+            try writer.writeAll(this.ffiHeader());
 
             // -- Generate the FFI function symbol
             try writer.writeAll("/* --- The Function To Call */\n");
@@ -1914,7 +1916,7 @@ pub const FFI = struct {
                 }
             }
 
-            try writer.writeAll(ffiHeader());
+            try writer.writeAll(this.ffiHeader());
 
             // -- Generate the FFI function symbol
             try writer.writeAll("\n \n/* --- The Callback Function */\n");

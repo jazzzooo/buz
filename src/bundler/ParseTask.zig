@@ -697,7 +697,7 @@ fn getCodeForParseTaskWithoutPlugins(
                 }
 
                 break :brk .{
-                    .contents = NodeFallbackModules.contentsFromPath(file_path.text) orelse "",
+                    .contents = NodeFallbackModules.contentsFromPath(resolver.io, file_path.text) orelse "",
                     .fd = bun.invalid_fd,
                 };
             }

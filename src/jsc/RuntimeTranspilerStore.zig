@@ -419,7 +419,7 @@ pub const RuntimeTranspilerStore = struct {
             }
 
             if (is_node_override) {
-                if (node_fallbacks.contentsFromPath(specifier)) |code| {
+                if (node_fallbacks.contentsFromPath(vm.io, specifier)) |code| {
                     const fallback_path = Fs.Path.initWithNamespace(specifier, "node");
                     fallback_source = logger.Source{ .path = fallback_path, .contents = code };
                     parse_options.virtual_source = &fallback_source;

@@ -1719,7 +1719,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
             assert(g.current_chunk_len > 0);
 
             const runtime: bake.HmrRuntime = switch (kind) {
-                .initial_response => bun.bake.getHmrRuntime(side),
+                .initial_response => bun.bake.getHmrRuntime(g.owner().vm.io, side),
                 .hmr_chunk => switch (side) {
                     .server => comptime .init("({"),
                     .client => comptime .init("self[Symbol.for(\"bun:hmr\")]({\n"),

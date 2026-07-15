@@ -821,7 +821,7 @@ pub const Transpiler = struct {
             }
 
             if (strings.eqlComptime(path.namespace, "node")) {
-                if (NodeFallbackModules.contentsFromPath(path.text)) |code| {
+                if (NodeFallbackModules.contentsFromPath(transpiler.io, path.text)) |code| {
                     break :brk logger.Source.initPathString(path.text, code);
                 }
 

@@ -2003,7 +2003,7 @@ pub const RunCommand = struct {
         ctx.runtime_options.eval.script = if (bun.Environment.codegen_embed)
             @embedFile("eval/feedback.ts")
         else
-            bun.runtimeEmbedFile(.codegen, "eval/feedback.ts");
+            bun.runtimeEmbedFile(ctx.io, .codegen, "eval/feedback.ts");
         try Run.boot(ctx, entry_point_buf[0 .. cwd.len + trigger.len], null);
         Global.exit(0);
     }
