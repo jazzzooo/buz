@@ -1731,14 +1731,14 @@ pub fn firstNonASCII16(slice: []const u16) ?u32 {
                 if (max_value > 127) {
                     const cmp = vec > max_u16_ascii;
                     const bitmask: u8 = @as(u8, @bitCast(cmp));
-                    const index_of_first_nonascii_in_vector = @ctz(bitmask);
+                    const index_of_first_nonascii_in_vector: usize = @ctz(bitmask);
 
                     const offset_of_vector_in_input = (@intFromPtr(remaining.ptr) - @intFromPtr(remaining_start)) / 2;
                     const out: u32 = @intCast(offset_of_vector_in_input + index_of_first_nonascii_in_vector);
 
                     if (comptime Environment.isDebug) {
-                        for (0..index_of_first_nonascii_in_vector) |i| {
-                            if (vec[i] > 127) {
+                        for (remaining[0..index_of_first_nonascii_in_vector]) |code_unit| {
+                            if (code_unit > 127) {
                                 bun.Output.panic("firstNonASCII16: found non-ASCII character in ASCII vector before the first non-ASCII character", .{});
                             }
                         }
