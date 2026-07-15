@@ -72,7 +72,7 @@ pub fn NewStore(comptime types: []const type, comptime count: usize) type {
         };
 
         pub fn firstBlock(store: *Store) *Block {
-            return &@as(*PreAlloc, @fieldParentPtr("metadata", store)).first_block;
+            return &@as(*PreAlloc, @alignCast(@fieldParentPtr("metadata", store))).first_block;
         }
 
         pub fn init() *Store {

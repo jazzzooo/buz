@@ -27,8 +27,8 @@ pub const isMusl = builtin.target.abi.isMusl();
 pub const isAndroid = builtin.target.abi.isAndroid();
 pub const isGlibc = isLinux and builtin.target.abi.isGnu();
 pub const allow_assert = isDebug or isTest or std.builtin.OptimizeMode.ReleaseSafe == builtin.mode;
-pub const ci_assert = isDebug or isTest or enable_asan or (std.builtin.OptimizeMode.ReleaseSafe == builtin.mode and is_canary);
-pub const show_crash_trace = isDebug or isTest or enable_asan;
+pub const ci_assert = isNative and (isDebug or isTest or enable_asan or (std.builtin.OptimizeMode.ReleaseSafe == builtin.mode and is_canary));
+pub const show_crash_trace = isNative and (isDebug or isTest or enable_asan);
 /// All calls to `@export` should be gated behind this check, so that code
 /// generators that compile Zig code know not to reference and compile a ton of
 /// unused code.
@@ -36,7 +36,7 @@ pub const export_cpp_apis = if (build_options.override_no_export_cpp_apis) false
 
 /// Whether or not to enable allocation tracking when the `AllocationScope`
 /// allocator is used.
-pub const enableAllocScopes = isDebug or enable_asan;
+pub const enableAllocScopes = isNative and (isDebug or enable_asan);
 
 pub const build_options = @import("build_options");
 

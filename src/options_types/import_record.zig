@@ -85,7 +85,7 @@ pub const ImportKind = enum(u8) {
 
     pub fn toAPI(k: ImportKind) api.ImportKind {
         return switch (k) {
-            ImportKind.entry_point => api.ImportKind.entry_point,
+            ImportKind.entry_point_run, ImportKind.entry_point_build => api.ImportKind.entry_point,
             ImportKind.stmt => api.ImportKind.stmt,
             ImportKind.require => api.ImportKind.require,
             ImportKind.dynamic => api.ImportKind.dynamic,

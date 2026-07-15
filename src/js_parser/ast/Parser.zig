@@ -293,24 +293,13 @@ pub const Parser = struct {
             if (comptime Environment.isWasm) {
                 // If the logger is backed by console.log, every print appends a newline.
                 // so buffering is kind of mandatory here
-                const fakeWriter = struct {
-                    fn writeAll(_: @This(), data: []const u8) anyerror!usize {
-                        if (data.len == 0) return 0;
-
-                        Output.print("{s}", .{data});
-                        return data.len;
-                    }
-                };
-                const writer = std.Io.GenericWriter(fakeWriter, anyerror, fakeWriter.writeAll){
-                    .context = fakeWriter{},
-                };
-                var buffered_writer = bun.deprecated.bufferedWriter(writer);
-                const actual = buffered_writer.writer();
+                var buffered_writer: std.Io.Writer.Allocating = .init(self.allocator);
+                defer buffered_writer.deinit();
                 for (self.log.msgs.items) |msg| {
                     var m: logger.Msg = msg;
-                    m.writeFormat(actual, true) catch {};
+                    m.writeFormat(&buffered_writer.writer, true) catch {};
                 }
-                buffered_writer.flush() catch {};
+                Output.print("{s}", .{buffered_writer.written()});
             }
             return error.SyntaxError;
         }

@@ -3349,7 +3349,11 @@ fn skipToInterestingCharacterInMultilineComment(text_: []const u8) ?u32 {
             @as(V1x16, @bitCast(newline == vec));
 
         if (@reduce(.Max, any_significant) > 0) {
-            const bitmask = @as(u16, @bitCast(any_significant));
+            const bitmask: u16 = switch (comptime strings.ascii_vector_size) {
+                8 => @as(u8, @bitCast(any_significant)),
+                16 => @as(u16, @bitCast(any_significant)),
+                else => @compileError("unsupported ASCII vector size"),
+            };
             const first = @ctz(bitmask);
             bun.assertWithLocation(first < strings.ascii_vector_size, @src());
             bun.assertWithLocation(text.ptr[first] == '*' or text.ptr[first] == '\r' or text.ptr[first] == '\n' or text.ptr[first] > 127, @src());

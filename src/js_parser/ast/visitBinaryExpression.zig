@@ -376,7 +376,10 @@ pub fn CreateBinaryExpressionVisitor(
                     .bin_pow => {
                         if (p.should_fold_typescript_constant_expressions) {
                             if (Expr.extractNumericValues(e_.left.data, e_.right.data)) |vals| {
-                                return p.newExpr(E.Number{ .value = jsc.math.pow(vals[0], vals[1]) }, v.loc);
+                                return p.newExpr(E.Number{ .value = if (comptime Environment.isNative)
+                                    jsc.math.pow(vals[0], vals[1])
+                                else
+                                    std.math.pow(f64, vals[0], vals[1]) }, v.loc);
                             }
                         }
                     },

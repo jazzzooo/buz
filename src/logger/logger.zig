@@ -924,7 +924,8 @@ pub const Log = struct {
     }
 
     // Use a bun.sys.Error's message in addition to some extra context.
-    pub fn addSysError(log: *Log, alloc: std.mem.Allocator, e: bun.sys.Error, comptime fmt: string, args: anytype) OOM!void {
+    pub fn addSysError(log: *Log, alloc: std.mem.Allocator, e: if (bun.Environment.isWasm) void else bun.sys.Error, comptime fmt: string, args: anytype) OOM!void {
+        if (comptime bun.Environment.isWasm) unreachable;
         const tag_name, const sys_errno = e.getErrorCodeTagName() orelse {
             try log.addErrorFmt(null, Loc.Empty, alloc, fmt, args);
             return;

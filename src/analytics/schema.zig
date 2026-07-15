@@ -67,7 +67,9 @@ pub const Reader = struct {
                 return try this.read(length);
             },
             u16, u32, i8, i16, i32 => {
-                return std.mem.readIntSliceNative(T, this.read(length * @sizeOf(T)));
+                const array = try this.allocator.alloc(T, length);
+                for (array) |*value| value.* = try this.readInt(T);
+                return array;
             },
             [:0]const u8, []const u8 => {
                 const array = try this.allocator.alloc(T, length);
@@ -112,7 +114,7 @@ pub const Reader = struct {
     pub inline fn readInt(this: *Self, comptime T: type) !T {
         const slice = try this.read(@sizeOf(T));
 
-        return std.mem.readIntSliceNative(T, slice);
+        return std.mem.readInt(T, slice[0..@sizeOf(T)], @import("builtin").cpu.arch.endian());
     }
 
     pub inline fn readBool(this: *Self) !bool {
@@ -138,7 +140,7 @@ pub const Reader = struct {
                 return try this.readArray([]u8);
             },
             u16, u32, i8, i16, i32 => {
-                return std.mem.readIntSliceNative(T, try this.read(@sizeOf(T)));
+                return try this.readInt(T);
             },
             else => {
                 switch (comptime @typeInfo(T)) {
@@ -316,9 +318,6 @@ pub fn Writer(comptime WritableStream: type) type {
         }
     };
 }
-
-pub const ByteWriter = Writer(*std.io.FixedBufferStream([]u8));
-pub const FileWriter = Writer(std.Io.File);
 
 pub const analytics = struct {
     pub const OperatingSystem = enum(u8) {

@@ -121,10 +121,10 @@ const ZAllocator = struct {
 };
 
 const memory_allocator_tags = struct {
-    const default_allocator_tag: usize = 0xBEEFA110C; // "BEEFA110C"  beef a110c i guess
+    const default_allocator_tag: usize = @truncate(@as(u64, 0xBEEFA110C)); // "BEEFA110C"  beef a110c i guess
     pub const default_allocator_tag_ptr: *anyopaque = @ptrFromInt(default_allocator_tag);
 
-    const z_allocator_tag: usize = 0x2a11043470123; // "z4110c4701" (Z ALLOCATOR in 1337 speak)
+    const z_allocator_tag: usize = @truncate(@as(u64, 0x2a11043470123)); // "z4110c4701" (Z ALLOCATOR in 1337 speak)
     pub const z_allocator_tag_ptr: *anyopaque = @ptrFromInt(z_allocator_tag);
 };
 

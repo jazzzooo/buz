@@ -991,6 +991,10 @@ pub fn eqlCaseInsensitiveASCII(a: string, b: string, comptime check_len: bool) b
     bun.unsafeAssert(b.len > 0);
     bun.unsafeAssert(a.len > 0);
 
+    if (comptime !bun.Environment.isNative) {
+        return b.len >= a.len and std.ascii.eqlIgnoreCase(a, b[0..a.len]);
+    }
+
     return bun.c.strncasecmp(a.ptr, b.ptr, a.len) == 0;
 }
 

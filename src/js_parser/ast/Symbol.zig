@@ -139,8 +139,10 @@ remove_overwritten_function_declaration: bool = false,
 has_been_assigned_to: bool = false,
 
 comptime {
-    bun.assert_eql(@sizeOf(Symbol), 88);
-    bun.assert_eql(@alignOf(Symbol), @alignOf([]const u8));
+    if (bun.Environment.isNative) {
+        bun.assert_eql(@sizeOf(Symbol), 88);
+        bun.assert_eql(@alignOf(Symbol), @alignOf([]const u8));
+    }
 }
 
 const invalid_chunk_index = std.math.maxInt(u32);

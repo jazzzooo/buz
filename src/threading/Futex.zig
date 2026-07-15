@@ -59,7 +59,9 @@ pub fn wake(ptr: *const atomic.Value(u32), max_waiters: u32) void {
     Impl.wake(ptr, max_waiters);
 }
 
-const Impl = if (builtin.os.tag == .windows)
+const Impl = if (builtin.single_threaded)
+    SingleThreadedImpl
+else if (builtin.os.tag == .windows)
     WindowsImpl
 else if (builtin.os.tag.isDarwin())
     DarwinImpl
@@ -67,10 +69,20 @@ else if (builtin.os.tag == .linux)
     LinuxImpl
 else if (builtin.os.tag == .freebsd)
     FreebsdImpl
-else if (builtin.target.isWasm())
+else if (builtin.target.cpu.arch.isWasm())
     WasmImpl
 else
     UnsupportedImpl;
+
+const SingleThreadedImpl = struct {
+    fn wait(ptr: *const atomic.Value(u32), expect: u32, timeout: ?u64) error{Timeout}!void {
+        if (ptr.load(.seq_cst) != expect) return;
+        if (timeout != null) return error.Timeout;
+        @panic("deadlock in single-threaded futex wait");
+    }
+
+    fn wake(_: *const atomic.Value(u32), _: u32) void {}
+};
 
 /// We can't do @compileError() in the `Impl` switch statement above as its eagerly evaluated.
 /// So instead, we @compileError() on the methods themselves for platforms which don't support futex.

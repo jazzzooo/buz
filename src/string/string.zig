@@ -201,6 +201,12 @@ pub const String = extern struct {
     }
 
     pub fn cloneUTF8(bytes: []const u8) String {
+        if (comptime bun.Environment.isWasm) {
+            if (bytes.len == 0) return .empty;
+            var zig_string = ZigString.initUTF8(bun.handleOom(bun.default_allocator.dupe(u8, bytes)));
+            zig_string.markGlobal();
+            return .{ .tag = .ZigString, .value = .{ .ZigString = zig_string } };
+        }
         return jsc.WebCore.encoding.toBunStringComptime(bytes, .utf8);
     }
 
@@ -1129,8 +1135,10 @@ pub const SliceWithUnderlyingString = struct {
 };
 
 comptime {
-    bun.assert_eql(@sizeOf(bun.String), 24);
-    bun.assert_eql(@alignOf(bun.String), 8);
+    if (bun.Environment.isNative) {
+        bun.assert_eql(@sizeOf(bun.String), 24);
+        bun.assert_eql(@alignOf(bun.String), 8);
+    }
 }
 
 const std = @import("std");

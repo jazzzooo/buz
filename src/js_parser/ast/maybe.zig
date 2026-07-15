@@ -423,9 +423,13 @@ pub fn AstMaybe(
                             return p.newExpr(E.String.init(p.source.path.text), name_loc);
                         } else if (strings.eqlComptime(name, "url")) {
                             // Inline import.meta.url as file:// URL
-                            const bunstr = bun.String.fromBytes(p.source.path.text);
-                            defer bunstr.deref();
-                            const url = std.fmt.allocPrint(p.allocator, "{f}", .{jsc.URL.fileURLFromString(bunstr)}) catch unreachable;
+                            const url = if (comptime bun.Environment.isWasm)
+                                std.fmt.allocPrint(p.allocator, "file://{s}", .{p.source.path.text}) catch unreachable
+                            else brk: {
+                                const bunstr = bun.String.fromBytes(p.source.path.text);
+                                defer bunstr.deref();
+                                break :brk std.fmt.allocPrint(p.allocator, "{f}", .{jsc.URL.fileURLFromString(bunstr)}) catch unreachable;
+                            };
                             return p.newExpr(E.String.init(url), name_loc);
                         }
                     }

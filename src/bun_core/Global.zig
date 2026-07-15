@@ -218,13 +218,15 @@ comptime {
 }
 
 pub export fn Bun__onExit() void {
-    bun.jsc.Node.FSEvents.closeAndWait();
+    if (comptime bun.Environment.isNative) {
+        bun.jsc.Node.FSEvents.closeAndWait();
 
-    runExitCallbacks();
-    Output.flush();
-    std.mem.doNotOptimizeAway(&Bun__atexit);
+        runExitCallbacks();
+        Output.flush();
+        std.mem.doNotOptimizeAway(&Bun__atexit);
 
-    Output.Source.Stdio.restore();
+        Output.Source.Stdio.restore();
+    }
 }
 
 comptime {

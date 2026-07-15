@@ -21,7 +21,7 @@ pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug)
 pub const callconv_inline: std.builtin.CallingConvention = if (builtin.mode == .Debug) .auto else .@"inline";
 
 /// In debug builds, this will catch memory leaks. In release builds, it is mimalloc.
-pub const debug_allocator: std.mem.Allocator = if (Environment.isDebug or Environment.enable_asan)
+pub const debug_allocator: std.mem.Allocator = if (Environment.isNative and (Environment.isDebug or Environment.enable_asan))
     debug_allocator_data.allocator
 else
     default_allocator;
@@ -209,13 +209,15 @@ pub const fmt = @import("./bun_core/fmt.zig");
 pub const gen = @import("./jsc/bindings/GeneratedBindings.zig");
 
 comptime {
-    // This file is gennerated, but cant be placed in the build/debug/codegen
-    // folder because zig will complain about outside-of-module stuff
-    _ = &@import("./jsc/bindings/GeneratedJS2Native.zig");
-    _ = &gen; // reference bindings
-    // Exports `us_dispatch_*` for loop.c — nothing in Zig calls them, but the
-    // C event loop link-depends on them.
-    _ = &uws.dispatch;
+    if (Environment.isNative) {
+        // This file is gennerated, but cant be placed in the build/debug/codegen
+        // folder because zig will complain about outside-of-module stuff
+        _ = &@import("./jsc/bindings/GeneratedJS2Native.zig");
+        _ = &gen; // reference bindings
+        // Exports `us_dispatch_*` for loop.c — nothing in Zig calls them, but the
+        // C event loop link-depends on them.
+        _ = &uws.dispatch;
+    }
 }
 
 /// Copied from Zig std.trait
@@ -842,7 +844,12 @@ pub fn rangeOfSliceInBuffer(slice: []const u8, buffer: []const u8) ?[2]u32 {
 // Please prefer `bun.FD.Optional.none` over this
 pub const invalid_fd: FD = .invalid;
 
-pub const bun_js = @import("./bun.js.zig");
+pub const bun_js = if (Environment.isWasm) struct {
+    const Stub = @import("./jsc_stub.zig");
+    pub const jsc = Stub;
+    pub const webcore = Stub.WebCore;
+    pub const api = Stub.API;
+} else @import("./bun.js.zig");
 /// Bindings to JavaScriptCore and other JavaScript primatives.
 /// Web and runtime-specific APIs should go in `webcore` and `api`.
 pub const jsc = bun_js.jsc;
@@ -969,6 +976,7 @@ pub fn openDirAbsoluteNotForDeletingOrRenaming(path_: []const u8) !std.Io.Dir {
 /// This wrapper exists to avoid the call to sliceTo(0)
 /// Zig's sliceTo(0) is scalar
 pub fn getenvZAnyCase(key: [:0]const u8) ?[]const u8 {
+    if (comptime !Environment.isNative) return null;
     if (comptime Environment.isWindows) return getenvZ(key);
 
     for (std.mem.span(std.c.environ)) |lineZ| {
@@ -1338,10 +1346,12 @@ pub fn asByteSlice(buffer: anytype) []const u8 {
 }
 
 comptime {
-    _ = @import("./runtime/node/buffer.zig").BufferVectorized.fill;
-    _ = @import("./cli/upgrade_command.zig").Version;
-    _ = @import("./jsc/resolve_path_jsc.zig");
-    _ = @import("./jsc/resolver_jsc.zig");
+    if (Environment.isNative) {
+        _ = @import("./runtime/node/buffer.zig").BufferVectorized.fill;
+        _ = @import("./cli/upgrade_command.zig").Version;
+        _ = @import("./jsc/resolve_path_jsc.zig");
+        _ = @import("./jsc/resolver_jsc.zig");
+    }
 }
 
 pub fn DebugOnlyDisabler(comptime Type: type) type {
@@ -2625,6 +2635,8 @@ pub fn exitThread() noreturn {
         exiter.ExitThread(0);
     } else if (comptime Environment.isPosix) {
         exiter.pthread_exit(null);
+    } else if (comptime Environment.isWasm) {
+        unreachable;
     } else {
         @compileError("Unsupported platform");
     }
@@ -2860,7 +2872,10 @@ pub fn SliceIterator(comptime T: type) type {
 // TODO: migrate
 pub const ArenaAllocator = std.heap.ArenaAllocator;
 
-pub const crash_handler = @import("./crash_handler/crash_handler.zig");
+pub const crash_handler = if (Environment.isWasm)
+    @import("./crash_handler/crash_handler_stub.zig")
+else
+    @import("./crash_handler/crash_handler.zig");
 pub const handleErrorReturnTrace = crash_handler.handleErrorReturnTrace;
 
 const assertion_failure_msg = "Internal assertion failure";

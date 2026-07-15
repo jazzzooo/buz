@@ -379,7 +379,9 @@ pub const StringID = enum(u32) {
 // zig__renderDiff, zig__ModuleInfoDeserialized__toJSModuleRecord, and the
 // JSModuleRecord/IdentifierArray opaques: see src/bundler_jsc/analyze_jsc.zig
 comptime {
-    _ = @import("../bundler_jsc/analyze_jsc.zig");
+    if (bun.Environment.isNative) {
+        _ = @import("../bundler_jsc/analyze_jsc.zig");
+    }
 }
 
 export fn zig__ModuleInfo__destroy(info: *ModuleInfo) void {

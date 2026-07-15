@@ -439,9 +439,9 @@ pub const Number = struct {
             // do not allocate for a small set of constant numbers: -100 through 100
             if (abs < double_digit.len) {
                 return if (int_value < 0)
-                    neg_double_digit[abs]
+                    neg_double_digit[@intCast(abs)]
                 else
-                    double_digit[abs];
+                    double_digit[@intCast(abs)];
             }
 
             return std.fmt.allocPrint(allocator, "{d}", .{@as(i32, @intCast(int_value))}) catch return null;

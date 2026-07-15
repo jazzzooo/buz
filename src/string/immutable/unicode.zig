@@ -356,12 +356,14 @@ pub fn toUTF8ListWithType(list_: std.array_list.Managed(u8), utf16: []const u16)
         return buf;
     }
 
-    @compileError("not implemented");
+    var list = list_;
+    return try toUTF8ListWithTypeBun(&list, utf16, false);
 }
 
 pub fn toUTF8AppendToList(list: *std.array_list.Managed(u8), utf16: []const u16) !void {
     if (!bun.FeatureFlags.use_simdutf) {
-        @compileError("not implemented");
+        _ = try toUTF8ListWithTypeBun(list, utf16, false);
+        return;
     }
     const length = bun.simdutf.length.utf8.from.utf16.le(utf16);
     try list.ensureUnusedCapacity(length + 16);

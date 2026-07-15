@@ -42,8 +42,6 @@ pub const Source = struct {
 
     raw_stream: StreamType,
     raw_error_stream: StreamType,
-    out_buffer: []u8 = &([_]u8{}),
-    err_buffer: []u8 = &([_]u8{}),
 
     pub fn init(
         out: *Source,
@@ -274,6 +272,7 @@ pub const Source = struct {
 
         pub extern "c" fn bun_restore_stdio() void;
         pub fn restore() void {
+            if (comptime !Environment.isNative) return;
             if (Environment.isWindows) {
                 WindowsStdio.restore();
             } else {
@@ -769,17 +768,15 @@ inline fn hasNoArgs(comptime Args: type) bool {
 
 inline fn printTo(dest: Destination, comptime fmt: string, args: anytype) void {
     if (comptime Environment.isWasm) {
+        const output = switch (dest) {
+            .stdout => source.stream,
+            .stderr => source.error_stream,
+        };
+        output.end = 0;
+        output.print(fmt, args) catch unreachable;
         switch (dest) {
-            .stdout => {
-                source.stream.pos = 0;
-                source.stream.writer().print(fmt, args) catch unreachable;
-                root.console_log(root.Uint8Array.fromSlice(source.stream.buffer[0..source.stream.pos]));
-            },
-            .stderr => {
-                source.error_stream.seekTo(0) catch return;
-                source.error_stream.writer().print(fmt, args) catch unreachable;
-                root.console_error(root.Uint8Array.fromSlice(source.err_buffer[0..source.error_stream.pos]));
-            },
+            .stdout => root.console_log(root.Uint8Array.fromSlice(output.buffered())),
+            .stderr => root.console_error(root.Uint8Array.fromSlice(output.buffered())),
         }
         return;
     }
@@ -860,7 +857,7 @@ pub fn Scoped(comptime tag: anytype, comptime visibility: Visibility) type {
 }
 
 fn ScopedLogger(comptime tagname: []const u8, comptime visibility: Visibility) type {
-    if (comptime !Environment.enable_logs) {
+    if (comptime !Environment.enable_logs or Environment.isWasm) {
         return struct {
             pub inline fn isVisible() bool {
                 return false;
@@ -1355,7 +1352,7 @@ pub inline fn errFmt(formatter: anytype) void {
 }
 
 var stdin_buffer: [4096]u8 = undefined;
-pub var buffered_stdin: File.Reader = undefined;
+pub var buffered_stdin: if (Environment.isWasm) void else File.Reader = undefined;
 
 const string = []const u8;
 
@@ -1395,4 +1392,4 @@ const Global = bun.Global;
 const c = bun.c;
 const strings = bun.strings;
 const use_mimalloc = bun.use_mimalloc;
-const File = bun.sys.File;
+const File = if (Environment.isWasm) void else bun.sys.File;

@@ -50,10 +50,32 @@ pub fn unlock(self: *Mutex) void {
 
 pub const deinit = void;
 
-const Impl = if (builtin.mode == .Debug and !builtin.single_threaded)
+const Impl = if (builtin.single_threaded)
+    SingleThreadedImpl
+else if (builtin.mode == .Debug)
     DebugImpl
 else
     ReleaseImpl;
+
+const SingleThreadedImpl = struct {
+    locked: bool = false,
+
+    inline fn tryLock(self: *@This()) bool {
+        if (self.locked) return false;
+        self.locked = true;
+        return true;
+    }
+
+    inline fn lock(self: *@This()) void {
+        assert(!self.locked);
+        self.locked = true;
+    }
+
+    inline fn unlock(self: *@This()) void {
+        assert(self.locked);
+        self.locked = false;
+    }
+};
 
 pub const ReleaseImpl = if (builtin.os.tag == .windows)
     WindowsImpl

@@ -410,6 +410,7 @@ const CHECK_STEPS = [
   "check-macos-debug",
   "check-linux",
   "check-linux-debug",
+  "check-wasm",
 ] as const;
 
 /**

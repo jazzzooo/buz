@@ -5,6 +5,11 @@ pub const ZigString = extern struct {
     /// Accessing it directly is unsafe.
     _unsafe_ptr_do_not_use: [*]const u8,
     len: usize,
+    wasm_flags: if (bun.Environment.isWasm) u8 else void = if (bun.Environment.isWasm) 0 else {},
+
+    const wasm_utf16 = 1 << 0;
+    const wasm_utf8 = 1 << 1;
+    const wasm_global = 1 << 2;
 
     pub const ByteString = union(enum) {
         latin1: []const u8,
@@ -430,6 +435,7 @@ pub const ZigString = extern struct {
     };
 
     pub inline fn is16Bit(this: *const ZigString) bool {
+        if (comptime bun.Environment.isWasm) return this.wasm_flags & wasm_utf16 != 0;
         return (@intFromPtr(this._unsafe_ptr_do_not_use) & (1 << 63)) != 0;
     }
 
@@ -580,14 +586,23 @@ pub const ZigString = extern struct {
     }
 
     pub fn isUTF8(this: ZigString) bool {
+        if (comptime bun.Environment.isWasm) return this.wasm_flags & wasm_utf8 != 0;
         return (@intFromPtr(this._unsafe_ptr_do_not_use) & (1 << 61)) != 0;
     }
 
     pub fn markUTF8(this: *ZigString) void {
+        if (comptime bun.Environment.isWasm) {
+            this.wasm_flags |= wasm_utf8;
+            return;
+        }
         this._unsafe_ptr_do_not_use = @as([*]const u8, @ptrFromInt(@intFromPtr(this._unsafe_ptr_do_not_use) | (1 << 61)));
     }
 
     pub fn markUTF16(this: *ZigString) void {
+        if (comptime bun.Environment.isWasm) {
+            this.wasm_flags |= wasm_utf16;
+            return;
+        }
         this._unsafe_ptr_do_not_use = @as([*]const u8, @ptrFromInt(@intFromPtr(this._unsafe_ptr_do_not_use) | (1 << 63)));
     }
 
@@ -597,6 +612,7 @@ pub const ZigString = extern struct {
     }
 
     pub inline fn isGloballyAllocated(this: ZigString) bool {
+        if (comptime bun.Environment.isWasm) return this.wasm_flags & wasm_global != 0;
         return (@intFromPtr(this._unsafe_ptr_do_not_use) & (1 << 62)) != 0;
     }
 
@@ -605,6 +621,10 @@ pub const ZigString = extern struct {
     }
 
     pub inline fn markGlobal(this: *ZigString) void {
+        if (comptime bun.Environment.isWasm) {
+            this.wasm_flags |= wasm_global;
+            return;
+        }
         this._unsafe_ptr_do_not_use = @as([*]const u8, @ptrFromInt(@intFromPtr(this._unsafe_ptr_do_not_use) | (1 << 62)));
     }
 
@@ -629,6 +649,7 @@ pub const ZigString = extern struct {
     pub const Empty = ZigString{ ._unsafe_ptr_do_not_use = "", .len = 0 };
 
     pub inline fn untagged(ptr: [*]const u8) [*]const u8 {
+        if (comptime bun.Environment.isWasm) return ptr;
         // this can be null ptr, so long as it's also a 0 length string
         @setRuntimeSafety(false);
         return @as([*]const u8, @ptrFromInt(@as(u53, @truncate(@intFromPtr(ptr)))));

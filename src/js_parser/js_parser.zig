@@ -292,7 +292,7 @@ pub const InlinedEnumValue = struct {
         if (encoded.raw_data > 0x0000FFFFFFFFFFFF) {
             return .{ .number = @bitCast(encoded.raw_data - double_encode_offset) };
         } else {
-            return .{ .string = @ptrFromInt(encoded.raw_data) };
+            return .{ .string = @ptrFromInt(@as(usize, @truncate(encoded.raw_data))) };
         }
     }
 };

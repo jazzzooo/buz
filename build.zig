@@ -483,6 +483,40 @@ pub fn build(b: *Build) !void {
             }, &.{.Debug});
         }
     }
+    {
+        const step = b.step("check-wasm", "Check the WebAssembly transpiler subset for semantic analysis errors");
+        const wasm_target = b.resolveTargetQuery(.{
+            .cpu_arch = .wasm32,
+            .cpu_model = .baseline,
+            .os_tag = .freestanding,
+        });
+        inline for (.{ std.builtin.OptimizeMode.Debug, std.builtin.OptimizeMode.ReleaseFast }) |mode| {
+            var options: BunBuildOptions = .{
+                .target = wasm_target,
+                .optimize = mode,
+                .os = .wasm,
+                .arch = .wasm32,
+                .version = build_options.version,
+                .canary_revision = build_options.canary_revision,
+                .sha = build_options.sha,
+                .enable_logs = build_options.enable_logs,
+                .enable_asan = false,
+                .enable_fuzzilli = false,
+                .enable_valgrind = false,
+                .enable_tinycc = false,
+                .use_mimalloc = build_options.use_mimalloc,
+                .tracy_callstack_depth = build_options.tracy_callstack_depth,
+                .reported_nodejs_version = build_options.reported_nodejs_version,
+                .codegen_embed = build_options.codegen_embed,
+                .codegen_path = build_options.codegen_path,
+                .lto = false,
+                .override_no_export_cpp_apis = true,
+            };
+            var obj = addBunWasmObject(b, &options);
+            obj.generated_bin = .none;
+            step.dependOn(&obj.step);
+        }
+    }
 
     // zig build translate-c-headers
     {
@@ -837,6 +871,29 @@ pub fn addBunObject(b: *Build, opts: *BunBuildOptions) *Compile {
     return obj;
 }
 
+fn addBunWasmObject(b: *Build, opts: *BunBuildOptions) *Compile {
+    const bun = b.createModule(.{
+        .root_source_file = b.path("src/bun.zig"),
+    });
+    bun.addImport("bun", bun);
+    addInternalImports(b, bun, opts);
+
+    const root = b.createModule(.{
+        .root_source_file = b.path("src/main_wasm.zig"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .single_threaded = true,
+    });
+    root.addImport("bun", bun);
+
+    const obj = b.addObject(.{
+        .name = if (opts.optimize == .Debug) "bun-wasm-debug" else "bun-wasm",
+        .root_module = root,
+    });
+    configureObj(b, opts, obj);
+    return obj;
+}
+
 fn enableFastBuild(b: *Build) bool {
     const val = b.graph.environ_map.get("BUN_BUILD_FAST") orelse return false;
     return std.mem.eql(u8, val, "1");
@@ -940,8 +997,11 @@ fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions) void {
 
     mod.addImport("build_options", opts.buildOptionsModule(b));
 
-    const translate_c = getTranslateC(b, opts.target, opts.optimize, opts.android_ndk_sysroot, opts.freebsdSysroot());
-    mod.addImport("translated-c-headers", b.createModule(.{ .root_source_file = translate_c }));
+    const translated_c = if (os == .wasm)
+        b.path("src/codegen/translated_c_stub.zig")
+    else
+        getTranslateC(b, opts.target, opts.optimize, opts.android_ndk_sysroot, opts.freebsdSysroot());
+    mod.addImport("translated-c-headers", b.createModule(.{ .root_source_file = translated_c }));
 
     const zlib_internal_path = switch (os) {
         .windows => "src/zlib_sys/win32.zig",

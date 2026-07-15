@@ -163,28 +163,24 @@ export fn bun_free(bytes: u64) void {
 }
 
 var output_stream_buf: [16384]u8 = undefined;
-var output_stream = std.io.fixedBufferStream(&output_stream_buf);
 var error_stream_buf: [16384]u8 = undefined;
-var error_stream = std.io.fixedBufferStream(&error_stream_buf);
-var output_source: global.Output.Source = undefined;
 var init_counter: usize = 0;
 export fn init(heapsize: u32) void {
     defer init_counter +%= 1;
     if (init_counter == 0) {
 
         // reserve 256 MB upfront
-        mimalloc.mi_option_set(.allow_decommit, 0);
-        mimalloc.mi_option_set(.limit_os_alloc, 1);
+        mimalloc.mi_option_set(.purge_decommits, 0);
+        mimalloc.mi_option_set(.disallow_os_alloc, 1);
         _ = mimalloc.mi_reserve_os_memory(heapsize, false, true);
 
-        JSAst.Stmt.Data.Store.create(default_allocator);
-        JSAst.Expr.Data.Store.create(default_allocator);
+        JSAst.Stmt.Data.Store.create();
+        JSAst.Expr.Data.Store.create();
         buffer_writer = JSPrinter.BufferWriter.init(default_allocator);
         buffer_writer.buffer.growBy(1024) catch unreachable;
         writer = JSPrinter.BufferPrinter.init(buffer_writer);
-        define = Define.Define.init(default_allocator, null, null) catch unreachable;
-        output_source = global.Output.Source.init(output_stream, error_stream);
-        global.Output.Source.set(&output_source);
+        define = Define.Define.init(default_allocator, null, null, false, false) catch unreachable;
+        global.Output.Source.setInit({}, &output_stream_buf, &error_stream_buf);
     } else {
         buffer_writer = writer.ctx;
     }
@@ -432,11 +428,11 @@ const TestAnalyzer = struct {
 };
 export fn getTests(opts_array: u64) u64 {
     var arena = Arena.init();
-    var allocator = arena.allocator();
+    const allocator = arena.allocator();
     defer arena.deinit();
     var log_ = Logger.Log.init(allocator);
     var reader = ApiReader.init(Uint8Array.fromJS(opts_array), allocator);
-    var opts = bun.handleOom(api.GetTestsRequest.decode(&reader));
+    const opts = api.GetTestsRequest.decode(&reader) catch unreachable;
     var code = Logger.Source.initPathString(if (opts.path.len > 0) opts.path else "my-test-file.test.tsx", opts.contents);
     code.contents_is_recycled = true;
     defer {
@@ -447,7 +443,7 @@ export fn getTests(opts_array: u64) u64 {
     var parser = JSParser.Parser.init(.{
         .jsx = .{},
         .ts = true,
-    }, &log_, &code, define, allocator) catch |err| bun.handleOom(err);
+    }, &log_, &code, define, allocator) catch unreachable;
 
     var anaylzer = TestAnalyzer{
         .items = std.array_list.Managed(
@@ -470,8 +466,8 @@ export fn getTests(opts_array: u64) u64 {
         return 0;
     };
 
-    var output = std.array_list.Managed(u8).init(default_allocator);
-    var output_writer = output.writer();
+    var output: std.Io.Writer.Allocating = .init(default_allocator);
+    const output_writer = &output.writer;
     const Encoder = ApiWriter(@TypeOf(output_writer));
     var encoder = Encoder.init(output_writer);
     var response = api.GetTestsResponse{
@@ -480,18 +476,19 @@ export fn getTests(opts_array: u64) u64 {
     };
 
     response.encode(&encoder) catch return 0;
-    return @as(u64, @bitCast([2]u32{ @intFromPtr(output.items.ptr), output.items.len }));
+    const written = output.written();
+    return @as(u64, @bitCast([2]u32{ @intFromPtr(written.ptr), written.len }));
 }
 
 export fn transform(opts_array: u64) u64 {
     // var arena = bun.ArenaAllocator.init(default_allocator);
     var arena = Arena.init();
-    var allocator = arena.allocator();
+    const allocator = arena.allocator();
     defer arena.deinit();
     log = Logger.Log.init(allocator);
 
     var reader = ApiReader.init(Uint8Array.fromJS(opts_array), allocator);
-    var opts = api.Transform.decode(&reader) catch unreachable;
+    const opts = api.Transform.decode(&reader) catch unreachable;
     const loader_ = opts.loader orelse api.Loader.tsx;
 
     defer {
@@ -518,7 +515,8 @@ export fn transform(opts_array: u64) u64 {
     parser.options.features.top_level_await = true;
     const result = parser.parse() catch unreachable;
     if (result == .ast and log.errors == 0) {
-        var symbols = JSAst.Symbol.NestedList.init(&[_]JSAst.Symbol.List{result.ast.symbols});
+        var symbol_lists = [_]JSAst.Symbol.List{result.ast.symbols};
+        const symbols = JSAst.Symbol.NestedList.fromBorrowedSliceDangerous(&symbol_lists);
 
         _ = JSPrinter.printAst(
             @TypeOf(&writer),
@@ -545,12 +543,13 @@ export fn transform(opts_array: u64) u64 {
         .errors = (log.toAPI(allocator) catch unreachable).msgs,
     };
 
-    var output = std.array_list.Managed(u8).init(default_allocator);
-    var output_writer = output.writer();
+    var output: std.Io.Writer.Allocating = .init(default_allocator);
+    const output_writer = &output.writer;
     const Encoder = ApiWriter(@TypeOf(output_writer));
     var encoder = Encoder.init(output_writer);
     transform_response.encode(&encoder) catch {};
-    return @as(u64, @bitCast([2]u32{ @intFromPtr(output.items.ptr), output.items.len }));
+    const written = output.written();
+    return @as(u64, @bitCast([2]u32{ @intFromPtr(written.ptr), written.len }));
 }
 
 export fn scan(opts_array: u64) u64 {
@@ -561,7 +560,7 @@ export fn scan(opts_array: u64) u64 {
     log = Logger.Log.init(allocator);
 
     var reader = ApiReader.init(Uint8Array.fromJS(opts_array), allocator);
-    var opts = api.Scan.decode(&reader) catch unreachable;
+    const opts = api.Scan.decode(&reader) catch unreachable;
     const loader_ = opts.loader orelse api.Loader.tsx;
 
     defer {
@@ -588,8 +587,8 @@ export fn scan(opts_array: u64) u64 {
     const result = parser.parse() catch unreachable;
     if (log.errors == 0) {
         var scan_result = std.mem.zeroes(api.ScanResult);
-        var output = std.array_list.Managed(u8).init(default_allocator);
-        var output_writer = output.writer();
+        var output: std.Io.Writer.Allocating = .init(default_allocator);
+        const output_writer = &output.writer;
         const Encoder = ApiWriter(@TypeOf(output_writer));
 
         if (result == .ast) {
@@ -610,10 +609,11 @@ export fn scan(opts_array: u64) u64 {
 
         var encoder = Encoder.init(output_writer);
         scan_result.encode(&encoder) catch unreachable;
-        return @as(u64, @bitCast([2]u32{ @intFromPtr(output.items.ptr), output.items.len }));
+        const written = output.written();
+        return @as(u64, @bitCast([2]u32{ @intFromPtr(written.ptr), written.len }));
     } else {
-        var output = std.array_list.Managed(u8).init(default_allocator);
-        var output_writer = output.writer();
+        var output: std.Io.Writer.Allocating = .init(default_allocator);
+        const output_writer = &output.writer;
         const Encoder = ApiWriter(@TypeOf(output_writer));
         var scan_result = api.ScanResult{
             .exports = &.{},
@@ -622,7 +622,8 @@ export fn scan(opts_array: u64) u64 {
         };
         var encoder = Encoder.init(output_writer);
         scan_result.encode(&encoder) catch unreachable;
-        return @as(u64, @bitCast([2]u32{ @intFromPtr(output.items.ptr), output.items.len }));
+        const written = output.written();
+        return @as(u64, @bitCast([2]u32{ @intFromPtr(written.ptr), written.len }));
     }
 }
 
@@ -649,11 +650,11 @@ comptime {
     _ = getTests;
 }
 
-const Define = @import("./bundler/defines.zig");
-const Options = @import("./bundler/options.zig");
 const std = @import("std");
 
 const bun = @import("bun");
+const Define = bun.options.defines;
+const Options = bun.options;
 const global = @import("bun");
 const JSAst = bun.ast;
 const JSParser = bun.js_parser;

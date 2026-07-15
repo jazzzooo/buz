@@ -428,7 +428,7 @@ pub const Options = struct {
     // us do binary search on to figure out what line a given AST node came from
     line_offset_tables: ?SourceMap.LineOffsetTable.List = null,
 
-    mangled_props: ?*const bun.bundle_v2.MangledProps,
+    mangled_props: ?*const bun.bundle_v2.MangledProps = null,
 
     // Default indentation is 2 spaces
     pub const Indentation = struct {
@@ -5748,10 +5748,12 @@ pub const DirectWriter = struct {
     handle: FileDescriptorType,
 
     pub fn write(writer: *DirectWriter, buf: []const u8) !usize {
+        if (comptime bun.Environment.isWasm) return error.Unsupported;
         return try bun.sys.write(writer.handle, buf).unwrap();
     }
 
     pub fn writeAll(writer: *DirectWriter, buf: []const u8) !void {
+        if (comptime bun.Environment.isWasm) return error.Unsupported;
         _ = try bun.sys.write(writer.handle, buf).unwrap();
     }
 
@@ -5827,14 +5829,15 @@ pub const BufferWriter = struct {
     }
 
     pub fn reserveNext(ctx: *BufferWriter, count: u64) anyerror![*]u8 {
-        try ctx.buffer.growIfNeeded(count);
+        try ctx.buffer.growIfNeeded(@intCast(count));
         return @as([*]u8, @ptrCast(&ctx.buffer.list.items.ptr[ctx.buffer.list.items.len]));
     }
 
     pub fn advanceBy(ctx: *BufferWriter, count: u64) void {
-        if (comptime Environment.isDebug) bun.assert(ctx.buffer.list.items.len + count <= ctx.buffer.list.capacity);
+        const amount: usize = @intCast(count);
+        if (comptime Environment.isDebug) bun.assert(ctx.buffer.list.items.len + amount <= ctx.buffer.list.capacity);
 
-        ctx.buffer.list.items = ctx.buffer.list.items.ptr[0 .. ctx.buffer.list.items.len + count];
+        ctx.buffer.list.items = ctx.buffer.list.items.ptr[0 .. ctx.buffer.list.items.len + amount];
 
         if (count >= 2) {
             ctx.last_bytes = ctx.buffer.list.items[ctx.buffer.list.items.len - 2 ..][0..2].*;
