@@ -895,12 +895,14 @@ pub const PackageInstall = struct {
                                 bun.MakePath.makePath(io, std.meta.Elem(@TypeOf(entry.path)), destination_dir, entry.path) catch {};
                             },
                             .file => {
-                                const destination_fd = bun.FD.fromStdDir(destination_dir);
-                                if (bun.sys.linkatZ(entry.dir, entry.basename, destination_fd, entry.path).asErr()) |err| {
-                                    if (err.getErrno() != .EXIST) return err.toZigErr();
-                                    bun.sys.unlinkat(destination_fd, entry.path).unwrap() catch {};
-                                    try bun.sys.linkatZ(entry.dir, entry.basename, destination_fd, entry.path).unwrap();
-                                }
+                                const source_dir = entry.dir.stdDir();
+                                source_dir.hardLink(entry.basename, destination_dir, entry.path, io, .{}) catch |err| switch (err) {
+                                    error.PathAlreadyExists => {
+                                        destination_dir.deleteFile(io, entry.path) catch {};
+                                        try source_dir.hardLink(entry.basename, destination_dir, entry.path, io, .{});
+                                    },
+                                    else => return err,
+                                };
 
                                 real_file_count += 1;
                             },
@@ -959,7 +961,7 @@ pub const PackageInstall = struct {
                 if (err == error.FailedToCopyFile) {
                     return Result.fail(err, .copying_files, @errorReturnTrace());
                 }
-            } else if (err == error.NotSameFileSystem or err == error.ENXIO) {
+            } else if (err == error.CrossDevice or err == error.ENXIO) {
                 return err;
             }
 
@@ -1454,7 +1456,7 @@ pub const PackageInstall = struct {
                     return result;
                 } else |err| outer: {
                     if (comptime !Environment.isWindows) {
-                        if (err == error.NotSameFileSystem) {
+                        if (err == error.CrossDevice) {
                             supported_method = .copyfile;
                             supported_method_to_use = .copyfile;
                             break :outer;
