@@ -165,7 +165,7 @@ pub const Async = struct {
                         var flags: c_int = @intFromEnum(args.flags);
                         flags = uv.O.fromBunO(flags);
 
-                        var mode: c_int = args.mode;
+                        var mode: c_int = @intCast(args.mode);
                         if (mode == 0) mode = 0o644;
 
                         const rc = uv.uv_fs_open(loop, &task.req, path.ptr, flags, mode, &uv_callback);
@@ -3848,7 +3848,7 @@ pub const NodeFS = struct {
 
             const src = bun.strings.toKernel32Path(bun.reinterpretSlice(u16, &fs.sync_error_buf), args.src.slice());
             const dest = bun.strings.toKernel32Path(dest_buf, args.dest.slice());
-            if (windows.CopyFileW(src.ptr, dest.ptr, if (args.mode.shouldntOverwrite()) 1 else 0) == windows.FALSE) {
+            if (!windows.CopyFileW(src.ptr, dest.ptr, windows.BOOL.fromBool(args.mode.shouldntOverwrite())).toBool()) {
                 if (ret.errnoSysP(0, .copyfile, args.src.slice())) |rest| {
                     return shouldIgnoreEbusy(args.src, args.dest, rest);
                 }
@@ -5540,7 +5540,7 @@ pub const NodeFS = struct {
 
         if (args.flush) {
             if (Environment.isWindows) {
-                _ = std.os.windows.kernel32.FlushFileBuffers(fd.cast());
+                _ = c.FlushFileBuffers(fd.cast());
             } else {
                 _ = system.fsync(fd.cast());
             }
@@ -6796,9 +6796,9 @@ pub const NodeFS = struct {
                     switch (err) {
                         .FILE_EXISTS, .ALREADY_EXISTS => errpath = dest,
                         .PATH_NOT_FOUND => {
-                            bun.makePathW(std.Io.Dir.cwd(), bun.path.dirnameW(dest)) catch {};
-                            const second_try = windows.CopyFileW(src, dest, @intFromBool(mode.shouldntOverwrite()));
-                            if (second_try > 0) return ret.success;
+                            bun.makePathW(std.Io.Dir.cwd(), this.vm.?.io, bun.path.dirnameW(dest)) catch {};
+                            const second_try = windows.CopyFileW(src, dest, windows.BOOL.fromBool(mode.shouldntOverwrite()));
+                            if (second_try.toBool()) return ret.success;
                             err = windows.GetLastError();
                             errpath = dest;
                             if (err == .FILE_EXISTS or err == .ALREADY_EXISTS) errpath = src;
@@ -6825,7 +6825,7 @@ pub const NodeFS = struct {
                     std.os.windows.SYMBOLIC_LINK_FLAG_DIRECTORY
                 else
                     0;
-                if (windows.CreateSymbolicLinkW(dest, wbuf[0..len :0], flags) == 0) {
+                if (!windows.CreateSymbolicLinkW(dest, wbuf[0..len :0], flags).toBool()) {
                     return ret.errnoSysP(0, .copyfile, this.osPathIntoSyncErrorBuf(dest)) orelse dst_enoent_maybe;
                 }
                 return ret.success;

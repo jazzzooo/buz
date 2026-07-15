@@ -89,15 +89,22 @@ const nt = struct {
 const k32 = struct {
     const CreateProcessW = w.kernel32.CreateProcessW;
     /// https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror
-    const GetLastError = w.kernel32.GetLastError;
+    const GetLastError = w.GetLastError;
     /// https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject
-    const WaitForSingleObject = w.kernel32.WaitForSingleObject;
+    extern "kernel32" fn WaitForSingleObject(
+        hHandle: w.HANDLE,
+        dwMilliseconds: w.DWORD,
+    ) callconv(.winapi) w.DWORD;
     /// https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess
-    const GetExitCodeProcess = w.kernel32.GetExitCodeProcess;
+    extern "kernel32" fn GetExitCodeProcess(
+        hProcess: w.HANDLE,
+        lpExitCode: *w.DWORD,
+    ) callconv(.winapi) w.BOOL;
     /// https://learn.microsoft.com/en-us/windows/console/getconsolemode
-    const GetConsoleMode = w.kernel32.GetConsoleMode;
-    /// https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-sethandleinformation
-    const SetHandleInformation = w.kernel32.SetHandleInformation;
+    extern "kernel32" fn GetConsoleMode(
+        hConsoleHandle: w.HANDLE,
+        lpMode: *w.DWORD,
+    ) callconv(.winapi) w.BOOL;
     /// https://learn.microsoft.com/en-us/windows/console/setconsolemode
     extern "kernel32" fn SetConsoleMode(
         hConsoleHandle: w.HANDLE, // [in]
@@ -118,7 +125,14 @@ fn unicodeStringToU16(str: w.UNICODE_STRING) []u16 {
     return str.Buffer.?[0 .. str.Length / 2];
 }
 
-const FILE_GENERIC_READ = w.STANDARD_RIGHTS_READ | w.FILE_READ_DATA | w.FILE_READ_ATTRIBUTES | w.FILE_READ_EA | w.SYNCHRONIZE;
+const FILE_GENERIC_READ: w.ACCESS_MASK = .{
+    .STANDARD = .{ .RIGHTS = .READ, .SYNCHRONIZE = true },
+    .SPECIFIC = .{ .FILE = .{
+        .READ_DATA = true,
+        .READ_ATTRIBUTES = true,
+        .READ_EA = true,
+    } },
+};
 
 const FailReason = enum {
     NoDirname,
@@ -242,7 +256,30 @@ pub fn writeToHandle(handle: w.HANDLE, data: []const u8) error{}!usize {
     return io.Information;
 }
 
-const NtWriter = std.Io.GenericWriter(w.HANDLE, error{}, writeToHandle);
+const NtWriter = struct {
+    handle: w.HANDLE,
+    interface: std.Io.Writer = .{ .vtable = &.{ .drain = drain }, .buffer = &.{} },
+
+    fn init(handle: w.HANDLE) NtWriter {
+        return .{ .handle = handle };
+    }
+
+    fn drain(interface: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const this: *NtWriter = @alignCast(@fieldParentPtr("interface", interface));
+        for (data[0 .. data.len - 1]) |bytes| this.writeAll(bytes);
+        for (0..splat) |_| this.writeAll(data[data.len - 1]);
+        return std.Io.Writer.countSplat(data, splat);
+    }
+
+    fn writeAll(this: *NtWriter, bytes: []const u8) void {
+        var remaining = bytes;
+        while (remaining.len > 0) {
+            const written = writeToHandle(this.handle, remaining) catch unreachable;
+            if (written == 0) return;
+            remaining = remaining[written..];
+        }
+    }
+};
 
 var failure_reason_data: [512]u8 = undefined;
 var failure_reason_argument: ?[]const u8 = null;
@@ -252,17 +289,16 @@ noinline fn failAndExitWithReason(reason: FailReason) noreturn {
 
     const console_handle = w.teb().ProcessEnvironmentBlock.ProcessParameters.hStdError;
     var mode: w.DWORD = 0;
-    if (k32.GetConsoleMode(console_handle, &mode) != 0) {
+    if (k32.GetConsoleMode(console_handle, &mode).toBool()) {
         mode |= w.ENABLE_VIRTUAL_TERMINAL_PROCESSING;
         _ = k32.SetConsoleMode(console_handle, mode);
     }
 
-    reason.write(NtWriter{
-        .context = @call(callmod_inline, w.teb, .{})
-            .ProcessEnvironmentBlock
-            .ProcessParameters
-            .hStdError,
-    }) catch |e| {
+    var writer = NtWriter.init(@call(callmod_inline, w.teb, .{})
+        .ProcessEnvironmentBlock
+        .ProcessParameters
+        .hStdError);
+    reason.write(&writer.interface) catch |e| {
         if (builtin.mode == .Debug) {
             std.debug.panic("Failed to write to stderr: {s}", .{@errorName(e)});
         }
@@ -376,10 +412,9 @@ fn launcher(comptime mode: LauncherMode, bun_ctx: anytype) mode.RetType() {
         };
         if (dbg) debug("NtCreateFile({s})", .{fmt16(unicodeStringToU16(nt_name))});
         if (dbg) debug("NtCreateFile({f})", .{(unicodeStringToU16(nt_name))});
-        var attr = w.OBJECT_ATTRIBUTES{
-            .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
+        var attr = w.OBJECT.ATTRIBUTES{
             .RootDirectory = null,
-            .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
+            .Attributes = .{ .CASE_INSENSITIVE = false },
             .ObjectName = &nt_name,
             .SecurityDescriptor = null,
             .SecurityQualityOfService = null,
@@ -396,10 +431,10 @@ fn launcher(comptime mode: LauncherMode, bun_ctx: anytype) mode.RetType() {
             &attr,
             &io,
             null,
-            w.FILE_ATTRIBUTE_NORMAL,
-            w.FILE_SHARE_WRITE | w.FILE_SHARE_READ | w.FILE_SHARE_DELETE,
-            w.FILE_OPEN,
-            w.FILE_NON_DIRECTORY_FILE | w.FILE_SYNCHRONOUS_IO_NONALERT,
+            .{ .NORMAL = true },
+            .{ .READ = true, .WRITE = true, .DELETE = true },
+            .OPEN,
+            .{ .NON_DIRECTORY_FILE = true, .IO = .SYNCHRONOUS_NONALERT },
             null,
             0,
         );
@@ -750,7 +785,7 @@ fn launcher(comptime mode: LauncherMode, bun_ctx: anytype) mode.RetType() {
     //
     // Documentation for the function I am using:
     // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw
-    var process: w.PROCESS_INFORMATION = undefined;
+    var process: w.PROCESS.INFORMATION = undefined;
     var startup_info = w.STARTUPINFOW{
         .cb = @sizeOf(w.STARTUPINFOW),
         .lpReserved = null,
@@ -781,14 +816,14 @@ fn launcher(comptime mode: LauncherMode, bun_ctx: anytype) mode.RetType() {
             spawn_command_line,
             null,
             null,
-            1, // true
+            w.BOOL.fromBool(true),
             .{ .create_unicode_environment = !is_standalone },
             if (is_standalone) null else @constCast(bun_ctx.environment),
             null,
             &startup_info,
             &process,
         );
-        if (did_process_spawn == 0) {
+        if (!did_process_spawn.toBool()) {
             const spawn_err = k32.GetLastError();
             if (dbg) {
                 debug("CreateProcessW failed: {s}", .{@tagName(spawn_err)});
@@ -868,7 +903,7 @@ fn launcher(comptime mode: LauncherMode, bun_ctx: anytype) mode.RetType() {
             };
         }
 
-        _ = k32.WaitForSingleObject(process.hProcess, w.INFINITE);
+        _ = k32.WaitForSingleObject(process.hProcess, std.math.maxInt(w.DWORD));
 
         var exit_code: w.DWORD = 255;
         _ = k32.GetExitCodeProcess(process.hProcess, &exit_code);
@@ -900,7 +935,7 @@ pub const FromBunRunContext = struct {
     /// Command.Context
     cli_context: CommandContext,
     /// Passed directly to CreateProcessW's lpEnvironment with CREATE_UNICODE_ENVIRONMENT
-    environment: ?[*]const u16,
+    environment: ?[*:0]const u16,
 };
 
 /// This is called from run_command.zig in bun.exe which allows us to skip the CreateProcessW

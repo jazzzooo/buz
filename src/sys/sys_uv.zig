@@ -31,7 +31,7 @@ pub fn open(file_path: [:0]const u8, c_flags: i32, _perm: bun.Mode) Maybe(bun.FD
         perm = 0o644;
     }
 
-    const rc = uv.uv_fs_open(uv.Loop.get(), &req, file_path.ptr, flags, perm, null);
+    const rc = uv.uv_fs_open(uv.Loop.get(), &req, file_path.ptr, flags, @intCast(perm), null);
     log("uv open({s}, {d}, {d}) = {d}", .{ file_path, flags, perm, rc.int() });
     return if (rc.errno()) |errno|
         .{ .err = .{ .errno = errno, .syscall = .open, .path = file_path } }
@@ -42,7 +42,7 @@ pub fn open(file_path: [:0]const u8, c_flags: i32, _perm: bun.Mode) Maybe(bun.FD
 pub fn mkdir(file_path: [:0]const u8, flags: bun.Mode) Maybe(void) {
     var req: uv.fs_t = uv.fs_t.uninitialized;
     defer req.deinit();
-    const rc = uv.uv_fs_mkdir(uv.Loop.get(), &req, file_path.ptr, flags, null);
+    const rc = uv.uv_fs_mkdir(uv.Loop.get(), &req, file_path.ptr, @intCast(flags), null);
 
     log("uv mkdir({s}, {d}) = {d}", .{ file_path, flags, rc.int() });
     return if (rc.errno()) |errno|
@@ -55,7 +55,7 @@ pub fn chmod(file_path: [:0]const u8, flags: bun.Mode) Maybe(void) {
     var req: uv.fs_t = uv.fs_t.uninitialized;
     defer req.deinit();
 
-    const rc = uv.uv_fs_chmod(uv.Loop.get(), &req, file_path.ptr, flags, null);
+    const rc = uv.uv_fs_chmod(uv.Loop.get(), &req, file_path.ptr, @intCast(flags), null);
 
     log("uv chmod({s}, {d}) = {d}", .{ file_path, flags, rc.int() });
     return if (rc.errno()) |errno|
@@ -68,7 +68,7 @@ pub fn fchmod(fd: FD, flags: bun.Mode) Maybe(void) {
     const uv_fd = fd.uv();
     var req: uv.fs_t = uv.fs_t.uninitialized;
     defer req.deinit();
-    const rc = uv.uv_fs_fchmod(uv.Loop.get(), &req, uv_fd, flags, null);
+    const rc = uv.uv_fs_fchmod(uv.Loop.get(), &req, uv_fd, @intCast(flags), null);
 
     log("uv fchmod({}, {d}) = {d}", .{ uv_fd, flags, rc.int() });
     return if (rc.errno()) |errno|

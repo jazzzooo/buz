@@ -457,13 +457,13 @@ pub const Coordinator = struct {
             should_abort.store(true, .release);
         }
 
-        fn windowsCtrlHandler(ctrl: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL {
+        fn windowsCtrlHandler(ctrl: bun.windows.DWORD) callconv(.winapi) bun.windows.BOOL {
             switch (ctrl) {
-                std.os.windows.CTRL_C_EVENT, std.os.windows.CTRL_BREAK_EVENT, std.os.windows.CTRL_CLOSE_EVENT => {
+                bun.windows.CTRL_C_EVENT, bun.windows.CTRL_BREAK_EVENT, bun.windows.CTRL_CLOSE_EVENT => {
                     should_abort.store(true, .release);
-                    return std.os.windows.TRUE;
+                    return .TRUE;
                 },
-                else => return std.os.windows.FALSE,
+                else => return .FALSE,
             }
         }
 
@@ -477,7 +477,7 @@ pub const Coordinator = struct {
                 bun.sys.sigaction(std.posix.SIG.INT, &act, &prev_int);
                 bun.sys.sigaction(std.posix.SIG.TERM, &act, &prev_term);
             } else {
-                _ = bun.c.SetConsoleCtrlHandler(windowsCtrlHandler, std.os.windows.TRUE);
+                _ = bun.windows.SetConsoleCtrlHandler(windowsCtrlHandler, .TRUE);
             }
         }
 
@@ -486,7 +486,7 @@ pub const Coordinator = struct {
                 bun.sys.sigaction(std.posix.SIG.INT, &prev_int, null);
                 bun.sys.sigaction(std.posix.SIG.TERM, &prev_term, null);
             } else {
-                _ = bun.c.SetConsoleCtrlHandler(windowsCtrlHandler, std.os.windows.FALSE);
+                _ = bun.windows.SetConsoleCtrlHandler(windowsCtrlHandler, .FALSE);
             }
         }
     };

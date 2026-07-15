@@ -46,7 +46,7 @@ pub const InstallCompletionsCommand = struct {
         };
     }
 
-    fn installBunxSymlinkWindows(_: []const u8) !void {
+    fn installBunxSymlinkWindows(io: std.Io, _: []const u8) !void {
         // Because symlinks are not always allowed on windows,
         // `bunx.exe` on windows is a hardlink to `bun.exe`
         // for this to work, we need to delete and recreate the hardlink every time
@@ -55,11 +55,11 @@ pub const InstallCompletionsCommand = struct {
 
         var bunx_path_buf: bun.WPathBuffer = undefined;
 
-        std.os.windows.DeleteFile(try bun.strings.concatBufT(u16, &bunx_path_buf, .{
+        _ = bun.windows.DeleteFileBun(try bun.strings.concatBufT(u16, &bunx_path_buf, .{
             &bun.windows.nt_object_prefix,
             image_dirname,
             comptime bun.strings.literal(u16, bunx_name ++ ".cmd"),
-        }), .{ .dir = null }) catch {};
+        }), .{ .dir = null });
 
         const bunx_path_with_z = try bun.strings.concatBufT(u16, &bunx_path_buf, .{
             &bun.windows.nt_object_prefix,
@@ -67,9 +67,9 @@ pub const InstallCompletionsCommand = struct {
             comptime bun.strings.literal(u16, bunx_name ++ ".exe\x00"),
         });
         const bunx_path = bunx_path_with_z[0 .. bunx_path_with_z.len - 1 :0];
-        std.os.windows.DeleteFile(bunx_path, .{ .dir = null }) catch {};
+        _ = bun.windows.DeleteFileBun(bunx_path, .{ .dir = null });
 
-        if (bun.windows.CreateHardLinkW(bunx_path, image_path, null) == 0) {
+        if (!bun.windows.CreateHardLinkW(bunx_path, image_path, null).toBool()) {
             // if hard link fails, use a cmd script
             const script = "@%~dp0bun.exe x %*\n";
 
@@ -79,23 +79,23 @@ pub const InstallCompletionsCommand = struct {
                 comptime bun.strings.literal(u16, bunx_name ++ ".exe\x00"),
             });
             const bunx_cmd = bunx_cmd_with_z[0 .. bunx_cmd_with_z.len - 1 :0];
-            // TODO: fix this zig bug, it is one line change to a few functions.
-            // const file = try std.fs.createFileAbsoluteW(bunx_cmd, .{});
-            const file = try std.Io.Dir.cwd().createFileW(bunx_cmd, .{});
-            defer file.close();
-            try file.writeAll(script);
+            var bunx_cmd_utf8_buf: bun.PathBuffer = undefined;
+            const bunx_cmd_utf8 = bun.strings.fromWPath(&bunx_cmd_utf8_buf, bunx_cmd);
+            const file = try std.Io.Dir.cwd().createFile(io, bunx_cmd_utf8[bun.windows.nt_object_prefix.len..], .{});
+            defer file.close(io);
+            try file.writeStreamingAll(io, script);
         }
     }
 
     fn installBunxSymlink(io: std.Io, cwd: []const u8) !void {
         if (Environment.isWindows) {
-            try installBunxSymlinkWindows(cwd);
+            try installBunxSymlinkWindows(io, cwd);
         } else {
             try installBunxSymlinkPosix(io, cwd);
         }
     }
 
-    fn installUninstallerWindows() !void {
+    fn installUninstallerWindows(io: std.Io) !void {
         // This uninstaller file is only written if the current exe is within a path
         // like `bun\bin\<whatever>.exe` so that it probably only runs when the
         // powershell `install.ps1` was used to install.
@@ -115,10 +115,12 @@ pub const InstallCompletionsCommand = struct {
             comptime bun.strings.literal(u16, "uninstall.ps1"),
         });
 
-        const file = try std.Io.Dir.cwd().createFileW(uninstaller_path, .{});
-        defer file.close();
+        var uninstaller_path_utf8_buf: bun.PathBuffer = undefined;
+        const uninstaller_path_utf8 = bun.strings.fromWPath(&uninstaller_path_utf8_buf, uninstaller_path);
+        const file = try std.Io.Dir.cwd().createFile(io, uninstaller_path_utf8[bun.windows.nt_object_prefix.len..], .{});
+        defer file.close(io);
 
-        try file.writeAll(content);
+        try file.writeStreamingAll(io, content);
     }
 
     pub fn exec(allocator: std.mem.Allocator, io: std.Io) !void {
@@ -153,7 +155,7 @@ pub const InstallCompletionsCommand = struct {
         installBunxSymlink(io, cwd) catch {};
 
         if (Environment.isWindows) {
-            installUninstallerWindows() catch {};
+            installUninstallerWindows(io) catch {};
         }
 
         // TODO: https://github.com/oven-sh/bun/issues/8939

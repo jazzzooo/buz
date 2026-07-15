@@ -726,7 +726,7 @@ pub const Bin = extern struct {
 
                 const node_modules_path_save = this.node_modules_path.save();
                 this.node_modules_path.append(".bin");
-                bun.makePath(std.Io.Dir.cwd(), this.node_modules_path.slice()) catch {};
+                bun.makePath(std.Io.Dir.cwd(), this.io, this.node_modules_path.slice()) catch {};
                 node_modules_path_save.restore();
 
                 break :bunx_file bun.sys.File.openatOSPath(bun.invalid_fd, abs_bunx_file, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o664).unwrap() catch |real_err| {
@@ -743,7 +743,7 @@ pub const Bin = extern struct {
 
             const shebang = shebang: {
                 const first_content_chunk = contents: {
-                    var reader = target.stdFile().readerStreaming(&.{});
+                    var reader = target.stdFile().readerStreaming(this.io, &.{});
                     var readvec_buf: []u8 = &read_in_buf;
                     const read = reader.interface.readVec((&readvec_buf)[0..1]) catch break :contents null;
                     if (read == 0) break :contents null;
@@ -777,7 +777,8 @@ pub const Bin = extern struct {
                 return;
             };
 
-            bunx_file.writer().writeAll(metadata) catch |err| {
+            var bunx_file_writer = bunx_file.writer();
+            bunx_file_writer.writeAll(metadata) catch |err| {
                 this.err = err;
                 return;
             };

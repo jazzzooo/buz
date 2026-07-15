@@ -360,7 +360,7 @@ pub fn moveToCacheDirectory(
         const path2 = bun.strings.toWPathNormalized(&path2_buf, folder_name);
         if (create_subdir) {
             if (bun.Dirname.dirname(u16, path2)) |folder| {
-                _ = bun.MakePath.makePath(u16, cache_dir, folder) catch {};
+                _ = bun.MakePath.makePath(this.package_manager.io, u16, cache_dir, folder) catch {};
             }
         }
 
@@ -410,7 +410,7 @@ pub fn moveToCacheDirectory(
                                 )) {
                                     .err => {},
                                     .result => {
-                                        tmpdir.deleteTree(tempdest) catch {};
+                                        tmpdir.deleteTree(this.package_manager.io, tempdest) catch {};
                                     },
                                 }
                                 did_retry = true;
@@ -557,7 +557,7 @@ pub fn moveToCacheDirectory(
             };
 
             if (comptime Environment.isWindows) {
-                bun.MakePath.makePath(u8, cache_dir, name) catch {
+                bun.MakePath.makePath(this.package_manager.io, u8, cache_dir, name) catch {
                     break :create_index;
                 };
 

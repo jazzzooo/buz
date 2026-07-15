@@ -1,5 +1,6 @@
 const backing_int = if (is_posix) c_int else u64;
 const WindowsHandleNumber = u63;
+const WindowsUVNumber = i63;
 const HandleNumber = if (is_posix) c_int else WindowsHandleNumber;
 /// Abstraction over file descriptors. On POSIX, fd is a wrapper around a "fd_t",
 /// and there is no special behavior. In return for using fd, you get access to
@@ -27,7 +28,7 @@ pub const FD = packed struct(backing_int) {
     pub const Value = if (is_posix)
         packed union { as_system: fd_t }
     else
-        packed union { as_system: WindowsHandleNumber, as_uv: uv_file };
+        packed union { as_system: WindowsHandleNumber, as_uv: WindowsUVNumber };
 
     /// An invalid file descriptor.
     /// Avoid in new code. Prefer `bun.FD.Optional` and `.none` instead.
@@ -64,7 +65,7 @@ pub const FD = packed struct(backing_int) {
                 else => .{ .kind = .system, .value = .{ .as_system = value } },
             }
         else
-            .{ .kind = .uv, .value = .{ .as_uv = value } };
+            .{ .kind = .uv, .value = .{ .as_uv = @intCast(value) } };
     }
 
     pub fn cwd() FD {
@@ -112,7 +113,7 @@ pub const FD = packed struct(backing_int) {
     pub fn decodeWindows(fd: FD) DecodeWindows {
         return switch (fd.kind) {
             .system => .{ .windows = numberToHandle(fd.value.as_system) },
-            .uv => .{ .uv = fd.value.as_uv },
+            .uv => .{ .uv = @intCast(fd.value.as_uv) },
         };
     }
 
@@ -161,9 +162,9 @@ pub const FD = packed struct(backing_int) {
                     if (fd == windows_cached_stdin) return 0;
                     if (fd == windows_cached_stdout) return 1;
                     if (fd == windows_cached_stderr) return 2;
-                    if (isStdioHandle(std.os.windows.STD_INPUT_HANDLE, handle)) return 0;
-                    if (isStdioHandle(std.os.windows.STD_OUTPUT_HANDLE, handle)) return 1;
-                    if (isStdioHandle(std.os.windows.STD_ERROR_HANDLE, handle)) return 2;
+                    if (isStdioHandle(bun.windows.STD_INPUT_HANDLE, handle)) return 0;
+                    if (isStdioHandle(bun.windows.STD_OUTPUT_HANDLE, handle)) return 1;
+                    if (isStdioHandle(bun.windows.STD_ERROR_HANDLE, handle)) return 2;
                     std.debug.panic(
                         \\Cast bun.FD.uv({f}) makes closing impossible!
                         \\
@@ -173,7 +174,7 @@ pub const FD = packed struct(backing_int) {
                         .{fd},
                     );
                 },
-                .uv => fd.value.as_uv,
+                .uv => @intCast(fd.value.as_uv),
             },
         };
     }
@@ -443,7 +444,7 @@ pub const FD = packed struct(backing_int) {
                             return try writer.print("{d}[cwd handle]", .{fd.value.as_system});
                         } else print_with_path: {
                             var fd_path: bun.WPathBuffer = undefined;
-                            const path = std.os.windows.GetFinalPathNameByHandle(handle, .{ .volume_name = .Nt }, &fd_path) catch break :print_with_path;
+                            const path = bun.windows.GetFinalPathNameByHandle(handle, .{ .volume_name = .Nt }, &fd_path) catch break :print_with_path;
                             return try writer.print("{d}[{f}]", .{
                                 fd.value.as_system,
                                 bun.fmt.utf16(path),
@@ -566,7 +567,7 @@ pub const FD = packed struct(backing_int) {
 };
 
 fn isStdioHandle(id: std.os.windows.DWORD, handle: HANDLE) bool {
-    const h = std.os.windows.GetStdHandle(id) catch return false;
+    const h = bun.windows.GetStdHandle(id) orelse return false;
     return handle == h;
 }
 

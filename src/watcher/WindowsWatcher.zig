@@ -33,15 +33,18 @@ const FileEvent = struct {
 const DirWatcher = struct {
     // must be initialized to zero (even though it's never read or written in our code),
     // otherwise ReadDirectoryChangesW will fail with INVALID_HANDLE
-    overlapped: w.OVERLAPPED = std.mem.zeroes(w.OVERLAPPED),
+    overlapped: bun.windows.libuv.OVERLAPPED = std.mem.zeroes(bun.windows.libuv.OVERLAPPED),
     buf: [64 * 1024]u8 align(@alignOf(w.FILE_NOTIFY_INFORMATION)) = undefined,
     dirHandle: w.HANDLE,
 
     // invalidates any EventIterators
     fn prepare(this: *DirWatcher) bun.sys.Maybe(void) {
-        const filter: w.FileNotifyChangeFilter = .{ .file_name = true, .dir_name = true, .last_write = true, .creation = true };
-        if (w.kernel32.ReadDirectoryChangesW(this.dirHandle, &this.buf, this.buf.len, 1, filter, null, &this.overlapped, null) == 0) {
-            const err = w.kernel32.GetLastError();
+        const filter: w.DWORD = bun.c.FILE_NOTIFY_CHANGE_FILE_NAME |
+            bun.c.FILE_NOTIFY_CHANGE_DIR_NAME |
+            bun.c.FILE_NOTIFY_CHANGE_LAST_WRITE |
+            bun.c.FILE_NOTIFY_CHANGE_CREATION;
+        if (!w.ReadDirectoryChangesW(this.dirHandle, &this.buf, @intCast(this.buf.len), .TRUE, filter, null, &this.overlapped, null).toBool()) {
+            const err = w.GetLastError();
             log("failed to start watching directory: {s}", .{@tagName(err)});
             return .{ .err = .{
                 .errno = @intFromEnum(bun.sys.SystemErrno.init(err) orelse bun.sys.SystemErrno.EINVAL),
@@ -92,14 +95,14 @@ pub fn init(this: *WindowsWatcher, root: []const u8) !void {
     var attr = w.OBJECT_ATTRIBUTES{
         .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
         .RootDirectory = null,
-        .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
+        .Attributes = .{}, // Note we do not use OBJ_CASE_INSENSITIVE here.
         .ObjectName = &nt_name,
         .SecurityDescriptor = null,
         .SecurityQualityOfService = null,
     };
     var handle: w.HANDLE = w.INVALID_HANDLE_VALUE;
     var io: w.IO_STATUS_BLOCK = undefined;
-    const rc = w.ntdll.NtCreateFile(
+    const rc = w.NtCreateFile(
         &handle,
         w.FILE_LIST_DIRECTORY,
         &attr,
@@ -134,7 +137,7 @@ pub fn init(this: *WindowsWatcher, root: []const u8) !void {
 }
 
 const Timeout = enum(w.DWORD) {
-    infinite = w.INFINITE,
+    infinite = std.math.maxInt(w.DWORD),
     minimal = 1,
     none = 0,
 };
@@ -151,11 +154,11 @@ pub fn next(this: *WindowsWatcher, timeout: Timeout) bun.sys.Maybe(?EventIterato
 
     var nbytes: w.DWORD = 0;
     var key: w.ULONG_PTR = 0;
-    var overlapped: ?*w.OVERLAPPED = null;
+    var overlapped: ?*bun.windows.libuv.OVERLAPPED = null;
     while (true) {
-        const rc = w.kernel32.GetQueuedCompletionStatus(this.iocp, &nbytes, &key, &overlapped, @intFromEnum(timeout));
-        if (rc == 0) {
-            const err = w.kernel32.GetLastError();
+        const rc = w.GetQueuedCompletionStatus(this.iocp, &nbytes, &key, @ptrCast(&overlapped), @intFromEnum(timeout));
+        if (!rc.toBool()) {
+            const err = w.GetLastError();
             if (err == .TIMEOUT or err == .WAIT_TIMEOUT) {
                 return .{ .result = null };
             } else {
@@ -193,8 +196,8 @@ pub fn next(this: *WindowsWatcher, timeout: Timeout) bun.sys.Maybe(?EventIterato
 }
 
 pub fn stop(this: *WindowsWatcher) void {
-    w.CloseHandle(this.watcher.dirHandle);
-    w.CloseHandle(this.iocp);
+    _ = w.CloseHandle(this.watcher.dirHandle);
+    _ = w.CloseHandle(this.iocp);
 }
 
 pub fn watchLoopCycle(this: *bun.Watcher) bun.sys.Maybe(void) {
@@ -313,7 +316,7 @@ pub fn createWatchEvent(event: FileEvent, index: WatchItemIndex) WatchEvent {
 const log = Output.scoped(.watcher, .visible);
 
 const std = @import("std");
-const w = std.os.windows;
+const w = bun.windows;
 
 const bun = @import("bun");
 const Mutex = bun.Mutex;

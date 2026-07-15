@@ -977,7 +977,7 @@ pub const Platform = enum {
             => if (T == u8)
                 std.fs.path.isAbsoluteWindows(path)
             else
-                std.fs.path.isAbsoluteWindowsWTF16(path),
+                std.fs.path.isAbsoluteWindowsWtf16(path),
         };
     }
 
@@ -1998,7 +1998,7 @@ pub const PosixToWinNormalizer = struct {
             if (root.len == 1) {
                 assert(isSepAny(root[0]));
                 if (bun.strings.isWindowsAbsolutePathMissingDriveLetter(u8, maybe_posix_path)) {
-                    const cwd = try std.posix.getcwd(buf);
+                    const cwd = try bun.getcwd(buf);
                     assert(cwd.ptr == buf.ptr);
                     const source_root = windowsFilesystemRoot(cwd);
                     assert(source_root.ptr == source_root.ptr);
@@ -2026,7 +2026,7 @@ pub const PosixToWinNormalizer = struct {
             if (root.len == 1) {
                 assert(isSepAny(root[0]));
                 if (bun.strings.isWindowsAbsolutePathMissingDriveLetter(u8, maybe_posix_path)) {
-                    const cwd = try std.posix.getcwd(buf);
+                    const cwd = try bun.getcwd(buf);
                     assert(cwd.ptr == buf.ptr);
                     const source_root = windowsFilesystemRoot(cwd);
                     assert(source_root.ptr == source_root.ptr);

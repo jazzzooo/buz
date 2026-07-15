@@ -1,6 +1,6 @@
 const dns = @This();
 
-const GetAddrInfoAsyncCallback = fn (i32, ?*std.c.addrinfo, ?*anyopaque) callconv(.c) void;
+const GetAddrInfoAsyncCallback = fn (i32, ?*AddrInfo, ?*anyopaque) callconv(.c) void;
 const INET6_ADDRSTRLEN = if (bun.Environment.isWindows) 65 else 46;
 const IANA_DNS_PORT = 53;
 
@@ -14,7 +14,7 @@ const LibInfo = struct {
     // static int32_t (*getaddrinfo_async_handle_reply)(void*);
     // static void (*getaddrinfo_async_cancel)(mach_port_t);
     // typedef void getaddrinfo_async_callback(int32_t, struct addrinfo*, void*)
-    const GetaddrinfoAsyncStart = fn (*bun.mach_port, noalias node: ?[*:0]const u8, noalias service: ?[*:0]const u8, noalias hints: ?*const std.c.addrinfo, callback: *const GetAddrInfoAsyncCallback, noalias context: ?*anyopaque) callconv(.c) i32;
+    const GetaddrinfoAsyncStart = fn (*bun.mach_port, noalias node: ?[*:0]const u8, noalias service: ?[*:0]const u8, noalias hints: ?*const AddrInfo, callback: *const GetAddrInfoAsyncCallback, noalias context: ?*anyopaque) callconv(.c) i32;
     const GetaddrinfoAsyncHandleReply = fn (?*bun.mach_port) callconv(.c) i32;
     const GetaddrinfoAsyncCancel = fn (?*bun.mach_port) callconv(.c) void;
 
@@ -733,7 +733,7 @@ pub const GetAddrInfoRequest = struct {
 
     pub fn getAddrInfoAsyncCallback(
         status: i32,
-        addr_info: ?*std.c.addrinfo,
+        addr_info: ?*AddrInfo,
         arg: ?*anyopaque,
     ) callconv(.c) void {
         const this = @as(*GetAddrInfoRequest, @ptrCast(@alignCast(arg)));
@@ -786,7 +786,7 @@ pub const GetAddrInfoRequest = struct {
                     // `doLookup` is bypassed.
                     const copied = strings.copy(hostname[0 .. hostname.len - 1], query.name);
                     hostname[copied.len] = 0;
-                    var addrinfo: ?*std.c.addrinfo = null;
+                    var addrinfo: ?*AddrInfo = null;
                     const host = hostname[0..copied.len :0];
                     const debug_timer = bun.Output.DebugTimer.start();
                     const err = std.c.getaddrinfo(
@@ -808,7 +808,7 @@ pub const GetAddrInfoRequest = struct {
 
                     // do not free addrinfo when err != 0
                     // https://github.com/ziglang/zig/pull/14242
-                    defer std.c.freeaddrinfo(addrinfo.?);
+                    defer freeAddrInfo(addrinfo.?);
 
                     this.* = .{ .success = bun.handleOom(GetAddrInfo.Result.toList(default_allocator, addrinfo.?)) };
                 }
@@ -1103,7 +1103,7 @@ pub const DNSLookup = struct {
         this.onCompleteWithArray(array);
     }
 
-    pub fn processGetAddrInfoNative(this: *DNSLookup, status: i32, result: ?*std.c.addrinfo) void {
+    pub fn processGetAddrInfoNative(this: *DNSLookup, status: i32, result: ?*AddrInfo) void {
         log("processGetAddrInfoNative: status={d}", .{status});
         if (c_ares.Error.initEAI(status)) |err| {
             err.toDeferred("getaddrinfo", null, &this.promise).rejectLater(this.globalThis);
@@ -1400,7 +1400,7 @@ pub const internal = struct {
     var global_cache = GlobalCache{};
 
     // we just hardcode a STREAM socktype
-    const default_hints: std.c.addrinfo = .{
+    const default_hints: AddrInfo = .{
         .addr = null,
         .addrlen = 0,
         .canonname = null,
@@ -1417,7 +1417,7 @@ pub const internal = struct {
         .protocol = 0,
         .socktype = std.c.SOCK.STREAM,
     };
-    pub fn getHints() std.c.addrinfo {
+    pub fn getHints() AddrInfo {
         var hints_copy = default_hints;
         if (bun.feature_flag.BUN_FEATURE_FLAG_DISABLE_ADDRCONFIG.get()) {
             hints_copy.flags.ADDRCONFIG = false;
@@ -1482,14 +1482,14 @@ pub const internal = struct {
     }
 
     const ResultEntry = extern struct {
-        info: std.c.addrinfo,
+        info: AddrInfo,
         addr: std.c.sockaddr.storage,
     };
 
     // re-order result to interleave ipv4 and ipv6 (also pack into a single allocation)
-    fn processResults(info: *std.c.addrinfo) []ResultEntry {
+    fn processResults(info: *AddrInfo) []ResultEntry {
         var count: usize = 0;
-        var info_: ?*std.c.addrinfo = info;
+        var info_: ?*AddrInfo = info;
         while (info_) |ai| {
             count += 1;
             info_ = ai.next;
@@ -1548,10 +1548,10 @@ pub const internal = struct {
         return results;
     }
 
-    fn afterResult(req: *Request, info: ?*std.c.addrinfo, err: c_int) void {
+    fn afterResult(req: *Request, info: ?*AddrInfo, err: c_int) void {
         const results: ?[*]ResultEntry = if (info) |ai| brk: {
             const res = processResults(ai);
-            std.c.freeaddrinfo(ai);
+            freeAddrInfo(ai);
             break :brk res.ptr;
         } else null;
 
@@ -1582,11 +1582,10 @@ pub const internal = struct {
             null;
 
         if (Environment.isWindows) {
-            const wsa = std.os.windows.ws2_32;
-            const wsa_hints = wsa.addrinfo{
+            const wsa_hints = AddrInfo{
                 .flags = .{},
-                .family = wsa.AF.UNSPEC,
-                .socktype = wsa.SOCK.STREAM,
+                .family = std.posix.AF.UNSPEC,
+                .socktype = std.posix.SOCK.STREAM,
                 .protocol = 0,
                 .addrlen = 0,
                 .canonname = null,
@@ -1594,8 +1593,8 @@ pub const internal = struct {
                 .next = null,
             };
 
-            var addrinfo: ?*wsa.addrinfo = null;
-            const err = wsa.getaddrinfo(
+            var addrinfo: ?*AddrInfo = null;
+            const err = libuv.getaddrinfo(
                 if (req.key.host) |host| host.ptr else null,
                 service,
                 &wsa_hints,
@@ -1603,7 +1602,7 @@ pub const internal = struct {
             );
             afterResult(req, @ptrCast(addrinfo), err);
         } else {
-            var addrinfo: ?*std.c.addrinfo = null;
+            var addrinfo: ?*AddrInfo = null;
             var hints = getHints();
 
             var err = std.c.getaddrinfo(
@@ -1671,7 +1670,7 @@ pub const internal = struct {
 
     fn libinfoCallback(
         status: i32,
-        addr_info: ?*std.c.addrinfo,
+        addr_info: ?*AddrInfo,
         arg: ?*anyopaque,
     ) callconv(.c) void {
         const req: *Request = bun.cast(*Request, arg);
@@ -3645,6 +3644,15 @@ const timespec = bun.timespec;
 const GetAddrInfo = bun.dns.GetAddrInfo;
 const libuv = bun.windows.libuv;
 const EventLoopTimer = bun.api.Timer.EventLoopTimer;
+const AddrInfo = bun.dns.AddrInfo;
+
+fn freeAddrInfo(info: *AddrInfo) void {
+    if (comptime Environment.isWindows) {
+        libuv.freeaddrinfo(info);
+    } else {
+        std.c.freeaddrinfo(info);
+    }
+}
 
 const jsc = bun.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;

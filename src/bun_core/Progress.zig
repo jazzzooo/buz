@@ -246,7 +246,7 @@ fn clearWithHeldLock(p: *Progress, end_ptr: *usize) void {
             assert(p.is_windows_terminal);
 
             var info: windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
-            if (windows.kernel32.GetConsoleScreenBufferInfo(file.handle, &info) != windows.TRUE) {
+            if (windows.GetConsoleScreenBufferInfo(file.handle, &info) == 0) {
                 // stop trying to write to this file
                 p.terminal = null;
                 break :winapi;
@@ -263,29 +263,29 @@ fn clearWithHeldLock(p: *Progress, end_ptr: *usize) void {
             const fill_chars = @as(windows.DWORD, @intCast(info.dwSize.X - cursor_pos.X));
 
             var written: windows.DWORD = undefined;
-            if (windows.kernel32.FillConsoleOutputAttribute(
+            if (windows.FillConsoleOutputAttribute(
                 file.handle,
                 info.wAttributes,
                 fill_chars,
                 cursor_pos,
                 &written,
-            ) != windows.TRUE) {
+            ) == 0) {
                 // stop trying to write to this file
                 p.terminal = null;
                 break :winapi;
             }
-            if (windows.kernel32.FillConsoleOutputCharacterW(
+            if (windows.FillConsoleOutputCharacterW(
                 file.handle,
                 ' ',
                 fill_chars,
                 cursor_pos,
                 &written,
-            ) != windows.TRUE) {
+            ) == 0) {
                 // stop trying to write to this file
                 p.terminal = null;
                 break :winapi;
             }
-            if (windows.kernel32.SetConsoleCursorPosition(file.handle, cursor_pos) != windows.TRUE) {
+            if (windows.SetConsoleCursorPosition(file.handle, cursor_pos) == 0) {
                 // stop trying to write to this file
                 p.terminal = null;
                 break :winapi;
@@ -465,7 +465,7 @@ test "basic functionality" {
 
 const builtin = @import("builtin");
 const std = @import("std");
-const windows = std.os.windows;
+const windows = bun.c;
 
 const bun = @import("bun");
 const assert = bun.assert;

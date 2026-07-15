@@ -484,16 +484,16 @@ pub const CreateCommand = struct {
 
                                 switch (entry.kind) {
                                     .directory => {
-                                        if (bun.windows.CreateDirectoryExW(src.ptr, dst.ptr, null) == 0) {
+                                        if (!bun.windows.CreateDirectoryExW(src.ptr, dst.ptr, null).toBool()) {
                                             bun.MakePath.makePath(io, u16, destination_dir_, entry.path) catch {};
                                         }
                                     },
                                     .file => {
                                         defer node_.completeOne();
-                                        if (bun.windows.CopyFileW(src.ptr, dst.ptr, 0) == bun.windows.FALSE) {
+                                        if (!bun.windows.CopyFileW(src.ptr, dst.ptr, .FALSE).toBool()) {
                                             if (bun.Dirname.dirname(u16, entry.path)) |entry_dirname| {
                                                 bun.MakePath.makePath(io, u16, destination_dir_, entry_dirname) catch {};
-                                                if (bun.windows.CopyFileW(src.ptr, dst.ptr, 0) != bun.windows.FALSE) {
+                                                if (bun.windows.CopyFileW(src.ptr, dst.ptr, .FALSE).toBool()) {
                                                     continue;
                                                 }
                                             }

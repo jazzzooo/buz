@@ -1,6 +1,6 @@
 pub const socklen_t = c.socklen_t;
 pub const ares_ssize_t = isize;
-pub const ares_socket_t = if (bun.Environment.isWindows) std.os.windows.ws2_32.SOCKET else c_int;
+pub const ares_socket_t = if (bun.Environment.isWindows) libuv.SOCKET else c_int;
 pub const ares_sock_state_cb = ?*const fn (?*anyopaque, ares_socket_t, c_int, c_int) callconv(.c) void;
 pub const struct_apattern = opaque {};
 
@@ -1470,7 +1470,10 @@ pub inline fn ARES_GETSOCK_WRITABLE(bits: anytype, num: anytype) @TypeOf(bits & 
 pub const ARES_LIB_INIT_NONE = @as(c_int, 0);
 pub const ARES_LIB_INIT_WIN32 = @as(c_int, 1) << @as(c_int, 0);
 pub const ARES_LIB_INIT_ALL = ARES_LIB_INIT_WIN32;
-pub const ARES_SOCKET_BAD = if (bun.Environment.isWindows) std.os.windows.ws2_32.INVALID_SOCKET else -@as(c_int, 1);
+pub const ARES_SOCKET_BAD: ares_socket_t = if (bun.Environment.isWindows)
+    @ptrFromInt(std.math.maxInt(usize))
+else
+    -1;
 pub const ares_socket_typedef = "";
 pub const ares_addrinfo_cname = AddrInfo_cname;
 pub const ares_addrinfo_node = AddrInfo_node;

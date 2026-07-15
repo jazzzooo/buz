@@ -428,7 +428,7 @@ pub const Archiver = struct {
                     // tokenize-on-'/' step already strips any leading separators,
                     // so `normalizeBufT` cannot produce an absolute output.
                     if (comptime Environment.isWindows) {
-                        if (std.fs.path.isAbsoluteWindowsWTF16(path)) continue :loop;
+                        if (std.fs.path.isAbsoluteWindowsWtf16(path)) continue :loop;
                     }
 
                     if (options.npm and Environment.isWindows) {

@@ -168,7 +168,7 @@ pub const JSValue = enum(i64) {
                 }
                 return this.coerceToInt32(globalThis);
             },
-            std.c.AI,
+            bun.dns.AI,
             => {
                 if (this.isInt32()) {
                     return @bitCast(this.asInt32());

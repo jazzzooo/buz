@@ -148,9 +148,11 @@ inline fn cpuid(leaf: u32, subleaf: u32) struct { eax: u32, ebx: u32, ecx: u32, 
 fn osMonotonicNs() u64 {
     if (comptime Environment.isWindows) {
         // QPF is a constant read from KUSER_SHARED_DATA; no need to cache.
-        const counter = std.os.windows.QueryPerformanceCounter();
-        const freq = std.os.windows.QueryPerformanceFrequency();
-        return @intCast(std.math.mulWide(u64, counter, std.time.ns_per_s) / freq);
+        var counter: std.os.windows.LARGE_INTEGER = 0;
+        var frequency: std.os.windows.LARGE_INTEGER = 0;
+        _ = std.os.windows.ntdll.RtlQueryPerformanceCounter(&counter);
+        _ = std.os.windows.ntdll.RtlQueryPerformanceFrequency(&frequency);
+        return @intCast(std.math.mulWide(u64, @intCast(counter), std.time.ns_per_s) / @as(u64, @intCast(frequency)));
     }
     var spec = bun.timespec{ .sec = 0, .nsec = 0 };
     if (comptime Environment.isLinux) {

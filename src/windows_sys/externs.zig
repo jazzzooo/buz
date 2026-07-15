@@ -3,10 +3,101 @@
 
 pub const LPDWORD = *DWORD;
 pub const HPCON = *anyopaque;
+pub const HRESULT = i32;
+
+pub const BY_HANDLE_FILE_INFORMATION = extern struct {
+    dwFileAttributes: DWORD,
+    ftCreationTime: windows.FILETIME,
+    ftLastAccessTime: windows.FILETIME,
+    ftLastWriteTime: windows.FILETIME,
+    dwVolumeSerialNumber: DWORD,
+    nFileSizeHigh: DWORD,
+    nFileSizeLow: DWORD,
+    nNumberOfLinks: DWORD,
+    nFileIndexHigh: DWORD,
+    nFileIndexLow: DWORD,
+};
+
+pub extern "ntdll" fn NtCreateFile(
+    file_handle: *HANDLE,
+    desired_access: ULONG,
+    object_attributes: *const windows.OBJECT.ATTRIBUTES,
+    io_status_block: *windows.IO_STATUS_BLOCK,
+    allocation_size: ?*const windows.LARGE_INTEGER,
+    file_attributes: ULONG,
+    share_access: ULONG,
+    create_disposition: ULONG,
+    create_options: ULONG,
+    ea_buffer: ?*const anyopaque,
+    ea_length: ULONG,
+) callconv(.winapi) windows.NTSTATUS;
 
 pub extern "kernel32" fn GetFileInformationByHandle(
     hFile: HANDLE,
-    lpFileInformation: *windows.BY_HANDLE_FILE_INFORMATION,
+    lpFileInformation: *BY_HANDLE_FILE_INFORMATION,
+) callconv(.winapi) BOOL;
+
+pub extern "kernel32" fn GetStdHandle(nStdHandle: DWORD) callconv(.winapi) ?HANDLE;
+
+pub extern "kernel32" fn CreateIoCompletionPort(
+    FileHandle: HANDLE,
+    ExistingCompletionPort: ?HANDLE,
+    CompletionKey: windows.ULONG_PTR,
+    NumberOfConcurrentThreads: DWORD,
+) callconv(.winapi) ?HANDLE;
+
+pub extern "kernel32" fn GetQueuedCompletionStatus(
+    CompletionPort: HANDLE,
+    lpNumberOfBytesTransferred: *DWORD,
+    lpCompletionKey: *windows.ULONG_PTR,
+    lpOverlapped: *?*anyopaque,
+    dwMilliseconds: DWORD,
+) callconv(.winapi) BOOL;
+
+pub extern "kernel32" fn ReadDirectoryChangesW(
+    hDirectory: HANDLE,
+    lpBuffer: *anyopaque,
+    nBufferLength: DWORD,
+    bWatchSubtree: BOOL,
+    dwNotifyFilter: DWORD,
+    lpBytesReturned: ?*DWORD,
+    lpOverlapped: ?*anyopaque,
+    lpCompletionRoutine: ?*const anyopaque,
+) callconv(.winapi) BOOL;
+
+pub extern "kernel32" fn CreateFileW(
+    lpFileName: LPCWSTR,
+    dwDesiredAccess: DWORD,
+    dwShareMode: DWORD,
+    lpSecurityAttributes: ?*windows.SECURITY_ATTRIBUTES,
+    dwCreationDisposition: DWORD,
+    dwFlagsAndAttributes: DWORD,
+    hTemplateFile: ?HANDLE,
+) callconv(.winapi) HANDLE;
+
+pub extern "kernel32" fn SetFilePointerEx(
+    hFile: HANDLE,
+    liDistanceToMove: windows.LARGE_INTEGER,
+    lpNewFilePointer: ?*windows.LARGE_INTEGER,
+    dwMoveMethod: DWORD,
+) callconv(.winapi) BOOL;
+
+pub extern "kernel32" fn GetFileSizeEx(
+    hFile: HANDLE,
+    lpFileSize: *windows.LARGE_INTEGER,
+) callconv(.winapi) BOOL;
+
+pub extern "kernel32" fn MoveFileExW(
+    lpExistingFileName: LPCWSTR,
+    lpNewFileName: LPCWSTR,
+    dwFlags: DWORD,
+) callconv(.winapi) BOOL;
+
+pub const ConsoleCtrlHandler = *const fn (DWORD) callconv(.winapi) BOOL;
+
+pub extern "kernel32" fn SetConsoleCtrlHandler(
+    handler: ?ConsoleCtrlHandler,
+    add: BOOL,
 ) callconv(.winapi) BOOL;
 
 pub extern "kernel32" fn CommandLineToArgvW(
@@ -33,6 +124,12 @@ pub extern fn GetProcAddress(
 pub extern fn LoadLibraryA(
     [*:0]const u8,
 ) ?*anyopaque;
+
+pub extern "kernel32" fn LoadLibraryExW(
+    lpLibFileName: LPCWSTR,
+    hFile: ?HANDLE,
+    dwFlags: DWORD,
+) callconv(.winapi) ?HMODULE;
 
 pub extern "kernel32" fn CopyFileW(
     source: LPCWSTR,
@@ -105,12 +202,12 @@ pub extern "kernel32" fn GetModuleFileNameW(
     hModule: HMODULE, // [in]
     lpFilename: LPWSTR, // [out]
     nSize: DWORD, // [in]
-) BOOL;
+) DWORD;
 
 pub extern "kernel32" fn GetThreadDescription(
     thread: ?*anyopaque, // [in]
     *PWSTR, // [out]
-) std.os.windows.HRESULT;
+) HRESULT;
 
 pub extern fn SetStdHandle(nStdHandle: u32, hHandle: *anyopaque) u32;
 
@@ -145,12 +242,12 @@ pub extern "kernel32" fn CreatePseudoConsole(
     hOutput: HANDLE,
     dwFlags: DWORD,
     phPC: *HPCON,
-) callconv(.winapi) std.os.windows.HRESULT;
+) callconv(.winapi) HRESULT;
 
 pub extern "kernel32" fn ResizePseudoConsole(
     hPC: HPCON,
     size: COORD,
-) callconv(.winapi) std.os.windows.HRESULT;
+) callconv(.winapi) HRESULT;
 
 pub extern "kernel32" fn ClosePseudoConsole(hPC: HPCON) callconv(.winapi) void;
 
@@ -192,3 +289,4 @@ const LPVOID = windows.LPVOID;
 const LPWSTR = windows.LPWSTR;
 const PWSTR = windows.PWSTR;
 const UINT = windows.UINT;
+const ULONG = windows.ULONG;

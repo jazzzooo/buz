@@ -751,9 +751,6 @@ pub fn init(
                                 fs.top_level_dir = try bun.default_allocator.dupeSentinel(u8, parent, 0);
                                 found = true;
                                 child_json.close(ctx.io);
-                                if (comptime Environment.isWindows) {
-                                    try json_file.seekTo(0);
-                                }
                                 workspace_name_hash = String.Builder.stringHash(entry.name);
                                 break :root_package_json_file json_file;
                             }

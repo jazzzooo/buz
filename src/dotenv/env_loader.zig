@@ -1259,7 +1259,7 @@ pub const Map = struct {
 
     /// Write the Windows environment block into a buffer
     /// This can be passed to CreateProcessW's lpEnvironment parameter
-    pub fn writeWindowsEnvBlock(this: *Map, result: *[32767]u16) ![*]const u16 {
+    pub fn writeWindowsEnvBlock(this: *Map, result: *[32767]u16) ![*:0]const u16 {
         var it = this.map.iterator();
         var i: usize = 0;
         while (it.next()) |pair| {
@@ -1281,7 +1281,7 @@ pub const Map = struct {
         result[i] = 0;
         i += 1;
 
-        return result[0..].ptr;
+        return result[0 .. i - 1 :0].ptr;
     }
 
     pub fn iterator(this: *const Map) HashTable.Iterator {

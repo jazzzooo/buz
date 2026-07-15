@@ -2225,7 +2225,7 @@ pub inline fn OSPathLiteral(comptime literal: anytype) *const [literal.len:0]OSP
 }
 
 pub const MakePath = struct {
-    const w = std.os.windows;
+    const w = bun.windows;
 
     // TODO(@paperclover): upstream making this public into zig std
     // there is zero reason this must be copied
@@ -2237,7 +2237,7 @@ pub const MakePath = struct {
     /// have been modified regardless.
     fn makeOpenPathAccessMaskW(io_: std.Io, self: std.Io.Dir, comptime T: type, sub_path: []const T, access_mask: u32, no_follow: bool) !std.Io.Dir {
         const Iterator = std.fs.path.ComponentIterator(.windows, T);
-        var it = try Iterator.init(sub_path);
+        var it = Iterator.init(sub_path);
         // If there are no components in the path, then create a dummy component with the full path.
         var component = it.last() orelse Iterator.Component{
             .name = &.{},
@@ -2246,13 +2246,13 @@ pub const MakePath = struct {
 
         while (true) {
             const sub_path_w = if (comptime T == u16)
-                try w.wToPrefixedFileW(self.handle,
+                try std.Io.Threaded.wToPrefixedFileW(self.handle,
                     // TODO: report this bug
                     // they always copy it
                     // it doesn't need to be [:0]const u16
-                    @ptrCast(component.path))
+                    @ptrCast(component.path), .{})
             else
-                try w.sliceToPrefixedFileW(self.handle, component.path);
+                try std.Io.Threaded.sliceToPrefixedFileW(self.handle, component.path, .{});
             var result = makeOpenDirAccessMaskW(self, sub_path_w.span().ptr, access_mask, .{
                 .no_follow = no_follow,
                 .create_disposition = w.FILE_OPEN_IF,
@@ -2288,14 +2288,14 @@ pub const MakePath = struct {
         var attr = w.OBJECT_ATTRIBUTES{
             .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
             .RootDirectory = if (std.fs.path.isAbsoluteWindowsW(sub_path_w)) null else self.handle,
-            .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
+            .Attributes = .{}, // Note we do not use OBJ_CASE_INSENSITIVE here.
             .ObjectName = &nt_name,
             .SecurityDescriptor = null,
             .SecurityQualityOfService = null,
         };
         const open_reparse_point: w.DWORD = if (flags.no_follow) w.FILE_OPEN_REPARSE_POINT else 0x0;
         var status: w.IO_STATUS_BLOCK = undefined;
-        const rc = w.ntdll.NtCreateFile(
+        const rc = w.NtCreateFile(
             &result.handle,
             access_mask,
             &attr,
@@ -2439,7 +2439,7 @@ pub const Dirname = struct {
         const WindowsPath_ = WindowsPath(T);
         if (path_.len >= 2 and path_[1] == ':') {
             return WindowsPath_{
-                .is_abs = if (comptime T == u16) std.fs.path.isAbsoluteWindowsWTF16(path_) else std.fs.path.isAbsolute(path_),
+                .is_abs = if (comptime T == u16) std.fs.path.isAbsoluteWindowsWtf16(path_) else std.fs.path.isAbsolute(path_),
                 .kind = WindowsPath_.Kind.Drive,
                 .disk_designator = path_[0..2],
             };
@@ -2473,7 +2473,7 @@ pub const Dirname = struct {
                 _ = (it.next() orelse return relative_path);
                 _ = (it.next() orelse return relative_path);
                 return WindowsPath_{
-                    .is_abs = if (T == u16) std.fs.path.isAbsoluteWindowsWTF16(path_) else std.fs.path.isAbsolute(path_),
+                    .is_abs = if (T == u16) std.fs.path.isAbsoluteWindowsWtf16(path_) else std.fs.path.isAbsolute(path_),
                     .kind = WindowsPath_.Kind.NetworkShare,
                     .disk_designator = path_[0..it.index],
                 };
@@ -2709,22 +2709,12 @@ pub inline fn resolveSourcePath(
     comptime root: enum { codegen, src },
     comptime sub_path: []const u8,
 ) []const u8 {
-    return comptime path: {
-        @setEvalBranchQuota(2000000);
-        var buf: bun.PathBuffer = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&buf);
-        const resolved = (std.fs.path.resolve(fba.allocator(), &.{
-            switch (root) {
-                .codegen,
-                => Environment.codegen_path,
-                .src,
-                => Environment.base_path ++ "/src",
-            },
-            sub_path,
-        }) catch
-            @compileError("unreachable"))[0..].*;
-        break :path &resolved;
+    const base = switch (root) {
+        .codegen => Environment.codegen_path,
+        .src => Environment.base_path ++ "/src",
     };
+    const separator = if (base.len > 0 and (base[base.len - 1] == '/' or base[base.len - 1] == '\\')) "" else "/";
+    return base ++ separator ++ sub_path;
 }
 
 const RuntimeEmbedRoot = enum {

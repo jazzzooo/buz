@@ -188,9 +188,9 @@ pub const Source = struct {
         pub fn init() void {
             w.libuv.uv_disable_stdio_inheritance();
 
-            const stdin = std.os.windows.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) catch w.INVALID_HANDLE_VALUE;
-            const stdout = std.os.windows.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) catch w.INVALID_HANDLE_VALUE;
-            const stderr = std.os.windows.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) catch w.INVALID_HANDLE_VALUE;
+            const stdin = std.Io.File.stdin().handle;
+            const stdout = std.Io.File.stdout().handle;
+            const stderr = std.Io.File.stderr().handle;
 
             const fd_internals = @import("../sys/fd.zig");
             const INVALID_HANDLE_VALUE = std.os.windows.INVALID_HANDLE_VALUE;

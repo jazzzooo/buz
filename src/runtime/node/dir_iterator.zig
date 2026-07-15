@@ -292,10 +292,10 @@ pub fn NewIterator(comptime use_windows_ospath: bool) type {
                             &io,
                             &self.buf,
                             self.buf.len,
-                            .FileDirectoryInformation,
-                            w.FALSE,
+                            .Directory,
+                            .FALSE,
                             filter_ptr,
-                            if (self.first) @as(w.BOOLEAN, w.TRUE) else @as(w.BOOLEAN, w.FALSE),
+                            w.BOOLEAN.fromBool(self.first),
                         );
 
                         self.first = false;
@@ -379,8 +379,8 @@ pub fn NewIterator(comptime use_windows_ospath: bool) type {
 
                     const kind = blk: {
                         const attrs = dir_info.FileAttributes;
-                        const isdir = attrs & w.FILE_ATTRIBUTE_DIRECTORY != 0;
-                        const islink = attrs & w.FILE_ATTRIBUTE_REPARSE_POINT != 0;
+                        const isdir = attrs.DIRECTORY;
+                        const islink = attrs.REPARSE_POINT;
                         // on windows symlinks can be directories, too. We prioritize the
                         // "sym_link" kind over the "directory" kind
                         // this will coerce into either .file or .directory later

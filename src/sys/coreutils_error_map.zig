@@ -1,6 +1,7 @@
 /// This map is derived off of what coreutils uses in printing errors. This is
 /// equivalent to `strerror`, but as strings with constant lifetime.
 pub const coreutils_error_map = brk: {
+    @setEvalBranchQuota(10_000);
     // macOS and Linux have slightly different error messages.
     const entries: []const struct { [:0]const u8, [:0]const u8 } = switch (Environment.os) {
         // Since windows is just an emulation of linux, it will derive the linux error messages.

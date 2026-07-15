@@ -65,7 +65,7 @@ pub inline fn getStartTime() i128 {
     return bun.start_time;
 }
 
-extern "kernel32" fn SetThreadDescription(thread: std.os.windows.HANDLE, name: [*:0]const u16) callconv(.winapi) std.os.windows.HRESULT;
+extern "kernel32" fn SetThreadDescription(thread: std.os.windows.HANDLE, name: [*:0]const u16) callconv(.winapi) i32;
 
 pub fn setThreadName(name: [:0]const u8) void {
     if (Environment.isLinux) {
@@ -128,7 +128,7 @@ pub fn exit(code: u32) noreturn {
         .mac => std.c.exit(@bitCast(code)),
         .windows => {
             Bun__onExit();
-            std.os.windows.kernel32.ExitProcess(code);
+            std.os.windows.ntdll.RtlExitUserProcess(code);
         },
         else => {
             if (Environment.enable_asan) {

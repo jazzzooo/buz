@@ -14,23 +14,30 @@ const symbol_replacements = std.StaticStringMap([]const u8).initComptime(&.{
     &.{ "PHANDLE", "*HANDLE" },
 });
 
-pub fn main() !void {
-    const gpa = std.heap.smp_allocator;
-    var args = try std.process.argsWithAllocator(gpa);
-    errdefer args.deinit();
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, gpa);
+    defer args.deinit();
     assert(args.skip());
 
     const in = brk: {
         const in_path = args.next() orelse @panic("missing argument");
-        const in = try std.Io.Dir.cwd().openFile(in_path, .{});
-        defer in.close();
-        break :brk try in.readToEndAllocOptions(gpa, std.math.maxInt(u32), null, .fromByteUnits(1), 0);
+        const in_file = try std.Io.Dir.cwd().openFile(init.io, in_path, .{});
+        defer in_file.close(init.io);
+        var read_buffer: [4096]u8 = undefined;
+        var reader = in_file.reader(init.io, &read_buffer);
+        break :brk try reader.interface.allocRemainingAlignedSentinel(
+            gpa,
+            .limited(std.math.maxInt(u32)),
+            .of(u8),
+            0,
+        );
     };
     defer gpa.free(in);
 
-    var out = try std.array_list.Managed(u8).initCapacity(gpa, in.len);
+    var out = try std.Io.Writer.Allocating.initCapacity(gpa, in.len);
     defer out.deinit();
-    const w = out.writer();
+    const w = &out.writer;
 
     var i: usize = 0;
     while (mem.indexOfPos(u8, in, i, "pub const ")) |pub_i| {
@@ -59,9 +66,9 @@ pub fn main() !void {
         i = end_of_line;
     }
     try w.writeAll(in[i..]);
-    try std.Io.Dir.cwd().writeFile(.{
+    try std.Io.Dir.cwd().writeFile(init.io, .{
         .sub_path = args.next() orelse @panic("missing argument"),
-        .data = out.items,
+        .data = out.written(),
     });
 }
 

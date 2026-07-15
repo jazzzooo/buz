@@ -975,14 +975,12 @@ pub const UpdateInteractiveCommand = struct {
                 };
             }
         } else if (comptime Environment.isWindows) {
-            const windows = std.os.windows;
-            const handle = windows.GetStdHandle(windows.STD_OUTPUT_HANDLE) catch {
+            const handle = bun.windows.GetStdHandle(bun.windows.STD_OUTPUT_HANDLE) orelse {
                 return .{ .height = 20, .width = 80 };
             };
 
-            var csbi: windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
-            const kernel32 = windows.kernel32;
-            if (kernel32.GetConsoleScreenBufferInfo(handle, &csbi) != windows.FALSE) {
+            var csbi: bun.c.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+            if (bun.c.GetConsoleScreenBufferInfo(handle, &csbi) != 0) {
                 const width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
                 const height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
                 // Reserve space for prompt + scroll indicators + buffer

@@ -709,7 +709,7 @@ pub const RunCommand = struct {
                 @ptrCast(&target_path_buffer[prefix.len]),
             );
             if (len == 0) {
-                Output.debug("Failed to create temporary node dir: {s}", .{@tagName(std.os.windows.kernel32.GetLastError())});
+                Output.debug("Failed to create temporary node dir: {s}", .{@tagName(std.os.windows.GetLastError())});
                 return;
             }
 
@@ -727,8 +727,8 @@ pub const RunCommand = struct {
             if (Environment.isDebug) {
                 const dir_slice_u8 = std.unicode.utf16LeToUtf8Alloc(bun.default_allocator, dir_slice) catch @panic("oom");
                 defer bun.default_allocator.free(dir_slice_u8);
-                std.fs.deleteTreeAbsolute(dir_slice_u8) catch {};
-                std.fs.makeDirAbsolute(dir_slice_u8) catch @panic("huh?");
+                std.Io.Dir.cwd().deleteTree(io, dir_slice_u8) catch {};
+                std.Io.Dir.cwd().createDirPath(io, dir_slice_u8) catch @panic("huh?");
             }
 
             const image_path = bun.windows.exePathW();
@@ -738,18 +738,18 @@ pub const RunCommand = struct {
 
                 const file_slice = target_path_buffer[0 .. prefix.len + len + file_name.len - "\x00".len];
 
-                if (bun.windows.CreateHardLinkW(@ptrCast(file_slice.ptr), image_path.ptr, null) == 0) {
-                    switch (std.os.windows.kernel32.GetLastError()) {
+                if (!bun.windows.CreateHardLinkW(@ptrCast(file_slice.ptr), image_path.ptr, null).toBool()) {
+                    switch (std.os.windows.GetLastError()) {
                         .ALREADY_EXISTS => {},
                         else => {
                             {
                                 bun.assert(target_path_buffer[dir_slice.len] == '\\');
                                 target_path_buffer[dir_slice.len] = 0;
-                                std.posix.mkdirW(target_path_buffer[0..dir_slice.len :0], 0) catch {};
+                                bun.MakePath.makePath(io, u16, std.Io.Dir.cwd(), target_path_buffer[0..dir_slice.len :0]) catch {};
                                 target_path_buffer[dir_slice.len] = '\\';
                             }
 
-                            if (bun.windows.CreateHardLinkW(@ptrCast(file_slice.ptr), image_path.ptr, null) == 0) {
+                            if (!bun.windows.CreateHardLinkW(@ptrCast(file_slice.ptr), image_path.ptr, null).toBool()) {
                                 return;
                             }
                         },
@@ -1469,9 +1469,9 @@ pub const RunCommand = struct {
                     if (size.col > 0) break :brk size.col;
                 }
             } else if (comptime bun.Environment.isWindows) {
-                if (windows.GetStdHandle(windows.STD_OUTPUT_HANDLE) catch null) |handle| {
-                    var csbi: windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
-                    if (windows.kernel32.GetConsoleScreenBufferInfo(handle, &csbi) != windows.FALSE) {
+                if (bun.windows.GetStdHandle(bun.windows.STD_OUTPUT_HANDLE)) |handle| {
+                    var csbi: bun.c.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+                    if (bun.c.GetConsoleScreenBufferInfo(handle, &csbi) != 0) {
                         const w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
                         if (w > 0) break :brk @intCast(w);
                     }
@@ -1870,8 +1870,8 @@ pub const RunCommand = struct {
             const root = comptime bun.strings.w("\\??\\");
             @memcpy(ptr[0..root.len], root);
             ptr = ptr[4..];
-            const cwd_len = windows.kernel32.GetCurrentDirectoryW(
-                BunXFastPath.direct_launch_buffer.len - 4,
+            const cwd_len = bun.c.GetCurrentDirectoryW(
+                @intCast(BunXFastPath.direct_launch_buffer.len - 4),
                 ptr.ptr,
             );
             if (cwd_len == 0) break :try_bunx_file;
@@ -2111,15 +2111,15 @@ pub const BunXFastPath = struct {
 
         debug("Attempting to find and load bunx file: '{f}'", .{bun.fmt.utf16(path_to_use)});
         if (Environment.allow_assert) {
-            bun.assert(std.fs.path.isAbsoluteWindowsWTF16(path_to_use));
+            bun.assert(std.fs.path.isAbsoluteWindowsWtf16(path_to_use));
         }
         const handle = (bun.sys.openFileAtWindows(
             bun.invalid_fd, // absolute path is given
             path_to_use,
             .{
-                .access_mask = windows.STANDARD_RIGHTS_READ | windows.FILE_READ_DATA | windows.FILE_READ_ATTRIBUTES | windows.FILE_READ_EA | windows.SYNCHRONIZE,
-                .disposition = windows.FILE_OPEN,
-                .options = windows.FILE_NON_DIRECTORY_FILE | windows.FILE_SYNCHRONOUS_IO_NONALERT,
+                .access_mask = bun.windows.STANDARD_RIGHTS_READ | bun.windows.FILE_READ_DATA | bun.windows.FILE_READ_ATTRIBUTES | bun.windows.FILE_READ_EA | bun.windows.SYNCHRONIZE,
+                .disposition = bun.windows.FILE_OPEN,
+                .options = bun.windows.FILE_NON_DIRECTORY_FILE | bun.windows.FILE_SYNCHRONOUS_IO_NONALERT,
             },
         ).unwrap() catch |err| {
             debug("Failed to open bunx file: '{}'", .{err});

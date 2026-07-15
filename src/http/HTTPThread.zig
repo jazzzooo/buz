@@ -235,10 +235,10 @@ pub fn onStart(opts: InitOpts) void {
     const loop = bun.jsc.MiniEventLoop.initGlobal(null, null);
 
     if (Environment.isWindows) {
-        _ = std.process.getenvW(comptime bun.strings.w("SystemRoot")) orelse {
+        if (bun.env_var.SYSTEMROOT.get() == null) {
             bun.Output.errGeneric("The %SystemRoot% environment variable is not set. Bun needs this set in order for network requests to work.", .{});
             Global.crash();
-        };
+        }
     }
 
     bun.http.http_thread.loop = loop;

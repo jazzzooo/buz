@@ -725,6 +725,13 @@ fn getTranslateC(b: *Build, initial_target: std.Build.ResolvedTarget, optimize: 
         translate_c.defineCMacroRaw(b.fmt("{s}={d}", .{ str, @intFromBool(value) }));
     }
 
+    if (target.result.os.tag == .windows and target.result.cpu.arch == .x86_64) {
+        // winnt.h includes these intrinsic headers even though none of their
+        // inline functions are needed by the translated declarations.
+        translate_c.defineCMacro("__X86INTRIN_H", "1");
+        translate_c.defineCMacro("__EMMINTRIN_H", "1");
+    }
+
     translate_c.addIncludePath(b.path("vendor/zstd/lib"));
 
     if (target.result.abi.isAndroid()) {

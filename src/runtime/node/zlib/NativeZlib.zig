@@ -305,7 +305,7 @@ const Context = struct {
                 this.err = .NeedDict;
             }
         }
-        while (this.state.avail_in > 0 and this.mode == .GUNZIP and this.err == .StreamEnd and this.state.next_in[0] != 0) {
+        while (this.state.avail_in > 0 and this.mode == .GUNZIP and this.err == .StreamEnd and @as(?[*]const u8, this.state.next_in).?[0] != 0) {
             // Bytes remain in input buffer. Perhaps this is another compressed member in the same archive, or just trailing garbage.
             // Trailing zero bytes are okay, though, since they are frequently used for padding.
             _ = this.reset();

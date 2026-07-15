@@ -567,7 +567,7 @@ pub const UDPSocket = struct {
             if (comptime use_wsa) {
                 if (bun.windows.WSAGetLastError()) |wsa| {
                     if (wsa != .SUCCESS) {
-                        std.os.windows.ws2_32.WSASetLastError(0);
+                        bun.c.WSASetLastError(0);
                         return bun.sys.Maybe(void).errno(wsa.toE(), tag);
                     }
                 }

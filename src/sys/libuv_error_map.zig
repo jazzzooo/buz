@@ -1,5 +1,6 @@
 /// This map is derived off of uv.h's definitions, and is what Node.js uses in printing errors.
 pub const libuv_error_map = brk: {
+    @setEvalBranchQuota(10_000);
     const entries: []const struct { [:0]const u8, [:0]const u8 } = &.{
         .{ "E2BIG", "argument list too long" },
         .{ "EACCES", "permission denied" },

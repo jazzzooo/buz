@@ -266,11 +266,11 @@ pub const BunxCommand = struct {
             const is_stale = is_stale: {
                 if (Environment.isWindows) {
                     var io_status_block: std.os.windows.IO_STATUS_BLOCK = undefined;
-                    var info: std.os.windows.FILE_BASIC_INFORMATION = undefined;
-                    const rc = std.os.windows.ntdll.NtQueryInformationFile(target_package_json_fd.cast(), &io_status_block, &info, @sizeOf(std.os.windows.FILE_BASIC_INFORMATION), .FileBasicInformation);
+                    var info: std.os.windows.FILE.BASIC_INFORMATION = undefined;
+                    const rc = std.os.windows.ntdll.NtQueryInformationFile(target_package_json_fd.cast(), &io_status_block, &info, @sizeOf(std.os.windows.FILE.BASIC_INFORMATION), .Basic);
                     switch (rc) {
                         .SUCCESS => {
-                            const time = std.os.windows.fromSysTime(info.LastWriteTime);
+                            const time = std.os.windows.fromSysTime(info.LastWriteTime).nanoseconds;
                             const now = std.Io.Clock.real.now(transpiler.io).nanoseconds;
                             break :is_stale (now - time > nanoseconds_cache_valid);
                         },
@@ -613,11 +613,11 @@ pub const BunxCommand = struct {
                             defer fd.close();
 
                             var io_status_block: std.os.windows.IO_STATUS_BLOCK = undefined;
-                            var info: std.os.windows.FILE_BASIC_INFORMATION = undefined;
-                            const rc = std.os.windows.ntdll.NtQueryInformationFile(fd.cast(), &io_status_block, &info, @sizeOf(std.os.windows.FILE_BASIC_INFORMATION), .FileBasicInformation);
+                            var info: std.os.windows.FILE.BASIC_INFORMATION = undefined;
+                            const rc = std.os.windows.ntdll.NtQueryInformationFile(fd.cast(), &io_status_block, &info, @sizeOf(std.os.windows.FILE.BASIC_INFORMATION), .Basic);
                             switch (rc) {
                                 .SUCCESS => {
-                                    const time = std.os.windows.fromSysTime(info.LastWriteTime);
+                                    const time = std.os.windows.fromSysTime(info.LastWriteTime).nanoseconds;
                                     const now = std.Io.Clock.real.now(this_transpiler.io).nanoseconds;
                                     break :is_stale (now - time > nanoseconds_cache_valid);
                                 },

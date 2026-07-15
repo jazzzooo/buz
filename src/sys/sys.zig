@@ -54,7 +54,7 @@ pub const syscall = switch (Environment.os) {
     .linux => std.os.linux,
     // macOS and FreeBSD go through libc
     .mac, .freebsd => std.c,
-    .windows, .wasm => @compileError("not implemented"),
+    .windows, .wasm => struct {},
 };
 
 pub fn execve(
@@ -363,9 +363,9 @@ pub fn getcwdZ(buf: []u8) Maybe([:0]u8) {
     if (comptime Environment.isWindows) {
         var wbuf = bun.w_path_buffer_pool.get();
         defer bun.w_path_buffer_pool.put(wbuf);
-        const len: windows.DWORD = kernel32.GetCurrentDirectoryW(wbuf.len, wbuf);
+        const len: windows.DWORD = c.GetCurrentDirectoryW(@intCast(wbuf.len), wbuf);
         if (Result.errnoSysP(len, .getcwd, buf)) |err| return err;
-        return Result{ .result = bun.strings.fromWPath(buf, wbuf[0..len]) };
+        return Result{ .result = @constCast(bun.strings.fromWPath(buf, wbuf[0..len])) };
     }
 
     const rc: ?[*:0]u8 = @ptrCast(std.c.getcwd(buf.ptr, buf.len));
@@ -465,8 +465,8 @@ pub fn chdirOSPath(
     if (comptime Environment.isWindows) {
         const wbuf = bun.w_path_buffer_pool.get();
         defer bun.w_path_buffer_pool.put(wbuf);
-        if (c.SetCurrentDirectoryW(bun.strings.toWDirPath(wbuf, destination)) == windows.FALSE) {
-            log("SetCurrentDirectory({s}) = {d}", .{ destination, kernel32.GetLastError() });
+        if (c.SetCurrentDirectoryW(bun.strings.toWDirPath(wbuf, destination)) == 0) {
+            log("SetCurrentDirectory({s}) = {d}", .{ destination, std.os.windows.GetLastError() });
             return Maybe(void).errnoSysPD(0, .chdir, path, destination) orelse .success;
         }
 
@@ -568,7 +568,7 @@ pub fn isatty(fd: bun.FD) bool {
         .mac, .linux, .freebsd => std.c.isatty(fd.cast()) != 0,
         .windows => brk: {
             var mode: windows.DWORD = 0;
-            break :brk kernel32.GetConsoleMode(fd.cast(), &mode) != 0;
+            break :brk c.GetConsoleMode(fd.cast(), &mode) != 0;
         },
         .wasm => false,
     };
@@ -1013,7 +1013,7 @@ pub fn mkdirA(file_path: []const u8, flags: mode_t) Maybe(void) {
         const wpath = bun.strings.toKernel32Path(wbuf, file_path);
 
         return Maybe(void).errnoSysP(
-            kernel32.CreateDirectoryW(wpath.ptr, null),
+            c.CreateDirectoryW(wpath.ptr, null),
             .mkdir,
             file_path,
         ) orelse .success;
@@ -1096,7 +1096,7 @@ pub fn normalizePathWindows(
     }
     var path = if (T == u16) path_ else bun.strings.convertUTF8toUTF16InBuffer(wbuf, path_);
 
-    if (std.fs.path.isAbsoluteWindowsWTF16(path)) {
+    if (std.fs.path.isAbsoluteWindowsWtf16(path)) {
         // `path_.len` guards the `path_[path_.len - 4 ..]` slice below; `path.len`
         // guards `path[1]`/`path[3]`. For T == u8 these can differ when the input
         // contains multi-byte UTF-8 (e.g. "\\\\é" is 4 bytes but 3 u16).
@@ -1221,13 +1221,13 @@ fn openDirAtWindowsNtPath(
     };
     var attr = w.OBJECT_ATTRIBUTES{
         .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
-        .RootDirectory = if (std.fs.path.isAbsoluteWindowsWTF16(path))
+        .RootDirectory = if (std.fs.path.isAbsoluteWindowsWtf16(path))
             null
         else if (dirFd == bun.invalid_fd)
             std.Io.Dir.cwd().handle
         else
             dirFd.cast(),
-        .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
+        .Attributes = .{}, // Note we do not use OBJ_CASE_INSENSITIVE here.
         .ObjectName = &nt_name,
         .SecurityDescriptor = null,
         .SecurityQualityOfService = null,
@@ -1235,7 +1235,7 @@ fn openDirAtWindowsNtPath(
     var fd: w.HANDLE = w.INVALID_HANDLE_VALUE;
     var io: w.IO_STATUS_BLOCK = undefined;
 
-    const rc = w.ntdll.NtCreateFile(
+    const rc = windows.NtCreateFile(
         &fd,
         flags,
         &attr,
@@ -1302,7 +1302,7 @@ fn openWindowsDevicePath(
     dwCreationDisposition: u32,
     dwFlagsAndAttributes: u32,
 ) Maybe(bun.FD) {
-    const rc = std.os.windows.kernel32.CreateFileW(
+    const rc = windows.CreateFileW(
         path,
         dwDesiredAccess,
         FILE_SHARE,
@@ -1437,7 +1437,7 @@ pub fn openFileAtWindowsNtPath(
             std.Io.Dir.cwd().handle
         else
             dir.cast(),
-        .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
+        .Attributes = .{}, // Note we do not use OBJ_CASE_INSENSITIVE here.
         .SecurityDescriptor = null,
         .SecurityQualityOfService = null,
     };
@@ -1445,7 +1445,7 @@ pub fn openFileAtWindowsNtPath(
 
     var attributes = options.attributes;
     while (true) {
-        const rc = windows.ntdll.NtCreateFile(
+        const rc = windows.NtCreateFile(
             &result,
             options.access_mask,
             &attr,
@@ -1506,7 +1506,7 @@ pub fn openFileAtWindowsNtPath(
                 if (options.access_mask & w.FILE_APPEND_DATA != 0) {
                     // https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfilepointerex
                     const FILE_END = 2;
-                    if (kernel32.SetFilePointerEx(result, 0, null, FILE_END) == 0) {
+                    if (!windows.SetFilePointerEx(result, 0, null, FILE_END).toBool()) {
                         return .{
                             .err = .{
                                 .errno = @intFromEnum(E.UNKNOWN),
@@ -1931,7 +1931,7 @@ pub fn rawWrite(fd: bun.FD, bytes: []const u8) Maybe(usize) {
         .freebsd => rawWritePosix(fd, bytes, adjusted_len, std.c.write),
         .windows => {
             var bytes_written: u32 = 0;
-            if (kernel32.WriteFile(fd.cast(), bytes.ptr, @intCast(adjusted_len), &bytes_written, null) == 0) {
+            if (c.WriteFile(fd.cast(), bytes.ptr, @intCast(adjusted_len), &bytes_written, null) == 0) {
                 return .{ .err = .{
                     .errno = @intFromEnum(bun.windows.getLastErrno()),
                     .syscall = .WriteFile,
@@ -1995,7 +1995,7 @@ pub fn write(fd: bun.FD, bytes: []const u8) Maybe(usize) {
             // "WriteFile sets this value to zero before doing any work or error checking."
             var bytes_written: u32 = undefined;
             bun.assert(bytes.len > 0);
-            const rc = kernel32.WriteFile(
+            const rc = c.WriteFile(
                 fd.cast(),
                 bytes.ptr,
                 @as(u32, @truncate(adjusted_len)),
@@ -2004,7 +2004,7 @@ pub fn write(fd: bun.FD, bytes: []const u8) Maybe(usize) {
             );
             if (rc == 0) {
                 log("WriteFile({f}, {d}) = {s}", .{ fd, adjusted_len, @tagName(bun.windows.getLastErrno()) });
-                const er = std.os.windows.kernel32.GetLastError();
+                const er = std.os.windows.GetLastError();
                 if (er == .ACCESS_DENIED) {
                     // file is not writable
                     return .{ .err = .{
@@ -2013,7 +2013,7 @@ pub fn write(fd: bun.FD, bytes: []const u8) Maybe(usize) {
                         .fd = fd,
                     } };
                 }
-                const errno = (SystemErrno.init(bun.windows.kernel32.GetLastError()) orelse SystemErrno.EUNKNOWN).toE();
+                const errno = (SystemErrno.init(bun.windows.GetLastError()) orelse SystemErrno.EUNKNOWN).toE();
                 return .{
                     .err = sys.Error{
                         .errno = @intFromEnum(errno),
@@ -2281,8 +2281,8 @@ pub fn read(fd: bun.FD, buf: []u8) Maybe(usize) {
             sys_uv.read(fd, buf)
         else {
             var amount_read: u32 = 0;
-            const rc = kernel32.ReadFile(fd.native(), buf.ptr, @as(u32, @truncate(adjusted_len)), &amount_read, null);
-            if (rc == windows.FALSE) {
+            const rc = c.ReadFile(fd.native(), buf.ptr, @as(u32, @truncate(adjusted_len)), &amount_read, null);
+            if (rc == 0) {
                 const ret: Maybe(usize) = .{
                     .err = sys.Error{
                         .errno = @intFromEnum(bun.windows.getLastErrno()),
@@ -2528,6 +2528,13 @@ pub fn pidfd_open(pid: std.os.linux.pid_t, flags: u32) Maybe(i32) {
 }
 
 pub fn lseek(fd: bun.FD, offset: i64, whence: usize) Maybe(usize) {
+    if (comptime Environment.isWindows) {
+        var new_offset: windows.LARGE_INTEGER = undefined;
+        const rc = windows.SetFilePointerEx(fd.cast(), offset, &new_offset, @intCast(whence));
+        if (!rc.toBool()) return Maybe(usize).errnoSysFd(windows.FALSE, .lseek, fd).?;
+        return .{ .result = @intCast(new_offset) };
+    }
+
     while (true) {
         const rc = syscall.lseek(fd.cast(), offset, @intCast(whence));
         if (Maybe(usize).errnoSysFd(rc, .lseek, fd)) |err| {
@@ -2594,7 +2601,7 @@ pub fn readlinkat(fd: bun.FD, in: [:0]const u8, buf: []u8) Maybe([:0]u8) {
 pub fn ftruncate(fd: bun.FD, size: isize) Maybe(void) {
     if (comptime Environment.isWindows) {
         var io_status_block: std.os.windows.IO_STATUS_BLOCK = undefined;
-        var eof_info = std.os.windows.FILE_END_OF_FILE_INFORMATION{
+        var eof_info = w.FILE_END_OF_FILE_INFORMATION{
             .EndOfFile = @bitCast(size),
         };
 
@@ -2602,8 +2609,8 @@ pub fn ftruncate(fd: bun.FD, size: isize) Maybe(void) {
             fd.cast(),
             &io_status_block,
             &eof_info,
-            @sizeOf(std.os.windows.FILE_END_OF_FILE_INFORMATION),
-            .FileEndOfFileInformation,
+            @sizeOf(w.FILE_END_OF_FILE_INFORMATION),
+            .EndOfFile,
         );
 
         return Maybe(void).errnoSysFd(rc, .ftruncate, fd) orelse .success;
@@ -2911,7 +2918,7 @@ pub fn symlinkW(dest: [:0]const u16, target: [:0]const u16, options: WindowsSyml
     while (true) {
         const flags = options.flags();
 
-        if (windows.CreateSymbolicLinkW(dest, target, flags) == 0) {
+        if (!windows.CreateSymbolicLinkW(dest, target, flags).toBool()) {
             const errno = bun.windows.Win32Error.get();
             log("CreateSymbolicLinkW({f}, {f}, {}) = {s}", .{
                 bun.fmt.fmtPath(u16, dest, .{}),
@@ -3620,7 +3627,7 @@ pub fn getFileAttributes(path: anytype) ?WindowsFileAttributes {
     const T = std.meta.Child(@TypeOf(path));
     if (T == u16) {
         // Win32 API does file path normalization, so we do not need the valid path assertion here.
-        const dword = kernel32.GetFileAttributesW(path.ptr);
+        const dword = c.GetFileAttributesW(path.ptr);
         if (comptime Environment.isDebug) {
             log("GetFileAttributesW({f}) = {d}", .{ bun.fmt.utf16(path), dword });
         }
@@ -3653,7 +3660,7 @@ pub fn existsOSPath(path: bun.OSPathSliceZ, file_only: bool) bool {
         }
         if (attributes.is_reparse_point) {
             // Check if the underlying file exists by opening it.
-            const rc = std.os.windows.kernel32.CreateFileW(
+            const rc = windows.CreateFileW(
                 path,
                 0,
                 0,
@@ -3853,13 +3860,13 @@ pub fn existsAtType(fd: bun.FD, subpath: anytype) Maybe(ExistsAtType) {
         };
         var attr = w.OBJECT_ATTRIBUTES{
             .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
-            .RootDirectory = if (std.fs.path.isAbsoluteWindowsWTF16(path))
+            .RootDirectory = if (std.fs.path.isAbsoluteWindowsWtf16(path))
                 null
             else if (fd == bun.invalid_fd)
                 std.Io.Dir.cwd().handle
             else
                 fd.cast(),
-            .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
+            .Attributes = .{}, // Note we do not use OBJ_CASE_INSENSITIVE here.
             .ObjectName = &nt_name,
             .SecurityDescriptor = null,
             .SecurityQualityOfService = null,
@@ -3871,15 +3878,9 @@ pub fn existsAtType(fd: bun.FD, subpath: anytype) Maybe(ExistsAtType) {
             return .{ .err = err.err };
         }
 
-        const is_regular_file = basic_info.FileAttributes != c.INVALID_FILE_ATTRIBUTES and
-            // from libuv: directories cannot be read-only
-            // https://github.com/libuv/libuv/blob/eb5af8e3c0ea19a6b0196d5db3212dae1785739b/src/win/fs.c#L2144-L2146
-            (basic_info.FileAttributes & c.FILE_ATTRIBUTE_DIRECTORY == 0 or
-                basic_info.FileAttributes & c.FILE_ATTRIBUTE_READONLY == 0);
+        const is_regular_file = !basic_info.FileAttributes.DIRECTORY or !basic_info.FileAttributes.READONLY;
 
-        const is_dir = basic_info.FileAttributes != c.INVALID_FILE_ATTRIBUTES and
-            basic_info.FileAttributes & c.FILE_ATTRIBUTE_DIRECTORY != 0 and
-            basic_info.FileAttributes & c.FILE_ATTRIBUTE_READONLY == 0;
+        const is_dir = basic_info.FileAttributes.DIRECTORY and !basic_info.FileAttributes.READONLY;
 
         return if (is_dir) {
             syslog("NtQueryAttributesFile({f}, O_RDONLY, 0) = directory", .{bun.fmt.fmtOSPath(path, .{})});
@@ -3951,7 +3952,7 @@ pub fn isExecutableFileOSPath(path: bun.OSPathSliceZ) bool {
         // The security policy Microsoft Management Console (MMC) snap-in (Secpol.msc) controls which extensions are considered executable file types.
 
         // we pass false to include .exe files (see https://learn.microsoft.com/en-us/windows/win32/api/winsafer/nf-winsafer-saferiisexecutablefiletype)
-        return bun.windows.SaferiIsExecutableFileType(path, w.FALSE) != w.FALSE;
+        return bun.windows.SaferiIsExecutableFileType(path, .FALSE).toBool();
     }
 
     @compileError("TODO: isExecutablePath");
@@ -3996,16 +3997,13 @@ pub fn setFileOffset(fd: bun.FD, offset: usize) Maybe(void) {
     }
 
     if (comptime Environment.isWindows) {
-        const offset_high: u64 = @as(u32, @intCast(offset >> 32));
-        const offset_low: u64 = @as(u32, @intCast(offset & 0xFFFFFFFF));
-        var plarge_integer: i64 = @bitCast(offset_high);
-        const rc = kernel32.SetFilePointerEx(
+        const rc = windows.SetFilePointerEx(
             fd.cast(),
-            @as(windows.LARGE_INTEGER, @bitCast(offset_low)),
-            &plarge_integer,
+            @intCast(offset),
+            null,
             windows.FILE_BEGIN,
         );
-        if (rc == windows.FALSE) {
+        if (!rc.toBool()) {
             return Maybe(void).errnoSysFd(0, .lseek, fd) orelse .success;
         }
         return .success;
@@ -4015,8 +4013,8 @@ pub fn setFileOffset(fd: bun.FD, offset: usize) Maybe(void) {
 pub fn setFileOffsetToEndWindows(fd: bun.FD) Maybe(usize) {
     if (comptime Environment.isWindows) {
         var new_ptr: std.os.windows.LARGE_INTEGER = undefined;
-        const rc = kernel32.SetFilePointerEx(fd.cast(), 0, &new_ptr, windows.FILE_END);
-        if (rc == windows.FALSE) {
+        const rc = windows.SetFilePointerEx(fd.cast(), 0, &new_ptr, windows.FILE_END);
+        if (!rc.toBool()) {
             return Maybe(usize).errnoSysFd(0, .lseek, fd) orelse Maybe(usize){ .result = 0 };
         }
         return Maybe(usize){ .result = @intCast(new_ptr) };
@@ -4066,14 +4064,14 @@ pub fn openNullDevice() Maybe(bun.FD) {
 pub fn dupWithFlags(fd: bun.FD, _: i32) Maybe(bun.FD) {
     if (comptime Environment.isWindows) {
         var target: windows.HANDLE = undefined;
-        const process = kernel32.GetCurrentProcess();
-        const out = kernel32.DuplicateHandle(
+        const process = c.GetCurrentProcess();
+        const out = c.DuplicateHandle(
             process,
             fd.cast(),
             process,
             &target,
             0,
-            w.TRUE,
+            1,
             w.DUPLICATE_SAME_ACCESS,
         );
         if (out == 0) {
@@ -4111,7 +4109,7 @@ pub fn link(comptime T: type, src: [:0]const T, dest: [:0]const T) Maybe(void) {
             return sys_uv.link(src, dest);
         }
 
-        if (bun.windows.CreateHardLinkW(dest, src, null) == 0) {
+        if (!bun.windows.CreateHardLinkW(dest, src, null).toBool()) {
             return Maybe(void).errno(bun.windows.getLastErrno(), .link);
         }
         log("CreateHardLinkW({f}, {f}) = 0", .{
@@ -4333,7 +4331,7 @@ pub fn writeNonblocking(fd: bun.FD, buf: []const u8) Maybe(usize) {
 pub fn getFileSize(fd: bun.FD) Maybe(usize) {
     if (Environment.isWindows) {
         var size: windows.LARGE_INTEGER = undefined;
-        if (windows.kernel32.GetFileSizeEx(fd.cast(), &size) == windows.FALSE) {
+        if (!windows.GetFileSizeEx(fd.cast(), &size).toBool()) {
             const err = Error.fromCode(windows.getLastErrno(), .fstat);
             log("GetFileSizeEx({f}) = {s}", .{ fd, err.name() });
             return .{ .err = err };
@@ -4819,7 +4817,7 @@ const ntdll = bun.windows.ntdll;
 const std = @import("std");
 const mem = std.mem;
 const page_size_min = std.heap.page_size_min;
-const w = std.os.windows;
+const w = bun.windows;
 const Stat = std.Io.File.Stat;
 
 const posix = std.posix;

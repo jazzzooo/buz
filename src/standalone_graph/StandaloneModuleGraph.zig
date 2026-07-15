@@ -1195,7 +1195,7 @@ pub const StandaloneModuleGraph = struct {
             fd = bun.invalid_fd;
 
             // Move the file using MoveFileExW
-            if (bun.windows.kernel32.MoveFileExW(temp_buf_u16[0..temp_w.len :0].ptr, dest_buf_u16[0..dest_w.len :0].ptr, bun.windows.MOVEFILE_COPY_ALLOWED | bun.windows.MOVEFILE_REPLACE_EXISTING | bun.windows.MOVEFILE_WRITE_THROUGH) == bun.windows.FALSE) {
+            if (!bun.windows.MoveFileExW(temp_buf_u16[0..temp_w.len :0].ptr, dest_buf_u16[0..dest_w.len :0].ptr, bun.windows.MOVEFILE_COPY_ALLOWED | bun.windows.MOVEFILE_REPLACE_EXISTING | bun.windows.MOVEFILE_WRITE_THROUGH).toBool()) {
                 const err = bun.windows.Win32Error.get();
                 if (err.toSystemErrno()) |sys_err| {
                     if (sys_err == .EISDIR) {
@@ -1540,7 +1540,7 @@ pub const StandaloneModuleGraph = struct {
 };
 
 const std = @import("std");
-const w = std.os.windows;
+const w = bun.windows;
 
 const bun = @import("bun");
 const Environment = bun.Environment;

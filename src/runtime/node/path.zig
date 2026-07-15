@@ -2494,7 +2494,9 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
                 //
                 // TODO: Enable test once spawnResult.stdout works on Windows.
                 // test/js/node/path/resolve.test.js
-                if (std.process.getenvW(key_w)) |r| {
+                var value_w: bun.WPathBuffer = undefined;
+                if (bun.windows.GetEnvironmentVariableW(@constCast(key_w), &value_w, @intCast(value_w.len))) |value_len| {
+                    const r = value_w[0..@intCast(value_len)];
                     if (T == u16) {
                         bufSize = r.len;
                         bun.memmove(buf2[0..bufSize], r);
@@ -2503,7 +2505,7 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
                         bufSize = std.unicode.wtf16LeToWtf8(buf2, r);
                     }
                     envPath = buf2[0..bufSize];
-                }
+                } else |_| {}
             }
             if (envPath) |_envPath| {
                 path = _envPath;

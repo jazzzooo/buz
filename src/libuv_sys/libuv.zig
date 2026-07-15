@@ -2,7 +2,7 @@ pub const __helpers = @import("std").zig.c_translation.helpers;
 
 const WORD = c_ushort;
 const LARGE_INTEGER = i64;
-const SOCKET = *anyopaque;
+pub const SOCKET = *anyopaque;
 const LPFN_ACCEPTEX = *const anyopaque;
 const LPFN_CONNECTEX = *const anyopaque;
 
@@ -19,6 +19,47 @@ pub const struct_sockaddr = extern struct {
     sa_family: c_ushort,
     sa_data: [14]u8,
 };
+pub const AI = packed struct(c_int) {
+    PASSIVE: bool = false,
+    CANONNAME: bool = false,
+    NUMERICHOST: bool = false,
+    NUMERICSERV: bool = false,
+    _4: u4 = 0,
+    ALL: bool = false,
+    _9: u1 = 0,
+    ADDRCONFIG: bool = false,
+    V4MAPPED: bool = false,
+    _: u20 = 0,
+};
+pub const addrinfo = extern struct {
+    flags: AI,
+    family: c_int,
+    socktype: c_int,
+    protocol: c_int,
+    addrlen: usize,
+    canonname: ?[*:0]u8,
+    addr: ?*struct_sockaddr,
+    next: ?*addrinfo,
+};
+pub const OVERLAPPED = extern struct {
+    Internal: ULONG_PTR,
+    InternalHigh: ULONG_PTR,
+    data: extern union {
+        offset: extern struct {
+            Offset: DWORD,
+            OffsetHigh: DWORD,
+        },
+        Pointer: ?*anyopaque,
+    },
+    hEvent: ?HANDLE,
+};
+pub extern "ws2_32" fn getaddrinfo(
+    node: ?[*:0]const u8,
+    service: ?[*:0]const u8,
+    hints: ?*const addrinfo,
+    result: *?*addrinfo,
+) callconv(.winapi) c_int;
+pub extern "ws2_32" fn freeaddrinfo(result: *addrinfo) callconv(.winapi) void;
 const struct_unnamed_350 = extern struct {
     s_b1: [*]u8,
     s_b2: [*]u8,
@@ -3037,8 +3078,6 @@ pub const ReturnCodeI64 = enum(i64) {
     }
 };
 
-pub const addrinfo = std.os.windows.ws2_32.addrinfo;
-
 // https://docs.libuv.org/en/v1.x/stream.html
 fn StreamMixin(comptime Type: type) type {
     return struct {
@@ -3210,6 +3249,5 @@ const sockaddr_in = std.os.linux.sockaddr.in;
 const sockaddr_in6 = std.os.linux.sockaddr.in6;
 
 const CRITICAL_SECTION = std.os.windows.CRITICAL_SECTION;
-const OVERLAPPED = std.os.windows.OVERLAPPED;
 const ULONG_PTR = std.os.windows.ULONG_PTR;
 const WIN32_FIND_DATAW = std.os.windows.WIN32_FIND_DATAW;

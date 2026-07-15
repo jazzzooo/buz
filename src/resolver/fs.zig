@@ -571,7 +571,7 @@ pub const FileSystem = struct {
                     }
 
                     var tmp_buf: bun.PathBuffer = undefined;
-                    const cwd = std.posix.getcwd(&tmp_buf) catch @panic("Failed to get cwd for platformTempDir");
+                    const cwd = bun.getcwd(&tmp_buf) catch @panic("Failed to get cwd for platformTempDir");
                     const root = bun.path.windowsFilesystemRoot(cwd);
                     return std.fmt.allocPrint(
                         bun.default_allocator,
@@ -732,7 +732,7 @@ pub const FileSystem = struct {
                     debug("moveFileExW({f}, {f})", .{ bun.fmt.utf16(existing), bun.fmt.utf16(new) });
                 }
 
-                if (bun.windows.kernel32.MoveFileExW(existing.ptr, new.ptr, bun.windows.MOVEFILE_COPY_ALLOWED | bun.windows.MOVEFILE_REPLACE_EXISTING | bun.windows.MOVEFILE_WRITE_THROUGH) == bun.windows.FALSE) {
+                if (!bun.windows.MoveFileExW(existing.ptr, new.ptr, bun.windows.MOVEFILE_COPY_ALLOWED | bun.windows.MOVEFILE_REPLACE_EXISTING | bun.windows.MOVEFILE_WRITE_THROUGH).toBool()) {
                     try bun.windows.Win32Error.get().unwrap();
                 }
             }
@@ -1405,11 +1405,11 @@ pub const FileSystem = struct {
                 // error was swallowed at `Entry.kind`, and a directory symlink
                 // was permanently misclassified as `.file` — surfacing as
                 // EISDIR at module load time.
-                const w = std.os.windows;
+                const w = bun.windows;
                 const wbuf = bun.w_path_buffer_pool.get();
                 defer bun.w_path_buffer_pool.put(wbuf);
                 const wpath = bun.strings.toKernel32Path(wbuf, absolute_path_c);
-                const handle = w.kernel32.CreateFileW(
+                const handle = w.CreateFileW(
                     wpath.ptr,
                     0,
                     w.FILE_SHARE_READ | w.FILE_SHARE_WRITE | w.FILE_SHARE_DELETE,
@@ -1432,7 +1432,7 @@ pub const FileSystem = struct {
                 defer _ = bun.windows.CloseHandle(handle);
 
                 var info: w.BY_HANDLE_FILE_INFORMATION = undefined;
-                if (bun.windows.GetFileInformationByHandle(handle, &info) != 0) {
+                if (bun.windows.GetFileInformationByHandle(handle, &info).toBool()) {
                     cache.kind = if (info.dwFileAttributes & w.FILE_ATTRIBUTE_DIRECTORY != 0) .dir else .file;
                 }
 

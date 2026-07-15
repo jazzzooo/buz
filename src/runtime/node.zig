@@ -227,7 +227,9 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
         pub fn errnoSys(rc: anytype, syscall: sys.Tag) ?@This() {
             if (comptime Environment.isWindows) {
                 if (comptime @TypeOf(rc) == std.os.windows.NTSTATUS) {} else {
-                    if (rc != 0) return null;
+                    if (comptime @TypeOf(rc) == std.os.windows.BOOL) {
+                        if (rc.toBool()) return null;
+                    } else if (rc != 0) return null;
                 }
             }
             return switch (sys.getErrno(rc)) {
@@ -255,7 +257,9 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
         pub fn errnoSysFd(rc: anytype, syscall: sys.Tag, fd: bun.FD) ?@This() {
             if (comptime Environment.isWindows) {
                 if (comptime @TypeOf(rc) == std.os.windows.NTSTATUS) {} else {
-                    if (rc != 0) return null;
+                    if (comptime @TypeOf(rc) == std.os.windows.BOOL) {
+                        if (rc.toBool()) return null;
+                    } else if (rc != 0) return null;
                 }
             }
             return switch (sys.getErrno(rc)) {
@@ -277,7 +281,9 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
             }
             if (comptime Environment.isWindows) {
                 if (comptime @TypeOf(rc) == std.os.windows.NTSTATUS) {} else {
-                    if (rc != 0) return null;
+                    if (comptime @TypeOf(rc) == std.os.windows.BOOL) {
+                        if (rc.toBool()) return null;
+                    } else if (rc != 0) return null;
                 }
             }
             return switch (sys.getErrno(rc)) {

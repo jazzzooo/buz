@@ -344,7 +344,7 @@ pub fn crashHandler(
                         .windows => {
                             var name: std.os.windows.PWSTR = undefined;
                             const result = bun.windows.GetThreadDescription(bun.windows.GetCurrentThread(), &name);
-                            if (std.os.windows.HRESULT_CODE(result) == .SUCCESS and name[0] != 0) {
+                            if (result >= 0 and name[0] != 0) {
                                 writer.print("({f})", .{bun.fmt.utf16(bun.span(name))}) catch std.process.abort();
                             } else {
                                 writer.print("(thread {d})", .{bun.c.GetCurrentThreadId()}) catch std.process.abort();
@@ -949,7 +949,7 @@ pub fn init() void {
     if (!enable) return;
     switch (bun.Environment.os) {
         .windows => {
-            windows_segfault_handle = windows.kernel32.AddVectoredExceptionHandler(0, handleSegfaultWindows);
+            windows_segfault_handle = windows.ntdll.RtlAddVectoredExceptionHandler(0, handleSegfaultWindows);
         },
         .mac, .linux, .freebsd => {
             resetOnPosix();
@@ -964,7 +964,7 @@ pub fn resetSegfaultHandler() void {
 
     if (bun.Environment.os == .windows) {
         if (windows_segfault_handle) |handle| {
-            const rc = windows.kernel32.RemoveVectoredExceptionHandler(handle);
+            const rc = windows.ntdll.RtlRemoveVectoredExceptionHandler(handle);
             windows_segfault_handle = null;
             bun.assert(rc != 0);
         }
@@ -1526,7 +1526,7 @@ fn report(url: []const u8) void {
 
     switch (bun.Environment.os) {
         .windows => {
-            var process: std.os.windows.PROCESS_INFORMATION = undefined;
+            var process: std.os.windows.PROCESS.INFORMATION = undefined;
             var startup_info = std.os.windows.STARTUPINFOW{
                 .cb = @sizeOf(std.os.windows.STARTUPINFOW),
                 .lpReserved = null,
@@ -1564,7 +1564,7 @@ fn report(url: []const u8) void {
                 cmd_line_slice,
                 null,
                 null,
-                1, // true
+                std.os.windows.BOOL.fromBool(true),
                 .{},
                 null,
                 null,

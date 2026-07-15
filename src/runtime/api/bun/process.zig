@@ -47,7 +47,7 @@ pub fn uv_getrusage(process: *uv.uv_process_t) win_rusage {
     var kerneltime: WinTime = undefined;
     var usertime: WinTime = undefined;
     // We at least get process times
-    if (bun.windows.GetProcessTimes(process_pid, &starttime, &exittime, &kerneltime, &usertime) == 1) {
+    if (bun.windows.GetProcessTimes(process_pid, &starttime, &exittime, &kerneltime, &usertime).toBool()) {
         var temp: u64 = (@as(u64, kerneltime.dwHighDateTime) << 32) | kerneltime.dwLowDateTime;
         if (temp > 0) {
             usage_info.stime.sec = @intCast(temp / 10000000);
@@ -64,11 +64,31 @@ pub fn uv_getrusage(process: *uv.uv_process_t) win_rusage {
     usage_info.inblock = counters.ReadOperationCount;
     usage_info.oublock = counters.WriteOperationCount;
 
-    const memory = std.os.windows.GetProcessMemoryInfo(process_pid) catch return usage_info;
+    var memory: PROCESS_MEMORY_COUNTERS = .{ .cb = @sizeOf(PROCESS_MEMORY_COUNTERS) };
+    if (!GetProcessMemoryInfo(process_pid, &memory, memory.cb).toBool()) return usage_info;
     usage_info.maxrss = memory.PeakWorkingSetSize / 1024;
 
     return usage_info;
 }
+
+const PROCESS_MEMORY_COUNTERS = extern struct {
+    cb: std.os.windows.DWORD,
+    PageFaultCount: std.os.windows.DWORD = 0,
+    PeakWorkingSetSize: usize = 0,
+    WorkingSetSize: usize = 0,
+    QuotaPeakPagedPoolUsage: usize = 0,
+    QuotaPagedPoolUsage: usize = 0,
+    QuotaPeakNonPagedPoolUsage: usize = 0,
+    QuotaNonPagedPoolUsage: usize = 0,
+    PagefileUsage: usize = 0,
+    PeakPagefileUsage: usize = 0,
+};
+
+extern "psapi" fn GetProcessMemoryInfo(
+    process: std.os.windows.HANDLE,
+    counters: *PROCESS_MEMORY_COUNTERS,
+    size: std.os.windows.DWORD,
+) callconv(.winapi) std.os.windows.BOOL;
 pub const Rusage = if (Environment.isWindows)
     win_rusage
     // std.posix.rusage has no .freebsd arm; field names also differ

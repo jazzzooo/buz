@@ -64,7 +64,7 @@ pub fn toJSWithoutMakingLibUVOwned(any_fd: FD) JSValue {
     if (Environment.isWindows) {
         return switch (any_fd.kind) {
             .system => JSValue.jsNumberFromUint64(@intCast(any_fd.value.as_system)),
-            .uv => JSValue.jsNumberFromInt32(any_fd.value.as_uv),
+            .uv => JSValue.jsNumberFromInt32(@intCast(any_fd.value.as_uv)),
         };
     }
     return JSValue.jsNumberFromInt32(any_fd.value.as_system);

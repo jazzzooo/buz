@@ -5,12 +5,13 @@
 
 pub const ntdll = windows.ntdll;
 pub const kernel32 = windows.kernel32;
-pub const GetLastError = kernel32.GetLastError;
+pub const GetLastError = windows.GetLastError;
 
 pub const PATH_MAX_WIDE = windows.PATH_MAX_WIDE;
 pub const MAX_PATH = windows.MAX_PATH;
 pub const WORD = windows.WORD;
 pub const DWORD = windows.DWORD;
+pub const SHORT = windows.SHORT;
 pub const CHAR = windows.CHAR;
 pub const BOOL = windows.BOOL;
 pub const BOOLEAN = windows.BOOLEAN;
@@ -22,14 +23,15 @@ pub const LPSTR = windows.LPSTR;
 pub const WCHAR = windows.WCHAR;
 pub const LPCSTR = windows.LPCSTR;
 pub const PWSTR = windows.PWSTR;
-pub const FALSE = windows.FALSE;
-pub const TRUE = windows.TRUE;
+pub const FALSE: BOOL = .FALSE;
+pub const TRUE: BOOL = .TRUE;
 pub const COORD = windows.COORD;
 pub const INVALID_HANDLE_VALUE = windows.INVALID_HANDLE_VALUE;
-pub const FILE_BEGIN = windows.FILE_BEGIN;
-pub const FILE_END = windows.FILE_END;
-pub const FILE_CURRENT = windows.FILE_CURRENT;
+pub const FILE_BEGIN: DWORD = asDword(c.FILE_BEGIN);
+pub const FILE_END: DWORD = asDword(c.FILE_END);
+pub const FILE_CURRENT: DWORD = asDword(c.FILE_CURRENT);
 pub const ULONG = windows.ULONG;
+pub const ULONG_PTR = windows.ULONG_PTR;
 pub const ULONGLONG = windows.ULONGLONG;
 pub const UINT = windows.UINT;
 pub const LARGE_INTEGER = windows.LARGE_INTEGER;
@@ -37,40 +39,118 @@ pub const UNICODE_STRING = windows.UNICODE_STRING;
 pub const NTSTATUS = windows.NTSTATUS;
 pub const NT_SUCCESS = windows.NT_SUCCESS;
 pub const STATUS_SUCCESS = windows.STATUS_SUCCESS;
+pub const unexpectedStatus = windows.unexpectedStatus;
 pub const MOVEFILE_COPY_ALLOWED = 0x2;
 pub const MOVEFILE_REPLACE_EXISTING = 0x1;
 pub const MOVEFILE_WRITE_THROUGH = 0x8;
+pub const CTRL_C_EVENT: DWORD = 0;
+pub const CTRL_BREAK_EVENT: DWORD = 1;
+pub const CTRL_CLOSE_EVENT: DWORD = 2;
 pub const FILETIME = windows.FILETIME;
+pub const BY_HANDLE_FILE_INFORMATION = @import("../../windows_sys/externs.zig").BY_HANDLE_FILE_INFORMATION;
 
-pub const DUPLICATE_SAME_ACCESS = windows.DUPLICATE_SAME_ACCESS;
-pub const OBJECT_ATTRIBUTES = windows.OBJECT_ATTRIBUTES;
+pub const DUPLICATE_SAME_ACCESS: DWORD = asDword(c.DUPLICATE_SAME_ACCESS);
+pub const OBJECT_ATTRIBUTES = windows.OBJECT.ATTRIBUTES;
 pub const IO_STATUS_BLOCK = windows.IO_STATUS_BLOCK;
 pub const FILE_INFO_BY_HANDLE_CLASS = windows.FILE_INFO_BY_HANDLE_CLASS;
-pub const FILE_SHARE_READ = windows.FILE_SHARE_READ;
-pub const FILE_SHARE_WRITE = windows.FILE_SHARE_WRITE;
-pub const FILE_SHARE_DELETE = windows.FILE_SHARE_DELETE;
-pub const FILE_ATTRIBUTE_NORMAL = windows.FILE_ATTRIBUTE_NORMAL;
-pub const FILE_ATTRIBUTE_READONLY = windows.FILE_ATTRIBUTE_READONLY;
-pub const FILE_ATTRIBUTE_HIDDEN = windows.FILE_ATTRIBUTE_HIDDEN;
-pub const FILE_ATTRIBUTE_SYSTEM = windows.FILE_ATTRIBUTE_SYSTEM;
-pub const FILE_ATTRIBUTE_DIRECTORY = windows.FILE_ATTRIBUTE_DIRECTORY;
-pub const FILE_ATTRIBUTE_ARCHIVE = windows.FILE_ATTRIBUTE_ARCHIVE;
-pub const FILE_ATTRIBUTE_DEVICE = windows.FILE_ATTRIBUTE_DEVICE;
-pub const FILE_ATTRIBUTE_TEMPORARY = windows.FILE_ATTRIBUTE_TEMPORARY;
-pub const FILE_ATTRIBUTE_SPARSE_FILE = windows.FILE_ATTRIBUTE_SPARSE_FILE;
-pub const FILE_ATTRIBUTE_REPARSE_POINT = windows.FILE_ATTRIBUTE_REPARSE_POINT;
-pub const FILE_ATTRIBUTE_COMPRESSED = windows.FILE_ATTRIBUTE_COMPRESSED;
-pub const FILE_ATTRIBUTE_OFFLINE = windows.FILE_ATTRIBUTE_OFFLINE;
-pub const FILE_ATTRIBUTE_NOT_CONTENT_INDEXED = windows.FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
-pub const FILE_DIRECTORY_FILE = windows.FILE_DIRECTORY_FILE;
-pub const FILE_WRITE_THROUGH = windows.FILE_WRITE_THROUGH;
-pub const FILE_SEQUENTIAL_ONLY = windows.FILE_SEQUENTIAL_ONLY;
-pub const FILE_SYNCHRONOUS_IO_NONALERT = windows.FILE_SYNCHRONOUS_IO_NONALERT;
-pub const FILE_OPEN_REPARSE_POINT = windows.FILE_OPEN_REPARSE_POINT;
+pub const FILE_SHARE_READ: DWORD = asDword(c.FILE_SHARE_READ);
+pub const FILE_SHARE_WRITE: DWORD = asDword(c.FILE_SHARE_WRITE);
+pub const FILE_SHARE_DELETE: DWORD = asDword(c.FILE_SHARE_DELETE);
+pub const FILE_ATTRIBUTE_NORMAL: DWORD = asDword(c.FILE_ATTRIBUTE_NORMAL);
+pub const FILE_ATTRIBUTE_READONLY: DWORD = asDword(c.FILE_ATTRIBUTE_READONLY);
+pub const FILE_ATTRIBUTE_HIDDEN: DWORD = asDword(c.FILE_ATTRIBUTE_HIDDEN);
+pub const FILE_ATTRIBUTE_SYSTEM: DWORD = asDword(c.FILE_ATTRIBUTE_SYSTEM);
+pub const FILE_ATTRIBUTE_DIRECTORY: DWORD = asDword(c.FILE_ATTRIBUTE_DIRECTORY);
+pub const FILE_ATTRIBUTE_ARCHIVE: DWORD = asDword(c.FILE_ATTRIBUTE_ARCHIVE);
+pub const FILE_ATTRIBUTE_DEVICE: DWORD = asDword(c.FILE_ATTRIBUTE_DEVICE);
+pub const FILE_ATTRIBUTE_TEMPORARY: DWORD = asDword(c.FILE_ATTRIBUTE_TEMPORARY);
+pub const FILE_ATTRIBUTE_SPARSE_FILE: DWORD = asDword(c.FILE_ATTRIBUTE_SPARSE_FILE);
+pub const FILE_ATTRIBUTE_REPARSE_POINT: DWORD = asDword(c.FILE_ATTRIBUTE_REPARSE_POINT);
+pub const FILE_ATTRIBUTE_COMPRESSED: DWORD = asDword(c.FILE_ATTRIBUTE_COMPRESSED);
+pub const FILE_ATTRIBUTE_OFFLINE: DWORD = asDword(c.FILE_ATTRIBUTE_OFFLINE);
+pub const FILE_ATTRIBUTE_NOT_CONTENT_INDEXED: DWORD = asDword(c.FILE_ATTRIBUTE_NOT_CONTENT_INDEXED);
+pub const FILE_DIRECTORY_FILE: DWORD = asDword(c.FILE_DIRECTORY_FILE);
+pub const FILE_NON_DIRECTORY_FILE: DWORD = asDword(c.FILE_NON_DIRECTORY_FILE);
+pub const FILE_WRITE_THROUGH: DWORD = asDword(c.FILE_WRITE_THROUGH);
+pub const FILE_SEQUENTIAL_ONLY: DWORD = asDword(c.FILE_SEQUENTIAL_ONLY);
+pub const FILE_SYNCHRONOUS_IO_NONALERT: DWORD = asDword(c.FILE_SYNCHRONOUS_IO_NONALERT);
+pub const FILE_OPEN_REPARSE_POINT: DWORD = asDword(c.FILE_OPEN_REPARSE_POINT);
+pub const FILE_OPEN_FOR_BACKUP_INTENT: DWORD = asDword(c.FILE_OPEN_FOR_BACKUP_INTENT);
+pub const FILE_DELETE_ON_CLOSE: DWORD = asDword(c.FILE_DELETE_ON_CLOSE);
+pub const FILE_READ_ATTRIBUTES: DWORD = asDword(c.FILE_READ_ATTRIBUTES);
+pub const FILE_READ_EA: DWORD = asDword(c.FILE_READ_EA);
+pub const FILE_READ_DATA: DWORD = asDword(c.FILE_READ_DATA);
+pub const FILE_WRITE_ATTRIBUTES: DWORD = asDword(c.FILE_WRITE_ATTRIBUTES);
+pub const FILE_WRITE_DATA: DWORD = asDword(c.FILE_WRITE_DATA);
+pub const FILE_APPEND_DATA: DWORD = asDword(c.FILE_APPEND_DATA);
+pub const FILE_TRAVERSE: DWORD = asDword(c.FILE_TRAVERSE);
+pub const FILE_LIST_DIRECTORY: DWORD = asDword(c.FILE_LIST_DIRECTORY);
+pub const FILE_ADD_FILE: DWORD = asDword(c.FILE_ADD_FILE);
+pub const FILE_ADD_SUBDIRECTORY: DWORD = asDword(c.FILE_ADD_SUBDIRECTORY);
+pub const FILE_OPEN: DWORD = asDword(c.FILE_OPEN);
+pub const FILE_CREATE: DWORD = asDword(c.FILE_CREATE);
+pub const FILE_OPEN_IF: DWORD = asDword(c.FILE_OPEN_IF);
+pub const FILE_OVERWRITE: DWORD = asDword(c.FILE_OVERWRITE);
+pub const FILE_OVERWRITE_IF: DWORD = asDword(c.FILE_OVERWRITE_IF);
+pub const STANDARD_RIGHTS_READ: DWORD = asDword(c.STANDARD_RIGHTS_READ);
+pub const READ_CONTROL: DWORD = asDword(c.READ_CONTROL);
+pub const SYNCHRONIZE: DWORD = asDword(c.SYNCHRONIZE);
+pub const DELETE: DWORD = asDword(c.DELETE);
+pub const GENERIC_READ: DWORD = asDword(c.GENERIC_READ);
+pub const GENERIC_WRITE: DWORD = asDword(c.GENERIC_WRITE);
+pub const FILE_GENERIC_READ: DWORD = asDword(c.FILE_GENERIC_READ);
+pub const FILE_GENERIC_WRITE: DWORD = asDword(c.FILE_GENERIC_WRITE);
+pub const FILE_FLAG_BACKUP_SEMANTICS: DWORD = asDword(c.FILE_FLAG_BACKUP_SEMANTICS);
+pub const FILE_FLAG_NO_BUFFERING: DWORD = asDword(c.FILE_FLAG_NO_BUFFERING);
+pub const FILE_FLAG_SEQUENTIAL_SCAN: DWORD = asDword(c.FILE_FLAG_SEQUENTIAL_SCAN);
+pub const FILE_FLAG_WRITE_THROUGH: DWORD = asDword(c.FILE_FLAG_WRITE_THROUGH);
+pub const CREATE_NEW: DWORD = asDword(c.CREATE_NEW);
+pub const OPEN_EXISTING: DWORD = asDword(c.OPEN_EXISTING);
+pub const OPEN_ALWAYS: DWORD = asDword(c.OPEN_ALWAYS);
+pub const TRUNCATE_EXISTING: DWORD = asDword(c.TRUNCATE_EXISTING);
+pub const SYMBOLIC_LINK_FLAG_DIRECTORY: DWORD = asDword(c.SYMBOLIC_LINK_FLAG_DIRECTORY);
+pub const SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE: DWORD = asDword(c.SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE);
+pub const STD_INPUT_HANDLE: DWORD = asDword(c.STD_INPUT_HANDLE);
+pub const STD_OUTPUT_HANDLE: DWORD = asDword(c.STD_OUTPUT_HANDLE);
+pub const STD_ERROR_HANDLE: DWORD = asDword(c.STD_ERROR_HANDLE);
+pub const PIPE_ACCESS_INBOUND: DWORD = asDword(c.PIPE_ACCESS_INBOUND);
+pub const PIPE_ACCESS_OUTBOUND: DWORD = asDword(c.PIPE_ACCESS_OUTBOUND);
+pub const PIPE_TYPE_BYTE: DWORD = asDword(c.PIPE_TYPE_BYTE);
+pub const PIPE_READMODE_BYTE: DWORD = asDword(c.PIPE_READMODE_BYTE);
+pub const PIPE_WAIT: DWORD = asDword(c.PIPE_WAIT);
+pub const FILE_FLAG_OVERLAPPED: DWORD = asDword(c.FILE_FLAG_OVERLAPPED);
+pub const FILE_ACTION_ADDED: DWORD = asDword(c.FILE_ACTION_ADDED);
+pub const FILE_ACTION_REMOVED: DWORD = asDword(c.FILE_ACTION_REMOVED);
+pub const FILE_ACTION_MODIFIED: DWORD = asDword(c.FILE_ACTION_MODIFIED);
+pub const FILE_ACTION_RENAMED_OLD_NAME: DWORD = asDword(c.FILE_ACTION_RENAMED_OLD_NAME);
+pub const FILE_ACTION_RENAMED_NEW_NAME: DWORD = asDword(c.FILE_ACTION_RENAMED_NEW_NAME);
+pub const FILE_BASIC_INFORMATION = windows.FILE.BASIC_INFORMATION;
+pub const FILE_END_OF_FILE_INFORMATION = windows.FILE.END_OF_FILE_INFORMATION;
+pub const FILE_NOTIFY_INFORMATION = c.FILE_NOTIFY_INFORMATION;
+pub const FILE_DISPOSITION_INFORMATION_EX = c.FILE_DISPOSITION_INFORMATION_EX;
+pub const FILE_RENAME_INFORMATION_EX = extern struct {
+    Flags: ULONG,
+    RootDirectory: ?HANDLE,
+    FileNameLength: ULONG,
+    FileName: [1]WCHAR,
+};
+pub const FILE_RENAME_REPLACE_IF_EXISTS: ULONG = 0x1;
+pub const FILE_RENAME_POSIX_SEMANTICS: ULONG = 0x2;
+pub const FILE_RENAME_IGNORE_READONLY_ATTRIBUTE: ULONG = 0x40;
+pub const CONSOLE_SCREEN_BUFFER_INFO = c.CONSOLE_SCREEN_BUFFER_INFO;
+pub const GetFinalPathNameByHandleFormat = std.Io.Threaded.GetFinalPathNameByHandleFormat;
+pub const GetFinalPathNameByHandleError = std.Io.Threaded.GetFinalPathNameByHandleError;
 pub const user32 = windows.user32;
 pub const advapi32 = windows.advapi32;
 
 pub const INVALID_FILE_ATTRIBUTES: u32 = std.math.maxInt(u32);
+
+fn asDword(comptime value: anytype) DWORD {
+    return if (@bitSizeOf(@TypeOf(value)) == 64)
+        @truncate(@as(u64, @bitCast(value)))
+    else
+        @as(u32, @bitCast(value));
+}
 
 pub const nt_object_prefix = [4]u16{ '\\', '?', '?', '\\' };
 pub const nt_unc_object_prefix = [8]u16{ '\\', '?', '?', '\\', 'U', 'N', 'C', '\\' };
@@ -85,6 +165,19 @@ pub const WPathBuffer = if (Environment.isWindows) bun.WPathBuffer else void;
 
 pub const HANDLE = win32.HANDLE;
 pub const HMODULE = win32.HMODULE;
+pub const NtCreateFile = @import("../../windows_sys/externs.zig").NtCreateFile;
+pub const GetStdHandle = @import("../../windows_sys/externs.zig").GetStdHandle;
+pub const GetQueuedCompletionStatus = @import("../../windows_sys/externs.zig").GetQueuedCompletionStatus;
+pub const ReadDirectoryChangesW = @import("../../windows_sys/externs.zig").ReadDirectoryChangesW;
+pub const CreateFileW = @import("../../windows_sys/externs.zig").CreateFileW;
+pub const SetFilePointerEx = @import("../../windows_sys/externs.zig").SetFilePointerEx;
+pub const GetFileSizeEx = @import("../../windows_sys/externs.zig").GetFileSizeEx;
+pub const MoveFileExW = @import("../../windows_sys/externs.zig").MoveFileExW;
+pub const SetConsoleCtrlHandler = @import("../../windows_sys/externs.zig").SetConsoleCtrlHandler;
+
+pub fn CreateIoCompletionPort(file: HANDLE, existing: ?HANDLE, completion_key: windows.ULONG_PTR, concurrency: DWORD) !HANDLE {
+    return @import("../../windows_sys/externs.zig").CreateIoCompletionPort(file, existing, completion_key, concurrency) orelse error.Unexpected;
+}
 
 /// https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfileinformationbyhandle
 pub const GetFileInformationByHandle = @import("../../windows_sys/externs.zig").GetFileInformationByHandle;
@@ -2941,7 +3034,7 @@ pub const Win32Error = enum(u16) {
     pub const WSA_QOS_RESERVED_PETYPE: Win32Error = @enumFromInt(11031);
 
     pub fn get() Win32Error {
-        return @enumFromInt(@intFromEnum(bun.windows.kernel32.GetLastError()));
+        return @enumFromInt(@intFromEnum(bun.windows.GetLastError()));
     }
 
     pub fn int(this: Win32Error) u16 {
@@ -2995,7 +3088,7 @@ pub const CreateHardLinkW = struct {
                 .{
                     bun.fmt.fmtOSPath(std.mem.span(newFileName), .{}),
                     bun.fmt.fmtOSPath(std.mem.span(existingFileName), .{}),
-                    if (rc == 0) @intFromEnum(Win32Error.get()) else 0,
+                    if (!rc.toBool()) @intFromEnum(Win32Error.get()) else 0,
                 },
             );
         return rc;
@@ -3007,7 +3100,7 @@ pub const CopyFileW = @import("../../windows_sys/externs.zig").CopyFileW;
 pub const SetFileInformationByHandle = @import("../../windows_sys/externs.zig").SetFileInformationByHandle;
 
 pub fn getLastErrno() bun.sys.E {
-    return (bun.sys.SystemErrno.init(bun.windows.kernel32.GetLastError()) orelse SystemErrno.EUNKNOWN).toE();
+    return (bun.sys.SystemErrno.init(bun.windows.GetLastError()) orelse SystemErrno.EUNKNOWN).toE();
 }
 
 pub fn getLastError() anyerror {
@@ -3183,7 +3276,7 @@ pub fn userUniqueId() u32 {
     // UNLEN + 1
     var buf: [257]u16 = undefined;
     var size: u32 = buf.len;
-    if (GetUserNameW(@ptrCast(&buf), &size) == 0) {
+    if (!GetUserNameW(@ptrCast(&buf), &size).toBool()) {
         if (Environment.isDebug) std.debug.panic("GetUserNameW failed: {}", .{bun.windows.GetLastError()});
         return 0;
     }
@@ -3301,7 +3394,7 @@ pub fn winSockErrorToZigError(err: std.os.windows.ws2_32.WinsockError) !void {
 }
 
 pub fn WSAGetLastError() ?SystemErrno {
-    return SystemErrno.init(@intFromEnum(std.os.windows.ws2_32.WSAGetLastError()));
+    return SystemErrno.init(bun.c.WSAGetLastError());
 }
 
 // BOOL CreateDirectoryExW(
@@ -3313,12 +3406,12 @@ pub const CreateDirectoryExW = @import("../../windows_sys/externs.zig").CreateDi
 
 pub fn GetFinalPathNameByHandle(
     hFile: HANDLE,
-    fmt: std.os.windows.GetFinalPathNameByHandleFormat,
+    fmt: GetFinalPathNameByHandleFormat,
     out_buffer: []u16,
-) std.os.windows.GetFinalPathNameByHandleError![]u16 {
+) GetFinalPathNameByHandleError![]u16 {
     const return_length = bun.windows.GetFinalPathNameByHandleW(hFile, out_buffer.ptr, @truncate(out_buffer.len), switch (fmt.volume_name) {
-        .Dos => win32.FILE_NAME_NORMALIZED | win32.VOLUME_NAME_DOS,
-        .Nt => win32.FILE_NAME_NORMALIZED | win32.VOLUME_NAME_NT,
+        .Dos => c.FILE_NAME_NORMALIZED | c.VOLUME_NAME_DOS,
+        .Nt => c.FILE_NAME_NORMALIZED | c.VOLUME_NAME_NT,
     });
 
     if (return_length == 0) {
@@ -3358,7 +3451,7 @@ pub fn getModuleHandleFromAddress(addr: usize) ?HMODULE {
         &module,
     );
     // If the function succeeds, the return value is nonzero.
-    return if (rc != 0) module else null;
+    return if (rc.toBool()) module else null;
 }
 
 pub fn getModuleNameW(module: HMODULE, buf: []u16) ?[]const u16 {
@@ -3368,6 +3461,7 @@ pub fn getModuleNameW(module: HMODULE, buf: []u16) ?[]const u16 {
 }
 
 pub const GetThreadDescription = @import("../../windows_sys/externs.zig").GetThreadDescription;
+pub const LoadLibraryExW = @import("../../windows_sys/externs.zig").LoadLibraryExW;
 
 pub const ENABLE_ECHO_INPUT = 0x004;
 pub const ENABLE_LINE_INPUT = 0x002;
@@ -3397,7 +3491,7 @@ pub fn DeleteFileBun(sub_path_w: []const u16, options: DeleteFileOptions) bun.sy
     const create_options_flags: ULONG = if (options.remove_dir)
         FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT
     else
-        windows.FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT; // would we ever want to delete the target instead?
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT; // would we ever want to delete the target instead?
 
     const path_len_bytes = @as(u16, @intCast(sub_path_w.len * 2));
     var nt_name = UNICODE_STRING{
@@ -3414,23 +3508,23 @@ pub fn DeleteFileBun(sub_path_w: []const u16, options: DeleteFileOptions) bun.sy
 
     var attr = OBJECT_ATTRIBUTES{
         .Length = @sizeOf(OBJECT_ATTRIBUTES),
-        .RootDirectory = if (std.fs.path.isAbsoluteWindowsWTF16(sub_path_w)) null else options.dir,
-        .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
+        .RootDirectory = if (std.fs.path.isAbsoluteWindowsWtf16(sub_path_w)) null else options.dir,
+        .Attributes = .{}, // Note we do not use OBJ_CASE_INSENSITIVE here.
         .ObjectName = &nt_name,
         .SecurityDescriptor = null,
         .SecurityQualityOfService = null,
     };
     var io: IO_STATUS_BLOCK = undefined;
     var tmp_handle: HANDLE = undefined;
-    var rc = ntdll.NtCreateFile(
+    var rc = NtCreateFile(
         &tmp_handle,
-        windows.SYNCHRONIZE | windows.DELETE,
+        SYNCHRONIZE | DELETE,
         &attr,
         &io,
         null,
         0,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        windows.FILE_OPEN,
+        FILE_OPEN,
         create_options_flags,
         null,
         0,
@@ -3448,18 +3542,20 @@ pub fn DeleteFileBun(sub_path_w: []const u16, options: DeleteFileOptions) bun.sy
     // The same reasoning for win10_rs5 as in os.renameatW() applies (FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE requires >= win10_rs5).
     var need_fallback = true;
     // Deletion with posix semantics if the filesystem supports it.
-    var info = windows.FILE_DISPOSITION_INFORMATION_EX{
-        .Flags = FILE_DISPOSITION_DELETE |
-            FILE_DISPOSITION_POSIX_SEMANTICS |
-            FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE,
+    var info = windows.FILE.DISPOSITION.INFORMATION.EX{
+        .Flags = .{
+            .DELETE = true,
+            .POSIX_SEMANTICS = true,
+            .IGNORE_READONLY_ATTRIBUTE = true,
+        },
     };
 
     rc = ntdll.NtSetInformationFile(
         tmp_handle,
         &io,
         &info,
-        @sizeOf(windows.FILE_DISPOSITION_INFORMATION_EX),
-        .FileDispositionInformationEx,
+        @sizeOf(windows.FILE.DISPOSITION.INFORMATION.EX),
+        .DispositionEx,
     );
     bun.sys.syslog("NtSetInformationFile({f}, DELETE) = {}", .{ bun.fmt.fmtPath(u16, sub_path_w, .{}), rc });
     switch (rc) {
@@ -3472,16 +3568,16 @@ pub fn DeleteFileBun(sub_path_w: []const u16, options: DeleteFileOptions) bun.sy
     if (need_fallback) {
         // Deletion with file pending semantics, which requires waiting or moving
         // files to get them removed (from here).
-        var file_dispo = windows.FILE_DISPOSITION_INFORMATION{
-            .DeleteFile = TRUE,
+        var file_dispo = windows.FILE.DISPOSITION.INFORMATION{
+            .DeleteFile = .TRUE,
         };
 
         rc = ntdll.NtSetInformationFile(
             tmp_handle,
             &io,
             &file_dispo,
-            @sizeOf(windows.FILE_DISPOSITION_INFORMATION),
-            .FileDispositionInformation,
+            @sizeOf(windows.FILE.DISPOSITION.INFORMATION),
+            .Disposition,
         );
         bun.sys.syslog("NtSetInformationFile({f}, DELETE) = {}", .{ bun.fmt.fmtPath(u16, sub_path_w, .{}), rc });
     }
@@ -3532,10 +3628,10 @@ pub const Subsystem = enum(u16) {
 
 pub fn editWin32BinarySubsystem(fd: bun.sys.File, subsystem: Subsystem) !void {
     comptime bun.assert(bun.Environment.isWindows);
-    if (bun.windows.SetFilePointerEx(fd.handle.cast(), pe_header_offset_location, null, std.os.windows.FILE_BEGIN) == 0)
+    if (c.SetFilePointerEx(fd.handle.cast(), pe_header_offset_location, null, FILE_BEGIN) == 0)
         return error.Win32Error;
     const offset = try fd.reader().readInt(u32, .little);
-    if (bun.windows.SetFilePointerEx(fd.handle.cast(), offset + subsystem_offset, null, std.os.windows.FILE_BEGIN) == 0)
+    if (c.SetFilePointerEx(fd.handle.cast(), offset + subsystem_offset, null, FILE_BEGIN) == 0)
         return error.Win32Error;
     try fd.writer().writeInt(u16, @intFromEnum(subsystem), .little);
 }
@@ -3690,11 +3786,11 @@ pub fn isWatcherChild() bool {
 
 pub fn becomeWatcherManager(allocator: std.mem.Allocator) noreturn {
     // this process will be the parent of the child process that actually runs the script
-    var procinfo: std.os.windows.PROCESS_INFORMATION = undefined;
+    var procinfo: std.os.windows.PROCESS.INFORMATION = undefined;
     windows_enable_stdio_inheritance();
     const job = CreateJobObjectA(null, null) orelse Output.panic(
         "Could not create watcher Job Object: {s}",
-        .{@tagName(std.os.windows.kernel32.GetLastError())},
+        .{@tagName(std.os.windows.GetLastError())},
     );
     var jeli = std.mem.zeroes(c.JOBOBJECT_EXTENDED_LIMIT_INFORMATION);
     jeli.BasicLimitInformation.LimitFlags =
@@ -3710,7 +3806,7 @@ pub fn becomeWatcherManager(allocator: std.mem.Allocator) noreturn {
     ) == 0) {
         Output.panic(
             "Could not configure watcher Job Object: {s}",
-            .{@tagName(std.os.windows.kernel32.GetLastError())},
+            .{@tagName(std.os.windows.GetLastError())},
         );
     }
 
@@ -3722,9 +3818,9 @@ pub fn becomeWatcherManager(allocator: std.mem.Allocator) noreturn {
             }
             Output.panic("Failed to spawn process: {s}\n", .{@errorName(err)});
         };
-        windows.WaitForSingleObject(procinfo.hProcess, c.INFINITE) catch |err| {
-            Output.panic("Failed to wait for child process: {s}\n", .{@errorName(err)});
-        };
+        if (c.WaitForSingleObject(procinfo.hProcess, c.INFINITE) == c.WAIT_FAILED) {
+            Output.panic("Failed to wait for child process: {s}\n", .{@tagName(GetLastError())});
+        }
         var exit_code: DWORD = 0;
         if (c.GetExitCodeProcess(procinfo.hProcess, &exit_code) == 0) {
             const err = windows.GetLastError();
@@ -3744,7 +3840,7 @@ pub fn becomeWatcherManager(allocator: std.mem.Allocator) noreturn {
 
 pub fn spawnWatcherChild(
     allocator: std.mem.Allocator,
-    procinfo: *std.os.windows.PROCESS_INFORMATION,
+    procinfo: *std.os.windows.PROCESS.INFORMATION,
     job: HANDLE,
 ) !void {
     // https://devblogs.microsoft.com/oldnewthing/20230209-00/?p=107812
@@ -3752,7 +3848,7 @@ pub fn spawnWatcherChild(
     _ = InitializeProcThreadAttributeList(null, 1, 0, &attr_size);
     const p = try allocator.alloc(u8, attr_size);
     defer allocator.free(p);
-    if (InitializeProcThreadAttributeList(p.ptr, 1, 0, &attr_size) == 0) {
+    if (!InitializeProcThreadAttributeList(p.ptr, 1, 0, &attr_size).toBool()) {
         return error.Win32Error;
     }
     if (UpdateProcThreadAttribute(
@@ -3763,7 +3859,7 @@ pub fn spawnWatcherChild(
         @sizeOf(HANDLE),
         null,
         null,
-    ) == 0) {
+    ).toBool() == false) {
         return error.Win32Error;
     }
 
@@ -3832,14 +3928,14 @@ pub fn spawnWatcherChild(
         c.GetCommandLineW(),
         null,
         null,
-        1,
+        .TRUE,
         flags,
-        envbuf.ptr,
+        @ptrCast(envbuf.ptr),
         null,
         @ptrCast(&startupinfo),
         procinfo,
     );
-    if (rc == 0) {
+    if (!rc.toBool()) {
         return error.Win32Error;
     }
     var is_in_job: c.BOOL = 0;
@@ -3872,7 +3968,7 @@ fn @"windows process.dlopen"(str: *bun.String) callconv(.c) ?*anyopaque {
     };
     buf[data.len] = 0;
     const LOAD_WITH_ALTERED_SEARCH_PATH = 0x00000008;
-    return bun.windows.kernel32.LoadLibraryExW(buf[0..data.len :0].ptr, null, LOAD_WITH_ALTERED_SEARCH_PATH);
+    return bun.windows.LoadLibraryExW(buf[0..data.len :0].ptr, null, LOAD_WITH_ALTERED_SEARCH_PATH);
 }
 
 pub const windows_enable_stdio_inheritance = @import("../../windows_sys/externs.zig").windows_enable_stdio_inheritance;
@@ -3894,7 +3990,7 @@ pub fn deleteOpenedFile(fd: bun.FD) Maybe(void) {
         &io,
         &info,
         @sizeOf(w.FILE_DISPOSITION_INFORMATION_EX),
-        .FileDispositionInformationEx,
+        .DispositionEx,
     );
 
     log("deleteOpenedFile({}) = {s}", .{ fd, @tagName(rc) });
@@ -3942,7 +4038,7 @@ pub fn moveOpenedFileAt(
     if (replace_if_exists) flags |= w.FILE_RENAME_REPLACE_IF_EXISTS;
     rename_info.* = .{
         .Flags = flags,
-        .RootDirectory = if (std.fs.path.isAbsoluteWindowsWTF16(new_file_name)) null else new_dir_fd.cast(),
+        .RootDirectory = if (std.fs.path.isAbsoluteWindowsWtf16(new_file_name)) null else new_dir_fd.cast(),
         .FileNameLength = @intCast(new_file_name.len * 2), // already checked error.NameTooLong
         .FileName = undefined,
     };
@@ -3952,7 +4048,7 @@ pub fn moveOpenedFileAt(
         &io_status_block,
         rename_info,
         @intCast(struct_len), // already checked for error.NameTooLong
-        .FileRenameInformationEx,
+        .RenameEx,
     );
     log("moveOpenedFileAt({f} ->> {f} '{f}', {s}) = {s}", .{ src_fd, new_dir_fd, bun.fmt.utf16(new_file_name), if (replace_if_exists) "replace_if_exists" else "no flag", @tagName(rc) });
 
@@ -4103,6 +4199,6 @@ const Maybe = bun.sys.Maybe;
 const SystemErrno = bun.sys.SystemErrno;
 const log = bun.sys.syslog;
 
-const w = std.os.windows;
+const w = @This();
 const win32 = windows;
 const windows = std.os.windows;

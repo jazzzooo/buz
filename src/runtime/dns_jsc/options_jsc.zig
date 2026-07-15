@@ -28,10 +28,10 @@ pub fn optionsFromJS(value: jsc.JSValue, globalObject: *jsc.JSGlobalObject) From
             if (!flags.isNumber())
                 return error.InvalidFlags;
 
-            options.flags = try flags.coerce(std.c.AI, globalObject);
+            options.flags = try flags.coerce(bun.dns.AI, globalObject);
 
             // hints & ~(AI_ADDRCONFIG | AI_ALL | AI_V4MAPPED)) !== 0
-            const filter = ~@as(u32, @bitCast(std.c.AI{ .ALL = true, .ADDRCONFIG = true, .V4MAPPED = true }));
+            const filter = ~@as(u32, @bitCast(bun.dns.AI{ .ALL = true, .ADDRCONFIG = true, .V4MAPPED = true }));
             const int = @as(u32, @bitCast(options.flags));
             if (int & filter != 0) return error.InvalidFlags;
         }
@@ -161,7 +161,7 @@ pub fn addressToJS(address: *const bun.api.socket.SocketAddress, globalThis: *js
     var str = addressToString(address) catch return globalThis.throwOutOfMemory();
     return str.transferToJS(globalThis);
 }
-pub fn addrInfoToJSArray(addr_info: *std.c.addrinfo, globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
+pub fn addrInfoToJSArray(addr_info: *bun.dns.AddrInfo, globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
     const array = try jsc.JSValue.createEmptyArray(
         globalThis,
         addrInfoCount(addr_info),
@@ -169,7 +169,7 @@ pub fn addrInfoToJSArray(addr_info: *std.c.addrinfo, globalThis: *jsc.JSGlobalOb
 
     {
         var j: u32 = 0;
-        var current: ?*std.c.addrinfo = addr_info;
+        var current: ?*bun.dns.AddrInfo = addr_info;
         while (current) |this_node| : (current = current.?.next) {
             try array.putIndex(
                 globalThis,

@@ -630,7 +630,7 @@ fn createOverlappedPipePair(
     server_access: u32,
 ) CreatePtyError!struct { server: bun.windows.HANDLE, client: bun.windows.HANDLE } {
     const w = bun.windows;
-    const k32 = std.os.windows.kernel32;
+    const k32 = bun.c;
     const FILE_FLAG_FIRST_PIPE_INSTANCE: u32 = 0x00080000;
 
     const pid: u32 = std.os.windows.GetCurrentProcessId();
@@ -648,8 +648,8 @@ fn createOverlappedPipePair(
 
     const server = k32.CreateNamedPipeW(
         name_w,
-        server_access | std.os.windows.FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
-        std.os.windows.PIPE_TYPE_BYTE | std.os.windows.PIPE_READMODE_BYTE | std.os.windows.PIPE_WAIT,
+        server_access | w.FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        w.PIPE_TYPE_BYTE | w.PIPE_READMODE_BYTE | w.PIPE_WAIT,
         1,
         65536,
         65536,
@@ -659,17 +659,17 @@ fn createOverlappedPipePair(
     if (server == w.INVALID_HANDLE_VALUE) return error.OpenPtyFailed;
     errdefer _ = w.CloseHandle(server);
 
-    const client_access: u32 = if (server_access == std.os.windows.PIPE_ACCESS_INBOUND)
-        std.os.windows.GENERIC_WRITE
+    const client_access: u32 = if (server_access == w.PIPE_ACCESS_INBOUND)
+        w.GENERIC_WRITE
     else
-        std.os.windows.GENERIC_READ;
+        w.GENERIC_READ;
 
-    const client = k32.CreateFileW(
+    const client = w.CreateFileW(
         name_w,
         client_access,
         0,
         null,
-        std.os.windows.OPEN_EXISTING,
+        w.OPEN_EXISTING,
         0,
         null,
     );
@@ -700,14 +700,14 @@ fn createPtyWindows(cols: u16, rows: u16) CreatePtyError!PtyResult {
 
     // Output pipe: ConPTY writes (client), we read (overlapped server).
     {
-        const pair = try createOverlappedPipePair(std.os.windows.PIPE_ACCESS_INBOUND);
+        const pair = try createOverlappedPipePair(w.PIPE_ACCESS_INBOUND);
         out_server = pair.server;
         out_client = pair.client;
     }
 
     // Input pipe: we write (overlapped server), ConPTY reads (client).
     {
-        const pair = try createOverlappedPipePair(std.os.windows.PIPE_ACCESS_OUTBOUND);
+        const pair = try createOverlappedPipePair(w.PIPE_ACCESS_OUTBOUND);
         in_server = pair.server;
         in_client = pair.client;
     }

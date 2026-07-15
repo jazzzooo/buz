@@ -92,7 +92,7 @@ pub fn toNTPath(wbuf: []u16, utf8: []const u8) [:0]u16 {
 }
 
 pub fn toNTPath16(wbuf: []u16, path: []const u16) [:0]u16 {
-    if (!std.fs.path.isAbsoluteWindowsWTF16(path)) {
+    if (!std.fs.path.isAbsoluteWindowsWtf16(path)) {
         return toWPathNormalized16(wbuf, path);
     }
 

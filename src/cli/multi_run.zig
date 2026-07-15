@@ -357,12 +357,12 @@ const AbortHandler = struct {
         should_abort = true;
     }
 
-    fn windowsCtrlHandler(dwCtrlType: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL {
-        if (dwCtrlType == std.os.windows.CTRL_C_EVENT) {
+    fn windowsCtrlHandler(dwCtrlType: bun.windows.DWORD) callconv(.winapi) bun.windows.BOOL {
+        if (dwCtrlType == bun.windows.CTRL_C_EVENT) {
             should_abort = true;
-            return std.os.windows.TRUE;
+            return .TRUE;
         }
-        return std.os.windows.FALSE;
+        return .FALSE;
     }
 
     pub fn install() void {
@@ -374,8 +374,8 @@ const AbortHandler = struct {
             };
             bun.sys.sigaction(std.posix.SIG.INT, &action, null);
         } else {
-            const res = bun.c.SetConsoleCtrlHandler(windowsCtrlHandler, std.os.windows.TRUE);
-            if (res == 0) {
+            const res = bun.windows.SetConsoleCtrlHandler(windowsCtrlHandler, .TRUE);
+            if (!res.toBool()) {
                 if (Environment.isDebug) {
                     Output.warn("Failed to set abort handler\n", .{});
                 }
@@ -385,7 +385,7 @@ const AbortHandler = struct {
 
     pub fn uninstall() void {
         if (Environment.isWindows) {
-            _ = bun.c.SetConsoleCtrlHandler(null, std.os.windows.FALSE);
+            _ = bun.windows.SetConsoleCtrlHandler(null, .FALSE);
         }
     }
 };

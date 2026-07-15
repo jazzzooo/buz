@@ -679,7 +679,7 @@ pub const inet = if (bun.Environment.isWindows) win: {
     const ws2 = std.os.windows.ws2_32;
     break :win struct {
         pub const IN4ADDR_LOOPBACK: u32 = ws2.IN4ADDR_LOOPBACK;
-        pub const INET6_ADDRSTRLEN = ws2.INET6_ADDRSTRLEN;
+        pub const INET6_ADDRSTRLEN = 46;
         pub const IN6ADDR_ANY_INIT: [16]u8 = @splat(0);
         pub const AF_INET = ws2.AF.INET;
         pub const AF_INET6 = ws2.AF.INET6;

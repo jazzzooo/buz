@@ -13,7 +13,7 @@ pub fn fromJS(globalObject: *JSGlobalObject, value: JSValue) bun.JSError!?TimeLi
         const seconds = value.asNumber();
         if (std.math.isFinite(seconds)) {
             if (seconds < 0) {
-                return fromNow();
+                return fromNow(globalObject.bunVM().io);
             }
             return fromSeconds(seconds);
         }
@@ -65,9 +65,9 @@ fn fromMilliseconds(milliseconds: f64) TimeLike {
     };
 }
 
-fn fromNow() TimeLike {
+fn fromNow(io: std.Io) TimeLike {
     if (Environment.isWindows) {
-        const nanos = std.time.nanoTimestamp();
+        const nanos = std.Io.Clock.real.now(io).nanoseconds;
         return @as(TimeLike, @floatFromInt(nanos)) / std.time.ns_per_s;
     }
 

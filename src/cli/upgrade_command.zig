@@ -788,7 +788,7 @@ pub const UpgradeCommand = struct {
                         target_dirname,
                         target_filename,
                     }, 0);
-                    std.posix.rename(destination_executable, outdated_filename.?) catch |err| {
+                    std.Io.Dir.cwd().rename(destination_executable, std.Io.Dir.cwd(), outdated_filename.?, ctx.io) catch |err| {
                         save_dir_.deleteTree(ctx.io, version_name) catch {};
                         Output.prettyErrorln("<r><red>error:<r> Failed to rename current executable {s}", .{@errorName(err)});
                         Global.exit(1);
@@ -801,7 +801,7 @@ pub const UpgradeCommand = struct {
 
                     if (comptime Environment.isWindows) {
                         // Attempt to restore the old executable. If this fails, the user will be left without a working copy of bun.
-                        std.posix.rename(outdated_filename.?, destination_executable) catch {
+                        std.Io.Dir.cwd().rename(outdated_filename.?, std.Io.Dir.cwd(), destination_executable, ctx.io) catch {
                             Output.errGeneric(
                                 \\Failed to move new version of Bun to {s} due to {s}
                             ,
@@ -946,7 +946,7 @@ pub const upgrade_js_bindings = struct {
     /// Windows only
     pub fn jsOpenTempDirWithoutSharingDelete(_: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!bun.jsc.JSValue {
         if (comptime !Environment.isWindows) return .js_undefined;
-        const w = std.os.windows;
+        const w = bun.windows;
 
         var buf: bun.WPathBuffer = undefined;
         const tmpdir_path = fs.FileSystem.RealFS.getDefaultTempDir();
@@ -956,16 +956,16 @@ pub const upgrade_js_bindings = struct {
         };
 
         const path_len_bytes: u16 = @truncate(path.len * 2);
-        var nt_name = std.os.windows.UNICODE_STRING{
+        var nt_name = w.UNICODE_STRING{
             .Length = path_len_bytes,
             .MaximumLength = path_len_bytes,
             .Buffer = @constCast(path.ptr),
         };
 
-        var attr = std.os.windows.OBJECT_ATTRIBUTES{
-            .Length = @sizeOf(std.os.windows.OBJECT_ATTRIBUTES),
+        var attr = w.OBJECT_ATTRIBUTES{
+            .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
             .RootDirectory = null,
-            .Attributes = 0,
+            .Attributes = .{},
             .ObjectName = &nt_name,
             .SecurityDescriptor = null,
             .SecurityQualityOfService = null,
@@ -973,10 +973,10 @@ pub const upgrade_js_bindings = struct {
 
         const flags: u32 = w.STANDARD_RIGHTS_READ | w.FILE_READ_ATTRIBUTES | w.FILE_READ_EA | w.SYNCHRONIZE | w.FILE_TRAVERSE;
 
-        var fd: std.os.windows.HANDLE = std.os.windows.INVALID_HANDLE_VALUE;
-        var io: std.os.windows.IO_STATUS_BLOCK = undefined;
+        var fd: w.HANDLE = w.INVALID_HANDLE_VALUE;
+        var io: w.IO_STATUS_BLOCK = undefined;
 
-        const rc = std.os.windows.ntdll.NtCreateFile(
+        const rc = w.NtCreateFile(
             &fd,
             flags,
             &attr,

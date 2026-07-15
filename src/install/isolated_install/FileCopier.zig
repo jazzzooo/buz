@@ -96,7 +96,7 @@ pub const FileCopier = struct {
 
                 switch (entry.kind) {
                     .directory => {
-                        if (bun.windows.CreateDirectoryExW(this.src_path.sliceZ(), this.dest_subpath.sliceZ(), null) == 0) {
+                        if (!bun.windows.CreateDirectoryExW(this.src_path.sliceZ(), this.dest_subpath.sliceZ(), null).toBool()) {
                             bun.MakePath.makePath(this.io, u16, dest_dir, entry.path) catch {};
                         }
                     },

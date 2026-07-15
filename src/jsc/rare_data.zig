@@ -654,9 +654,9 @@ pub export fn Bun__Process__getStdinFdType(vm: *jsc.VirtualMachine, fd: i32) Std
         2 => vm.rareData().stderr().data.file.mode,
         else => unreachable,
     };
-    if (bun.S.ISFIFO(mode)) {
+    if (bun.S.ISFIFO(@intCast(mode))) {
         return .pipe;
-    } else if (bun.S.ISSOCK(mode)) {
+    } else if (bun.S.ISSOCK(@intCast(mode))) {
         return .socket;
     } else {
         return .file;

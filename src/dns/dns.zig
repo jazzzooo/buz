@@ -1,6 +1,8 @@
 pub const AI_V4MAPPED: c_int = if (bun.Environment.isWindows) 2048 else bun.c.AI_V4MAPPED;
 pub const AI_ADDRCONFIG: c_int = if (bun.Environment.isWindows) 1024 else bun.c.AI_ADDRCONFIG;
 pub const AI_ALL: c_int = if (bun.Environment.isWindows) 256 else bun.c.AI_ALL;
+pub const AI = if (bun.Environment.isWindows) bun.windows.libuv.AI else std.c.AI;
+pub const AddrInfo = if (bun.Environment.isWindows) bun.windows.libuv.addrinfo else std.c.addrinfo;
 
 pub const GetAddrInfo = struct {
     name: []const u8 = "",
@@ -49,16 +51,16 @@ pub const GetAddrInfo = struct {
         socktype: SocketType = .stream,
         protocol: Protocol = .unspecified,
         backend: Backend = Backend.default,
-        flags: std.c.AI = .{},
+        flags: AI = .{},
         _: u24 = 0,
 
-        pub fn toLibC(this: Options) ?std.c.addrinfo {
-            if (this.family == .unspecified and this.socktype == .unspecified and this.protocol == .unspecified and this.flags == std.c.AI{}) {
+        pub fn toLibC(this: Options) ?AddrInfo {
+            if (this.family == .unspecified and this.socktype == .unspecified and this.protocol == .unspecified and this.flags == AI{}) {
                 return null;
             }
 
-            var hints: std.c.addrinfo = undefined;
-            @memset(std.mem.asBytes(&hints)[0..@sizeOf(std.c.addrinfo)], 0);
+            var hints: AddrInfo = undefined;
+            @memset(std.mem.asBytes(&hints)[0..@sizeOf(AddrInfo)], 0);
 
             hints.family = this.family.toLibC();
             hints.socktype = this.socktype.toLibC();
@@ -197,7 +199,7 @@ pub const GetAddrInfo = struct {
         pub const List = std.array_list.Managed(Result);
 
         pub const Any = union(enum) {
-            addrinfo: ?*std.c.addrinfo,
+            addrinfo: ?*AddrInfo,
             list: List,
 
             pub const toJS = options_jsc.resultAnyToJS;
@@ -206,7 +208,7 @@ pub const GetAddrInfo = struct {
                 switch (this.*) {
                     .addrinfo => |addrinfo| {
                         if (addrinfo) |a| {
-                            std.c.freeaddrinfo(a);
+                            freeAddrInfo(a);
                         }
                     },
                     .list => |list_| {
@@ -217,10 +219,10 @@ pub const GetAddrInfo = struct {
             }
         };
 
-        pub fn toList(allocator: std.mem.Allocator, addrinfo: *std.c.addrinfo) !List {
+        pub fn toList(allocator: std.mem.Allocator, addrinfo: *AddrInfo) !List {
             var list = try List.initCapacity(allocator, addrInfoCount(addrinfo));
 
-            var addr: ?*std.c.addrinfo = addrinfo;
+            var addr: ?*AddrInfo = addrinfo;
             while (addr) |a| : (addr = a.next) {
                 list.appendAssumeCapacity(fromAddrInfo(a) orelse continue);
             }
@@ -228,9 +230,9 @@ pub const GetAddrInfo = struct {
             return list;
         }
 
-        pub fn fromAddrInfo(addrinfo: *std.c.addrinfo) ?Result {
+        pub fn fromAddrInfo(addrinfo: *AddrInfo) ?Result {
             return Result{
-                .address = bun.api.socket.SocketAddress.fromPosix(@alignCast(addrinfo.addr orelse return null)) orelse return null,
+                .address = bun.api.socket.SocketAddress.fromPosix(@ptrCast(@alignCast(addrinfo.addr orelse return null))) orelse return null,
                 // no TTL in POSIX getaddrinfo()
                 .ttl = 0,
             };
@@ -246,13 +248,21 @@ pub fn addressToString(address: *const bun.api.socket.SocketAddress) bun.OOM!bun
 
 pub const addressToJS = options_jsc.addressToJS;
 
-pub fn addrInfoCount(addrinfo: *std.c.addrinfo) u32 {
+pub fn addrInfoCount(addrinfo: *AddrInfo) u32 {
     var count: u32 = 1;
-    var current: ?*std.c.addrinfo = addrinfo.next;
+    var current: ?*AddrInfo = addrinfo.next;
     while (current != null) : (current = current.?.next) {
         count += @intFromBool(current.?.addr != null);
     }
     return count;
+}
+
+pub fn freeAddrInfo(addrinfo: *AddrInfo) void {
+    if (comptime bun.Environment.isWindows) {
+        bun.windows.libuv.freeaddrinfo(addrinfo);
+    } else {
+        std.c.freeaddrinfo(addrinfo);
+    }
 }
 
 pub const addrInfoToJSArray = options_jsc.addrInfoToJSArray;

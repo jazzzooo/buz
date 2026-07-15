@@ -485,7 +485,7 @@ pub const PackageInstall = struct {
         io: std.Io,
         cached_package_dir: std.Io.Dir = undefined,
         walker: Walker = undefined,
-        subdir: std.Io.Dir = if (Environment.isWindows) std.Io.Dir{ .fd = std.os.windows.INVALID_HANDLE_VALUE } else undefined,
+        subdir: std.Io.Dir = if (Environment.isWindows) std.Io.Dir{ .handle = std.os.windows.INVALID_HANDLE_VALUE } else undefined,
         buf: bun.windows.WPathBuffer = if (Environment.isWindows) undefined,
         buf2: bun.windows.WPathBuffer = if (Environment.isWindows) undefined,
         to_copy_buf: if (Environment.isWindows) []u16 else void = if (Environment.isWindows) undefined,
@@ -541,14 +541,14 @@ pub const PackageInstall = struct {
             return .success;
         }
 
-        const dest_path_length = bun.windows.GetFinalPathNameByHandleW(destbase.fd, &state.buf, state.buf.len, 0);
+        const dest_path_length = bun.windows.GetFinalPathNameByHandleW(destbase.handle, &state.buf, state.buf.len, 0);
         if (dest_path_length == 0 or dest_path_length >= state.buf.len) {
             const e = bun.windows.Win32Error.get();
             const err = if (dest_path_length == 0)
                 (if (e.toSystemErrno()) |sys_err| bun.errnoToZigErr(sys_err) else error.Unexpected)
             else
                 error.NameTooLong;
-            state.cached_package_dir.close();
+            state.cached_package_dir.close(this.io);
             state.walker.deinit();
             return Result.fail(err, .opening_dest_dir, null);
         }
@@ -568,14 +568,14 @@ pub const PackageInstall = struct {
         _ = node_fs_for_package_installer().mkdirRecursiveOSPathImpl(void, {}, fullpath, 0, false);
         state.to_copy_buf = state.buf[fullpath.len..];
 
-        const cache_path_length = bun.windows.GetFinalPathNameByHandleW(state.cached_package_dir.fd, &state.buf2, state.buf2.len, 0);
+        const cache_path_length = bun.windows.GetFinalPathNameByHandleW(state.cached_package_dir.handle, &state.buf2, state.buf2.len, 0);
         if (cache_path_length == 0 or cache_path_length >= state.buf2.len) {
             const e = bun.windows.Win32Error.get();
             const err = if (cache_path_length == 0)
                 (if (e.toSystemErrno()) |sys_err| bun.errnoToZigErr(sys_err) else error.Unexpected)
             else
                 error.NameTooLong;
-            state.cached_package_dir.close();
+            state.cached_package_dir.close(this.io);
             state.walker.deinit();
             return Result.fail(err, .copying_files, null);
         }
@@ -634,15 +634,15 @@ pub const PackageInstall = struct {
 
                         switch (entry.kind) {
                             .directory => {
-                                if (bun.windows.CreateDirectoryExW(src.ptr, dest.ptr, null) == 0) {
-                                    bun.MakePath.makePath(u16, destination_dir_, entry.path) catch {};
+                                if (!bun.windows.CreateDirectoryExW(src.ptr, dest.ptr, null).toBool()) {
+                                    bun.MakePath.makePath(io, u16, destination_dir_, entry.path) catch {};
                                 }
                             },
                             .file => {
-                                if (bun.windows.CopyFileW(src.ptr, dest.ptr, 0) == 0) {
+                                if (!bun.windows.CopyFileW(src.ptr, dest.ptr, .FALSE).toBool()) {
                                     if (bun.Dirname.dirname(u16, entry.path)) |entry_dirname| {
-                                        bun.MakePath.makePath(u16, destination_dir_, entry_dirname) catch {};
-                                        if (bun.windows.CopyFileW(src.ptr, dest.ptr, 0) != 0) {
+                                        bun.MakePath.makePath(io, u16, destination_dir_, entry_dirname) catch {};
+                                        if (bun.windows.CopyFileW(src.ptr, dest.ptr, .FALSE).toBool()) {
                                             continue;
                                         }
                                     }
@@ -813,7 +813,7 @@ pub const PackageInstall = struct {
             const src = task.src;
             const dest = task.dest;
 
-            if (bun.windows.CreateHardLinkW(dest.ptr, src.ptr, null) != 0) {
+            if (bun.windows.CreateHardLinkW(dest.ptr, src.ptr, null).toBool()) {
                 return null;
             }
 
@@ -826,7 +826,7 @@ pub const PackageInstall = struct {
                             .{bun.fmt.fmtPath(u16, dest, .{})},
                         );
                     _ = bun.windows.DeleteFileW(dest.ptr);
-                    if (bun.windows.CreateHardLinkW(dest.ptr, src.ptr, null) != 0) {
+                    if (bun.windows.CreateHardLinkW(dest.ptr, src.ptr, null).toBool()) {
                         return null;
                     }
                 },
@@ -838,7 +838,7 @@ pub const PackageInstall = struct {
             _ = node_fs_for_package_installer().mkdirRecursiveOSPathImpl(void, {}, dirpath, 0, false).unwrap() catch {};
             dest[dest.len - task.basename - 1] = std.fs.path.sep;
 
-            if (bun.windows.CreateHardLinkW(dest.ptr, src.ptr, null) != 0) {
+            if (bun.windows.CreateHardLinkW(dest.ptr, src.ptr, null).toBool()) {
                 return null;
             }
 
@@ -861,7 +861,7 @@ pub const PackageInstall = struct {
                 }
             }
 
-            if (bun.windows.CopyFileW(src.ptr, dest.ptr, 0) != 0) {
+            if (bun.windows.CopyFileW(src.ptr, dest.ptr, .FALSE).toBool()) {
                 return null;
             }
 
@@ -1040,15 +1040,15 @@ pub const PackageInstall = struct {
 
                         switch (entry.kind) {
                             .directory => {
-                                if (bun.windows.CreateDirectoryExW(src.ptr, dest.ptr, null) == 0) {
-                                    bun.MakePath.makePath(u16, destination_dir, entry.path) catch {};
+                                if (!bun.windows.CreateDirectoryExW(src.ptr, dest.ptr, null).toBool()) {
+                                    bun.MakePath.makePath(io, u16, destination_dir, entry.path) catch {};
                                 }
                             },
                             .file => {
                                 switch (bun.sys.symlinkW(dest, src, .{})) {
                                     .err => |err| {
                                         if (bun.Dirname.dirname(u16, entry.path)) |entry_dirname| {
-                                            bun.MakePath.makePath(u16, destination_dir, entry_dirname) catch {};
+                                            bun.MakePath.makePath(io, u16, destination_dir, entry_dirname) catch {};
                                             if (bun.sys.symlinkW(dest, src, .{}) == .result) {
                                                 continue;
                                             }

@@ -2369,7 +2369,7 @@ fn getExistsSync(this: *Blob) jsc.JSValue {
     // We say regular files and pipes exist.
     // This is mostly meant for "Can we use this in new Response(file)?"
     return JSValue.jsBoolean(
-        bun.isRegularFile(store.data.file.mode) or bun.sys.S.ISFIFO(store.data.file.mode),
+        bun.isRegularFile(store.data.file.mode) or bun.sys.S.ISFIFO(@intCast(store.data.file.mode)),
     );
 }
 

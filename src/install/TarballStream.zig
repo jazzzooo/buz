@@ -569,7 +569,7 @@ fn beginEntry(this: *TarballStream, entry: *lib.Archive.Entry) !void {
         return;
     }
     if (comptime Environment.isWindows) {
-        if (std.fs.path.isAbsoluteWindowsWTF16(path)) {
+        if (std.fs.path.isAbsoluteWindowsWtf16(path)) {
             this.phase = .want_data;
             this.out_fd = null;
             return;

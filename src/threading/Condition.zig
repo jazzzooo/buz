@@ -117,7 +117,7 @@ const WindowsImpl = struct {
 
     fn wait(self: *Impl, mutex: *Mutex, timeout: ?u64) error{Timeout}!void {
         var timeout_overflowed = false;
-        var timeout_ms: os.windows.DWORD = os.windows.INFINITE;
+        var timeout_ms: os.windows.DWORD = std.math.maxInt(os.windows.DWORD);
 
         if (timeout) |timeout_ns| {
             // Round the nanoseconds to the nearest millisecond,
@@ -126,7 +126,7 @@ const WindowsImpl = struct {
             timeout_ms = std.math.cast(os.windows.DWORD, ms) orelse std.math.maxInt(os.windows.DWORD);
 
             // Track if the timeout overflowed into INFINITE and make sure not to wait forever.
-            if (timeout_ms == os.windows.INFINITE) {
+            if (timeout_ms == std.math.maxInt(os.windows.DWORD)) {
                 timeout_overflowed = true;
                 timeout_ms -= 1;
             }
@@ -136,7 +136,7 @@ const WindowsImpl = struct {
             // The internal state of the DebugMutex needs to be handled here as well.
             mutex.impl.locking_thread.store(0, .unordered);
         }
-        const rc = os.windows.kernel32.SleepConditionVariableSRW(
+        const rc = SleepConditionVariableSRW(
             &self.condition,
             if (builtin.mode == .Debug) &mutex.impl.impl.srwlock else &mutex.impl.srwlock,
             timeout_ms,
@@ -148,7 +148,7 @@ const WindowsImpl = struct {
         }
 
         // Return error.Timeout if we know the timeout elapsed correctly.
-        if (rc == os.windows.FALSE) {
+        if (!rc.toBool()) {
             assert(os.windows.GetLastError() == .TIMEOUT);
             if (!timeout_overflowed) return error.Timeout;
         }
@@ -156,10 +156,17 @@ const WindowsImpl = struct {
 
     fn wake(self: *Impl, comptime notify: Notify) void {
         switch (notify) {
-            .one => os.windows.kernel32.WakeConditionVariable(&self.condition),
-            .all => os.windows.kernel32.WakeAllConditionVariable(&self.condition),
+            .one => os.windows.ntdll.RtlWakeConditionVariable(&self.condition),
+            .all => os.windows.ntdll.RtlWakeAllConditionVariable(&self.condition),
         }
     }
+
+    extern "kernel32" fn SleepConditionVariableSRW(
+        condition_variable: *os.windows.CONDITION_VARIABLE,
+        srw_lock: *os.windows.SRWLOCK,
+        milliseconds: os.windows.DWORD,
+        flags: os.windows.ULONG,
+    ) callconv(.winapi) os.windows.BOOL;
 };
 
 const FutexImpl = struct {

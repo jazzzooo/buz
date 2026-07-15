@@ -381,21 +381,11 @@ pub fn homedir(global: *jsc.JSGlobalObject) !bun.String {
 pub fn hostname(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
     if (Environment.isWindows) {
         var name_buffer: [129:0]u16 = undefined;
-        if (bun.windows.GetHostNameW(&name_buffer, name_buffer.len) == 0) {
+        if (bun.windows.GetHostNameW(&name_buffer, name_buffer.len).toBool()) {
             const str = bun.String.cloneUTF16(std.mem.sliceTo(&name_buffer, 0));
             defer str.deref();
             return str.toJS(global);
         }
-
-        var result: std.os.windows.ws2_32.WSADATA = undefined;
-        if (std.os.windows.ws2_32.WSAStartup(0x202, &result) == 0) {
-            if (bun.windows.GetHostNameW(&name_buffer, name_buffer.len) == 0) {
-                var y = bun.String.cloneUTF16(std.mem.sliceTo(&name_buffer, 0));
-                defer y.deref();
-                return y.toJS(global);
-            }
-        }
-
         return jsc.ZigString.init("unknown").withEncoding().toJS(global);
     } else {
         var name_buffer: [bun.HOST_NAME_MAX]u8 = undefined;

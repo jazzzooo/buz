@@ -44,8 +44,8 @@ pub fn main(init: std.process.Init) void {
 
     _bun.handleOom(_bun.initEnviron(init.minimal.environ, init.environ_map));
     if (Environment.isWindows) {
-        environ = @ptrCast(_bun.environ.ptr);
-        _environ = @ptrCast(_bun.environ.ptr);
+        environ = @ptrCast(@constCast(_bun.environ.ptr));
+        _environ = @ptrCast(@constCast(_bun.environ.ptr));
     }
 
     _bun.start_time = @intCast(std.Io.Clock.awake.now(init.io).nanoseconds);

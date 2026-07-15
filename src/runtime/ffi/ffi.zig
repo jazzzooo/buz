@@ -61,7 +61,7 @@ pub const FFI = struct {
     pub const fromJS = js.fromJS;
     pub const fromJSDirect = js.fromJSDirect;
 
-    dylib: ?std.DynLib = null,
+    dylib: ?DynLib = null,
     functions: bun.StringArrayHashMap(Function) = .empty,
     closed: bool = false,
     shared_state: ?*TCC.State = null,
@@ -1064,12 +1064,12 @@ pub const FFI = struct {
             return global.toInvalidArguments("Expected at least one symbol", .{});
         }
 
-        var dylib: std.DynLib = brk: {
+        var dylib: DynLib = brk: {
             // First try using the name directly
-            break :brk std.DynLib.open(name) catch {
+            break :brk DynLib.open(name) catch {
                 const backup_name = Fs.FileSystem.instance.abs(&[1]string{name});
                 // if that fails, try resolving the filepath relative to the current working directory
-                break :brk std.DynLib.open(backup_name) catch {
+                break :brk DynLib.open(backup_name) catch {
                     // Then, if that fails, report an error with the library name and system error
                     const dlerror_buf = getDlError(bun.default_allocator) catch null;
                     defer if (dlerror_buf) |buf| bun.default_allocator.free(buf);
@@ -2454,6 +2454,29 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 const Output = bun.Output;
 const strings = bun.strings;
+const libuv = bun.windows.libuv;
+
+const DynLib = struct {
+    inner: libuv.uv_lib_t,
+
+    fn open(path: []const u8) !DynLib {
+        const path_z = try bun.default_allocator.dupeSentinel(u8, path, 0);
+        defer bun.default_allocator.free(path_z);
+        var result: DynLib = undefined;
+        if (libuv.uv_dlopen(path_z.ptr, &result.inner) != 0) return error.OpenFailed;
+        return result;
+    }
+
+    fn close(this: *DynLib) void {
+        libuv.uv_dlclose(&this.inner);
+    }
+
+    fn lookup(this: *DynLib, comptime T: type, name: [:0]const u8) ?T {
+        var pointer: ?*anyopaque = null;
+        if (libuv.uv_dlsym(&this.inner, name.ptr, &pointer) != 0) return null;
+        return @ptrCast(pointer orelse return null);
+    }
+};
 
 const jsc = bun.jsc;
 const JSGlobalObject = bun.jsc.JSGlobalObject;
