@@ -43,7 +43,7 @@ pub const TestingAPIs = struct {
 
         pub fn deinit(this: *ApplyArgs) void {
             this.patchfile_txt.deinit();
-            this.patchfile.deinit(bun.default_allocator);
+            this.patchfile.deinit();
             // TODO: HAVE @zackradisic REVIEW THIS DIFF
             if (bun.FD.cwd() != this.dirfd) {
                 this.dirfd.close();
@@ -81,7 +81,7 @@ pub const TestingAPIs = struct {
                 return globalThis.throwError(e, "failed to parse patch file");
             }
         };
-        defer patchfile.deinit(bun.default_allocator);
+        defer patchfile.deinit();
 
         const str = bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "{f}", .{std.json.fmt(patchfile, .{})}));
         const outstr = bun.String.borrowUTF8(str);

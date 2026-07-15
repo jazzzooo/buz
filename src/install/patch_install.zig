@@ -268,7 +268,7 @@ pub const PatchTask = struct {
             );
             return;
         };
-        defer patchfile.deinit(bun.default_allocator);
+        defer patchfile.deinit();
 
         // 2. Create temp dir to do all the modifications
         var tmpname_buf: [1024]u8 = undefined;

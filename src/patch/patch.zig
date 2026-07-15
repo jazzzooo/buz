@@ -13,13 +13,13 @@ pub const PatchFilePart = union(enum) {
     file_rename: *FileRename,
     file_mode_change: *FileModeChange,
 
-    pub fn deinit(this: *PatchFilePart, allocator: Allocator) void {
+    pub fn deinit(this: *PatchFilePart) void {
         switch (this.*) {
-            .file_patch => this.file_patch.deinit(allocator),
-            .file_deletion => this.file_deletion.deinit(allocator),
-            .file_creation => this.file_creation.deinit(allocator),
-            .file_rename => this.file_rename.deinit(allocator),
-            .file_mode_change => this.file_mode_change.deinit(allocator),
+            .file_patch => this.file_patch.deinit(),
+            .file_deletion => this.file_deletion.deinit(),
+            .file_creation => this.file_creation.deinit(),
+            .file_rename => this.file_rename.deinit(),
+            .file_mode_change => this.file_mode_change.deinit(),
         }
     }
 };
@@ -27,9 +27,9 @@ pub const PatchFilePart = union(enum) {
 pub const PatchFile = struct {
     parts: List(PatchFilePart) = .empty,
 
-    pub fn deinit(this: *PatchFile, allocator: Allocator) void {
-        for (this.parts.items) |*part| part.deinit(allocator);
-        this.parts.deinit(allocator);
+    pub fn deinit(this: *PatchFile) void {
+        for (this.parts.items) |*part| part.deinit();
+        this.parts.deinit(bun.default_allocator);
     }
 
     const ApplyState = struct {
@@ -387,11 +387,11 @@ const FileDeets = struct {
         return hunks;
     }
 
-    fn deinit(this: *FileDeets, allocator: Allocator) void {
+    fn deinit(this: *FileDeets) void {
         for (this.hunks.items) |*hunk| {
-            hunk.deinit(allocator);
+            hunk.deinit();
         }
-        this.hunks.deinit(allocator);
+        this.hunks.deinit(bun.default_allocator);
     }
 
     fn nullifyEmptyStrings(this: *FileDeets) void {
@@ -415,8 +415,8 @@ pub const PatchMutationPart = struct {
     /// Ensure context, insertion, deletion values are in sync with HunkLineType enum
     pub const PartType = enum(u2) { context = 0, insertion, deletion };
 
-    pub fn deinit(this: *PatchMutationPart, allocator: Allocator) void {
-        this.lines.deinit(allocator);
+    pub fn deinit(this: *PatchMutationPart) void {
+        this.lines.deinit(bun.default_allocator);
     }
 };
 
@@ -440,11 +440,11 @@ pub const Hunk = struct {
         };
     };
 
-    pub fn deinit(this: *Hunk, allocator: Allocator) void {
+    pub fn deinit(this: *Hunk) void {
         for (this.parts.items) |*part| {
-            part.deinit(allocator);
+            part.deinit();
         }
-        this.parts.deinit(allocator);
+        this.parts.deinit(bun.default_allocator);
     }
 
     pub fn verifyIntegrity(this: *const Hunk) bool {
@@ -489,7 +489,7 @@ pub const FileRename = struct {
     to_path: []const u8,
 
     /// Does not allocate
-    pub fn deinit(_: *FileRename, _: Allocator) void {}
+    pub fn deinit(_: *FileRename) void {}
 };
 
 pub const FileModeChange = struct {
@@ -498,7 +498,7 @@ pub const FileModeChange = struct {
     new_mode: FileMode,
 
     /// Does not allocate
-    pub fn deinit(_: *FileModeChange, _: Allocator) void {}
+    pub fn deinit(_: *FileModeChange) void {}
 };
 
 pub const FilePatch = struct {
@@ -507,9 +507,9 @@ pub const FilePatch = struct {
     before_hash: ?[]const u8,
     after_hash: ?[]const u8,
 
-    pub fn deinit(this: *FilePatch, allocator: Allocator) void {
-        for (this.hunks.items) |*hunk| hunk.deinit(allocator);
-        this.hunks.deinit(allocator);
+    pub fn deinit(this: *FilePatch) void {
+        for (this.hunks.items) |*hunk| hunk.deinit();
+        this.hunks.deinit(bun.default_allocator);
         bun.destroy(this);
     }
 };
@@ -520,8 +520,8 @@ pub const FileDeletion = struct {
     hunk: ?*Hunk,
     hash: ?[]const u8,
 
-    pub fn deinit(this: *FileDeletion, allocator: Allocator) void {
-        if (this.hunk) |hunk| hunk.deinit(allocator);
+    pub fn deinit(this: *FileDeletion) void {
+        if (this.hunk) |hunk| hunk.deinit();
         bun.destroy(this);
     }
 };
@@ -532,8 +532,8 @@ pub const FileCreation = struct {
     hunk: ?*Hunk,
     hash: ?[]const u8,
 
-    pub fn deinit(this: *FileCreation, allocator: Allocator) void {
-        if (this.hunk) |hunk| hunk.deinit(allocator);
+    pub fn deinit(this: *FileCreation) void {
+        if (this.hunk) |hunk| hunk.deinit();
         bun.destroy(this);
     }
 };
@@ -562,12 +562,12 @@ const ParseErr = error{
 /// NOTE: the returned `PatchFile` struct will contain pointers to original file text so make sure to not deallocate `file`
 pub fn parsePatchFile(file: []const u8) ParseErr!PatchFile {
     var lines_parser = PatchLinesParser{};
-    defer lines_parser.deinit(bun.default_allocator, false);
+    defer lines_parser.deinit(false);
 
     lines_parser.parse(file, .{}) catch |err| brk: {
         // TODO: the parser can be refactored to remove this as it is a hacky workaround, like detecting while parsing if legacy diffs are used
         if (err == ParseErr.hunk_header_integrity_check_failed) {
-            lines_parser.reset(bun.default_allocator);
+            lines_parser.reset();
             break :brk try lines_parser.parse(file, .{ .support_legacy_diffs = true });
         }
         return err;
@@ -742,20 +742,20 @@ const PatchLinesParser = struct {
         pragma,
     };
 
-    fn deinit(this: *PatchLinesParser, allocator: Allocator, comptime clear_result_retaining_capacity: bool) void {
-        this.current_file_patch.deinit(allocator);
-        if (this.current_hunk) |*hunk| hunk.deinit(allocator);
-        if (this.current_hunk_mutation_part) |*part| part.deinit(allocator);
-        for (this.result.items) |*file_deet| file_deet.deinit(allocator);
+    fn deinit(this: *PatchLinesParser, comptime clear_result_retaining_capacity: bool) void {
+        this.current_file_patch.deinit();
+        if (this.current_hunk) |*hunk| hunk.deinit();
+        if (this.current_hunk_mutation_part) |*part| part.deinit();
+        for (this.result.items) |*file_deet| file_deet.deinit();
         if (comptime clear_result_retaining_capacity) {
             this.result.clearRetainingCapacity();
         } else {
-            this.result.deinit(allocator);
+            this.result.deinit(bun.default_allocator);
         }
     }
 
-    fn reset(this: *PatchLinesParser, allocator: Allocator) void {
-        this.deinit(allocator, true);
+    fn reset(this: *PatchLinesParser) void {
+        this.deinit(true);
         this.result.clearRetainingCapacity();
         this.* = .{
             .result = this.result,
