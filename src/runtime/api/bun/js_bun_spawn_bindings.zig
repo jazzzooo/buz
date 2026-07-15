@@ -457,7 +457,7 @@ pub fn spawnMaybeSync(
 
     if (!override_env and env_array.items.len == 0) {
         env_array.items = jsc_vm.transpiler.env.map.createNullDelimitedEnvMap(allocator) catch |err| return globalThis.throwError(err, "in Bun.spawn") catch return .zero;
-        env_array.capacity = env_array.items.len;
+        env_array.capacity = env_array.items.len + 1;
     }
 
     inline for (0..stdio.len) |fd_index| {
