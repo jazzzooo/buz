@@ -13,6 +13,7 @@ pub fn fileReadError(err: anyerror, stderr: anytype, filename: string, kind: str
 }
 
 pub fn readFile(
+    io: std.Io,
     allocator: std.mem.Allocator,
     cwd: string,
     filename: string,
@@ -20,10 +21,7 @@ pub fn readFile(
     var paths = [_]string{ cwd, filename };
     const outpath = try std.fs.path.resolve(allocator, &paths);
     defer allocator.free(outpath);
-    var file = try bun.openFileZ(&try std.posix.toPosixPath(outpath), std.Io.Dir.OpenFileOptions{ .mode = .read_only });
-    defer file.close();
-    const size = try file.getEndPos();
-    return try file.readToEndAlloc(allocator, size);
+    return std.Io.Dir.cwd().readFileAlloc(io, outpath, allocator, .unlimited);
 }
 
 pub fn resolve_jsx_runtime(str: string) !Api.JsxRuntime {

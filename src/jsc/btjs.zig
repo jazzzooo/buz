@@ -168,12 +168,15 @@ fn printLineFromFileAnyOs(out_stream: *std.Io.Writer, source_location: std.debug
 
     // Need this to always block even in async I/O mode, because this could potentially
     // be called from e.g. the event loop code crashing.
-    var f = try std.Io.Dir.cwd().openFile(source_location.file_name, .{});
-    defer f.close();
+    const io = std.Options.debug_io;
+    var f = try std.Io.Dir.cwd().openFile(io, source_location.file_name, .{});
+    defer f.close(io);
     // TODO fstat and make sure that the file has the correct size
 
     var buf: [4096]u8 = undefined;
-    var amt_read = try f.read(buf[0..]);
+    var file_offset: u64 = 0;
+    var amt_read = try f.readPositionalAll(io, buf[0..], file_offset);
+    file_offset += amt_read;
     const line_start = seek: {
         var current_line_start: usize = 0;
         var next_line: usize = 1;
@@ -182,13 +185,15 @@ fn printLineFromFileAnyOs(out_stream: *std.Io.Writer, source_location: std.debug
             if (std.mem.indexOfScalar(u8, slice, '\n')) |pos| {
                 next_line += 1;
                 if (pos == slice.len - 1) {
-                    amt_read = try f.read(buf[0..]);
+                    amt_read = try f.readPositionalAll(io, buf[0..], file_offset);
+                    file_offset += amt_read;
                     current_line_start = 0;
                 } else current_line_start += pos + 1;
             } else if (amt_read < buf.len) {
                 return error.EndOfFile;
             } else {
-                amt_read = try f.read(buf[0..]);
+                amt_read = try f.readPositionalAll(io, buf[0..], file_offset);
+                file_offset += amt_read;
                 current_line_start = 0;
             }
         }
@@ -203,7 +208,8 @@ fn printLineFromFileAnyOs(out_stream: *std.Io.Writer, source_location: std.debug
         std.mem.replaceScalar(u8, slice, '\t', ' ');
         try out_stream.writeAll(slice);
         while (amt_read == buf.len) {
-            amt_read = try f.read(buf[0..]);
+            amt_read = try f.readPositionalAll(io, buf[0..], file_offset);
+            file_offset += amt_read;
             if (std.mem.indexOfScalar(u8, buf[0..amt_read], '\n')) |pos| {
                 const line = buf[0 .. pos + 1];
                 std.mem.replaceScalar(u8, line, '\t', ' ');

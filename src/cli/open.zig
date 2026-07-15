@@ -348,8 +348,8 @@ pub const EditorContext = struct {
     path: string = "",
     const Fs = @import("../resolver/fs.zig");
 
-    pub fn openInEditor(this: *EditorContext, editor_: Editor, blob: []const u8, id: string, tmpdir: std.Io.Dir, line: string, column: string) void {
-        _openInEditor(this.path, editor_, blob, id, tmpdir, line, column) catch |err| {
+    pub fn openInEditor(this: *EditorContext, io: std.Io, editor_: Editor, blob: []const u8, id: string, tmpdir: std.Io.Dir, line: string, column: string) void {
+        _openInEditor(this.path, io, editor_, blob, id, tmpdir, line, column) catch |err| {
             if (editor_ != .other) {
                 Output.prettyErrorln("Error {s} opening in {s}", .{ @errorName(err), @tagName(editor_) });
             }
@@ -358,7 +358,7 @@ pub const EditorContext = struct {
         };
     }
 
-    fn _openInEditor(path: string, editor_: Editor, blob: []const u8, id: string, tmpdir: std.Io.Dir, line: string, column: string) !void {
+    fn _openInEditor(path: string, io: std.Io, editor_: Editor, blob: []const u8, id: string, tmpdir: std.Io.Dir, line: string, column: string) !void {
         var basename_buf: [512]u8 = undefined;
         var basename = std.fs.path.basename(id);
         if (strings.endsWith(basename, ".bun") and basename.len < 499) {
@@ -367,10 +367,10 @@ pub const EditorContext = struct {
             basename = basename_buf[0 .. basename.len + 3];
         }
 
-        try tmpdir.writeFile(basename, blob);
+        try tmpdir.writeFile(io, .{ .sub_path = basename, .data = blob });
 
-        var opened = try tmpdir.openFile(basename, .{});
-        defer opened.close();
+        var opened = try tmpdir.openFile(io, basename, .{});
+        defer opened.close(io);
         var path_buf: bun.PathBuffer = undefined;
         try editor_.open(
             path,

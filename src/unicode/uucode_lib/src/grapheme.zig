@@ -443,10 +443,11 @@ fn testGraphemeBreak(getActualIsBreak: fn (cp1: u21, cp2: u21, state: *BreakStat
     const allocator = std.testing.allocator;
     const file_path = "ucd/auxiliary/GraphemeBreakTest.txt";
 
-    const file = try std.Io.Dir.cwd().openFile(file_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(std.testing.io, file_path, .{});
+    defer file.close(std.testing.io);
 
-    const content = try file.readToEndAlloc(allocator, 1024 * 1024 * 10);
+    var file_reader = file.reader(std.testing.io, &.{});
+    const content = try file_reader.interface.allocRemaining(allocator, .limited(1024 * 1024 * 10));
     defer allocator.free(content);
 
     var lines = std.mem.splitScalar(u8, content, '\n');
