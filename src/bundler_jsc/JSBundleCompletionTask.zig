@@ -19,6 +19,7 @@ pub fn createAndScheduleCompletionTask(
         .config = config,
         .jsc_event_loop = event_loop,
         .globalThis = globalThis,
+        .io = globalThis.bunVM().io,
         .poll_ref = Async.KeepAlive.init(),
         .env = globalThis.bunVM().transpiler.env,
         .plugins = plugins,
@@ -64,6 +65,7 @@ pub const JSBundleCompletionTask = struct {
     jsc_event_loop: *bun.jsc.EventLoop,
     task: bun.jsc.AnyTask,
     globalThis: *jsc.JSGlobalObject,
+    io: std.Io,
     promise: jsc.JSPromise.Strong = .{},
     poll_ref: Async.KeepAlive = Async.KeepAlive.init(),
     env: *bun.DotEnv.Loader,
@@ -91,7 +93,7 @@ pub const JSBundleCompletionTask = struct {
 
         transpiler.* = try bun.Transpiler.init(
             alloc,
-            completion.globalThis.bunVM().io,
+            completion.io,
             &completion.log,
             api.TransformOptions{
                 .define = if (config.define.count() > 0) config.define.toAPI() else null,
@@ -281,7 +283,7 @@ pub const JSBundleCompletionTask = struct {
         var root_dir = bun.FD.cwd().stdDir();
         defer {
             if (bun.FD.fromStdDir(root_dir) != bun.FD.cwd()) {
-                root_dir.close(this.globalThis.bunVM().io);
+                root_dir.close(this.io);
             }
         }
 
@@ -291,12 +293,12 @@ pub const JSBundleCompletionTask = struct {
 
         if (Environment.isPosix and !(dirname.len == 0 or strings.eqlComptime(dirname, "."))) {
             // On POSIX, makeOpenPath and change root_dir
-            root_dir = bun.MakePath.makeOpenPath(this.globalThis.bunVM().io, root_dir, dirname, .{}) catch |err| {
+            root_dir = bun.MakePath.makeOpenPath(this.io, root_dir, dirname, .{}) catch |err| {
                 return bun.StandaloneModuleGraph.CompileResult.failFmt("Failed to open output directory {s}: {s}", .{ dirname, @errorName(err) });
             };
         } else if (Environment.isWindows and !(dirname.len == 0 or strings.eqlComptime(dirname, "."))) {
             // On Windows, ensure directories exist but don't change root_dir
-            _ = bun.makePath(root_dir, this.globalThis.bunVM().io, dirname) catch |err| {
+            _ = bun.makePath(root_dir, this.io, dirname) catch |err| {
                 return bun.StandaloneModuleGraph.CompileResult.failFmt("Failed to create output directory {s}: {s}", .{ dirname, @errorName(err) });
             };
         }
@@ -307,7 +309,7 @@ pub const JSBundleCompletionTask = struct {
         const result = bun.StandaloneModuleGraph.toExecutable(
             &compile_options.compile_target,
             bun.default_allocator,
-            this.globalThis.bunVM().io,
+            this.io,
             output_files.items,
             root_dir,
             module_prefix,
