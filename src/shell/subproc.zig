@@ -765,14 +765,10 @@ pub const ShellSubprocess = struct {
         out: **@This(),
         notify_caller_process_already_exited: *bool,
     ) bun.shell.Result(void) {
-        var arena = bun.ArenaAllocator.init(bun.default_allocator);
-        defer arena.deinit();
-
         var spawn_args = spawn_args_;
 
         return switch (spawnMaybeSyncImpl(
             event_loop,
-            arena.allocator(),
             &spawn_args,
             shellio,
             out,
@@ -785,7 +781,6 @@ pub const ShellSubprocess = struct {
 
     fn spawnMaybeSyncImpl(
         event_loop: jsc.EventLoopHandle,
-        allocator: Allocator,
         spawn_args: *SpawnArgs,
         shellio: *ShellIO,
         // We have to use an out pointer because this function may invoke callbacks that expect a
@@ -796,10 +791,11 @@ pub const ShellSubprocess = struct {
     ) bun.shell.Result(void) {
         const is_sync = false;
 
+        const arena = spawn_args.arena.allocator();
+
         if (!spawn_args.override_env and spawn_args.env_array.items.len == 0) {
-            // spawn_args.env_array.items = bun.handleOom(jsc_vm.transpiler.env.map.createNullDelimitedEnvMap(allocator));
-            spawn_args.env_array.items = bun.handleOom(event_loop.createNullDelimitedEnvMap(allocator));
-            spawn_args.env_array.capacity = spawn_args.env_array.items.len;
+            spawn_args.env_array.items = bun.handleOom(event_loop.createNullDelimitedEnvMap(arena));
+            spawn_args.env_array.capacity = spawn_args.env_array.items.len + 1;
         }
 
         // Until ownership transfers into Writable/Readable, deinit any caller-provided
@@ -855,7 +851,7 @@ pub const ShellSubprocess = struct {
             return .{ .err = .{ .custom = bun.handleOom(bun.default_allocator.dupe(u8, "out of memory")) } };
         };
 
-        spawn_args.env_array.append(allocator, null) catch {
+        spawn_args.env_array.append(arena, null) catch {
             spawn_options.deinit();
             return .{ .err = .{ .custom = bun.handleOom(bun.default_allocator.dupe(u8, "out of memory")) } };
         };
