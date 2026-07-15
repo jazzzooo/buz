@@ -601,8 +601,8 @@ pub const BackgroundHandler = struct {
     attachments: ?css.SmallList(BackgroundAttachment, 1) = null,
     origins: ?css.SmallList(BackgroundOrigin, 1) = null,
     clips: ?struct { css.SmallList(BackgroundClip, 1), VendorPrefix } = null,
-    decls: ArrayList(Property) = undefined,
-    flushed_properties: BackgroundProperty = undefined,
+    decls: ArrayList(Property) = .empty,
+    flushed_properties: BackgroundProperty = .{},
     has_any: bool = false,
 
     pub fn handleProperty(
