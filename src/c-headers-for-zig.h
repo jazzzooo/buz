@@ -12,12 +12,27 @@
 // - WINDOWS
 // - DARWIN
 // - LINUX
+// - MUSL
 // - FREEBSD
 // - POSIX
 
 // For `POSIX_SPAWN_SETSID` and some other non-POSIX extensions in glibc
 #if LINUX
 #define _GNU_SOURCE
+#endif
+
+#if MUSL
+// musl's public timespec uses zero-width anonymous bit-fields for padding.
+// translate-c treats those fields as opaque on the supported LP64 targets,
+// which in turn makes struct stat opaque. Supply the equivalent LP64 layout
+// before musl's feature-driven alltypes header is asked to define it.
+#define __NEED_time_t
+#include <bits/alltypes.h>
+struct timespec {
+  time_t tv_sec;
+  long tv_nsec;
+};
+#define __DEFINED_struct_timespec
 #endif
 
 #if FREEBSD

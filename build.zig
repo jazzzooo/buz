@@ -673,7 +673,7 @@ const TargetDescription = struct {
             .cpu_model = getCpuModel(desc.os, desc.arch) orelse .determined_by_arch_os,
             .os_version_min = getOSVersionMin(desc.os),
             .glibc_version = if (desc.musl or desc.android) null else getOSGlibCVersion(desc.os),
-            .abi = if (desc.android) .android else null,
+            .abi = if (desc.android) .android else if (desc.musl) .musl else null,
         });
     }
 };
@@ -736,6 +736,7 @@ fn getTranslateC(b: *Build, initial_target: std.Build.ResolvedTarget, optimize: 
         .{ "WINDOWS", translate_c.target.result.os.tag == .windows },
         .{ "POSIX", translate_c.target.result.os.tag != .windows },
         .{ "LINUX", translate_c.target.result.os.tag == .linux },
+        .{ "MUSL", target.query.abi != null and target.query.abi.?.isMusl() },
         .{ "DARWIN", translate_c.target.result.os.tag.isDarwin() },
         .{ "FREEBSD", translate_c.target.result.os.tag == .freebsd },
     }) |entry| {
