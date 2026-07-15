@@ -238,47 +238,6 @@ pub const BrotliCompressionStream = struct {
     pub fn deinit(this: *BrotliCompressionStream) void {
         this.brotli.destroyInstance();
     }
-
-    fn NewWriter(comptime InputWriter: type) type {
-        return struct {
-            compressor: *BrotliCompressionStream,
-            input_writer: InputWriter,
-
-            const Self = @This();
-            pub const WriteError = error{BrotliCompressionError} || InputWriter.Error;
-            pub const Writer = std.Io.GenericWriter(@This(), WriteError, Self.write);
-
-            pub fn init(compressor: *BrotliCompressionStream, input_writer: InputWriter) Self {
-                return Self{
-                    .compressor = compressor,
-                    .input_writer = input_writer,
-                };
-            }
-
-            pub fn write(self: Self, to_compress: []const u8) WriteError!usize {
-                const decompressed = try self.compressor.write(to_compress, false);
-                try self.input_writer.writeAll(decompressed);
-                return to_compress.len;
-            }
-
-            pub fn end(self: Self) !usize {
-                const decompressed = try self.compressor.end();
-                try self.input_writer.writeAll(decompressed);
-            }
-
-            pub fn writer(self: Self) Writer {
-                return Writer{ .context = self };
-            }
-        };
-    }
-
-    pub fn writerContext(this: *BrotliCompressionStream, writable: anytype) NewWriter(@TypeOf(writable)) {
-        return NewWriter(@TypeOf(writable)).init(this, writable);
-    }
-
-    pub fn writer(this: *BrotliCompressionStream, writable: anytype) NewWriter(@TypeOf(writable)).Writer {
-        return this.writerContext(writable).writer();
-    }
 };
 
 const std = @import("std");

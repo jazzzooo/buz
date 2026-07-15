@@ -249,9 +249,9 @@ fn testErr(params: []const clap.Param(u8), args_strings: []const []const u8, exp
     };
     while (c.next() catch |err| {
         var buf: [1024]u8 = undefined;
-        var fbs = io.fixedBufferStream(&buf);
-        diag.report(fbs.writer(), err) catch unreachable;
-        testing.expectEqualStrings(expected, fbs.getWritten());
+        var writer = std.Io.Writer.fixed(&buf);
+        diag.report(&writer, err) catch unreachable;
+        testing.expectEqualStrings(expected, writer.buffered());
         return;
     }) |_| {}
 
@@ -444,6 +444,5 @@ const bun = @import("bun");
 const Output = bun.Output;
 
 const std = @import("std");
-const io = std.io;
 const mem = std.mem;
 const testing = std.testing;

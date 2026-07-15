@@ -141,12 +141,6 @@ pub const ArrayBuffer = extern struct {
     pub const empty = ArrayBuffer{ .len = 0, .byte_len = 0, .typed_array_type = .Uint8Array, .ptr = &.{} };
 
     pub const name = "Bun__ArrayBuffer";
-    pub const Stream = std.io.FixedBufferStream([]u8);
-
-    pub inline fn stream(this: ArrayBuffer) Stream {
-        return Stream{ .pos = 0, .buf = this.slice() };
-    }
-
     pub fn create(globalThis: *jsc.JSGlobalObject, bytes: []const u8, comptime kind: jsc.JSValue.JSType) bun.JSError!jsc.JSValue {
         jsc.markBinding(@src());
         return switch (comptime kind) {
@@ -545,10 +539,6 @@ pub const ArrayBuffer = extern struct {
 pub const MarkedArrayBuffer = struct {
     buffer: ArrayBuffer = .{},
     allocator: ?std.mem.Allocator = null,
-
-    pub inline fn stream(this: *MarkedArrayBuffer) ArrayBuffer.Stream {
-        return this.buffer.stream();
-    }
 
     pub fn fromTypedArray(ctx: *jsc.JSGlobalObject, value: jsc.JSValue) MarkedArrayBuffer {
         return MarkedArrayBuffer{

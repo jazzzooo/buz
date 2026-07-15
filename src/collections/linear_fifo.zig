@@ -37,8 +37,6 @@ pub fn LinearFifo(
         count: usize,
 
         const Self = @This();
-        pub const Reader = std.Io.GenericReader(*Self, error{}, readFn);
-        pub const Writer = std.Io.GenericWriter(*Self, error{OutOfMemory}, appendWrite);
 
         // Type of Self argument for slice operations.
         // If buffer is inline (Static) then we need to ensure we haven't
@@ -225,16 +223,6 @@ pub fn LinearFifo(
             return dst.len - dst_left.len;
         }
 
-        /// Same as `read` except it returns an error union
-        /// The purpose of this function existing is to match `std.io.Reader` API.
-        fn readFn(self: *Self, dest: []u8) error{}!usize {
-            return self.read(dest);
-        }
-
-        pub fn reader(self: *Self) Reader {
-            return .{ .context = self };
-        }
-
         /// Returns number of items available in fifo
         pub fn writableLength(self: Self) usize {
             return self.buf.len - self.count;
@@ -315,17 +303,6 @@ pub fn LinearFifo(
             try self.ensureUnusedCapacity(src.len);
 
             return self.writeAssumeCapacity(src);
-        }
-
-        /// Same as `write` except it returns the number of bytes written, which is always the same
-        /// as `bytes.len`. The purpose of this function existing is to match `std.io.Writer` API.
-        fn appendWrite(self: *Self, bytes: []const u8) error{OutOfMemory}!usize {
-            try self.write(bytes);
-            return bytes.len;
-        }
-
-        pub fn writer(self: *Self) Writer {
-            return .{ .context = self };
         }
 
         /// Make `count` items available before the current read location
@@ -419,25 +396,6 @@ pub fn LinearFifo(
             }
             self.count -= 1;
         }
-
-        /// Pump data from a reader into a writer
-        /// stops when reader returns 0 bytes (EOF)
-        /// Buffer size must be set before calling; a buffer length of 0 is invalid.
-        pub fn pump(self: *Self, src_reader: anytype, dest_writer: *std.Io.Writer) !void {
-            assert(self.buf.len > 0);
-            while (true) {
-                if (self.writableLength() > 0) {
-                    const n = try src_reader.read(self.writableSlice(0));
-                    if (n == 0) break; // EOF
-                    self.update(n);
-                }
-                self.discard(try dest_writer.write(self.readableSlice(0)));
-            }
-            // flush remaining data
-            while (self.readableLength() > 0) {
-                self.discard(try dest_writer.write(self.readableSlice(0)));
-            }
-        }
     };
 }
 
@@ -508,31 +466,6 @@ test "LinearFifo(u8, .Dynamic)" {
     }
 
     fifo.shrink(0);
-
-    {
-        try fifo.writer().print("{s}, {s}!", .{ "Hello", "World" });
-        var result: [30]u8 = undefined;
-        try testing.expectEqualSlices(u8, "Hello, World!", result[0..fifo.read(&result)]);
-        try testing.expectEqual(@as(usize, 0), fifo.readableLength());
-    }
-
-    {
-        try fifo.writer().writeAll("This is a test");
-        var result: [30]u8 = undefined;
-        try testing.expectEqualSlices(u8, "This", (try fifo.reader().readUntilDelimiterOrEof(&result, ' ')).?);
-        try testing.expectEqualSlices(u8, "is", (try fifo.reader().readUntilDelimiterOrEof(&result, ' ')).?);
-        try testing.expectEqualSlices(u8, "a", (try fifo.reader().readUntilDelimiterOrEof(&result, ' ')).?);
-        try testing.expectEqualSlices(u8, "test", (try fifo.reader().readUntilDelimiterOrEof(&result, ' ')).?);
-    }
-
-    {
-        try fifo.ensureTotalCapacity(1);
-        var in_fbs = std.io.fixedBufferStream("pump test");
-        var out_buf: [50]u8 = undefined;
-        var out_fbs = std.io.fixedBufferStream(&out_buf);
-        try fifo.pump(in_fbs.reader(), out_fbs.writer());
-        try testing.expectEqualSlices(u8, in_fbs.buffer, out_fbs.getWritten());
-    }
 }
 
 test "LinearFifo" {

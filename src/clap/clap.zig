@@ -302,9 +302,9 @@ pub const Diagnostic = struct {
 
 fn testDiag(diag: Diagnostic, err: anyerror, expected: []const u8) void {
     var buf: [1024]u8 = undefined;
-    var slice_stream = io.fixedBufferStream(&buf);
-    diag.report(slice_stream.writer(), err) catch unreachable;
-    testing.expectEqualStrings(expected, slice_stream.getWritten());
+    var writer = std.Io.Writer.fixed(&buf);
+    diag.report(&writer, err) catch unreachable;
+    testing.expectEqualStrings(expected, writer.buffered());
 }
 
 pub fn Args(comptime Id: type, comptime params: []const Param(Id)) type {
@@ -408,10 +408,9 @@ pub fn helpFull(
     const max_spacing = blk: {
         var res: usize = 0;
         for (params) |param| {
-            var cs = io.countingWriter(io.null_writer);
-            try printParam(cs.writer(), Id, param, Error, context, valueText);
-            if (res < cs.bytes_written)
-                res = @as(usize, @intCast(cs.bytes_written));
+            var counting: std.Io.Writer.Discarding = .init(&.{});
+            try printParam(&counting.writer, Id, param, Error, context, valueText);
+            res = @max(res, @as(usize, @intCast(counting.fullCount())));
         }
 
         break :blk res;
@@ -424,10 +423,11 @@ pub fn helpFull(
         const help_text = try helpText(context, param);
         // only print flag if description is defined
         if (help_text.len > 0) {
-            var cs = io.countingWriter(stream);
+            var counting: std.Io.Writer.Discarding = .init(&.{});
+            try printParam(&counting.writer, Id, param, Error, context, valueText);
             try stream.print("\t", .{});
-            try printParam(cs.writer(), Id, param, Error, context, valueText);
-            try stream.splatByteAll(' ', max_spacing - @as(usize, @intCast(cs.bytes_written)));
+            try printParam(stream, Id, param, Error, context, valueText);
+            try stream.splatByteAll(' ', max_spacing - @as(usize, @intCast(counting.fullCount())));
             try stream.print("\t{s}\n", .{try helpText(context, param)});
         }
     }
@@ -638,19 +638,20 @@ pub fn usageFull(
     context: anytype,
     valueText: fn (@TypeOf(context), Param(Id)) Error![]const u8,
 ) !void {
-    var cos = io.countingWriter(stream);
-    const cs = cos.writer();
+    var wrote_any = false;
     for (params) |param| {
         const name = param.names.short orelse continue;
         if (param.takes_value != .none)
             continue;
 
-        if (cos.bytes_written == 0)
+        if (!wrote_any) {
             try stream.writeAll("[-");
-        try cs.writeByte(name);
+            wrote_any = true;
+        }
+        try stream.writeByte(name);
     }
-    if (cos.bytes_written != 0)
-        try cs.writeByte(']');
+    if (wrote_any)
+        try stream.writeByte(']');
 
     var positional: ?Param(Id) = null;
     for (params) |param| {
@@ -665,24 +666,25 @@ pub fn usageFull(
             positional = param;
             continue;
         };
-        if (cos.bytes_written != 0)
-            try cs.writeByte(' ');
+        if (wrote_any)
+            try stream.writeByte(' ');
 
-        try cs.print("[{s}{s}", .{ prefix, name });
+        try stream.print("[{s}{s}", .{ prefix, name });
         switch (param.takes_value) {
             .none => {},
-            .one => try cs.print(" <{s}>", .{try valueText(context, param)}),
-            .one_optional => try cs.print(" <{s}>?", .{try valueText(context, param)}),
-            .many => try cs.print(" <{s}>...", .{try valueText(context, param)}),
+            .one => try stream.print(" <{s}>", .{try valueText(context, param)}),
+            .one_optional => try stream.print(" <{s}>?", .{try valueText(context, param)}),
+            .many => try stream.print(" <{s}>...", .{try valueText(context, param)}),
         }
 
-        try cs.writeByte(']');
+        try stream.writeByte(']');
+        wrote_any = true;
     }
 
     if (positional) |p| {
-        if (cos.bytes_written != 0)
-            try cs.writeByte(' ');
-        try cs.print("<{s}>", .{try valueText(context, p)});
+        if (wrote_any)
+            try stream.writeByte(' ');
+        try stream.print("<{s}>", .{try valueText(context, p)});
     }
 }
 
@@ -719,9 +721,9 @@ pub fn usage(stream: anytype, params: []const Param(Help)) !void {
 
 fn testUsage(expected: []const u8, params: []const Param(Help)) !void {
     var buf: [1024]u8 = undefined;
-    var fbs = io.fixedBufferStream(&buf);
-    try usage(fbs.writer(), params);
-    testing.expectEqualStrings(expected, fbs.getWritten());
+    var writer = std.Io.Writer.fixed(&buf);
+    try usage(&writer, params);
+    testing.expectEqualStrings(expected, writer.buffered());
 }
 
 const Output = @import("../bun_core/output.zig");
@@ -729,6 +731,5 @@ const bun = @import("bun");
 
 const std = @import("std");
 const heap = std.heap;
-const io = std.io;
 const mem = std.mem;
 const testing = std.testing;

@@ -1178,8 +1178,6 @@ pub const PackCommand = struct {
             };
     }
 
-    const BufferedFileReader = bun.deprecated.BufferedReader(1024 * 512, File.Reader);
-
     pub fn pack(
         ctx: *Context,
         abs_package_json_path: stringZ,
@@ -1705,12 +1703,9 @@ pub const PackCommand = struct {
         defer pack_list.deinit(ctx.allocator);
 
         var read_buf: [8192]u8 = undefined;
-        const file_reader = try ctx.allocator.create(BufferedFileReader);
-        defer ctx.allocator.destroy(file_reader);
-        file_reader.* = .{
-            .unbuffered_reader = undefined,
-            .buf = undefined,
-        };
+        var file_reader: File.Reader = undefined;
+        const file_reader_buffer = try ctx.allocator.alloc(u8, 1024 * 512);
+        defer ctx.allocator.free(file_reader_buffer);
 
         var entry = Archive.Entry.new2(archive);
 
@@ -1760,7 +1755,8 @@ pub const PackCommand = struct {
                     stat,
                     item.path,
                     &read_buf,
-                    file_reader,
+                    &file_reader,
+                    file_reader_buffer,
                     archive,
                     entry,
                     &print_buf,
@@ -1791,7 +1787,8 @@ pub const PackCommand = struct {
                     stat,
                     item.path,
                     &read_buf,
-                    file_reader,
+                    &file_reader,
+                    file_reader_buffer,
                     archive,
                     entry,
                     &print_buf,
@@ -1851,10 +1848,7 @@ pub const PackCommand = struct {
                 break :tarball_bytes tarball_bytes;
             }
 
-            file_reader.* = .{
-                .unbuffered_reader = tarball_file.reader(),
-                .buf = undefined,
-            };
+            file_reader = tarball_file.bufferedReader(file_reader_buffer);
 
             var size: usize = 0;
             var read = file_reader.read(&read_buf) catch |err| {
@@ -2096,7 +2090,8 @@ pub const PackCommand = struct {
         stat: bun.Stat,
         filename: stringZ,
         read_buf: []u8,
-        file_reader: *BufferedFileReader,
+        file_reader: *File.Reader,
+        file_reader_buffer: []u8,
         archive: *Archive,
         entry: *Archive.Entry,
         print_buf: *std.array_list.Managed(u8),
@@ -2132,10 +2127,7 @@ pub const PackCommand = struct {
             else => {},
         }
 
-        file_reader.* = .{
-            .unbuffered_reader = File.from(file).reader(),
-            .buf = undefined,
-        };
+        file_reader.* = File.from(file).bufferedReader(file_reader_buffer);
 
         var read = file_reader.read(read_buf) catch |err| {
             Output.err(err, "failed to read file: \"{s}\"", .{filename});
