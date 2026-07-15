@@ -1293,7 +1293,7 @@ pub const LinuxWaker = struct {
 
     pub fn wait(this: Waker) void {
         var bytes: usize = 0;
-        _ = std.posix.read(this.fd.cast(), @as(*[8]u8, @ptrCast(&bytes))) catch 0;
+        _ = bun.sys.read(this.fd, @as(*[8]u8, @ptrCast(&bytes))).unwrap() catch 0;
     }
 
     pub fn wake(this: *const Waker) void {

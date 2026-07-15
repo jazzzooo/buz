@@ -441,24 +441,24 @@ test "basic functionality" {
         next_sub_task = (next_sub_task + 1) % sub_task_names.len;
 
         node.completeOne();
-        std.Thread.sleep(5 * speed_factor);
+        std.Io.sleep(std.testing.io, .fromNanoseconds(5 * speed_factor), .awake) catch unreachable;
         node.completeOne();
         node.completeOne();
-        std.Thread.sleep(5 * speed_factor);
+        std.Io.sleep(std.testing.io, .fromNanoseconds(5 * speed_factor), .awake) catch unreachable;
         node.completeOne();
         node.completeOne();
-        std.Thread.sleep(5 * speed_factor);
+        std.Io.sleep(std.testing.io, .fromNanoseconds(5 * speed_factor), .awake) catch unreachable;
 
         node.end();
 
-        std.Thread.sleep(5 * speed_factor);
+        std.Io.sleep(std.testing.io, .fromNanoseconds(5 * speed_factor), .awake) catch unreachable;
     }
     {
         var node = root_node.start("this is a really long name designed to activate the truncation code. let's find out if it works", 0);
         node.activate();
-        std.Thread.sleep(10 * speed_factor);
+        std.Io.sleep(std.testing.io, .fromNanoseconds(10 * speed_factor), .awake) catch unreachable;
         progress.refresh();
-        std.Thread.sleep(10 * speed_factor);
+        std.Io.sleep(std.testing.io, .fromNanoseconds(10 * speed_factor), .awake) catch unreachable;
         node.end();
     }
 }

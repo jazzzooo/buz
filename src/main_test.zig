@@ -1,4 +1,4 @@
-pub const bun = @import("./bun.zig");
+pub const bun = @import("bun");
 
 const Output = bun.Output;
 const Environment = bun.Environment;
@@ -7,7 +7,6 @@ const Environment = bun.Environment;
 pub const panic = recover.panic;
 pub const std_options = std.Options{
     .enable_segfault_handler = false,
-    .cryptoRandomSeed = bun.csprng,
 };
 
 pub const io_mode = .blocking;
@@ -19,7 +18,7 @@ comptime {
 pub extern "C" var _environ: ?*anyopaque;
 pub extern "C" var environ: ?*anyopaque;
 
-pub fn main() void {
+pub fn main(init: std.process.Init) void {
     // This should appear before we make any calls at all to libuv.
     // So it's safest to put it very early in the main function.
     if (Environment.isWindows) {
@@ -29,18 +28,26 @@ pub fn main() void {
             @ptrCast(&bun.mimalloc.mi_calloc),
             @ptrCast(&bun.mimalloc.mi_free),
         );
-        environ = @ptrCast(std.os.environ.ptr);
-        _environ = @ptrCast(std.os.environ.ptr);
     }
 
-    bun.initArgv() catch |err| {
+    bun.handleOom(bun.initEnviron(init.minimal.environ, init.environ_map));
+    if (Environment.isWindows) {
+        environ = @ptrCast(@constCast(bun.environ.ptr));
+        _environ = @ptrCast(@constCast(bun.environ.ptr));
+    }
+
+    bun.start_time = bun.awakeNanoseconds(init.io);
+    bun.initSelfExePath(init.io) catch |err| {
+        Output.panic("Failed to resolve the executable path: {s}\n", .{@errorName(err)});
+    };
+    bun.initArgv(init.minimal.args) catch |err| {
         Output.panic("Failed to initialize argv: {s}\n", .{@errorName(err)});
     };
 
-    Output.Source.Stdio.init();
+    Output.Source.Stdio.init(init.io);
     defer Output.flush();
     bun.StackCheck.configureThread();
-    const exit_code = runTests();
+    const exit_code = runTests(init.io);
     bun.Global.exit(exit_code);
 }
 
@@ -49,17 +56,18 @@ const Stats = struct {
     fail: u32,
     leak: u32,
     panic: u32,
-    start: i64,
+    start: std.Io.Timestamp,
 
-    fn init() Stats {
+    fn init(io: std.Io) Stats {
         var stats = std.mem.zeroes(Stats);
-        stats.start = std.time.milliTimestamp();
+        stats.start = std.Io.Clock.awake.now(io);
         return stats;
     }
 
     /// Time elapsed since start in milliseconds
-    fn elapsed(this: *const Stats) i64 {
-        return std.time.milliTimestamp() - this.start;
+    fn elapsed(this: *const Stats, io: std.Io) i64 {
+        const now = std.Io.Clock.awake.now(io);
+        return @intCast(@divTrunc(this.start.durationTo(now).nanoseconds, std.time.ns_per_ms));
     }
 
     /// Total number of tests run
@@ -76,8 +84,8 @@ const Stats = struct {
     }
 };
 
-fn runTests() u8 {
-    var stats = Stats.init();
+fn runTests(io: std.Io) u8 {
+    var stats = Stats.init(io);
     var stderr = std.Io.File.stderr();
 
     namebuf = std.heap.page_allocator.alloc(u8, namebuf_size) catch {
@@ -90,14 +98,14 @@ fn runTests() u8 {
         std.testing.allocator_instance = .{};
 
         var did_lock = true;
-        stderr.lock(.exclusive) catch {
+        stderr.lock(io, .exclusive) catch {
             did_lock = false;
         };
-        defer if (did_lock) stderr.unlock();
+        defer if (did_lock) stderr.unlock(io);
 
-        const start = std.time.milliTimestamp();
+        const start = std.Io.Clock.awake.now(io);
         const result = recover.callForTest(t.func);
-        const elapsed = std.time.milliTimestamp() - start;
+        const elapsed = @divTrunc(start.durationTo(std.Io.Clock.awake.now(io)).nanoseconds, std.time.ns_per_ms);
 
         const name = extractName(t);
         const memory_check = std.testing.allocator_instance.deinit();
@@ -125,7 +133,7 @@ fn runTests() u8 {
     }
 
     const total = stats.total();
-    const total_time = stats.elapsed();
+    const total_time = stats.elapsed(io);
 
     if (total == stats.pass) {
         Output.pretty("\n<green>All tests passed</r>\n", .{});
