@@ -59,7 +59,7 @@ pub fn parse(possibly_encoded_pathname_: string) !URLPath {
 
         var writer = std.Io.Writer.fixed(possibly_encoded_pathname);
 
-        decoded_pathname = possibly_encoded_pathname[0..try PercentEncoding.decodeFaultTolerant(*std.Io.Writer, &writer, clone, &needs_redirect, true)];
+        decoded_pathname = possibly_encoded_pathname[0..try PercentEncoding.decodeFaultTolerant(&writer, clone, &needs_redirect, true)];
     }
 
     var question_mark_i: i16 = -1;

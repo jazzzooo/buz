@@ -808,7 +808,7 @@ pub fn transpileSourceCode(
                     var buf = bun.handleOom(MutableString.init2048(jsc_vm.allocator));
                     defer buf.deinit();
                     const writer = buf.writer();
-                    jsc.API.Bun.getPublicPath(specifier, jsc_vm.origin, @TypeOf(writer), writer);
+                    jsc.API.Bun.getPublicPath(specifier, jsc_vm.origin, writer);
                     break :brk try bun.String.createUTF8ForJS(globalObject.?, buf.slice());
                 }
 

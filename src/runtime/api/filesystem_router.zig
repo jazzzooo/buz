@@ -581,8 +581,7 @@ pub const MatchedRoute = struct {
 
     pub fn getScriptSrcString(
         origin: []const u8,
-        comptime Writer: type,
-        writer: Writer,
+        writer: *std.Io.Writer,
         file_path: string,
         client_framework_enabled: bool,
     ) void {
@@ -597,11 +596,10 @@ pub const MatchedRoute = struct {
                     Fs.PathName.init(file_path),
                 ),
                 origin,
-                Writer,
                 writer,
             );
         } else {
-            jsc.API.Bun.getPublicPath(file_path, origin, Writer, writer);
+            jsc.API.Bun.getPublicPath(file_path, origin, writer);
         }
     }
 
@@ -616,7 +614,6 @@ pub const MatchedRoute = struct {
             if (this.base_dir) |base_dir| base_dir.slice() else jsc.VirtualMachine.get().transpiler.fs.top_level_dir,
             if (this.origin) |origin| URL.parse(origin.slice()) else URL{},
             if (this.asset_prefix) |prefix| prefix.slice() else "",
-            *std.Io.Writer,
             &writer,
             .posix,
         );

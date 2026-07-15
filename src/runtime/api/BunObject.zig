@@ -696,13 +696,12 @@ pub fn openInEditor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) 
     return .js_undefined;
 }
 
-pub fn getPublicPath(to: string, origin: URL, comptime Writer: type, writer: Writer) void {
+pub fn getPublicPath(to: string, origin: URL, writer: *std.Io.Writer) void {
     return getPublicPathWithAssetPrefix(
         to,
         VirtualMachine.get().transpiler.fs.top_level_dir,
         origin,
         "",
-        comptime Writer,
         writer,
         .loose,
     );
@@ -713,8 +712,7 @@ pub fn getPublicPathWithAssetPrefix(
     dir: string,
     origin: URL,
     asset_prefix: string,
-    comptime Writer: type,
-    writer: Writer,
+    writer: *std.Io.Writer,
     comptime platform: bun.path.Platform,
 ) void {
     const relative_path = if (strings.hasPrefix(to, dir))
@@ -732,7 +730,6 @@ pub fn getPublicPathWithAssetPrefix(
             }
         } else {
             origin.joinWrite(
-                Writer,
                 writer,
                 asset_prefix,
                 "",

@@ -99,7 +99,6 @@ pub const HostedGitInfo = struct {
         const writable = sb.writable();
         var writer = std.Io.Writer.fixed(writable);
         const decoded_len = PercentEncoding.decode(
-            *std.Io.Writer,
             &writer,
             input,
         ) catch {
@@ -1382,7 +1381,6 @@ const HostProvider = enum {
                         const writable = sb.writable();
                         var writer = std.Io.Writer.fixed(writable);
                         const decoded_len = PercentEncoding.decode(
-                            *std.Io.Writer,
                             &writer,
                             user_part,
                         ) catch return null;
@@ -1393,7 +1391,6 @@ const HostProvider = enum {
                         const writable = sb.writable();
                         var writer = std.Io.Writer.fixed(writable);
                         const decoded_len = PercentEncoding.decode(
-                            *std.Io.Writer,
                             &writer,
                             project,
                         ) catch return null;
@@ -1404,7 +1401,6 @@ const HostProvider = enum {
                         const writable = sb.writable();
                         var writer = std.Io.Writer.fixed(writable);
                         const decoded_len = PercentEncoding.decode(
-                            *std.Io.Writer,
                             &writer,
                             c,
                         ) catch return null;
