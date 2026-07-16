@@ -150,6 +150,7 @@ x64
 yarn.lock
 zig-cache
 zig-out
+zig-pkg
 test/node.js/upstream
 .zig-cache
 scripts/env.local
@@ -162,7 +163,7 @@ tmp
 codegen-for-zig-team.tar.gz
 
 # Dependencies
-/vendor
+/zig-upstream
 
 # Dependencies (before CMake)
 # These can be removed in the far future

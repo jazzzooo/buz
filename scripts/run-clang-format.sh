@@ -47,7 +47,7 @@ done < <(find src packages -type f \( -name "*.h" -o -name "*.hpp" \) \
     -not -path "*/generated/*" \
     -print0 2>/dev/null || true)
 
-# Glob C++ source files — patterns are defined in scripts/build/sources.ts
+# Glob C++ source files — patterns are defined in scripts/glob-sources.ts
 echo "Globbing C++ source files..."
 while IFS= read -r file; do
     if [[ -n "$file" && -f "$file" ]]; then

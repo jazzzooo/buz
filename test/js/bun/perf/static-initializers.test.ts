@@ -59,8 +59,8 @@ describe("static initializers", () => {
       .map(a => a.trim())
       .filter(line => line.includes("running initializer") && line.includes(bunExe()));
 
-    // mimalloc v3 on darwin (MI_OSX_ZONE=OFF in scripts/build/deps/mimalloc.ts —
-    // zone override breaks NAPI addons) contributes two: __GLOBAL__sub_I_static.c
+    // mimalloc v3 on darwin (MI_OSX_ZONE=OFF — zone override breaks NAPI
+    // addons) contributes two: __GLOBAL__sub_I_static.c
     // and mi_process_attach. On x86_64 there may also be ___cpu_indicator_init
     // from CPU feature detection, depending on the toolchain. Removals are wins;
     // only additions are regressions.

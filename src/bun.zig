@@ -203,15 +203,15 @@ pub const DirIterator = @import("./runtime/node/dir_iterator.zig");
 pub const PackageJSON = @import("./resolver/package_json.zig").PackageJSON;
 pub const fmt = @import("./bun_core/fmt.zig");
 
-// This file is gennerated, but cant be placed in the build/debug/codegen
-// folder because zig will complain about outside-of-module stuff
+// Generated, but lives in the source tree (not the codegen dir) because it
+// imports src files by relative path.
 /// All functions and interfaces provided from Bun's `bindgen` utility.
 pub const gen = @import("./jsc/bindings/GeneratedBindings.zig");
 
 comptime {
     if (Environment.isNative) {
-        // This file is gennerated, but cant be placed in the build/debug/codegen
-        // folder because zig will complain about outside-of-module stuff
+        // Generated, but lives in the source tree (not the codegen dir)
+        // because it imports src files by relative path.
         _ = &@import("./jsc/bindings/GeneratedJS2Native.zig");
         _ = &gen; // reference bindings
         // Exports `us_dispatch_*` for loop.c — nothing in Zig calls them, but the

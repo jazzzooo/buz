@@ -16,7 +16,12 @@
 import { globSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assert } from "./build/error.ts";
+
+function assert(condition: unknown, message: string, context?: { hint?: string; file?: string }): asserts condition {
+  if (!condition) {
+    throw new Error(context?.hint ? `${message} (${context.hint})` : message);
+  }
+}
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

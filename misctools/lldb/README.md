@@ -61,14 +61,14 @@ To test the pretty printers:
 
 1. Build a debug version of Bun:
 ```bash
-bun bd
+zig build
 ```
 
 2. Create a test file that uses bun.String types
 
 3. Debug with LLDB:
 ```bash
-lldb ./build/debug/bun-debug
+lldb ./zig-out/bin/bun-debug
 (lldb) command script import misctools/lldb/bun_pretty_printer.py
 (lldb) breakpoint set --file your_test.zig --line <line_number>
 (lldb) run your_test.zig

@@ -1588,7 +1588,11 @@ writeIfNotChanged(
   path.join(codegenRoot, "GeneratedBindings.cpp"),
   [...headers].map(name => `#include ${str(name)}\n`).join("") + "\n" + cppInternal.buffer + "\n" + cpp.buffer,
 );
+// Lives in the source tree because it imports src files by relative path;
+// also written into the codegen dir so the build graph can re-materialize it
+// from a cached run.
 writeIfNotChanged(path.join(src, "jsc/bindings/GeneratedBindings.zig"), zig.buffer + zigInternal.buffer);
+writeIfNotChanged(path.join(codegenRoot, "GeneratedBindings.zig"), zig.buffer + zigInternal.buffer);
 
 // Headers
 for (const [filename, { functions, typedefs }] of files) {

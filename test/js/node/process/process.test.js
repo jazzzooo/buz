@@ -327,7 +327,7 @@ it("process.umask()", () => {
 });
 
 it("process.versions", () => {
-  // Expected dependency versions — must match scripts/build/deps/*.ts commits.
+  // Expected dependency versions — must match the build.zig.zon pins.
   // These are the ACTUAL commits built into bun (not derived values, so
   // bumping a dep requires updating this test too).
   const expectedVersions = {

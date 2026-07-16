@@ -84,12 +84,16 @@ export function writeIfNotChanged(file: string, contents: string) {
     }
   } catch (e) {}
 
+  // Write-then-rename: concurrent builds (debug + release) write the same
+  // source-tree files, and readers must never see a partial write.
+  const tmp = `${file}.${process.pid}.tmp`;
   try {
-    fs.writeFileSync(file, contents);
+    fs.writeFileSync(tmp, contents);
   } catch (error) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, contents);
+    fs.writeFileSync(tmp, contents);
   }
+  fs.renameSync(tmp, file);
 
   if (fs.readFileSync(file, "utf8") !== contents) {
     throw new Error(`Failed to write file ${file}`);

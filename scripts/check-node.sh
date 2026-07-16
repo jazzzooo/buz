@@ -29,7 +29,7 @@ for x in $(git ls-files test/js/node/test/parallel --exclude-standard --others |
 do
   i=$((i+1))
   echo ./$x
-  if timeout 2 $PWD/build/debug/bun-debug ./$x
+  if timeout 2 $PWD/zig-out/bin/bun-debug ./$x
   then
     j=$((j+1))
     git add $x

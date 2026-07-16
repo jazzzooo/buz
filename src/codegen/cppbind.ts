@@ -758,8 +758,7 @@ async function main() {
 
   const parser = cppParser;
 
-  // Source list: build system globs and passes the path (see
-  // scripts/build/codegen.ts emitCppBind). For ad-hoc runs:
+  // Source list: build.zig globs and passes the path. For ad-hoc runs:
   //   bun scripts/glob-sources.ts cxx > /tmp/cxx.txt
   //   bun src/codegen/cppbind.ts <codegen> <out> /tmp/cxx.txt
   const cxxSourcesPath = args[2];

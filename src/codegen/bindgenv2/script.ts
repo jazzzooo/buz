@@ -6,13 +6,9 @@ const USAGE = `\
 Usage: script.ts [options]
 
 Options (all required):
-  --command=<command>    Command to run (see below)
+  --command=<command>    Command to run (only: generate)
   --sources=<sources>    Comma-separated list of *.bindv2.ts files
   --codegen-path=<path>  Path to build/*/codegen
-
-Commands:
-  list-outputs  List files that will be generated, separated by semicolons
-  generate      Generate all files
 `;
 
 let codegenPath: string;
@@ -63,19 +59,11 @@ function toZigNamespace(name: string): string {
   return result;
 }
 
-function listOutputs(): void {
-  const outputs: string[] = [`${codegenPath}/bindgen_generated.zig`];
-  for (const type of getNamedExports()) {
-    if (type.hasCppSource) outputs.push(cppSourcePath(type));
-    if (type.hasZigSource) outputs.push(zigSourcePath(type));
-  }
-  process.stdout.write(outputs.join(";"));
-}
-
 function generate(): void {
   const names = new Set<string>();
   const zigRoot: string[] = [];
   const zigRootInternal: string[] = [];
+  const cppIncludes: string[] = [];
 
   const namedExports = getNamedExports();
   {
@@ -117,6 +105,7 @@ function generate(): void {
     }
     if (cppSource) {
       helpers.writeIfNotChanged(cppSourcePath(type), cppSource);
+      cppIncludes.push(`#include "Generated${type.name}.cpp"`);
     }
     if (zigSource) {
       zigRoot.push(
@@ -139,6 +128,10 @@ function generate(): void {
       "",
     ].join("\n"),
   );
+
+  // Single fixed-name TU compiled by build.zig; a new or removed type changes
+  // this file's content instead of the compile file list.
+  helpers.writeIfNotChanged(`${codegenPath}/bindgen_generated.cpp`, cppIncludes.join("\n") + "\n");
 }
 
 function main(): void {
@@ -166,9 +159,6 @@ function main(): void {
   sources = sourcesArg.split(",").filter(x => x);
 
   switch (command) {
-    case "list-outputs":
-      listOutputs();
-      break;
     case "generate":
       generate();
       break;

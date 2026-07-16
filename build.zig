@@ -1,3 +1,20 @@
+//! Bun's build. Downloaded inputs are pinned in build.zig.zon (the bootstrap
+//! bun that runs codegen, WebKit prebuilts, Node.js headers, mold, dependency
+//! sources); the host provides gcc and git.
+//!
+//!   zig build                          debug binary → zig-out/bin/bun-debug
+//!   zig build --watch -fincremental    the dev loop: edit → smoke-tested
+//!                                      binary in a few seconds
+//!   zig build run -- -e 'console.log(1)'
+//!   zig build --release=fast           release → zig-out/bin/{bun-profile,bun}
+//!   zig build check --watch -fincremental   type-check only, no binary
+//!
+//! Compile steps must leave `incremental` unset: -fincremental trades
+//! content-based caching for in-process state, which only pays off under
+//! --watch (where the CLI flag enables it).
+//!
+//! Builds on x86_64-linux only; the check-* steps type-check other targets.
+
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -15,6 +32,7 @@ const Version = std.SemanticVersion;
 const Arch = std.Target.Cpu.Arch;
 
 const OperatingSystem = @import("src/bun_core/env.zig").OperatingSystem;
+const bun_exe = @import("src/build/exe.zig");
 
 const pathRel = fs.path.relative;
 
@@ -31,7 +49,6 @@ const BunBuildOptions = struct {
     sha: []const u8,
     /// enable debug logs in release builds
     enable_logs: bool = false,
-    enable_asan: bool,
     enable_fuzzilli: bool,
     enable_valgrind: bool,
     enable_tinycc: bool,
@@ -48,9 +65,8 @@ const BunBuildOptions = struct {
     /// A similar technique is used in C++ code for JavaScript builtins
     codegen_embed: bool = false,
 
-    /// `./build/codegen` or equivalent
+    /// Directory holding the generated code (see Codegen.codegen_install_abs).
     codegen_path: []const u8,
-    lto: bool,
     override_no_export_cpp_apis: bool,
     android_ndk_sysroot: ?[]const u8 = null,
     freebsd_sysroot_x86_64: ?[]const u8 = null,
@@ -58,6 +74,9 @@ const BunBuildOptions = struct {
 
     cached_options_module: ?*Module = null,
     windows_shim: ?WindowsShim = null,
+
+    /// The codegen graph; codegen_path is its stable synced dir.
+    codegen: *const bun_exe.Codegen,
 
     pub fn isBaseline(this: *const BunBuildOptions) bool {
         return this.arch.isX86() and
@@ -96,7 +115,6 @@ const BunBuildOptions = struct {
         opts.addOption([:0]const u8, "sha", b.allocator.dupeSentinel(u8, this.sha, 0) catch @panic("OOM"));
         opts.addOption(bool, "baseline", this.isBaseline());
         opts.addOption(bool, "enable_logs", this.enable_logs);
-        opts.addOption(bool, "enable_asan", this.enable_asan);
         opts.addOption(bool, "enable_fuzzilli", this.enable_fuzzilli);
         opts.addOption(bool, "enable_valgrind", this.enable_valgrind);
         opts.addOption(bool, "enable_tinycc", this.enable_tinycc);
@@ -159,15 +177,18 @@ pub fn getCpuModel(os: OperatingSystem, arch: Arch) ?Target.Query.CpuModel {
         return .{ .explicit = &Target.aarch64.cpu.apple_m1 };
     }
 
-    // note: x86_64 is dealt with in the CMake config and passed in.
-    // the reason for the explicit handling on aarch64 is due to troubles
-    // passing the exact target in via flags.
+    // x86_64 stays null here: the executable graph pins haswell itself.
     return null;
 }
 
 pub fn build(b: *Build) !void {
+    // Configure observes untracked host state (source-directory scans, gcc
+    // probes, env vars), and the Maker's config-cache manifest does not yet
+    // hash directory dependencies, so a cached configuration would miss new
+    // source files. Keep the cache off.
+    b.graph.poisonCache();
+
     std.log.info("zig compiler v{s}", .{builtin.zig_version_string});
-    checked_file_exists = std.AutoHashMap(u64, void).init(b.allocator);
 
     var target_query = b.standardTargetOptionsQueryOnly(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -204,18 +225,27 @@ pub fn build(b: *Build) !void {
 
     const target = b.resolveTargetQuery(target_query);
 
-    const codegen_path = b.option([]const u8, "codegen_path", "Set the generated code directory") orelse
-        "build/debug/codegen";
+    // The full-executable graph: pinned inputs, codegen, C/C++, link, smoke
+    // test. Every step (bun, check) consumes its generated code.
+    const mode: bun_exe.Mode = if (optimize == .Debug) .debug else .release;
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) {
+        std.debug.panic("this build supports x86_64-linux hosts only", .{});
+    }
+    // Null = lazy fetches pending: end configuration cleanly so the runner
+    // fetches the marked dependencies and re-runs it.
+    const resolved = bun_exe.resolveDeps(b, mode) orelse return;
+    const pkgs = b.graph.arena.create(bun_exe.DepPkgs) catch @panic("OOM");
+    pkgs.* = resolved;
+    const cg = bun_exe.addCodegen(b, pkgs, mode);
+
     const codegen_embed = b.option(bool, "codegen_embed", "If codegen files should be embedded in the binary") orelse switch (b.graph.release_mode) {
         .off => false,
         else => true,
     };
 
-    const bun_version = b.option([]const u8, "version", "Value of `Bun.version`") orelse "0.0.0";
+    const bun_version = b.option([]const u8, "version", "Value of `Bun.version`") orelse
+        packageJsonVersion(b) orelse "0.0.0";
 
-    const obj_format = b.option(ObjectFormat, "obj_format", "Output file for object files") orelse .obj;
-
-    const lto = b.option(bool, "lto", "Emit LLVM bitcode for full LTO instead of a native object") orelse false;
     const override_no_export_cpp_apis = b.option(bool, "override-no-export-cpp-apis", "Override the default export_cpp_apis logic to disable exports") orelse false;
     // Zig does not bundle bionic headers, so translate-c needs the NDK
     // sysroot include paths explicitly. The obj's linkLibC() gets bionic
@@ -247,19 +277,20 @@ pub fn build(b: *Build) !void {
         .optimize = optimize,
         .os = os,
         .arch = arch,
-        .codegen_path = codegen_path,
+        .codegen_path = cg.codegen_install_abs,
         .codegen_embed = codegen_embed,
-        .lto = lto,
         .override_no_export_cpp_apis = override_no_export_cpp_apis,
         .version = try Version.parse(bun_version),
         .canary_revision = canary: {
-            const rev = b.option(u32, "canary", "Treat this as a canary build") orelse 0;
+            const rev = b.option(u32, "canary", "Treat this as a canary build (0 = release)") orelse 1;
             break :canary if (rev == 0) null else rev;
         },
         .reported_nodejs_version = try Version.parse(
             b.option([]const u8, "reported_nodejs_version", "Reported Node.js version") orelse
-                "0.0.0-unset",
+                bun_exe.nodejsVersionFromZon(b),
         ),
+        // Dev builds bake the zero sha so commits never invalidate compiles;
+        // CI passes the real revision.
         .sha = sha: {
             const sha = b.option([]const u8, "sha", "Force the git sha") orelse zero_sha;
 
@@ -276,57 +307,57 @@ pub fn build(b: *Build) !void {
             break :sha sha;
         },
         .tracy_callstack_depth = b.option(u16, "tracy_callstack_depth", "") orelse 10,
-        .enable_logs = b.option(bool, "enable_logs", "Enable logs in release") orelse false,
-        .enable_asan = b.option(bool, "enable_asan", "Enable asan") orelse false,
+        .enable_logs = b.option(bool, "enable_logs", "Enable logs in release") orelse (optimize == .Debug),
         .enable_fuzzilli = b.option(bool, "enable_fuzzilli", "Enable fuzzilli instrumentation") orelse false,
         .enable_valgrind = b.option(bool, "enable_valgrind", "Enable valgrind") orelse false,
         .enable_tinycc = b.option(bool, "enable_tinycc", "Enable TinyCC for FFI JIT compilation") orelse true,
-        .use_mimalloc = b.option(bool, "use_mimalloc", "Use mimalloc as default allocator") orelse false,
+        .use_mimalloc = b.option(bool, "use_mimalloc", "Use mimalloc as default allocator") orelse true,
         .android_ndk_sysroot = android_ndk_sysroot,
         .freebsd_sysroot_x86_64 = freebsd_sysroot_x86_64,
         .freebsd_sysroot_aarch64 = freebsd_sysroot_aarch64,
+        .codegen = cg,
     };
 
-    // zig build obj
+    // The bun executable: codegen, C/C++, link, smoke test. Default step.
     {
-        var step = b.step("obj", "Build Bun's Zig code as a .o file");
-        var bun_obj = addBunObject(b, &build_options);
-        step.dependOn(&bun_obj.step);
-        step.dependOn(addInstallObjectFile(b, bun_obj, "bun-zig", obj_format));
-    }
-
-    // zig build test
-    {
-        var step = b.step("test", "Build Bun's unit test suite");
         var o = build_options;
-        var unit_tests = b.addTest(.{
-            .name = "bun-test",
-            .test_runner = .{ .path = b.path("src/main_test.zig"), .mode = .simple },
-            .root_module = b.createModule(.{
-                .optimize = build_options.optimize,
-                .root_source_file = b.path("src/unit_test.zig"),
-                .target = build_options.target,
-                .omit_frame_pointer = false,
-                .strip = false,
-            }),
+        // The distributed binary targets the haswell baseline; the C++ side
+        // is pinned to the same in src/build/exe.zig.
+        o.target = b.resolveTargetQuery(.{
+            .cpu_arch = .x86_64,
+            .os_tag = .linux,
+            .abi = .gnu,
+            .cpu_model = .{ .explicit = &Target.x86.cpu.haswell },
+            .os_version_min = getOSVersionMin(.linux),
+            .glibc_version = getOSGlibCVersion(.linux),
         });
-        configureObj(b, &o, unit_tests);
-        // Setting `linker_allow_shlib_undefined` causes the linker to ignore
-        // all undefined symbols.  We want this because all we care about is the
-        // object file Zig creates; we perform our own linking later. There is
-        // currently no way to make a test build that only creates an object
-        // file w/o creating an executable.
-        //
-        // See: https://github.com/ziglang/zig/issues/23374
-        unit_tests.linker_allow_shlib_undefined = true;
-        unit_tests.link_function_sections = true;
-        unit_tests.link_data_sections = true;
-        unit_tests.bundle_ubsan_rt = false;
+        o.codegen_embed = mode == .release;
+        o.cached_options_module = null;
+        const obj = addBunObject(b, &o);
 
-        const bin = unit_tests.getEmittedBin();
-        const obj = bin.dirname().path(b, "bun-test.o");
-        const cpy_obj = b.addInstallFile(obj, "bun-test.o");
-        step.dependOn(&cpy_obj.step);
+        const exe_opts: bun_exe.Options = .{
+            .mode = mode,
+            .version = bun_version,
+            .sha = if (std.mem.eql(u8, build_options.sha, zero_sha)) null else build_options.sha,
+            .target = o.target,
+        };
+        const archives = bun_exe.addCpp(b, pkgs, cg, exe_opts);
+        const built = bun_exe.addLink(b, pkgs, archives, obj.getEmittedBin(), cg, exe_opts);
+        // The executable is pinned to this target; fail loudly rather than
+        // silently overriding an explicit -Dtarget/-Dcpu.
+        if ((target_query.abi != null and target_query.abi.? != .gnu) or
+            target_query.cpu_model != .determined_by_arch_os)
+        {
+            const fail = b.addFail("the bun executable is pinned to x86_64-linux-gnu (haswell); -Dtarget/-Dcpu apply only to the check steps");
+            built.step.dependOn(&fail.step);
+        }
+        b.default_step.dependOn(built.step);
+
+        const run_step = b.step("run", "Run the built bun (pass args after --)");
+        const run_cmd = b.addRunFile(built.exe);
+        run_cmd.addPassthruArgs();
+        run_cmd.step.dependOn(built.step);
+        run_step.dependOn(&run_cmd.step);
     }
 
     // zig build windows-shim
@@ -342,22 +373,8 @@ pub fn build(b: *Build) !void {
         var step = b.step("check", "Check for semantic analysis errors");
         var bun_check_obj = addBunObject(b, &build_options);
         bun_check_obj.generated_bin = .none;
-        // bun_check_obj.use_llvm = false;
         step.dependOn(&bun_check_obj.step);
-
-        // The default install step will run zig build check. This is so ZLS
-        // identifies the codebase, as well as performs checking if build on
-        // save is enabled.
-
-        // For building Bun itself, one should run `bun setup`
-        b.default_step.dependOn(step);
     }
-
-    // zig build watch
-    // const enable_watch_step = b.option(bool, "watch_step", "Enable the watch step. This reads more files so it is off by default") orelse false;
-    // if (enable_watch_step) {
-    //     self_hosted_watch.selfHostedExeBuild(b, &build_options) catch @panic("OOM");
-    // }
 
     // zig build check-debug
     {
@@ -416,28 +433,28 @@ pub fn build(b: *Build) !void {
         }, &.{.Debug});
     }
     {
-        const step = b.step("check-macos", "Check for semantic analysis errors on Windows");
+        const step = b.step("check-macos", "Check for semantic analysis errors on macOS");
         addMultiCheck(b, step, build_options, &.{
             .{ .os = .mac, .arch = .x86_64 },
             .{ .os = .mac, .arch = .aarch64 },
         }, &.{ .Debug, .ReleaseFast });
     }
     {
-        const step = b.step("check-macos-debug", "Check for semantic analysis errors on Windows");
+        const step = b.step("check-macos-debug", "Check for semantic analysis errors on macOS in debug mode");
         addMultiCheck(b, step, build_options, &.{
             .{ .os = .mac, .arch = .x86_64 },
             .{ .os = .mac, .arch = .aarch64 },
         }, &.{.Debug});
     }
     {
-        const step = b.step("check-linux", "Check for semantic analysis errors on Windows");
+        const step = b.step("check-linux", "Check for semantic analysis errors on Linux");
         addMultiCheck(b, step, build_options, &.{
             .{ .os = .linux, .arch = .x86_64 },
             .{ .os = .linux, .arch = .aarch64 },
         }, &.{ .Debug, .ReleaseFast });
     }
     {
-        const step = b.step("check-linux-debug", "Check for semantic analysis errors on Windows");
+        const step = b.step("check-linux-debug", "Check for semantic analysis errors on Linux in debug mode");
         addMultiCheck(b, step, build_options, &.{
             .{ .os = .linux, .arch = .x86_64 },
             .{ .os = .linux, .arch = .aarch64 },
@@ -490,17 +507,16 @@ pub fn build(b: *Build) !void {
             .cpu_model = .baseline,
             .os_tag = .freestanding,
         });
-        inline for (.{ std.builtin.OptimizeMode.Debug, std.builtin.OptimizeMode.ReleaseFast }) |mode| {
+        inline for (.{ std.builtin.OptimizeMode.Debug, std.builtin.OptimizeMode.ReleaseFast }) |wasm_mode| {
             var options: BunBuildOptions = .{
                 .target = wasm_target,
-                .optimize = mode,
+                .optimize = wasm_mode,
                 .os = .wasm,
                 .arch = .wasm32,
                 .version = build_options.version,
                 .canary_revision = build_options.canary_revision,
                 .sha = build_options.sha,
                 .enable_logs = build_options.enable_logs,
-                .enable_asan = false,
                 .enable_fuzzilli = false,
                 .enable_valgrind = false,
                 .enable_tinycc = false,
@@ -509,34 +525,12 @@ pub fn build(b: *Build) !void {
                 .reported_nodejs_version = build_options.reported_nodejs_version,
                 .codegen_embed = build_options.codegen_embed,
                 .codegen_path = build_options.codegen_path,
-                .lto = false,
+                .codegen = build_options.codegen,
                 .override_no_export_cpp_apis = true,
             };
             var obj = addBunWasmObject(b, &options);
             obj.generated_bin = .none;
             step.dependOn(&obj.step);
-        }
-    }
-
-    // zig build translate-c-headers
-    {
-        const step = b.step("translate-c", "Copy generated translated-c-headers.zig to zig-out");
-        for ([_]TargetDescription{
-            .{ .os = .windows, .arch = .x86_64 },
-            .{ .os = .windows, .arch = .aarch64 },
-            .{ .os = .mac, .arch = .x86_64 },
-            .{ .os = .mac, .arch = .aarch64 },
-            .{ .os = .linux, .arch = .x86_64 },
-            .{ .os = .linux, .arch = .aarch64 },
-            .{ .os = .linux, .arch = .x86_64, .musl = true },
-            .{ .os = .linux, .arch = .aarch64, .musl = true },
-        }) |t| {
-            const resolved = t.resolveTarget(b);
-            step.dependOn(
-                &b.addInstallFile(getTranslateC(b, resolved, .Debug, null, null), b.fmt("translated-c-headers/{s}.zig", .{
-                    resolved.result.zigTriple(b.allocator) catch @panic("OOM"),
-                })).step,
-            );
         }
     }
 
@@ -734,8 +728,6 @@ fn addMultiCheck(
                 .version = root_build_options.version,
                 .reported_nodejs_version = root_build_options.reported_nodejs_version,
                 .codegen_path = root_build_options.codegen_path,
-                .lto = false,
-                .enable_asan = root_build_options.enable_asan,
                 .enable_valgrind = root_build_options.enable_valgrind,
                 .enable_tinycc = root_build_options.enable_tinycc,
                 .enable_fuzzilli = root_build_options.enable_fuzzilli,
@@ -744,6 +736,7 @@ fn addMultiCheck(
                 .android_ndk_sysroot = root_build_options.android_ndk_sysroot,
                 .freebsd_sysroot_x86_64 = root_build_options.freebsd_sysroot_x86_64,
                 .freebsd_sysroot_aarch64 = root_build_options.freebsd_sysroot_aarch64,
+                .codegen = root_build_options.codegen,
             };
 
             var obj = addBunObject(b, &options);
@@ -785,7 +778,10 @@ fn getTranslateC(b: *Build, initial_target: std.Build.ResolvedTarget, optimize: 
         translate_c.defineCMacro("__EMMINTRIN_H", "1");
     }
 
-    translate_c.addIncludePath(b.path("vendor/zstd/lib"));
+    // zstd headers for @cImport come from the pinned zon package.
+    if (b.lazyDependency("zstd", .{})) |zstd_pkg| {
+        translate_c.addIncludePath(zstd_pkg.path("lib"));
+    }
 
     if (target.result.abi.isAndroid()) {
         const sysroot = android_ndk_sysroot orelse
@@ -867,7 +863,8 @@ pub fn addBunObject(b: *Build, opts: *BunBuildOptions) *Compile {
         .root_module = root,
     });
     configureObj(b, opts, obj);
-    if (enableFastBuild(b)) obj.root_module.strip = true;
+    // Generated imports come from the stable synced dir.
+    obj.step.dependOn(opts.codegen.sync_step);
     return obj;
 }
 
@@ -891,12 +888,8 @@ fn addBunWasmObject(b: *Build, opts: *BunBuildOptions) *Compile {
         .root_module = root,
     });
     configureObj(b, opts, obj);
+    obj.step.dependOn(opts.codegen.sync_step);
     return obj;
-}
-
-fn enableFastBuild(b: *Build) bool {
-    const val = b.graph.environ_map.get("BUN_BUILD_FAST") orelse return false;
-    return std.mem.eql(u8, val, "1");
 }
 
 fn configureObj(b: *Build, opts: *BunBuildOptions, obj: *Compile) void {
@@ -906,24 +899,14 @@ fn configureObj(b: *Build, opts: *BunBuildOptions, obj: *Compile) void {
     // https://github.com/ziglang/zig/issues/17430
     obj.root_module.pic = true;
 
-    // Use Zig's default backend and linker for the selected target and
-    // optimization mode. Debug builds use the self-hosted backend where it is
-    // supported.
-    obj.incremental = true;
-    if (opts.lto) {
-        obj.lto = .full;
-        obj.use_lld = true;
-    }
+    // Incremental compilation is deliberately NOT forced here: -fincremental
+    // switches the compiler to a cache mode without content-based caching, so
+    // forcing it makes every one-shot build a full recompile. Pass
+    // `--watch -fincremental` for the resident dev loop; one-shot builds get
+    // the content-addressed whole-cache.
 
-    if (opts.enable_asan and !enableFastBuild(b)) {
-        if (@hasField(Build.Module, "sanitize_address")) {
-            if (opts.enable_fuzzilli) {
-                obj.sanitize_coverage_trace_pc_guard = true;
-            }
-            obj.root_module.sanitize_address = true;
-        }
-    } else if (opts.enable_fuzzilli) {
-        const fail_step = b.addFail("fuzzilli requires asan");
+    if (opts.enable_fuzzilli) {
+        const fail_step = b.addFail("fuzzilli requires an ASan build, which is not currently supported");
         obj.step.dependOn(&fail_step.step);
     }
     obj.bundle_compiler_rt = false;
@@ -954,42 +937,17 @@ fn configureObj(b: *Build, opts: *BunBuildOptions, obj: *Compile) void {
     }
 }
 
-const ObjectFormat = enum {
-    /// Emitting LLVM bc files could allow a stronger LTO pass, however it
-    /// doesn't yet work. It is left accessible with `-Dobj_format=bc` or in
-    /// CMake with `-DZIG_OBJECT_FORMAT=bc`.
-    ///
-    /// To use LLVM bitcode from Zig, more work needs to be done. Currently, an install of
-    /// LLVM 18.1.7 does not compatible with what bitcode Zig 0.13 outputs (has LLVM 18.1.7)
-    /// Change to "bc" to experiment, "Invalid record" means it is not valid output.
-    bc,
-    /// Emit a .o / .obj file for the bun-zig object.
-    obj,
-};
-
-pub fn addInstallObjectFile(
-    b: *Build,
-    compile: *Compile,
-    name: []const u8,
-    out_mode: ObjectFormat,
-) *Step {
-    const bin = compile.getEmittedBin();
-    return &b.addInstallFile(switch (out_mode) {
-        .obj => bin,
-        .bc => compile.getEmittedLlvmBc(),
-    }, b.fmt("{s}.o", .{name})).step;
-}
-
-var checked_file_exists: std.AutoHashMap(u64, void) = undefined;
-fn exists(b: *Build, path: []const u8) bool {
-    const entry = checked_file_exists.getOrPut(std.hash.Wyhash.hash(0, path)) catch unreachable;
-    if (entry.found_existing) {
-        // It would've panicked.
-        return true;
-    }
-
-    std.Io.Dir.accessAbsolute(b.graph.io, path, .{ .read = true }) catch return false;
-    return true;
+/// Default `Bun.version`, read from package.json.
+fn packageJsonVersion(b: *Build) ?[]const u8 {
+    const arena = b.graph.arena;
+    b.dependOnFileContents(b.path("package.json"));
+    const root = b.root.toString(arena) catch return null;
+    const dir = std.Io.Dir.openDirAbsolute(b.graph.io, root, .{}) catch return null;
+    const content = dir.readFileAlloc(b.graph.io, "package.json", arena, .limited(1024 * 1024)) catch return null;
+    const key = "\"version\": \"";
+    const start = (std.mem.indexOf(u8, content, key) orelse return null) + key.len;
+    const end = std.mem.indexOfScalarPos(u8, content, start, '"') orelse return null;
+    return content[start..end];
 }
 
 fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions) void {
@@ -1063,12 +1021,11 @@ fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions) void {
         .{ .file = "eval/feedback.ts", .enable = opts.shouldEmbedCode() },
     }) |entry| {
         if (!@hasField(@TypeOf(entry), "enable") or entry.enable) {
-            const path = b.pathJoin(&.{ opts.codegen_path, entry.file });
-            validateGeneratedPath(b, path);
             const import_path = if (@hasField(@TypeOf(entry), "import"))
                 entry.import
             else
                 entry.file;
+            const path = b.pathJoin(&.{ opts.codegen_path, entry.file });
             mod.addAnonymousImport(import_path, .{
                 .root_source_file = .{ .cwd_relative = path },
             });
@@ -1123,16 +1080,6 @@ fn propagateImports(source_mod: *Module) !void {
         for (source_mod.import_table.keys(), source_mod.import_table.values()) |k, v|
             if (mod.import_table.get(k) == null)
                 mod.addImport(k, v);
-    }
-}
-
-fn validateGeneratedPath(b: *Build, path: []const u8) void {
-    if (!exists(b, path)) {
-        std.debug.panic(
-            \\Generated file '{s}' is missing!
-            \\
-            \\Make sure to use CMake and Ninja, or pass a manual codegen folder with '-Dgenerated-code=...'
-        , .{path});
     }
 }
 

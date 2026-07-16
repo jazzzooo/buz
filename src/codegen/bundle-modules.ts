@@ -480,9 +480,13 @@ writeIfNotChanged(
 
 writeIfNotChanged(path.join(CODEGEN_DIR, "GeneratedJS2Native.h"), getJS2NativeCPP());
 
-// zig will complain if this file is outside of the module
+// Lives in the source tree because it imports src files by relative path;
+// also written into the codegen dir so the build graph can re-materialize it
+// from a cached run.
 const js2nativeZigPath = path.join(import.meta.dir, "../jsc/bindings/GeneratedJS2Native.zig");
-writeIfNotChanged(js2nativeZigPath, getJS2NativeZig(js2nativeZigPath));
+const js2nativeZig = getJS2NativeZig(js2nativeZigPath);
+writeIfNotChanged(js2nativeZigPath, js2nativeZig);
+writeIfNotChanged(path.join(CODEGEN_DIR, "GeneratedJS2Native.zig"), js2nativeZig);
 
 const generatedDTSPath = path.join(CODEGEN_DIR, "generated.d.ts");
 writeIfNotChanged(

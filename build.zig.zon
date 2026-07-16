@@ -1,0 +1,142 @@
+.{
+    .name = .bun,
+    .version = "1.3.14",
+    .fingerprint = 0x4c5007b06ab7c09c, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.0-dev.1414+80d06578a",
+
+    .dependencies = .{
+        .bun_bootstrap = .{
+            .url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-x64.zip",
+            .hash = "N-V-__8AAHBLhwXb9ibGzI7UE5ToOr__9BjmI6g83DdzkMpE",
+            .lazy = true,
+        },
+        .nodejs_headers = .{
+            .url = "https://nodejs.org/dist/v24.3.0/node-v24.3.0-headers.tar.gz",
+            .hash = "N-V-__8AAF8cCgNPd0LiDy1T5pVgCof711ERmVxa3hl9UdpO",
+            .lazy = true,
+        },
+        .webkit_debug = .{
+            .url = "https://github.com/oven-sh/WebKit/releases/download/autobuild-5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b/bun-webkit-linux-amd64-debug.tar.gz",
+            .hash = "N-V-__8AAFztalopgiCTaWjUVuDPzQGwOfNwOay6Elv_Zd9J",
+            .lazy = true,
+        },
+        .webkit_release = .{
+            .url = "https://github.com/oven-sh/WebKit/releases/download/autobuild-5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b/bun-webkit-linux-amd64.tar.gz",
+            .hash = "N-V-__8AACg9xkPBF_FGECuhhb3xkR-_RdCtnoPEbNZom1I1",
+            .lazy = true,
+        },
+        .mold = .{
+            .url = "https://github.com/rui314/mold/releases/download/v2.40.4/mold-2.40.4-x86_64-linux.tar.gz",
+            .hash = "N-V-__8AAJDAJwF1tN3yKqkTNn9MTeolcxSLkIWt3FOIAe7C",
+            .lazy = true,
+        },
+        .picohttpparser = .{
+            .url = "https://github.com/h2o/picohttpparser/archive/066d2b1e9ab820703db0837a7255d92d30f0c9f5.tar.gz",
+            .hash = "N-V-__8AAGwhAQAxmAhFieX9pgcUaJQO7l1EuPFzJ0fwoP3l",
+            .lazy = true,
+        },
+        .zlib = .{
+            .url = "https://github.com/zlib-ng/zlib-ng/archive/12731092979c6d07f42da27da673a9f6c7b13586.tar.gz",
+            .hash = "N-V-__8AAPaJcABkB6U-96R7h2xuXX5TlDMvwPbE4PucPI59",
+            .lazy = true,
+        },
+        .zstd = .{
+            .url = "https://github.com/facebook/zstd/archive/f8745da6ff1ad1e7bab384bd1f9d742439278e99.tar.gz",
+            .hash = "N-V-__8AAPZ7fwBg4JoCzM_0o2A8wxH2hsUUeiU1iuZv53L5",
+            .lazy = true,
+        },
+        .brotli = .{
+            .url = "https://github.com/google/brotli/archive/v1.1.0.tar.gz",
+            .hash = "N-V-__8AAF_gIQDX2wVzXI-r96NyCgKuDj9W_Gab-TU7Qzoi",
+            .lazy = true,
+        },
+        .libdeflate = .{
+            .url = "https://github.com/ebiggers/libdeflate/archive/c8c56a20f8f621e6a966b716b31f1dedab6a41e3.tar.gz",
+            .hash = "N-V-__8AACODCwCL9flGfJkJ2IlkP36ExXwOhPuIUgIFfB8l",
+            .lazy = true,
+        },
+        .libarchive = .{
+            .url = "https://github.com/libarchive/libarchive/archive/ded82291ab41d5e355831b96b0e1ff49e24d8939.tar.gz",
+            .hash = "N-V-__8AAPdSDQGzgAMg1N4RT7W5S3EDT1wmqOXNxMVyyVr4",
+            .lazy = true,
+        },
+        .libjpeg_turbo = .{
+            .url = "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/e352b02f794f701407b39af08576035ba3360d60.tar.gz",
+            .hash = "N-V-__8AAJIglwCj83BsrQ4XzhO7KYhD7YXV0OvGJj_4NVKU",
+            .lazy = true,
+        },
+        .libspng = .{
+            .url = "https://github.com/randy408/libspng/archive/fb768002d4288590083a476af628e51c3f1d47cd.tar.gz",
+            .hash = "N-V-__8AAModCAATNPKPcCapFcZFQHw0a8VjUyjAokEkvmW7",
+            .lazy = true,
+        },
+        .libwebp = .{
+            .url = "https://github.com/webmproject/libwebp/archive/b7e29b9d75bd31422b00c2a446d49d7af06c328d.tar.gz",
+            .hash = "N-V-__8AAGkrewARcKiSyLfJKsaW0ZoqHh4hzi4mTGwekxjk",
+            .lazy = true,
+        },
+        .cares = .{
+            .url = "https://github.com/c-ares/c-ares/archive/3ac47ee46edd8ea40370222f91613fc16c434853.tar.gz",
+            .hash = "N-V-__8AAJVlLwBvQ16wx4uTBDjN8evEHj9ZSohHiyIzZ05h",
+            .lazy = true,
+        },
+        .hdrhistogram = .{
+            .url = "https://github.com/HdrHistogram/HdrHistogram_c/archive/be60a9987ee48d0abf0d7b6a175bad8d6c1585d1.tar.gz",
+            .hash = "N-V-__8AAF6ICABk4PFCde8Kw2746Upg2o4qU63rc8Ds0P9r",
+            .lazy = true,
+        },
+        .highway = .{
+            .url = "https://github.com/google/highway/archive/2607d3b5b0113992fe84d3848859eae13b3b52c1.tar.gz",
+            .hash = "N-V-__8AAD_MkACxo3rELIYCI7ap_7GsxHN1WH6AsMLDYp6L",
+            .lazy = true,
+        },
+        .lshpack = .{
+            .url = "https://github.com/litespeedtech/ls-hpack/archive/8905c024b6d052f083a3d11d0a169b3c2735c8a1.tar.gz",
+            .hash = "N-V-__8AAFo5VQCMGNos53oUbtdyzgRTdBedy52h5FsecO51",
+            .lazy = true,
+        },
+        .lsqpack = .{
+            .url = "https://github.com/litespeedtech/ls-qpack/archive/1e9c5b8e59f8161c54f168a570c8bfdc59ded0c3.tar.gz",
+            .hash = "N-V-__8AAKHvVgBsNJVDKKVAFfD0XLyv3NZA7q19Lkm6ozff",
+            .lazy = true,
+        },
+        .mimalloc = .{
+            .url = "https://github.com/oven-sh/mimalloc/archive/f15aecb94fc8096008bf87b90c53ed682026914a.tar.gz",
+            .hash = "N-V-__8AAEDOVwAWa_CsURc2b2DiaiUJox-0rGWpmoyhmg1v",
+            .lazy = true,
+        },
+        .boringssl = .{
+            .url = "https://github.com/oven-sh/boringssl/archive/0c5fce43b7ed5eb6001487ee48ac65766f5ddcd1.tar.gz",
+            .hash = "N-V-__8AACMivg1jnnu7y3MDtx3eQYYkGO5Hnr9d7P2EKm-G",
+            .lazy = true,
+        },
+        .lsquic = .{
+            .url = "https://github.com/litespeedtech/lsquic/archive/3181911301b1aa4f54c1ed690901abc674ee08fb.tar.gz",
+            .hash = "N-V-__8AAGrhZQBk-JOGi7TmXqFwZicV5bsci-XShOj2SRxj",
+            .lazy = true,
+        },
+        .tinycc = .{
+            .url = "https://github.com/oven-sh/tinycc/archive/12882eee073cfe5c7621bcfadf679e1372d4537b.tar.gz",
+            .hash = "N-V-__8AABASQgCtrlfXYF79gMIeExM-Kv9nquZFv_ACS7Jy",
+            .lazy = true,
+        },
+        // Source provenance of src/build/prebuilt/liblolhtml.a; never fetched.
+        .lolhtml = .{
+            .url = "https://github.com/cloudflare/lol-html/archive/77127cd2b8545998756e8d64e36ee2313c4bb312.tar.gz",
+            .hash = "N-V-__8AAILRWQB2Fz5ONMTIQcwzKIePNIYCjZbjICu9z9TP",
+            .lazy = true,
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "bun.lock",
+        "bunfig.toml",
+        "package.json",
+        "patches",
+        "src",
+        "packages",
+        "completions",
+    },
+}

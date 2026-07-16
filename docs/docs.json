@@ -179,14 +179,7 @@
           {
             "group": "Contributing",
             "icon": "heart",
-            "pages": [
-              "/project/roadmap",
-              "/project/benchmarking",
-              "/project/contributing",
-              "/project/building-windows",
-              "/project/bindgen",
-              "/project/license"
-            ]
+            "pages": ["/project/roadmap", "/project/benchmarking", "/project/bindgen", "/project/license"]
           }
         ]
       },

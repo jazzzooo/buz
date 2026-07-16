@@ -1,1 +1,5 @@
 build
+
+# The zig build system implementation (src/build/) is source, not output.
+!/build/
+!/build/prebuilt/*.a
