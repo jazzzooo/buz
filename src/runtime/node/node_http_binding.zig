@@ -9,8 +9,6 @@ pub fn getBunServerAllClosedPromise(globalThis: *jsc.JSGlobalObject, callframe: 
     inline for ([_]type{
         jsc.API.HTTPServer,
         jsc.API.HTTPSServer,
-        jsc.API.DebugHTTPServer,
-        jsc.API.DebugHTTPSServer,
     }) |Server| {
         if (value.as(Server)) |server| {
             return server.getAllClosedPromise(globalThis);

@@ -26,20 +26,14 @@ pub const NativePromiseContext = @This();
 pub const Tag = enum(u8) {
     HTTPServerRequestContext,
     HTTPSServerRequestContext,
-    DebugHTTPServerRequestContext,
-    DebugHTTPSServerRequestContext,
     BodyValueBufferer,
     HTTPSServerH3RequestContext,
-    DebugHTTPSServerH3RequestContext,
 
     pub fn fromType(comptime T: type) Tag {
         return switch (T) {
             server.HTTPServer.RequestContext => .HTTPServerRequestContext,
             server.HTTPSServer.RequestContext => .HTTPSServerRequestContext,
-            server.DebugHTTPServer.RequestContext => .DebugHTTPServerRequestContext,
-            server.DebugHTTPSServer.RequestContext => .DebugHTTPSServerRequestContext,
             server.HTTPSServer.H3RequestContext => .HTTPSServerH3RequestContext,
-            server.DebugHTTPSServer.H3RequestContext => .DebugHTTPSServerH3RequestContext,
             bun.webcore.Body.ValueBufferer => .BodyValueBufferer,
             else => @compileError("NativePromiseContext.Tag: unsupported type " ++ @typeName(T)),
         };
@@ -84,13 +78,13 @@ comptime {
 /// outside the sweep phase.
 ///
 /// Zero-allocation: the ctx pointer and our Tag are packed into the task's
-/// `_ptr` slot (pointer in high bits, tag in low 3 bits — the target types
-/// are all >= 8-byte aligned). See PosixSignalTask for the same trick with
+/// `_ptr` slot (pointer in high bits, tag in low 2 bits — the target types
+/// are all >= 4-byte aligned). See PosixSignalTask for the same trick with
 /// signal numbers.
 ///
 /// Layout inside jsc.Task's packed u64 after setUintptr:
 ///
-///     bits 63..49  bits 48..3           bits 2..0
+///     bits 63..49  bits 48..2           bits 1..0
 ///     ┌──────────┬────────────────────┬─────────┐
 ///     │ data=u15 │ ctx ptr (aligned)  │ our Tag │
 ///     └──────────┴────────────────────┴─────────┘
@@ -103,19 +97,18 @@ comptime {
 ///
 /// setUintptr only writes _ptr; the Task discriminant in data that
 /// Task.init(&marker) stamped stays put. @truncate to u49 keeps the low
-/// bits, so both the ctx pointer (bits 3..48) and our Tag (bits 0..2)
+/// bits, so both the ctx pointer (bits 2..48) and our Tag (bits 0..1)
 /// survive.
 pub const DeferredDerefTask = struct {
-    const tag_mask: usize = 0b111;
+    const tag_mask: usize = 0b11;
     comptime {
-        // Low 3 bits hold the tag; verify both capacity and alignment
+        // Low 2 bits hold the tag; verify both capacity and alignment
         // slack so adding a tag or a packed field can't silently break
         // the packing.
         bun.assert(@typeInfo(Tag).@"enum".field_names.len <= tag_mask + 1);
         bun.assert(@alignOf(server.HTTPServer.RequestContext) > tag_mask);
         bun.assert(@alignOf(server.HTTPSServer.RequestContext) > tag_mask);
-        bun.assert(@alignOf(server.DebugHTTPServer.RequestContext) > tag_mask);
-        bun.assert(@alignOf(server.DebugHTTPSServer.RequestContext) > tag_mask);
+        bun.assert(@alignOf(server.HTTPSServer.H3RequestContext) > tag_mask);
         bun.assert(@alignOf(bun.webcore.Body.ValueBufferer) > tag_mask);
     }
 
@@ -140,8 +133,6 @@ pub const DeferredDerefTask = struct {
         switch (tag) {
             .HTTPServerRequestContext => @as(*server.HTTPServer.RequestContext, @ptrCast(@alignCast(ctx))).deref(),
             .HTTPSServerRequestContext => @as(*server.HTTPSServer.RequestContext, @ptrCast(@alignCast(ctx))).deref(),
-            .DebugHTTPServerRequestContext => @as(*server.DebugHTTPServer.RequestContext, @ptrCast(@alignCast(ctx))).deref(),
-            .DebugHTTPSServerRequestContext => @as(*server.DebugHTTPSServer.RequestContext, @ptrCast(@alignCast(ctx))).deref(),
             .BodyValueBufferer => {
                 // ValueBufferer is embedded by value inside HTMLRewriter's
                 // BufferOutputSink, with the owner pointer stored in .ctx.
@@ -151,7 +142,6 @@ pub const DeferredDerefTask = struct {
                 @as(*HTMLRewriter.BufferOutputSink, @ptrCast(@alignCast(bufferer.ctx))).deref();
             },
             .HTTPSServerH3RequestContext => @as(*server.HTTPSServer.H3RequestContext, @ptrCast(@alignCast(ctx))).deref(),
-            .DebugHTTPSServerH3RequestContext => @as(*server.DebugHTTPSServer.H3RequestContext, @ptrCast(@alignCast(ctx))).deref(),
         }
     }
 };

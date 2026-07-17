@@ -1037,16 +1037,6 @@ pub fn serve(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.J
                         server.onReloadFromZig(&config, globalObject);
                         return server.js_value.tryGet() orelse .js_undefined;
                     },
-                    @field(@TypeOf(entry.tag()), @typeName(jsc.API.DebugHTTPServer)) => {
-                        var server: *jsc.API.DebugHTTPServer = entry.as(jsc.API.DebugHTTPServer);
-                        server.onReloadFromZig(&config, globalObject);
-                        return server.js_value.tryGet() orelse .js_undefined;
-                    },
-                    @field(@TypeOf(entry.tag()), @typeName(jsc.API.DebugHTTPSServer)) => {
-                        var server: *jsc.API.DebugHTTPSServer = entry.as(jsc.API.DebugHTTPSServer);
-                        server.onReloadFromZig(&config, globalObject);
-                        return server.js_value.tryGet() orelse .js_undefined;
-                    },
                     @field(@TypeOf(entry.tag()), @typeName(jsc.API.HTTPSServer)) => {
                         var server: *jsc.API.HTTPSServer = entry.as(jsc.API.HTTPSServer);
                         server.onReloadFromZig(&config, globalObject);
@@ -1060,51 +1050,38 @@ pub fn serve(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.J
 
     switch (config.ssl_config != null) {
         inline else => |has_ssl_config| {
-            switch (config.isDevelopment()) {
-                inline else => |development| {
-                    const ServerType = comptime switch (development) {
-                        true => switch (has_ssl_config) {
-                            true => jsc.API.DebugHTTPSServer,
-                            false => jsc.API.DebugHTTPServer,
-                        },
-                        false => switch (has_ssl_config) {
-                            true => jsc.API.HTTPSServer,
-                            false => jsc.API.HTTPServer,
-                        },
-                    };
+            const ServerType = if (has_ssl_config) jsc.API.HTTPSServer else jsc.API.HTTPServer;
 
-                    var server = try ServerType.init(&config, globalObject);
-                    if (globalObject.hasException()) {
-                        return .zero;
-                    }
-                    const route_list_object = server.listen();
-                    if (globalObject.hasException()) {
-                        return .zero;
-                    }
-                    const obj = server.toJS(globalObject);
-                    if (route_list_object != .zero) {
-                        ServerType.js.routeListSetCached(obj, globalObject, route_list_object);
-                    }
-                    server.js_value.setStrong(obj, globalObject);
-
-                    if (config.allow_hot) {
-                        if (globalObject.bunVM().hotMap()) |hot| {
-                            hot.insert(config.id, server);
-                        }
-                    }
-
-                    if (vm.debugger) |*debugger| {
-                        debugger.http_server_agent.notifyServerStarted(
-                            jsc.API.AnyServer.from(server),
-                        );
-                        debugger.http_server_agent.notifyServerRoutesUpdated(
-                            jsc.API.AnyServer.from(server),
-                        ) catch |err| bun.handleOom(err);
-                    }
-
-                    return obj;
-                },
+            var server = try ServerType.init(&config, globalObject);
+            if (globalObject.hasException()) {
+                return .zero;
             }
+            const route_list_object = server.listen();
+            if (globalObject.hasException()) {
+                return .zero;
+            }
+            const obj = server.toJS(globalObject);
+            if (route_list_object != .zero) {
+                server.routeListSetCached(obj, globalObject, route_list_object);
+            }
+            server.js_value.setStrong(obj, globalObject);
+
+            if (config.allow_hot) {
+                if (globalObject.bunVM().hotMap()) |hot| {
+                    hot.insert(config.id, server);
+                }
+            }
+
+            if (vm.debugger) |*debugger| {
+                debugger.http_server_agent.notifyServerStarted(
+                    jsc.API.AnyServer.from(server),
+                );
+                debugger.http_server_agent.notifyServerRoutesUpdated(
+                    jsc.API.AnyServer.from(server),
+                ) catch |err| bun.handleOom(err);
+            }
+
+            return obj;
         },
     }
 }

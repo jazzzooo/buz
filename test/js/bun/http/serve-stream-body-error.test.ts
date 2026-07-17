@@ -55,7 +55,7 @@ test.concurrent.each([
   expect(stderr).toContain("boom");
 });
 
-// Same under `development: true` (the DEBUG RequestContext monomorphization).
+// Same under `development: true`.
 test.concurrent("pull-throw in development mode: the rejection is handled", async () => {
   const { stdout, stderr, exitCode } = await runFixture("pull-throw", "development");
   expect({ result: JSON.parse(stdout), exitCode }).toEqual({
@@ -150,7 +150,7 @@ test.concurrent.each(["cancel-throw", "cancel-async-reject", "cancel-byte-throw"
   },
 );
 
-// Same under `development: true` (the DEBUG RequestContext monomorphization).
+// Same under `development: true`.
 test.concurrent("cancel-throw in development mode: not an unhandledRejection", async () => {
   const { stdout, stderr, exitCode } = await runFixture("cancel-throw", "development");
   const result = JSON.parse(stdout);

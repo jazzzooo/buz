@@ -381,14 +381,6 @@ public:
         Bun__HTTPRequestContextTLS__onRejectStream,
         Bun__HTTPRequestContextTLS__onResolve,
         Bun__HTTPRequestContextTLS__onResolveStream,
-        Bun__HTTPRequestContextDebug__onReject,
-        Bun__HTTPRequestContextDebug__onRejectStream,
-        Bun__HTTPRequestContextDebug__onResolve,
-        Bun__HTTPRequestContextDebug__onResolveStream,
-        Bun__HTTPRequestContextDebugTLS__onReject,
-        Bun__HTTPRequestContextDebugTLS__onRejectStream,
-        Bun__HTTPRequestContextDebugTLS__onResolve,
-        Bun__HTTPRequestContextDebugTLS__onResolveStream,
         jsFunctionOnLoadObjectResultResolve,
         jsFunctionOnLoadObjectResultReject,
         Bun__TestScope__Describe2__bunTestThen,
@@ -409,12 +401,8 @@ public:
         Bun__HTTPRequestContextH3__onRejectStream,
         Bun__HTTPRequestContextH3__onResolve,
         Bun__HTTPRequestContextH3__onResolveStream,
-        Bun__HTTPRequestContextDebugH3__onReject,
-        Bun__HTTPRequestContextDebugH3__onRejectStream,
-        Bun__HTTPRequestContextDebugH3__onResolve,
-        Bun__HTTPRequestContextDebugH3__onResolveStream,
     };
-    static constexpr size_t promiseFunctionsSize = 42;
+    static constexpr size_t promiseFunctionsSize = 30;
 
     static PromiseFunctions promiseHandlerID(SYSV_ABI EncodedJSValue (*handler)(JSC::JSGlobalObject* arg0, JSC::CallFrame* arg1));
 

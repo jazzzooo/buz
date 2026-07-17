@@ -3700,26 +3700,6 @@ GlobalObject::PromiseFunctions GlobalObject::promiseHandlerID(Zig::FFIFunction h
         return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextTLS__onResolve;
     } else if (handler == Bun__HTTPRequestContextTLS__onResolveStream) {
         return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextTLS__onResolveStream;
-    } else if (handler == Bun__HTTPRequestContextDebug__onReject) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebug__onReject;
-    } else if (handler == Bun__HTTPRequestContextDebug__onRejectStream) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebug__onRejectStream;
-    } else if (handler == Bun__HTTPRequestContextDebug__onResolve) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebug__onResolve;
-    } else if (handler == Bun__HTTPRequestContextDebug__onResolveStream) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebug__onResolveStream;
-    } else if (handler == Bun__HTTPRequestContextDebugTLS__onReject) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebugTLS__onReject;
-    } else if (handler == Bun__HTTPRequestContextDebugTLS__onRejectStream) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebugTLS__onRejectStream;
-    } else if (handler == Bun__HTTPRequestContextDebugTLS__onResolve) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebugTLS__onResolve;
-    } else if (handler == Bun__HTTPRequestContextDebugTLS__onResolveStream) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebugTLS__onResolveStream;
-    } else if (handler == Bun__HTTPRequestContextDebugTLS__onResolveStream) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebugTLS__onResolveStream;
-    } else if (handler == Bun__HTTPRequestContextDebugTLS__onResolveStream) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebugTLS__onResolveStream;
     } else if (handler == jsFunctionOnLoadObjectResultResolve) {
         return GlobalObject::PromiseFunctions::jsFunctionOnLoadObjectResultResolve;
     } else if (handler == jsFunctionOnLoadObjectResultReject) {
@@ -3760,14 +3740,6 @@ GlobalObject::PromiseFunctions GlobalObject::promiseHandlerID(Zig::FFIFunction h
         return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextH3__onResolve;
     } else if (handler == Bun__HTTPRequestContextH3__onResolveStream) {
         return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextH3__onResolveStream;
-    } else if (handler == Bun__HTTPRequestContextDebugH3__onReject) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebugH3__onReject;
-    } else if (handler == Bun__HTTPRequestContextDebugH3__onRejectStream) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebugH3__onRejectStream;
-    } else if (handler == Bun__HTTPRequestContextDebugH3__onResolve) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebugH3__onResolve;
-    } else if (handler == Bun__HTTPRequestContextDebugH3__onResolveStream) {
-        return GlobalObject::PromiseFunctions::Bun__HTTPRequestContextDebugH3__onResolveStream;
     } else {
         RELEASE_ASSERT_NOT_REACHED();
     }

@@ -6,10 +6,7 @@ const AnyRequestContext = @This();
 pub const Pointer = bun.TaggedPointerUnion(.{
     HTTPServer.RequestContext,
     HTTPSServer.RequestContext,
-    DebugHTTPServer.RequestContext,
-    DebugHTTPSServer.RequestContext,
     HTTPSServer.H3RequestContext,
-    DebugHTTPSServer.H3RequestContext,
 });
 
 tagged_pointer: Pointer,
@@ -165,7 +162,5 @@ const bun = @import("bun");
 const jsc = bun.jsc;
 const uws = bun.uws;
 
-const DebugHTTPSServer = bun.api.DebugHTTPSServer;
-const DebugHTTPServer = bun.api.DebugHTTPServer;
 const HTTPSServer = bun.api.HTTPSServer;
 const HTTPServer = bun.api.HTTPServer;

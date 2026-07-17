@@ -40,11 +40,8 @@ public:
     enum class Tag : uint8_t {
         HTTPServerRequestContext,
         HTTPSServerRequestContext,
-        DebugHTTPServerRequestContext,
-        DebugHTTPSServerRequestContext,
         BodyValueBufferer,
         HTTPSServerH3RequestContext,
-        DebugHTTPSServerH3RequestContext,
     };
 
     static NativePromiseContext* create(JSC::VM& vm, JSC::Structure* structure, void* ctx, Tag tag);

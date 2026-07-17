@@ -393,16 +393,12 @@ pub const HotMap = struct {
 
     const HTTPServer = jsc.API.HTTPServer;
     const HTTPSServer = jsc.API.HTTPSServer;
-    const DebugHTTPServer = jsc.API.DebugHTTPServer;
-    const DebugHTTPSServer = jsc.API.DebugHTTPSServer;
     const TCPSocket = jsc.API.TCPSocket;
     const TLSSocket = jsc.API.TLSSocket;
     const Listener = jsc.API.Listener;
     const Entry = bun.TaggedPointerUnion(.{
         HTTPServer,
         HTTPSServer,
-        DebugHTTPServer,
-        DebugHTTPSServer,
         TCPSocket,
         TLSSocket,
         Listener,

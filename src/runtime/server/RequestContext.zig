@@ -18,7 +18,7 @@ pub const AdditionalOnAbortCallback = struct {
     }
 };
 
-pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, comptime ThisServer: type, comptime http3: bool) type {
+pub fn NewRequestContext(comptime ssl_enabled: bool, comptime ThisServer: type, comptime http3: bool) type {
     return struct {
         const RequestContext = @This();
 
@@ -49,7 +49,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
         method: HTTP.Method,
         cookies: ?*jsc.WebCore.CookieMap = null,
 
-        flags: NewFlags(debug_mode) = .{},
+        flags: Flags = .{},
 
         upgrade_context: ?*uws.WebSocketUpgradeContext = null,
 
@@ -385,7 +385,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
 
         pub fn renderMissingCorked(ctx: *RequestContext) void {
             if (ctx.resp) |resp| {
-                if (comptime !debug_mode) {
+                if (!ctx.server.?.config.isDevelopment()) {
                     if (!ctx.flags.has_written_status)
                         resp.writeStatus("204 No Content");
                     ctx.flags.has_written_status = true;
@@ -1281,7 +1281,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
         ) void {
             ctxLog("toAsync", .{});
             ctx.toAsyncWithoutAbortHandler(req, request_object);
-            if (comptime debug_mode) {
+            if (ctx.server.?.config.isDevelopment()) {
                 ctx.pathname = request_object.url.clone();
             }
             ctx.setAbortHandler();
@@ -1703,8 +1703,8 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                 req.renderMetadata();
             }
 
-            if (comptime debug_mode) {
-                if (req.server) |server| {
+            if (req.server) |server| {
+                if (server.config.isDevelopment()) {
                     if (!err.isEmptyOrUndefinedOrNull()) {
                         var exception_list: std.array_list.Managed(Api.JsException) = std.array_list.Managed(Api.JsException).init(req.allocator);
                         defer exception_list.deinit();
@@ -2048,7 +2048,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
             if (this.server == null) return this.renderProductionError(status);
             var vm: *jsc.VirtualMachine = this.server.?.vm;
             const globalThis = this.server.?.globalThis;
-            if (comptime debug_mode) {
+            if (this.server.?.config.isDevelopment()) {
                 var arena = std.heap.ArenaAllocator.init(this.allocator);
                 defer arena.deinit();
                 const allocator = arena.allocator();
@@ -2605,8 +2605,8 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
         }
 
         comptime {
-            const export_prefix = "Bun__HTTPRequestContext" ++ (if (debug_mode) "Debug" else "") ++ (if (http3) "H3" else if (ThisServer.ssl_enabled) "TLS" else "");
             if (bun.Environment.export_cpp_apis) {
+                const export_prefix = "Bun__HTTPRequestContext" ++ (if (http3) "H3" else if (ThisServer.ssl_enabled) "TLS" else "");
                 @export(&jsc.toJSHostFn(onResolve), .{ .name = export_prefix ++ "__onResolve" });
                 @export(&jsc.toJSHostFn(onReject), .{ .name = export_prefix ++ "__onReject" });
                 @export(&jsc.toJSHostFn(onResolveStream), .{ .name = export_prefix ++ "__onResolveStream" });
@@ -2626,47 +2626,34 @@ const SendfileContext = struct {
     total: Blob.SizeType = 0,
 };
 
-fn NewFlags(comptime debug_mode: bool) type {
-    return packed struct(u16) {
-        has_marked_complete: bool = false,
-        has_marked_pending: bool = false,
-        has_abort_handler: bool = false,
-        has_timeout_handler: bool = false,
-        has_sendfile_ctx: bool = false,
-        has_called_error_handler: bool = false,
-        needs_content_length: bool = false,
-        needs_content_range: bool = false,
-        /// Used to avoid looking at the uws.Request struct after it's been freed
-        is_transfer_encoding: bool = false,
+const Flags = packed struct(u16) {
+    has_marked_complete: bool = false,
+    has_marked_pending: bool = false,
+    has_abort_handler: bool = false,
+    has_timeout_handler: bool = false,
+    has_sendfile_ctx: bool = false,
+    has_called_error_handler: bool = false,
+    needs_content_length: bool = false,
+    needs_content_range: bool = false,
+    /// Used to avoid looking at the uws.Request struct after it's been freed
+    is_transfer_encoding: bool = false,
 
-        /// Used to identify if request can be safely deinitialized
-        is_waiting_for_request_body: bool = false,
-        /// Used in renderMissing in debug mode to show the user an HTML page
-        /// Used to avoid looking at the uws.Request struct after it's been freed
-        is_web_browser_navigation: if (debug_mode) bool else void = if (debug_mode) false,
-        has_written_status: bool = false,
-        response_protected: bool = false,
-        aborted: bool = false,
-        has_finalized: bun.DebugOnly(bool) = if (Environment.isDebug) false,
+    /// Used to identify if request can be safely deinitialized
+    is_waiting_for_request_body: bool = false,
+    /// Used in renderMissing in development mode to show the user an HTML page
+    /// Used to avoid looking at the uws.Request struct after it's been freed
+    is_web_browser_navigation: bool = false,
+    has_written_status: bool = false,
+    response_protected: bool = false,
+    aborted: bool = false,
+    has_finalized: bun.DebugOnly(bool) = if (Environment.isDebug) false,
 
-        is_error_promise_pending: bool = false,
+    is_error_promise_pending: bool = false,
 
-        _padding: PaddingInt = 0,
+    _padding: PaddingInt = 0,
 
-        const PaddingInt = brk: {
-            var size: usize = 2;
-            if (Environment.isDebug) {
-                size -= 1;
-            }
-
-            if (debug_mode) {
-                size -= 1;
-            }
-
-            break :brk @Int(.unsigned, size);
-        };
-    };
-}
+    const PaddingInt = @Int(.unsigned, if (Environment.isDebug) 0 else 1);
+};
 
 fn getContentType(headers: ?*WebCore.FetchHeaders, blob: *const WebCore.Blob.Any, allocator: std.mem.Allocator) struct { MimeType, bool, bool } {
     var needs_content_type = true;
