@@ -622,7 +622,7 @@ pub const QueryStringMap = struct {
         }
         var count = route_params.len;
 
-        var scanner = Scanner.init(query_string);
+        var scanner = QueryScanner.init(query_string);
         while (scanner.next()) |result| {
             estimated_str_len += result.name.length + result.value.length;
             count += 1;
@@ -680,30 +680,23 @@ pub const QueryStringMap = struct {
         var list = Param.List{};
         errdefer list.deinit(allocator);
 
-        var scanner = Scanner.init(query_string);
+        var scanner = QueryScanner.init(query_string);
         var count: usize = 0;
         var estimated_str_len: usize = 0;
 
-        var nothing_needs_decoding = true;
         while (scanner.next()) |result| {
-            if (result.name_needs_decoding or result.value_needs_decoding) {
-                nothing_needs_decoding = false;
-            }
             estimated_str_len += result.name.length + result.value.length;
             count += 1;
         }
 
         if (count == 0) return null;
 
-        scanner = Scanner.init(query_string);
+        scanner.reset();
         try list.ensureTotalCapacity(allocator, count);
 
-        if (nothing_needs_decoding) {
-            scanner = Scanner.init(query_string);
+        const needs_decoding = strings.containsChar(query_string, '%') or strings.containsChar(query_string, '+');
+        if (!needs_decoding) {
             while (scanner.next()) |result| {
-                if (Environment.allow_assert) bun.assert(!result.name_needs_decoding);
-                if (Environment.allow_assert) bun.assert(!result.value_needs_decoding);
-
                 const name = result.name;
                 const value = result.value;
                 list.appendAssumeCapacity(.{ .name = name, .value = value });
@@ -853,107 +846,56 @@ pub const PercentEncoding = struct {
 
 pub const FormData = @import("../runtime/webcore/FormData.zig").FormData;
 
-pub const Scanner = struct {
+const QueryScanner = struct {
     query_string: string,
-    i: usize,
+    cursor: usize,
     start: usize = 0,
 
-    pub fn init(query_string: string) Scanner {
-        if (query_string.len > 0 and query_string[0] == '?') {
-            return Scanner{ .query_string = query_string, .i = 1, .start = 1 };
-        }
-
-        return Scanner{ .query_string = query_string, .i = 0, .start = 0 };
+    pub fn init(query_string: string) QueryScanner {
+        const start: usize = if (query_string.len > 0 and query_string[0] == '?') 1 else 0;
+        return .{ .query_string = query_string, .cursor = start, .start = start };
     }
 
-    pub inline fn reset(this: *Scanner) void {
-        this.i = this.start;
+    pub inline fn reset(this: *QueryScanner) void {
+        this.cursor = this.start;
     }
 
-    pub const Result = struct {
-        name_needs_decoding: bool = false,
-        value_needs_decoding: bool = false,
+    const Result = struct {
         name: api.StringPointer,
         value: api.StringPointer,
 
         pub inline fn rawName(this: *const Result, query_string: string) string {
-            return if (this.name.length > 0) query_string[this.name.offset..][0..this.name.length] else "";
+            return query_string[this.name.offset..][0..this.name.length];
         }
 
         pub inline fn rawValue(this: *const Result, query_string: string) string {
-            return if (this.value.length > 0) query_string[this.value.offset..][0..this.value.length] else "";
+            return query_string[this.value.offset..][0..this.value.length];
         }
     };
 
-    /// Get the next query string parameter without allocating memory.
-    pub fn next(this: *Scanner) ?Result {
-        var relative_i: usize = 0;
-        defer this.i += relative_i;
+    pub fn next(this: *QueryScanner) ?Result {
+        while (this.cursor < this.query_string.len) {
+            const field_start = this.cursor;
+            const field_end = if (std.mem.indexOfScalar(u8, this.query_string[field_start..], '&')) |ampersand|
+                field_start + ampersand
+            else
+                this.query_string.len;
+            this.cursor = if (field_end < this.query_string.len) field_end + 1 else field_end;
 
-        // reuse stack space
-        // otherwise we'd recursively call the function
-        loop: while (true) {
-            if (this.i >= this.query_string.len) return null;
+            if (field_start == field_end) continue;
 
-            const slice = this.query_string[this.i..];
-            relative_i = 0;
-            var name = api.StringPointer{ .offset = @as(u32, @truncate(this.i)), .length = 0 };
-            var value = api.StringPointer{ .offset = 0, .length = 0 };
-            var name_needs_decoding = false;
+            const field = this.query_string[field_start..field_end];
+            const equals = std.mem.indexOfScalar(u8, field, '=');
+            const name_len = equals orelse field.len;
+            const value_start = if (equals) |index| field_start + index + 1 else field_end;
 
-            while (relative_i < slice.len) {
-                const char = slice[relative_i];
-                switch (char) {
-                    '=' => {
-                        name.length = @as(u32, @truncate(relative_i));
-                        relative_i += 1;
-
-                        value.offset = @as(u32, @truncate(relative_i + this.i));
-
-                        const offset = relative_i;
-                        var value_needs_decoding = false;
-                        while (relative_i < slice.len and slice[relative_i] != '&') : (relative_i += 1) {
-                            value_needs_decoding = value_needs_decoding or switch (slice[relative_i]) {
-                                '%', '+' => true,
-                                else => false,
-                            };
-                        }
-                        value.length = @as(u32, @truncate(relative_i - offset));
-                        // If the name is empty and it's just a value, skip it.
-                        // This is kind of an opinion. But, it's hard to see where that might be intentional.
-                        if (name.length == 0) return null;
-                        return Result{ .name = name, .value = value, .name_needs_decoding = name_needs_decoding, .value_needs_decoding = value_needs_decoding };
-                    },
-                    '%', '+' => {
-                        name_needs_decoding = true;
-                    },
-                    '&' => {
-                        // key&
-                        if (relative_i > 0) {
-                            name.length = @as(u32, @truncate(relative_i));
-                            return Result{ .name = name, .value = value, .name_needs_decoding = name_needs_decoding, .value_needs_decoding = false };
-                        }
-
-                        // &&&&&&&&&&&&&key=value
-                        while (relative_i < slice.len and slice[relative_i] == '&') : (relative_i += 1) {}
-                        this.i += relative_i;
-
-                        // reuse stack space
-                        continue :loop;
-                    },
-                    else => {},
-                }
-
-                relative_i += 1;
-            }
-
-            if (relative_i == 0) {
-                return null;
-            }
-
-            name.length = @as(u32, @truncate(relative_i));
-            return Result{ .name = name, .value = value, .name_needs_decoding = name_needs_decoding };
+            return .{
+                .name = .{ .offset = @intCast(field_start), .length = @intCast(name_len) },
+                .value = .{ .offset = @intCast(value_start), .length = @intCast(field_end - value_start) },
+            };
         }
+
+        return null;
     }
 };
 
