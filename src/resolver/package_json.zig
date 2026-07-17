@@ -1498,13 +1498,6 @@ pub const ESModule = struct {
         subpath: string = "",
         token: logger.Range = logger.Range.None,
     };
-    const invalid_percent_chars = [_]string{
-        "%2f",
-        "%2F",
-        "%5c",
-        "%5C",
-    };
-
     const module_bufs = bun.ThreadlocalBuffers(struct {
         resolved_path_buf_percent: bun.PathBuffer = undefined,
         resolve_target_buf: bun.PathBuffer = undefined,
@@ -1554,6 +1547,10 @@ pub const ESModule = struct {
 
         // If resolved contains any percent encodings of "/" or "\" ("%2f" and "%5C"
         // respectively), then throw an Invalid Module Specifier error.
+        if (containsEncodedPathSeparator(result.path)) {
+            return Resolution{ .status = .InvalidModuleSpecifier, .path = result.path, .debug = result.debug };
+        }
+
         const PercentEncoding = @import("../url/url.zig").PercentEncoding;
         const resolved_path_buf_percent = &module_bufs.get().resolved_path_buf_percent;
         var writer = std.Io.Writer.fixed(resolved_path_buf_percent);
@@ -1564,21 +1561,6 @@ pub const ESModule = struct {
         };
 
         const resolved_path = resolved_path_buf_percent[0..len];
-
-        var found: string = "";
-        if (strings.contains(resolved_path, invalid_percent_chars[0])) {
-            found = invalid_percent_chars[0];
-        } else if (strings.contains(resolved_path, invalid_percent_chars[1])) {
-            found = invalid_percent_chars[1];
-        } else if (strings.contains(resolved_path, invalid_percent_chars[2])) {
-            found = invalid_percent_chars[2];
-        } else if (strings.contains(resolved_path, invalid_percent_chars[3])) {
-            found = invalid_percent_chars[3];
-        }
-
-        if (found.len != 0) {
-            return Resolution{ .status = .InvalidModuleSpecifier, .path = result.path, .debug = result.debug };
-        }
 
         // If resolved is a directory, throw an Unsupported Directory Import error.
         if (strings.endsWithAnyComptime(resolved_path, "/\\")) {
@@ -1673,24 +1655,18 @@ pub const ESModule = struct {
                 // expansionKey up to but excluding the first "*" character
                 if (strings.indexOfChar(expansion.key, '*')) |star| {
                     const pattern_base = expansion.key[0..star];
-                    // If patternBase is not null and matchKey starts with but is not equal
-                    // to patternBase, then
-                    if (strings.startsWith(match_key, pattern_base)) {
-                        // Let patternTrailer be the substring of expansionKey from the index
-                        // after the first "*" character.
-                        const pattern_trailer = expansion.key[star + 1 ..];
+                    const pattern_trailer = expansion.key[star + 1 ..];
 
-                        // If patternTrailer has zero length, or if matchKey ends with
-                        // patternTrailer and the length of matchKey is greater than or
-                        // equal to the length of expansionKey, then
-                        if (pattern_trailer.len == 0 or (strings.endsWith(match_key, pattern_trailer) and match_key.len >= expansion.key.len)) {
-                            const target = expansion.value;
-                            const subpath = match_key[pattern_base.len .. match_key.len - pattern_trailer.len];
-                            if (r.debug_logs) |log| {
-                                log.addNoteFmt("The key \"{s}\" matched with \"{s}\" left over", .{ expansion.key, subpath });
-                            }
-                            return r.resolveTarget(package_url, target, subpath, is_imports, true);
+                    if (match_key.len >= expansion.key.len and
+                        strings.startsWith(match_key, pattern_base) and
+                        strings.endsWith(match_key, pattern_trailer))
+                    {
+                        const target = expansion.value;
+                        const subpath = match_key[pattern_base.len .. match_key.len - pattern_trailer.len];
+                        if (r.debug_logs) |log| {
+                            log.addNoteFmt("The key \"{s}\" matched with \"{s}\" left over", .{ expansion.key, subpath });
                         }
+                        return r.resolveTarget(package_url, target, subpath, is_imports, true);
                     }
                 } else {
                     // Otherwise if patternBase is null and matchKey starts with
@@ -1732,9 +1708,8 @@ pub const ESModule = struct {
         target: ExportsMap.Entry,
         subpath: string,
         internal: bool,
-        comptime pattern: bool,
+        pattern: bool,
     ) Resolution {
-        const resolve_target_buf = &module_bufs.get().resolve_target_buf;
         const resolve_target_buf2 = &module_bufs.get().resolve_target_buf2;
         switch (target.data) {
             .string => |str| {
@@ -1750,7 +1725,7 @@ pub const ESModule = struct {
 
                 // If pattern is false, subpath has non-zero length and target
                 // does not end with "/", throw an Invalid Module Specifier error.
-                if (comptime !pattern) {
+                if (!pattern) {
                     if (subpath.len > 0 and !strings.endsWithChar(str, '/')) {
                         if (r.debug_logs) |log| {
                             log.addNoteFmt("The target \"{s}\" is invalid because it doesn't end with a \"/\"", .{str});
@@ -1767,7 +1742,7 @@ pub const ESModule = struct {
                     }
 
                     if (internal and !strings.hasPrefixComptime(str, "../") and !strings.hasPrefix(str, "/")) {
-                        if (comptime pattern) {
+                        if (pattern) {
                             // Return the URL resolution of resolvedTarget with every instance of "*" replaced with subpath.
                             const len = std.mem.replacementSize(u8, str, "*", subpath);
                             _ = std.mem.replace(u8, str, "*", subpath, resolve_target_buf2);
@@ -1793,7 +1768,7 @@ pub const ESModule = struct {
 
                 // If target split on "/" or "\" contains any ".", ".." or "node_modules"
                 // segments after the first segment, throw an Invalid Package Target error.
-                if (findInvalidSegment(str)) |invalid| {
+                if (findInvalidPackageSegment(str[2..])) |invalid| {
                     if (r.debug_logs) |log| {
                         log.addNoteFmt("The target \"{s}\" is invalid because it contains an invalid segment \"{s}\"", .{ str, invalid });
                     }
@@ -1801,27 +1776,32 @@ pub const ESModule = struct {
                     return Resolution{ .path = str, .status = .InvalidPackageTarget, .debug = .{ .token = target.first_token } };
                 }
 
-                // Let resolvedTarget be the URL resolution of the concatenation of packageURL and target.
-                const parts = [_]string{ package_url, str };
-                const resolved_target = resolve_path.joinStringBuf(resolve_target_buf, parts, .auto);
-
-                // If target split on "/" or "\" contains any ".", ".." or "node_modules"
-                // segments after the first segment, throw an Invalid Package Target error.
-                if (findInvalidSegment(resolved_target)) |invalid| {
+                if (findInvalidPackageSegment(subpath)) |invalid| {
                     if (r.debug_logs) |log| {
-                        log.addNoteFmt("The target \"{s}\" is invalid because it contains an invalid segment \"{s}\"", .{ str, invalid });
+                        log.addNoteFmt("The subpath \"{s}\" is invalid because it contains an invalid segment \"{s}\"", .{ subpath, invalid });
                     }
 
-                    return Resolution{ .path = str, .status = .InvalidModuleSpecifier, .debug = .{ .token = target.first_token } };
+                    return Resolution{ .path = subpath, .status = .InvalidModuleSpecifier, .debug = .{ .token = target.first_token } };
                 }
 
-                if (comptime pattern) {
-                    // Return the URL resolution of resolvedTarget with every instance of "*" replaced with subpath.
-                    const len = std.mem.replacementSize(u8, resolved_target, "*", subpath);
-                    _ = std.mem.replace(u8, resolved_target, "*", subpath, resolve_target_buf2);
-                    const result = resolve_target_buf2[0..len];
+                if (pattern) {
+                    const resolve_target_buf = &module_bufs.get().resolve_target_buf;
+                    const len = std.mem.replacementSize(u8, str, "*", subpath);
+                    _ = std.mem.replace(u8, str, "*", subpath, resolve_target_buf);
+                    const substituted_target = resolve_target_buf[0..len];
+
+                    if (findInvalidPackageSegment(substituted_target[2..])) |invalid| {
+                        if (r.debug_logs) |log| {
+                            log.addNoteFmt("The target \"{s}\" is invalid after substitution because it contains an invalid segment \"{s}\"", .{ substituted_target, invalid });
+                        }
+
+                        return Resolution{ .path = substituted_target, .status = .InvalidModuleSpecifier, .debug = .{ .token = target.first_token } };
+                    }
+
+                    const parts = [_]string{ package_url, substituted_target };
+                    const result = resolve_path.joinStringBuf(resolve_target_buf2, parts, .auto);
                     if (r.debug_logs) |log| {
-                        log.addNoteFmt("Substituted \"{s}\" for \"*\" in \".{s}\" to get \".{s}\" ", .{ subpath, resolved_target, result });
+                        log.addNoteFmt("Substituted \"{s}\" for \"*\" in \"{s}\" to get \"{s}\"", .{ subpath, str, result });
                     }
 
                     const status: Status = if (strings.endsWithCharOrIsZeroLength(result, '*') and strings.indexOfChar(result, '*').? == result.len - 1)
@@ -1833,7 +1813,7 @@ pub const ESModule = struct {
                     const parts2 = [_]string{ package_url, str, subpath };
                     const result = resolve_path.joinStringBuf(resolve_target_buf2, parts2, .auto);
                     if (r.debug_logs) |log| {
-                        log.addNoteFmt("Substituted \"{s}\" for \"*\" in \".{s}\" to get \".{s}\" ", .{ subpath, resolved_target, result });
+                        log.addNoteFmt("Resolved \"{s}\" with subpath \"{s}\" to \"{s}\"", .{ str, subpath, result });
                     }
 
                     return Resolution{ .path = result, .status = .Exact, .debug = .{ .token = target.first_token } };
@@ -2124,34 +2104,60 @@ pub const ESModule = struct {
     }
 };
 
-fn findInvalidSegment(path_: string) ?string {
-    const slash = strings.indexAnyComptime(path_, "/\\") orelse return "";
-    var path = path_[slash + 1 ..];
-
-    while (path.len > 0) {
-        var segment = path;
-        if (strings.indexAnyComptime(path, "/\\")) |new_slash| {
-            segment = path[0..new_slash];
-            path = path[new_slash + 1 ..];
-        } else {
-            path = "";
-        }
-
-        switch (segment.len) {
-            1 => {
-                if (strings.eqlComptimeIgnoreLen(segment, ".")) return segment;
-            },
-            2 => {
-                if (strings.eqlComptimeIgnoreLen(segment, "..")) return segment;
-            },
-            "node_modules".len => {
-                if (strings.eqlComptimeIgnoreLen(segment, "node_modules")) return segment;
-            },
-            else => {},
+fn findInvalidPackageSegment(path: string) ?string {
+    var segments = std.mem.splitAny(u8, path, "/\\");
+    while (segments.next()) |segment| {
+        if (encodedSegmentEql(segment, ".") or
+            encodedSegmentEql(segment, "..") or
+            encodedSegmentEql(segment, "node_modules"))
+        {
+            return segment;
         }
     }
 
     return null;
+}
+
+fn encodedSegmentEql(segment: string, comptime expected: string) bool {
+    var index: usize = 0;
+    inline for (expected) |expected_byte| {
+        if (index >= segment.len) return false;
+
+        const actual = if (segment[index] == '%' and
+            index + 2 < segment.len and
+            strings.isASCIIHexDigit(segment[index + 1]) and
+            strings.isASCIIHexDigit(segment[index + 2]))
+        decode: {
+            const byte = strings.toASCIIHexValue(segment[index + 1]) << 4 |
+                strings.toASCIIHexValue(segment[index + 2]);
+            index += 3;
+            break :decode byte;
+        } else byte: {
+            const byte = segment[index];
+            index += 1;
+            break :byte byte;
+        };
+
+        if (std.ascii.toLower(actual) != expected_byte) return false;
+    }
+
+    return index == segment.len;
+}
+
+fn containsEncodedPathSeparator(path: string) bool {
+    var index: usize = 0;
+    while (index + 2 < path.len) : (index += 1) {
+        if (path[index] != '%') continue;
+
+        const low = std.ascii.toLower(path[index + 2]);
+        if ((path[index + 1] == '2' and low == 'f') or
+            (path[index + 1] == '5' and low == 'c'))
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 const string = []const u8;
