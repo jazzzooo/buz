@@ -638,12 +638,26 @@ const JSONParserForMacro = JSONLikeParser(
     },
 );
 
-var empty_object = E.Object{};
-var empty_array = E.Array{};
-var empty_string = E.String{};
-var empty_string_data = Expr.Data{ .e_string = &empty_string };
-var empty_object_data = Expr.Data{ .e_object = &empty_object };
-var empty_array_data = Expr.Data{ .e_array = &empty_array };
+const FastPathResult = struct {
+    expr: Expr,
+    is_empty: bool = false,
+};
+
+fn parseFastPath(contents: []const u8) ?FastPathResult {
+    const loc = logger.Loc{ .start = 0 };
+    return switch (contents.len) {
+        0 => .{ .expr = Expr.init(E.Object, .{}, loc), .is_empty = true },
+        2 => if (strings.eqlComptime(contents, "\"\"") or strings.eqlComptime(contents, "''"))
+            .{ .expr = Expr.init(E.String, .{}, loc) }
+        else if (strings.eqlComptime(contents, "{}"))
+            .{ .expr = Expr.init(E.Object, .{}, loc) }
+        else if (strings.eqlComptime(contents, "[]"))
+            .{ .expr = Expr.init(E.Array, .{}, loc) }
+        else
+            null,
+        else => null,
+    };
+}
 
 /// Parse JSON
 /// This leaves UTF-16 strings as UTF-16 strings
@@ -654,25 +668,9 @@ pub fn parse(
     allocator: std.mem.Allocator,
     comptime force_utf8: bool,
 ) !Expr {
-    var parser = try JSONParser.init(allocator, source, log);
-    switch (source.contents.len) {
-        // This is to be consisntent with how disabled JS files are handled
-        0 => {
-            return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data };
-        },
-        // This is a fast pass I guess
-        2 => {
-            if (strings.eqlComptime(source.contents[0..1], "\"\"") or strings.eqlComptime(source.contents[0..1], "''")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_string_data };
-            } else if (strings.eqlComptime(source.contents[0..1], "{}")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data };
-            } else if (strings.eqlComptime(source.contents[0..1], "[]")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_array_data };
-            }
-        },
-        else => {},
-    }
+    if (parseFastPath(source.contents)) |result| return result.expr;
 
+    var parser = try JSONParser.init(allocator, source, log);
     return try parser.parseExpr(false, force_utf8);
 }
 
@@ -686,25 +684,7 @@ pub fn parsePackageJSONUTF8(
     log: *logger.Log,
     allocator: std.mem.Allocator,
 ) !Expr {
-    const len = source.contents.len;
-
-    switch (len) {
-        // This is to be consisntent with how disabled JS files are handled
-        0 => {
-            return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data };
-        },
-        // This is a fast pass I guess
-        2 => {
-            if (strings.eqlComptime(source.contents[0..1], "\"\"") or strings.eqlComptime(source.contents[0..1], "''")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_string_data };
-            } else if (strings.eqlComptime(source.contents[0..1], "{}")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data };
-            } else if (strings.eqlComptime(source.contents[0..1], "[]")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_array_data };
-            }
-        },
-        else => {},
-    }
+    if (parseFastPath(source.contents)) |result| return result.expr;
 
     var parser = try JSONLikeParser(.{
         .is_json = true,
@@ -727,27 +707,7 @@ pub fn parsePackageJSONUTF8WithOpts(
     allocator: std.mem.Allocator,
     comptime opts: js_lexer.JSONOptions,
 ) !JsonResult {
-    const len = source.contents.len;
-
-    switch (len) {
-        // This is to be consisntent with how disabled JS files are handled
-        0 => {
-            return .{
-                .root = Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data },
-            };
-        },
-        // This is a fast pass I guess
-        2 => {
-            if (strings.eqlComptime(source.contents[0..1], "\"\"") or strings.eqlComptime(source.contents[0..1], "''")) {
-                return .{ .root = Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_string_data } };
-            } else if (strings.eqlComptime(source.contents[0..1], "{}")) {
-                return .{ .root = Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data } };
-            } else if (strings.eqlComptime(source.contents[0..1], "[]")) {
-                return .{ .root = Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_array_data } };
-            }
-        },
-        else => {},
-    }
+    if (parseFastPath(source.contents)) |result| return .{ .root = result.expr };
 
     var parser = try JSONLikeParser(opts).init(allocator, source, log);
     bun.assert(parser.source().contents.len > 0);
@@ -779,25 +739,7 @@ pub fn parseUTF8Impl(
     allocator: std.mem.Allocator,
     comptime check_len: bool,
 ) !Expr {
-    const len = source.contents.len;
-
-    switch (len) {
-        // This is to be consisntent with how disabled JS files are handled
-        0 => {
-            return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data };
-        },
-        // This is a fast pass I guess
-        2 => {
-            if (strings.eqlComptime(source.contents[0..1], "\"\"") or strings.eqlComptime(source.contents[0..1], "''")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_string_data };
-            } else if (strings.eqlComptime(source.contents[0..1], "{}")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data };
-            } else if (strings.eqlComptime(source.contents[0..1], "[]")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_array_data };
-            }
-        },
-        else => {},
-    }
+    if (parseFastPath(source.contents)) |result| return result.expr;
 
     var parser = try JSONParser.init(allocator, source, log);
     bun.assert(parser.source().contents.len > 0);
@@ -811,23 +753,7 @@ pub fn parseUTF8Impl(
     return result;
 }
 pub fn parseForMacro(source: *const logger.Source, log: *logger.Log, allocator: std.mem.Allocator) !Expr {
-    switch (source.contents.len) {
-        // This is to be consisntent with how disabled JS files are handled
-        0 => {
-            return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data };
-        },
-        // This is a fast pass I guess
-        2 => {
-            if (strings.eqlComptime(source.contents[0..1], "\"\"") or strings.eqlComptime(source.contents[0..1], "''")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_string_data };
-            } else if (strings.eqlComptime(source.contents[0..1], "{}")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data };
-            } else if (strings.eqlComptime(source.contents[0..1], "[]")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_array_data };
-            }
-        },
-        else => {},
-    }
+    if (parseFastPath(source.contents)) |result| return result.expr;
 
     var parser = try JSONParserForMacro.init(allocator, source, log);
 
@@ -846,23 +772,10 @@ pub const JSONParseResult = struct {
 };
 
 pub fn parseForBundling(source: *const logger.Source, log: *logger.Log, allocator: std.mem.Allocator) !JSONParseResult {
-    switch (source.contents.len) {
-        // This is to be consisntent with how disabled JS files are handled
-        0 => {
-            return JSONParseResult{ .expr = Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data }, .tag = .empty };
-        },
-        // This is a fast pass I guess
-        2 => {
-            if (strings.eqlComptime(source.contents[0..1], "\"\"") or strings.eqlComptime(source.contents[0..1], "''")) {
-                return JSONParseResult{ .expr = Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_string_data }, .tag = .expr };
-            } else if (strings.eqlComptime(source.contents[0..1], "{}")) {
-                return JSONParseResult{ .expr = Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data }, .tag = .expr };
-            } else if (strings.eqlComptime(source.contents[0..1], "[]")) {
-                return JSONParseResult{ .expr = Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_array_data }, .tag = .expr };
-            }
-        },
-        else => {},
-    }
+    if (parseFastPath(source.contents)) |result| return .{
+        .expr = result.expr,
+        .tag = if (result.is_empty) .empty else .expr,
+    };
 
     var parser = try JSONParser.init(allocator, source.*, log);
     const result = try parser.parseExpr(false, true);
@@ -875,23 +788,7 @@ pub fn parseForBundling(source: *const logger.Source, log: *logger.Log, allocato
 // threadlocal var env_json_auto_quote_buffer: MutableString = undefined;
 // threadlocal var env_json_auto_quote_buffer_loaded: bool = false;
 pub fn parseEnvJSON(source: *const logger.Source, log: *logger.Log, allocator: std.mem.Allocator) !Expr {
-    switch (source.contents.len) {
-        // This is to be consisntent with how disabled JS files are handled
-        0 => {
-            return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data };
-        },
-        // This is a fast pass I guess
-        2 => {
-            if (strings.eqlComptime(source.contents[0..1], "\"\"") or strings.eqlComptime(source.contents[0..1], "''")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_string_data };
-            } else if (strings.eqlComptime(source.contents[0..1], "{}")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data };
-            } else if (strings.eqlComptime(source.contents[0..1], "[]")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_array_data };
-            }
-        },
-        else => {},
-    }
+    if (parseFastPath(source.contents)) |result| return result.expr;
 
     var parser = try DotEnvJSONParser.init(allocator, source, log);
 
@@ -926,23 +823,7 @@ pub fn parseEnvJSON(source: *const logger.Source, log: *logger.Log, allocator: s
 }
 
 pub fn parseTSConfig(source: *const logger.Source, log: *logger.Log, allocator: std.mem.Allocator, comptime force_utf8: bool) !Expr {
-    switch (source.contents.len) {
-        // This is to be consisntent with how disabled JS files are handled
-        0 => {
-            return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data };
-        },
-        // This is a fast pass I guess
-        2 => {
-            if (strings.eqlComptime(source.contents[0..1], "\"\"") or strings.eqlComptime(source.contents[0..1], "''")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_string_data };
-            } else if (strings.eqlComptime(source.contents[0..1], "{}")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_object_data };
-            } else if (strings.eqlComptime(source.contents[0..1], "[]")) {
-                return Expr{ .loc = logger.Loc{ .start = 0 }, .data = empty_array_data };
-            }
-        },
-        else => {},
-    }
+    if (parseFastPath(source.contents)) |result| return result.expr;
 
     var parser = try TSConfigParser.init(allocator, source, log);
 

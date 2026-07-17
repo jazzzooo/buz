@@ -223,6 +223,7 @@ pub const Parser = struct {
                 val = if (val.len > 1) val[1 .. val.len - 1] else val[1..];
                 offset += 1;
             }
+            if (val.len == 0) break :out;
             const src = bun.logger.Source.initPathString(this.source.path.text, val);
             var log = bun.logger.Log.init(arena_allocator);
             defer log.deinit();
