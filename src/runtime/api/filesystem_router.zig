@@ -7,13 +7,89 @@ const default_extensions = &[_][]const u8{
     "js",
 };
 
+const OwnedArena = struct {
+    state: *bun.ArenaAllocator,
+
+    fn init(backing_allocator: std.mem.Allocator) !OwnedArena {
+        const state = try backing_allocator.create(bun.ArenaAllocator);
+        state.* = bun.ArenaAllocator.init(backing_allocator);
+        return .{ .state = state };
+    }
+
+    fn allocator(this: *const OwnedArena) std.mem.Allocator {
+        return this.state.allocator();
+    }
+
+    fn deinit(this: *OwnedArena) void {
+        const backing_allocator = this.state.child_allocator;
+        this.state.deinit();
+        backing_allocator.destroy(this.state);
+        this.* = undefined;
+    }
+};
+
+const OwnedRouteConfig = struct {
+    arena: OwnedArena,
+    value: Options.RouteConfig = .{},
+
+    fn init(backing_allocator: std.mem.Allocator) !OwnedRouteConfig {
+        return .{ .arena = try .init(backing_allocator) };
+    }
+
+    fn allocator(this: *const OwnedRouteConfig) std.mem.Allocator {
+        return this.arena.allocator();
+    }
+
+    fn deinit(this: *OwnedRouteConfig) void {
+        this.arena.deinit();
+        this.* = undefined;
+    }
+};
+
+const RouteSnapshot = struct {
+    arena: OwnedArena,
+    router: ?Router = null,
+
+    fn init(backing_allocator: std.mem.Allocator) !RouteSnapshot {
+        return .{ .arena = try .init(backing_allocator) };
+    }
+
+    fn allocator(this: *const RouteSnapshot) std.mem.Allocator {
+        return this.arena.allocator();
+    }
+
+    fn load(
+        this: *RouteSnapshot,
+        fs: *Fs.FileSystem,
+        config: Options.RouteConfig,
+        log: *Log.Log,
+        resolver: *Resolver,
+        root_dir_info: *const DirInfo,
+    ) !void {
+        bun.assert(this.router == null);
+        var router = try Router.init(fs, this.allocator(), config);
+        errdefer router.deinit();
+        try router.loadRoutes(log, root_dir_info, Resolver, resolver, config.dir);
+        this.router = router;
+    }
+
+    fn get(this: *RouteSnapshot) *Router {
+        return if (this.router) |*router| router else unreachable;
+    }
+
+    fn deinit(this: *RouteSnapshot) void {
+        if (this.router) |*router| router.deinit();
+        this.arena.deinit();
+        this.* = undefined;
+    }
+};
+
 pub const FileSystemRouter = struct {
     origin: ?*jsc.RefString = null,
     base_dir: ?*jsc.RefString = null,
-    router: Router,
-    arena: *bun.ArenaAllocator = undefined,
-    allocator: std.mem.Allocator = undefined,
     asset_prefix: ?*jsc.RefString = null,
+    config: OwnedRouteConfig,
+    snapshot: RouteSnapshot,
 
     pub const js = jsc.Codegen.JSFileSystemRouter;
     pub const toJS = js.toJS;
@@ -35,7 +111,7 @@ pub const FileSystemRouter = struct {
         var root_dir_path: ZigString.Slice = ZigString.Slice.fromUTF8NeverFree(vm.transpiler.fs.top_level_dir);
         defer root_dir_path.deinit();
         var origin_str: ZigString.Slice = .{};
-        var asset_prefix_slice: ZigString.Slice = .{};
+        defer origin_str.deinit();
 
         var out_buf: [bun.MAX_PATH_BYTES * 2]u8 = undefined;
         if (try argument.get(globalThis, "style")) |style_val| {
@@ -50,12 +126,14 @@ pub const FileSystemRouter = struct {
             if (!dir.isString()) {
                 return globalThis.throwInvalidArguments("Expected dir to be a string", .{});
             }
-            const root_dir_path_ = try dir.toSlice(globalThis, globalThis.allocator());
+            var root_dir_path_ = try dir.toSlice(globalThis, globalThis.allocator());
+            defer root_dir_path_.deinit();
             if (!(root_dir_path_.len == 0 or strings.eqlComptime(root_dir_path_.slice(), "."))) {
                 // resolve relative path if needed
                 const path = root_dir_path_.slice();
                 if (bun.path.Platform.isAbsolute(.auto, path)) {
                     root_dir_path = root_dir_path_;
+                    root_dir_path_ = .empty;
                 } else {
                     var parts = [_][]const u8{path};
                     root_dir_path = jsc.ZigString.Slice.fromUTF8NeverFree(bun.path.joinAbsStringBuf(Fs.FileSystem.instance.top_level_dir, &out_buf, &parts, .auto));
@@ -65,15 +143,13 @@ pub const FileSystemRouter = struct {
             // dir is not optional
             return globalThis.throwInvalidArguments("Expected dir to be a string", .{});
         }
-        var arena = globalThis.allocator().create(bun.ArenaAllocator) catch unreachable;
-        arena.* = bun.ArenaAllocator.init(globalThis.allocator());
-        const allocator = arena.allocator();
-        var extensions = std.array_list.Managed(string).init(allocator);
+        var config = OwnedRouteConfig.init(globalThis.allocator()) catch unreachable;
+        errdefer config.deinit();
+        const config_allocator = config.allocator();
+
+        var extensions = std.array_list.Managed(string).init(config_allocator);
         if (try argument.get(globalThis, "fileExtensions")) |file_extensions| {
             if (!file_extensions.jsType().isArray()) {
-                origin_str.deinit();
-                arena.deinit();
-                globalThis.allocator().destroy(arena);
                 return globalThis.throwInvalidArguments("Expected fileExtensions to be an Array", .{});
             }
 
@@ -81,80 +157,64 @@ pub const FileSystemRouter = struct {
             extensions.ensureTotalCapacityPrecise(iter.len) catch unreachable;
             while (try iter.next()) |val| {
                 if (!val.isString()) {
-                    origin_str.deinit();
-                    arena.deinit();
-                    globalThis.allocator().destroy(arena);
                     return globalThis.throwInvalidArguments("Expected fileExtensions to be an Array of strings", .{});
                 }
                 if (try val.getLength(globalThis) == 0) continue;
-                extensions.appendAssumeCapacity((try val.toUTF8Bytes(globalThis, allocator))[1..]);
+                extensions.appendAssumeCapacity((try val.toUTF8Bytes(globalThis, config_allocator))[1..]);
             }
         }
 
+        var asset_prefix_path: string = "";
         if (try argument.getTruthy(globalThis, "assetPrefix")) |asset_prefix| {
             if (!asset_prefix.isString()) {
-                origin_str.deinit();
-                arena.deinit();
-                globalThis.allocator().destroy(arena);
                 return globalThis.throwInvalidArguments("Expected assetPrefix to be a string", .{});
             }
 
-            asset_prefix_slice = try (try asset_prefix.toSlice(globalThis, allocator)).cloneIfBorrowed(allocator);
+            asset_prefix_path = try asset_prefix.toUTF8Bytes(globalThis, config_allocator);
         }
-        const orig_log = vm.transpiler.resolver.log;
-        var log = Log.Log.init(allocator);
-        vm.transpiler.resolver.log = &log;
-        defer vm.transpiler.resolver.log = orig_log;
-
-        const path_to_use = (root_dir_path.cloneWithTrailingSlash(allocator) catch unreachable).slice();
-
-        const root_dir_info = vm.transpiler.resolver.readDirInfo(path_to_use) catch {
-            // Build the JS error before freeing the arena: `log` is backed by the arena allocator.
-            // Capture the error union so cleanup runs even if toJS itself fails.
-            const err_value = log.toJS(globalThis, globalThis.allocator(), "reading root directory");
-            origin_str.deinit();
-            arena.deinit();
-            globalThis.allocator().destroy(arena);
-            return globalThis.throwValue(try err_value);
-        } orelse {
-            origin_str.deinit();
-            arena.deinit();
-            globalThis.allocator().destroy(arena);
-            return globalThis.throw("Unable to find directory: {s}", .{root_dir_path.slice()});
-        };
-
-        var router = Router.init(vm.transpiler.fs, allocator, .{
-            .dir = path_to_use,
-            .extensions = if (extensions.items.len > 0) extensions.items else default_extensions,
-            .asset_prefix_path = asset_prefix_slice.slice(),
-        }) catch unreachable;
-
-        router.loadRoutes(&log, root_dir_info, Resolver, &vm.transpiler.resolver, router.config.dir) catch {
-            // Build the JS error before freeing the arena: `log` is backed by the arena allocator.
-            // Capture the error union so cleanup runs even if toJS itself fails.
-            const err_value = log.toJS(globalThis, globalThis.allocator(), "loading routes");
-            origin_str.deinit();
-            arena.deinit();
-            globalThis.allocator().destroy(arena);
-            return globalThis.throwValue(try err_value);
-        };
 
         if (try argument.get(globalThis, "origin")) |origin| {
             if (!origin.isString()) {
-                arena.deinit();
-                globalThis.allocator().destroy(arena);
                 return globalThis.throwInvalidArguments("Expected origin to be a string", .{});
             }
             origin_str = try origin.toSlice(globalThis, globalThis.allocator());
         }
 
+        const path_to_use = (root_dir_path.cloneWithTrailingSlash(config_allocator) catch unreachable).slice();
+        config.value = .{
+            .dir = path_to_use,
+            .extensions = if (extensions.items.len > 0) extensions.items else default_extensions,
+            .asset_prefix_path = asset_prefix_path,
+        };
+
+        var snapshot = RouteSnapshot.init(globalThis.allocator()) catch unreachable;
+        errdefer snapshot.deinit();
+
+        const orig_log = vm.transpiler.resolver.log;
+        var log = Log.Log.init(snapshot.allocator());
+        vm.transpiler.resolver.log = &log;
+        defer vm.transpiler.resolver.log = orig_log;
+
+        const root_dir_info = vm.transpiler.resolver.readDirInfo(config.value.dir) catch {
+            // Build the JS error before freeing the arena: `log` is backed by the arena allocator.
+            // Capture the error union so cleanup runs even if toJS itself fails.
+            const err_value = log.toJS(globalThis, globalThis.allocator(), "reading root directory");
+            return globalThis.throwValue(try err_value);
+        } orelse {
+            return globalThis.throw("Unable to find directory: {s}", .{root_dir_path.slice()});
+        };
+
+        snapshot.load(vm.transpiler.fs, config.value, &log, &vm.transpiler.resolver, root_dir_info) catch {
+            // Build the JS error before freeing the arena: `log` is backed by the arena allocator.
+            // Capture the error union so cleanup runs even if toJS itself fails.
+            const err_value = log.toJS(globalThis, globalThis.allocator(), "loading routes");
+            return globalThis.throwValue(try err_value);
+        };
+
         if (log.errors + log.warnings > 0) {
             // Build the JS error before freeing the arena: `log` is backed by the arena allocator.
             // Capture the error union so cleanup runs even if toJS itself fails.
             const err_value = log.toJS(globalThis, globalThis.allocator(), "loading routes");
-            origin_str.deinit();
-            arena.deinit();
-            globalThis.allocator().destroy(arena);
             return globalThis.throwValue(try err_value);
         }
 
@@ -165,19 +225,12 @@ pub const FileSystemRouter = struct {
                 root_dir_info.abs_real_path
             else
                 root_dir_info.abs_path, null, true),
-            .asset_prefix = if (asset_prefix_slice.len > 0) vm.refCountedString(asset_prefix_slice.slice(), null, true) else null,
-            .router = router,
-            .arena = arena,
-            .allocator = allocator,
+            .asset_prefix = if (config.value.asset_prefix_path.len > 0) vm.refCountedString(config.value.asset_prefix_path, null, true) else null,
+            .config = config,
+            .snapshot = snapshot,
         };
 
-        router.config.dir = fs_router.base_dir.?.slice();
         fs_router.base_dir.?.ref();
-
-        // TODO: Memory leak? We haven't freed `asset_prefix_slice`, but we can't do so because the
-        // underlying string is borrowed in `fs_router.router.config.asset_prefix_path`.
-        // `FileSystemRouter.deinit` frees `fs_router.asset_prefix`, but that's a clone of
-        // `asset_prefix_slice`. The original is not freed.
         return fs_router;
     }
 
@@ -224,60 +277,43 @@ pub const FileSystemRouter = struct {
     }
 
     pub fn bustDirCache(this: *FileSystemRouter, globalThis: *jsc.JSGlobalObject) void {
-        bustDirCacheRecursive(this, globalThis, strings.withoutTrailingSlashWindowsPath(this.router.config.dir));
+        bustDirCacheRecursive(this, globalThis, strings.withoutTrailingSlashWindowsPath(this.config.value.dir));
     }
 
     pub fn reload(this: *FileSystemRouter, globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
         const this_value = callframe.this();
-
-        var arena = globalThis.allocator().create(bun.ArenaAllocator) catch unreachable;
-        arena.* = bun.ArenaAllocator.init(globalThis.allocator());
-
-        var allocator = arena.allocator();
         var vm = globalThis.bunVM();
 
+        var snapshot = RouteSnapshot.init(globalThis.allocator()) catch unreachable;
+        errdefer snapshot.deinit();
+
         const orig_log = vm.transpiler.resolver.log;
-        var log = Log.Log.init(allocator);
+        var log = Log.Log.init(snapshot.allocator());
         vm.transpiler.resolver.log = &log;
         defer vm.transpiler.resolver.log = orig_log;
 
         bustDirCache(this, globalThis);
 
-        const root_dir_info = vm.transpiler.resolver.readDirInfo(this.router.config.dir) catch {
+        const root_dir_info = vm.transpiler.resolver.readDirInfo(this.config.value.dir) catch {
             // Build the JS error before freeing the arena: `log` is backed by the arena allocator.
             // Capture the error union so cleanup runs even if toJS itself fails.
             const err_value = log.toJS(globalThis, globalThis.allocator(), "reading root directory");
-            arena.deinit();
-            globalThis.allocator().destroy(arena);
             return globalThis.throwValue(try err_value);
         } orelse {
-            arena.deinit();
-            globalThis.allocator().destroy(arena);
-            return globalThis.throw("Unable to find directory: {s}", .{this.router.config.dir});
+            return globalThis.throw("Unable to find directory: {s}", .{this.config.value.dir});
         };
 
-        var router = Router.init(vm.transpiler.fs, allocator, .{
-            .dir = allocator.dupe(u8, this.router.config.dir) catch unreachable,
-            .extensions = allocator.dupe(string, this.router.config.extensions) catch unreachable,
-            .asset_prefix_path = this.router.config.asset_prefix_path,
-        }) catch unreachable;
-        router.loadRoutes(&log, root_dir_info, Resolver, &vm.transpiler.resolver, router.config.dir) catch {
+        snapshot.load(vm.transpiler.fs, this.config.value, &log, &vm.transpiler.resolver, root_dir_info) catch {
             // Build the JS error before freeing the arena: `log` is backed by the arena allocator.
             // Capture the error union so cleanup runs even if toJS itself fails.
             const err_value = log.toJS(globalThis, globalThis.allocator(), "loading routes");
-            arena.deinit();
-            globalThis.allocator().destroy(arena);
             return globalThis.throwValue(try err_value);
         };
 
-        this.router.deinit();
-        this.arena.deinit();
-        globalThis.allocator().destroy(this.arena);
-
-        this.arena = arena;
+        var old_snapshot = this.snapshot;
+        this.snapshot = snapshot;
         js.routesSetCached(this_value, globalThis, jsc.JSValue.zero);
-        this.allocator = allocator;
-        this.router = router;
+        old_snapshot.deinit();
         return this_value;
     }
 
@@ -329,7 +365,7 @@ pub const FileSystemRouter = struct {
         defer parsed.deinit(globalThis.allocator());
         var params = Router.Param.List{};
         defer params.deinit(globalThis.allocator());
-        const route = this.router.routes.matchPageWithAllocator(
+        const route = this.snapshot.get().routes.matchPageWithAllocator(
             "",
             parsed.value,
             &params,
@@ -366,8 +402,8 @@ pub const FileSystemRouter = struct {
     }
 
     pub fn getRoutes(this: *FileSystemRouter, globalThis: *jsc.JSGlobalObject) bun.JSError!JSValue {
-        const paths = this.router.getEntryPoints();
-        const names = this.router.getNames();
+        const paths = this.snapshot.get().getEntryPoints();
+        const names = this.snapshot.get().getNames();
         var name_strings = try bun.default_allocator.alloc(ZigString, names.len * 2);
         defer bun.default_allocator.free(name_strings);
         var paths_strings = name_strings[names.len..];
@@ -411,8 +447,8 @@ pub const FileSystemRouter = struct {
             dir.deref();
         }
 
-        this.router.deinit();
-        this.arena.deinit();
+        this.snapshot.deinit();
+        this.config.deinit();
     }
 };
 
@@ -685,7 +721,9 @@ pub const MatchedRoute = struct {
 
 const string = []const u8;
 
+const DirInfo = @import("../../resolver/dir_info.zig");
 const Fs = @import("../../resolver/fs.zig");
+const Options = @import("../../bundler/options.zig");
 const Router = @import("../../router/router.zig");
 const URLPath = @import("../../http_types/URLPath.zig");
 const std = @import("std");
