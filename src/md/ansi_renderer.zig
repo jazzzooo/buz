@@ -1264,9 +1264,9 @@ pub const AnsiRenderer = struct {
     }
 
     fn writeHighlightedJs(self: *AnsiRenderer, line: []const u8) void {
-        const highlighter = bun.fmt.QuickAndDirtyJavaScriptSyntaxHighlighter{
+        const highlighter = bun.fmt.JavaScriptSyntaxHighlighter{
             .text = line,
-            .opts = .{ .enable_colors = true, .check_for_unhighlighted_write = false },
+            .opts = .{ .enable_colors = true, .max_highlight_bytes = null },
         };
         var aw: std.Io.Writer.Allocating = .init(self.allocator);
         defer aw.deinit();

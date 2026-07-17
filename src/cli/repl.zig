@@ -1,7 +1,7 @@
 //! Bun REPL - A modern, feature-rich Read-Eval-Print Loop
 //!
 //! This is a native Zig implementation of Bun's REPL with advanced TUI features:
-//! - Syntax highlighting using QuickAndDirtySyntaxHighlighter
+//! - JavaScript syntax highlighting
 //! - Full line editing with cursor movement (Emacs-style keybindings)
 //! - Persistent history with file storage
 //! - Tab completion for properties and commands
@@ -990,11 +990,11 @@ fn refreshLine(self: *Repl) void {
 
 fn writeHighlighted(_: *Repl, text: []const u8) void {
     var writer = Output.writer();
-    const highlighter = fmt.QuickAndDirtyJavaScriptSyntaxHighlighter{
+    const highlighter = fmt.JavaScriptSyntaxHighlighter{
         .text = text,
         .opts = .{
             .enable_colors = true,
-            .check_for_unhighlighted_write = false,
+            .max_highlight_bytes = null,
         },
     };
     highlighter.format(writer) catch {

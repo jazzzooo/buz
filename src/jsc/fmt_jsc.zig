@@ -1,6 +1,5 @@
-//! Bindgen target for `fmt_jsc.bind.ts`. The actual formatters live in
-//! `src/bun_core/fmt.zig`; only the JS-facing wrapper that takes a
-//! `*JSGlobalObject` lives here so `bun_core/` stays JSC-free.
+//! Bindgen target for `fmt_jsc.bind.ts`. The formatters live in `bun_core`;
+//! only the JS-facing wrapper that takes a `*JSGlobalObject` lives here.
 
 pub const js_bindings = struct {
     const gen = bun.gen.fmt_jsc;
@@ -12,10 +11,11 @@ pub const js_bindings = struct {
         var writer = buffer.bufferedWriter();
 
         switch (formatter_id) {
-            .highlight_javascript => {
+            .highlight_javascript, .highlight_javascript_redacted => {
                 const formatter = bun.fmt.fmtJavaScript(code, .{
                     .enable_colors = true,
-                    .check_for_unhighlighted_write = false,
+                    .max_highlight_bytes = null,
+                    .redact_sensitive_information = formatter_id == .highlight_javascript_redacted,
                 });
                 writer.writer().print("{f}", .{formatter}) catch |err| {
                     return global.throwError(err, "while formatting");

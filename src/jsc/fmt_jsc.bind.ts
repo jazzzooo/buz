@@ -2,7 +2,11 @@ import { fn, t } from "bindgen";
 
 const implNamespace = "js_bindings";
 
-export const Formatter = t.stringEnum("highlight-javascript", "escape-powershell");
+export const Formatter = t.stringEnum(
+  "highlight-javascript",
+  "highlight-javascript-redacted",
+  "escape-powershell",
+);
 
 export const fmtString = fn({
   implNamespace,

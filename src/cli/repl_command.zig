@@ -2,7 +2,7 @@
 //!
 //! This is the entry point for `bun repl` which provides an interactive
 //! JavaScript REPL with:
-//! - Syntax highlighting using QuickAndDirtySyntaxHighlighter
+//! - JavaScript syntax highlighting
 //! - Full line editing with Emacs-style keybindings
 //! - Persistent history
 //! - Tab completion

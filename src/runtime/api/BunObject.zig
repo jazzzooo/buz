@@ -2050,7 +2050,7 @@ pub const JSZstd = struct {
 //         var writer = buffer.bufferedWriter();
 //         const formatter = bun.fmt.fmtJavaScript(code.slice(), .{
 //             .enable_colors = true,
-//             .check_for_unhighlighted_write = false,
+//             .max_highlight_bytes = null,
 //         });
 //         writer.writer().print("{f}", .{formatter}) catch |err| {
 //             return globalThis.throwError(err, "Error formatting code");
