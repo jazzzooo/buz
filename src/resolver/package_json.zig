@@ -1713,6 +1713,8 @@ pub const ESModule = struct {
         const resolve_target_buf2 = &module_bufs.get().resolve_target_buf2;
         switch (target.data) {
             .string => |str| {
+                const module_not_found = Resolution{ .path = str, .status = .ModuleNotFound, .debug = .{ .token = target.first_token } };
+
                 if (r.debug_logs) |log| {
                     log.addNoteFmt("Checking path \"{s}\" against target \"{s}\"", .{ subpath, str });
                     log.increaseIndent();
@@ -1745,6 +1747,7 @@ pub const ESModule = struct {
                         if (pattern) {
                             // Return the URL resolution of resolvedTarget with every instance of "*" replaced with subpath.
                             const len = std.mem.replacementSize(u8, str, "*", subpath);
+                            if (len > resolve_target_buf2.len) return module_not_found;
                             _ = std.mem.replace(u8, str, "*", subpath, resolve_target_buf2);
                             const result = resolve_target_buf2[0..len];
                             if (r.debug_logs) |log| {
@@ -1754,7 +1757,7 @@ pub const ESModule = struct {
                             return Resolution{ .path = result, .status = .PackageResolve, .debug = .{ .token = target.first_token } };
                         } else {
                             const parts2 = [_]string{ str, subpath };
-                            const result = resolve_path.joinStringBuf(resolve_target_buf2, parts2, .auto);
+                            const result = resolve_path.joinStringBufChecked(resolve_target_buf2, &parts2, .auto) orelse return module_not_found;
                             if (r.debug_logs) |log| {
                                 log.addNoteFmt("Resolved \".{s}\" to \".{s}\"", .{ str, result });
                             }
@@ -1786,20 +1789,21 @@ pub const ESModule = struct {
 
                 if (pattern) {
                     const resolve_target_buf = &module_bufs.get().resolve_target_buf;
-                    const len = std.mem.replacementSize(u8, str, "*", subpath);
-                    _ = std.mem.replace(u8, str, "*", subpath, resolve_target_buf);
-                    const substituted_target = resolve_target_buf[0..len];
+                    var bfa: std.heap.BufferFirstAllocator = .init(resolve_target_buf, bun.default_allocator);
+                    const allocator = bfa.allocator();
+                    const substituted_target = bun.handleOom(std.mem.replaceOwned(u8, allocator, str, "*", subpath));
+                    defer allocator.free(substituted_target);
 
                     if (findInvalidPackageSegment(substituted_target[2..])) |invalid| {
                         if (r.debug_logs) |log| {
                             log.addNoteFmt("The target \"{s}\" is invalid after substitution because it contains an invalid segment \"{s}\"", .{ substituted_target, invalid });
                         }
 
-                        return Resolution{ .path = substituted_target, .status = .InvalidModuleSpecifier, .debug = .{ .token = target.first_token } };
+                        return Resolution{ .path = str, .status = .InvalidModuleSpecifier, .debug = .{ .token = target.first_token } };
                     }
 
                     const parts = [_]string{ package_url, substituted_target };
-                    const result = resolve_path.joinStringBuf(resolve_target_buf2, parts, .auto);
+                    const result = resolve_path.joinStringBufChecked(resolve_target_buf2, &parts, .auto) orelse return module_not_found;
                     if (r.debug_logs) |log| {
                         log.addNoteFmt("Substituted \"{s}\" for \"*\" in \"{s}\" to get \"{s}\"", .{ subpath, str, result });
                     }
@@ -1811,7 +1815,7 @@ pub const ESModule = struct {
                     return Resolution{ .path = result, .status = status, .debug = .{ .token = target.first_token } };
                 } else {
                     const parts2 = [_]string{ package_url, str, subpath };
-                    const result = resolve_path.joinStringBuf(resolve_target_buf2, parts2, .auto);
+                    const result = resolve_path.joinStringBufChecked(resolve_target_buf2, &parts2, .auto) orelse return module_not_found;
                     if (r.debug_logs) |log| {
                         log.addNoteFmt("Resolved \"{s}\" with subpath \"{s}\" to \"{s}\"", .{ str, subpath, result });
                     }

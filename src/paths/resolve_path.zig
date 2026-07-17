@@ -1239,6 +1239,9 @@ pub fn joinZBuf(buf: []u8, _parts: anytype, comptime platform: Platform) [:0]con
 pub fn joinStringBuf(buf: []u8, parts: anytype, comptime platform: Platform) []const u8 {
     return joinStringBufT(u8, buf, parts, platform);
 }
+pub fn joinStringBufChecked(buf: []u8, parts: []const []const u8, comptime platform: Platform) ?[]const u8 {
+    return joinBufChecked(null, buf, parts, platform);
+}
 pub fn joinStringBufW(buf: []u16, parts: anytype, comptime platform: Platform) []const u16 {
     return joinStringBufT(u16, buf, parts, platform);
 }
@@ -1344,21 +1347,32 @@ pub fn joinAbsStringBuf(cwd: []const u8, buf: []u8, _parts: anytype, comptime pl
 /// succeed.
 pub fn joinAbsStringBufChecked(cwd: []const u8, buf: []u8, parts: []const []const u8, comptime platform: Platform) ?[]const u8 {
     comptime if (platform == .nt) @compileError("joinAbsStringBufChecked does not support .nt (the \\\\?\\ prefix is not accounted for in scratch sizing)");
-    // Fast path: size check only — don't allocate a JoinScratch here since the
-    // inner joinAbsStringBuf already has its own (avoids doubling stack usage).
-    var total: usize = cwd.len + 2;
-    for (parts) |p| total += p.len + 1;
-    if (total < buf.len) return joinAbsStringBuf(cwd, buf, parts, platform);
+    return joinBufChecked(cwd, buf, parts, platform);
+}
 
-    // Slow path: allocate a large scratch for the result. The inner
-    // joinAbsStringBuf will heap-allocate its own temp buffer for the concat
-    // since `total > MAX_PATH_BYTES * 2 > sfa inline size` is likely here.
-    var sfa_buffer: [bun.MAX_PATH_BYTES]u8 = undefined;
-    var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, bun.default_allocator);
-    const alloc = sfa.allocator();
-    const scratch = bun.handleOom(alloc.alloc(u8, total));
-    defer alloc.free(scratch);
-    const joined = joinAbsStringBuf(cwd, scratch, parts, platform);
+fn joinBufChecked(cwd: ?[]const u8, buf: []u8, parts: []const []const u8, comptime platform: Platform) ?[]const u8 {
+    var total: usize = 2;
+    if (cwd) |base| total = std.math.add(usize, total, base.len) catch return null;
+    for (parts) |part| {
+        total = std.math.add(usize, total, part.len) catch return null;
+        total = std.math.add(usize, total, 1) catch return null;
+    }
+
+    if (total <= buf.len) {
+        return if (cwd) |base|
+            joinAbsStringBuf(base, buf, parts, platform)
+        else
+            joinStringBuf(buf, parts, platform);
+    }
+
+    const scratch = bun.handleOom(bun.default_allocator.alloc(u8, total));
+    defer bun.default_allocator.free(scratch);
+
+    const joined = if (cwd) |base|
+        joinAbsStringBuf(base, scratch, parts, platform)
+    else
+        joinStringBuf(scratch, parts, platform);
+
     if (joined.len > buf.len) return null;
     bun.copy(u8, buf, joined);
     return buf[0..joined.len];
