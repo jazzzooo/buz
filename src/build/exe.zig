@@ -1439,6 +1439,16 @@ pub fn addLink(
     const exe_name = if (opts.mode == .debug) "bun-debug" else "bun-profile";
     run.step.name = b.fmt("link {s}", .{exe_name});
 
+    const zig_obj = if (opts.mode == .debug) obj: {
+        // zig-upstream/src/link/Elf2.zig's Section.Index.relaDeleteOne and
+        // resetNodeRelocs can reverse TLS relocation groups.
+        const normalize = b.addSystemCommand(&.{ "/usr/bin/ld", "-r", "-o" });
+        normalize.step.name = b.fmt("normalize {s}.o", .{exe_name});
+        const obj = normalize.addOutputFileArg(b.fmt("{s}.o", .{exe_name}));
+        normalize.addFileArg(zig_obj_bin);
+        break :obj obj;
+    } else zig_obj_bin;
+
     run.addArgs(&.{"-o"});
     const exe = run.addOutputFileArg(exe_name);
 
@@ -1450,7 +1460,7 @@ pub fn addLink(
     run.addArg("--whole-archive");
     for (archives) |lib| run.addArtifactArg(lib);
     run.addArg("--no-whole-archive");
-    run.addFileArg(zig_obj_bin);
+    run.addFileArg(zig_obj);
     // Prebuilt from the zon-pinned lolhtml source; rebuild recipe in
     // src/build/prebuilt/README.md.
     run.addFileArg(b.path("src/build/prebuilt/liblolhtml.a"));
