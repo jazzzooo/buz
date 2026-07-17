@@ -279,11 +279,11 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
 
             if (this.defer_deinit_until_callback_completes) |defer_deinit| {
                 defer_deinit.* = true;
-                ctxLog("deferred deinit <d> ({*})<r>", .{this});
+                ctxLog("deferred deinit ({*})", .{this});
                 return;
             }
 
-            ctxLog("deinit<d> ({*})<r>", .{this});
+            ctxLog("deinit ({*})", .{this});
             if (comptime Environment.isDebug)
                 assert(this.flags.has_finalized);
 
@@ -602,7 +602,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                 .range = RangeRequest.rawFromRequest(if (comptime http3) .{ .h3 = req } else .{ .h1 = req }),
             };
 
-            ctxLog("create<d> ({*})<r>", .{this});
+            ctxLog("create ({*})", .{this});
         }
 
         pub fn onTimeout(this: *RequestContext, resp: *App.Response) void {
@@ -714,7 +714,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
         // This function may be called multiple times
         // so it's important that we can safely do that
         pub fn finalizeWithoutDeinit(this: *RequestContext) void {
-            ctxLog("finalizeWithoutDeinit<d> ({*})<r>", .{this});
+            ctxLog("finalizeWithoutDeinit ({*})", .{this});
             this.blob.detach();
             assert(this.server != null);
             const globalThis = this.server.?.globalThis;

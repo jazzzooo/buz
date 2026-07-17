@@ -2916,118 +2916,106 @@ comptime {
 
 
 // -- Avoid instantiating these log functions too many times
-fn log_zig_method_call(typename: []const u8, method_name: []const u8, callframe: *jsc.CallFrame) callconv(bun.callconv_inline) void {
-  if (comptime Environment.enable_logs) {
-    zig("<d>{s}<r>.{s}<d>({d} args)<r>", .{typename, method_name, callframe.arguments().len});
-  }
-}
-
 fn log_zig_getter(typename: []const u8, property_name: []const u8) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><blue>get<r> {s}<d>.<r>{s}", .{typename, property_name});
+    zig("get {s}.{s}", .{typename, property_name});
   }
 }
 
 fn log_zig_setter(typename: []const u8, property_name: []const u8, value: jsc.JSValue) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><blue>set<r> {s}<d>.<r>{s} = {?s}", .{typename, property_name, std.enums.tagName(jsc.JSValue, value)});
+    zig("set {s}.{s} = {?s}", .{typename, property_name, std.enums.tagName(jsc.JSValue, value)});
   }
 }
 
 fn log_zig_finalize(typename: []const u8, ptr: *const anyopaque) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<d>~{s} 0x{x:8}<r>", .{typename, @intFromPtr(ptr)});
-  }
-}
-
-fn log_zig_function_call(typename: []const u8, callframe: *jsc.CallFrame) callconv(bun.callconv_inline) void {
-  if (comptime Environment.enable_logs) {
-    zig("{s}<d>({d} args)<r>", .{typename, callframe.arguments().len});
+    zig("~{s} 0x{x:8}", .{typename, @intFromPtr(ptr)});
   }
 }
 
 fn log_zig_constructor(typename: []const u8, callframe: *jsc.CallFrame) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><blue>new<r> {s}<d>({d} args)<r>", .{typename, callframe.arguments().len});
+    zig("new {s}({d} args)", .{typename, callframe.arguments().len});
   }
 }
 
 fn log_zig_call(typename: []const u8, callframe: *jsc.CallFrame) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<d>{s}<d>({d} args)<r>", .{typename, callframe.arguments().len});
+    zig("{s}({d} args)", .{typename, callframe.arguments().len});
   }
 }
 
 fn log_zig_get_internal_properties(typename: []const u8) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><blue>getInternalProperties<r> {s}", .{typename});
+    zig("getInternalProperties {s}", .{typename});
   }
 }
 
 fn log_zig_method(typename: []const u8, method_name: []const u8, callframe: *jsc.CallFrame) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<d>{s}.<r>{s}<d>({d} args)<r>", .{typename, method_name, callframe.arguments().len});
+    zig("{s}.{s}({d} args)", .{typename, method_name, callframe.arguments().len});
   }
 }
 
 fn log_zig_structured_clone_serialize(typename: []const u8) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><blue>structuredCloneSerialize<r> {s}", .{typename});
+    zig("structuredCloneSerialize {s}", .{typename});
   }
 }
 
 fn log_zig_structured_clone_transfer(typename: []const u8) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><blue>structuredCloneTransfer<r> {s}", .{typename});
+    zig("structuredCloneTransfer {s}", .{typename});
   }
 }
 
 fn log_zig_structured_clone_deserialize(typename: []const u8) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><blue>structuredCloneDeserialize<r> {s}", .{typename});
+    zig("structuredCloneDeserialize {s}", .{typename});
   }
 }
 
 fn log_zig_from_js(typename: []const u8) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><blue>{s}<r><d>.fromJS<r>", .{typename});
+    zig("{s}.fromJS", .{typename});
   }
 }
 
 fn log_zig_from_js_direct(typename: []const u8) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><blue>{s}<r><d>.fromJSDirect<r>", .{typename});
+    zig("{s}.fromJSDirect", .{typename});
   }
 }
 
 fn log_zig_get_constructor(typename: []const u8) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><blue>{s}<r><d>.constructor<r>", .{typename});
+    zig("{s}.constructor", .{typename});
   }
 }
 
 
 fn log_zig_to_js(typename: []const u8) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><d>{s}.toJS<r>", .{typename});
+    zig("{s}.toJS", .{typename});
   }
 }
 
 fn log_zig_class_method(typename: []const u8, method_name: []const u8, callframe: *jsc.CallFrame) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><blue>{s}<r><d>.{s}<d>({d} args)<r>", .{typename, method_name, callframe.arguments().len});
+    zig("{s}.{s}({d} args)", .{typename, method_name, callframe.arguments().len});
   }
 }
 
 fn log_zig_class_getter(typename: []const u8, property_name: []const u8) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><d>static<r> <blue>get<r> {s}<d>.<r>{s}", .{typename, property_name});
+    zig("static get {s}.{s}", .{typename, property_name});
   }
 }
 
 fn log_zig_class_setter(typename: []const u8, property_name: []const u8, value: jsc.JSValue) callconv(bun.callconv_inline) void {
   if (comptime Environment.enable_logs) {
-    zig("<r><d>static<r> <blue>set<r> {s}<d>.<r>{s} = {?s}", .{typename, property_name, std.enums.tagName(jsc.JSValue, value)});
+    zig("static set {s}.{s} = {?s}", .{typename, property_name, std.enums.tagName(jsc.JSValue, value)});
   }
 }
 

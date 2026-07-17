@@ -862,40 +862,19 @@ fn ScopedLogger(comptime tagname: []const u8, comptime visibility: Visibility) t
         };
     }
 
+    const env_name = comptime "BUN_DEBUG_" ++ tagname;
+    const debug_arg = comptime "--debug-" ++ tagname;
+
     return struct {
-        var buffer: [4096]u8 = undefined;
-        var buffered_writer: File.QuietWriter = undefined;
-        var out: *std.Io.Writer = undefined;
-        var out_set = false;
-        var really_disable = std.atomic.Value(bool).init(visibility == .hidden);
-
-        var lock = bun.Mutex{};
-
-        var is_visible_once = bun.once(evaluateIsVisible);
-
-        fn evaluateIsVisible() void {
-            if (bun.getenvZAnyCase("BUN_DEBUG_" ++ tagname)) |val| {
-                really_disable.store(strings.eqlComptime(val, "0"), .monotonic);
-            } else if (bun.env_var.BUN_DEBUG_ALL.get()) |val| {
-                really_disable.store(!val, .monotonic);
-            } else if (bun.env_var.BUN_DEBUG_QUIET_LOGS.get()) |val| {
-                really_disable.store(really_disable.load(.monotonic) or val, .monotonic);
-            } else {
-                for (bun.argv) |arg| {
-                    if (strings.eqlCaseInsensitiveASCII(arg, comptime "--debug-" ++ tagname, true)) {
-                        really_disable.store(false, .monotonic);
-                        break;
-                    } else if (strings.eqlCaseInsensitiveASCII(arg, comptime "--debug-all", true)) {
-                        really_disable.store(false, .monotonic);
-                        break;
-                    }
-                }
-            }
-        }
+        var state: ScopedLogState = .{
+            .tagname = tagname,
+            .env_name = env_name,
+            .debug_arg = debug_arg,
+            .visible = visibility == .visible,
+        };
 
         pub fn isVisible() bool {
-            is_visible_once.call(.{});
-            return !really_disable.load(.monotonic);
+            return state.isVisible();
         }
 
         /// Debug-only logs which should not appear in release mode
@@ -906,48 +885,115 @@ fn ScopedLogger(comptime tagname: []const u8, comptime visibility: Visibility) t
         /// To enable all logs, set the environment variable
         ///   BUN_DEBUG_ALL=1
         pub fn log(comptime fmt: string, args: anytype) callconv(bun.callconv_inline) void {
-            if (!source_set) return;
-            if (fmt.len == 0 or fmt[fmt.len - 1] != '\n') {
-                return log(fmt ++ "\n", args);
-            }
+            var entry = beginScopedLog(&state, fmt.len == 0 or fmt[fmt.len - 1] != '\n') orelse return;
+            defer entry.deinit();
 
-            if (ScopedDebugWriter.disable_inside_log > 0) {
-                return;
-            }
-
-            if (bun.crash_handler.isPanicking()) return;
-
-            if (Environment.enable_logs) ScopedDebugWriter.disable_inside_log += 1;
-            defer {
-                if (Environment.enable_logs)
-                    ScopedDebugWriter.disable_inside_log -= 1;
-            }
-
-            if (!isVisible())
-                return;
-
-            if (!out_set) {
-                buffered_writer = scopedWriter().quietBufferedWriter(&buffer);
-                out = &buffered_writer.interface;
-                out_set = true;
-            }
-            lock.lock();
-            defer lock.unlock();
-
-            switch (enable_ansi_colors_stdout and source_set and scopedWriter().handle == rawWriter().handle) {
-                inline else => |use_ansi| {
-                    out.print(comptime prettyFmt("<r><d>[" ++ tagname ++ "]<r> " ++ fmt, use_ansi), args) catch {
-                        really_disable.store(true, .monotonic);
-                        return;
-                    };
-                    out.flush() catch {
-                        really_disable.store(true, .monotonic);
-                        return;
-                    };
-                },
-            }
+            entry.writer.print(fmt, args) catch {
+                entry.failed = true;
+            };
         }
     };
+}
+
+const ScopedLogState = struct {
+    tagname: []const u8,
+    env_name: [:0]const u8,
+    debug_arg: []const u8,
+    visible: bool,
+    visibility_once: bun.Once(evaluateScopedLogVisibility) = .{},
+
+    noinline fn isVisible(state: *ScopedLogState) bool {
+        state.visibility_once.call(.{state});
+        return state.visible;
+    }
+};
+
+fn evaluateScopedLogVisibility(state: *ScopedLogState) void {
+    if (bun.getenvZAnyCase(state.env_name)) |val| {
+        state.visible = !strings.eqlComptime(val, "0");
+    } else if (bun.env_var.BUN_DEBUG_ALL.get()) |val| {
+        state.visible = val;
+    } else if (bun.env_var.BUN_DEBUG_QUIET_LOGS.get()) |val| {
+        state.visible = state.visible and !val;
+    } else {
+        for (bun.argv) |arg| {
+            if (strings.eqlCaseInsensitiveASCII(arg, state.debug_arg, true) or
+                strings.eqlCaseInsensitiveASCII(arg, "--debug-all", true))
+            {
+                state.visible = true;
+                break;
+            }
+        }
+    }
+}
+
+const ScopedLogEntry = struct {
+    writer: *std.Io.Writer,
+    append_newline: bool,
+    failed: bool = false,
+
+    noinline fn deinit(entry: *ScopedLogEntry) void {
+        if (!entry.failed and entry.append_newline) {
+            entry.writer.writeByte('\n') catch {
+                entry.failed = true;
+            };
+        }
+        if (!entry.failed) {
+            entry.writer.flush() catch {
+                entry.failed = true;
+            };
+        }
+        if (entry.failed) {
+            ScopedDebugWriter.failed.store(true, .monotonic);
+        }
+
+        ScopedDebugWriter.lock.unlock();
+        ScopedDebugWriter.disable_inside_log -= 1;
+    }
+};
+
+noinline fn beginScopedLog(
+    state: *ScopedLogState,
+    append_newline: bool,
+) ?ScopedLogEntry {
+    if (!ScopedDebugWriter.initialized.load(.acquire) or
+        ScopedDebugWriter.disable_inside_log > 0 or
+        ScopedDebugWriter.failed.load(.monotonic) or
+        bun.crash_handler.isPanicking())
+    {
+        return null;
+    }
+
+    ScopedDebugWriter.disable_inside_log += 1;
+    if (!state.isVisible()) {
+        ScopedDebugWriter.disable_inside_log -= 1;
+        return null;
+    }
+
+    ScopedDebugWriter.lock.lock();
+    if (ScopedDebugWriter.failed.load(.monotonic)) {
+        ScopedDebugWriter.lock.unlock();
+        ScopedDebugWriter.disable_inside_log -= 1;
+        return null;
+    }
+
+    var entry: ScopedLogEntry = .{
+        .writer = &ScopedDebugWriter.buffered_writer.interface,
+        .append_newline = append_newline,
+    };
+    writeScopedLogPrefix(entry.writer, state.tagname, ScopedDebugWriter.use_ansi) catch {
+        entry.failed = true;
+        entry.deinit();
+        return null;
+    };
+
+    return entry;
+}
+
+fn writeScopedLogPrefix(log_writer: *std.Io.Writer, tagname: []const u8, use_ansi: bool) std.Io.Writer.Error!void {
+    try log_writer.writeAll(if (use_ansi) RESET ++ CSI ++ "2m[" else "[");
+    try log_writer.writeAll(tagname);
+    try log_writer.writeAll(if (use_ansi) "]" ++ RESET ++ " " else "] ");
 }
 
 pub fn scoped(comptime tag: anytype, comptime visibility: Visibility) LogFunction {
@@ -1286,8 +1332,13 @@ pub inline fn err(error_name: anytype, comptime fmt: []const u8, args: anytype) 
 }
 
 pub const ScopedDebugWriter = struct {
-    pub var scoped_file: File = undefined;
     pub threadlocal var disable_inside_log: isize = 0;
+    var initialized = std.atomic.Value(bool).init(false);
+    var buffer: [4096]u8 = undefined;
+    var buffered_writer: File.QuietWriter = undefined;
+    var use_ansi = false;
+    var failed = std.atomic.Value(bool).init(false);
+    var lock = bun.Mutex{};
 };
 pub fn disableScopedDebugWriter() void {
     if (!@inComptime()) {
@@ -1305,6 +1356,7 @@ extern "c" fn getpid() c_int;
 pub fn initScopedDebugWriterAtStartup(io: std.Io) void {
     bun.debugAssert(source_set);
 
+    var file = source.raw_stream;
     if (bun.env_var.BUN_DEBUG.get()) |path| {
         if (path.len > 0 and !strings.eql(path, "0") and !strings.eql(path, "false")) {
             if (std.fs.path.dirname(path)) |dir| {
@@ -1322,19 +1374,13 @@ pub fn initScopedDebugWriterAtStartup(io: std.Io) void {
                 panic("Failed to open file for debug output: {s} ({s})", .{ @errorName(open_err), path });
             };
             _ = fd.truncate(0); // windows
-            ScopedDebugWriter.scoped_file = .{ .handle = fd };
-            return;
+            file = .{ .handle = fd };
         }
     }
 
-    ScopedDebugWriter.scoped_file = source.raw_stream;
-}
-fn scopedWriter() File {
-    if (comptime !Environment.isDebug and !Environment.enable_logs) {
-        @compileError("scopedWriter() should only be called in debug mode");
-    }
-
-    return ScopedDebugWriter.scoped_file;
+    ScopedDebugWriter.buffered_writer = file.quietBufferedWriter(&ScopedDebugWriter.buffer);
+    ScopedDebugWriter.use_ansi = enable_ansi_colors_stdout and file.handle == rawWriter().handle;
+    ScopedDebugWriter.initialized.store(true, .release);
 }
 
 /// Print a red error message with "error: " as the prefix. For custom prefixes see `err()`

@@ -598,7 +598,7 @@ pub fn appendFileMaybeLock(
 
     if (DebugLogScope.isVisible()) {
         const cwd_len_with_slash = if (this.cwd[this.cwd.len - 1] == '/') this.cwd.len else this.cwd.len + 1;
-        log("<d>Added <b>{s}<r><d> to watch list.<r>", .{
+        log("Added {s} to watch list.", .{
             if (file_path.len > cwd_len_with_slash and bun.strings.startsWith(file_path, this.cwd))
                 file_path[cwd_len_with_slash..]
             else
