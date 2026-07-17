@@ -313,12 +313,13 @@ const RouteLoader = struct {
         root_dir_info: *const DirInfo,
         base_dir: []const u8,
     ) Routes {
-        var route_dirname_len: u16 = 0;
-
-        const relative_dir = FileSystem.instance.relative(base_dir, config.dir);
-        if (!strings.hasPrefixComptime(relative_dir, "..")) {
-            route_dirname_len = @as(u16, @truncate(relative_dir.len + @as(usize, @intFromBool(config.dir[config.dir.len - 1] != std.fs.path.sep))));
-        }
+        var root_public_dir_buf: bun.PathBuffer = undefined;
+        const relative_dir = bun.path.relativePlatformBuf(&root_public_dir_buf, base_dir, config.dir, .auto, true);
+        const root_public_dir = if (strings.hasPrefixComptime(relative_dir, ".."))
+            ""
+        else
+            std.mem.trim(u8, relative_dir, std.fs.path.sep_str);
+        const route_dirname_len: u16 = @intCast(root_public_dir.len + @intFromBool(root_public_dir.len > 0));
 
         var this = RouteLoader{
             .allocator = allocator,
@@ -331,7 +332,7 @@ const RouteLoader = struct {
             .route_dirname_len = route_dirname_len,
         };
         defer this.dedupe_dynamic.deinit(allocator);
-        this.load(ResolverType, resolver, root_dir_info, base_dir);
+        this.load(ResolverType, resolver, root_dir_info, root_public_dir);
         if (this.all_routes.items.len == 0) return Routes{
             .static = this.static_list,
             .config = config,
@@ -401,7 +402,7 @@ const RouteLoader = struct {
         comptime ResolverType: type,
         resolver: *ResolverType,
         root_dir_info: *const DirInfo,
-        base_dir: []const u8,
+        public_dir: []const u8,
     ) void {
         var fs = this.fs;
 
@@ -424,12 +425,18 @@ const RouteLoader = struct {
                         var abs_parts = [_]string{ entry.dir, entry.base() };
                         if (resolver.readDirInfoIgnoreError(fs.abs(&abs_parts))) |_dir_info| {
                             const dir_info: *const DirInfo = _dir_info;
+                            var child_public_dir_buf: bun.PathBuffer = undefined;
+                            const child_public_dir = bun.path.joinStringBuf(
+                                &child_public_dir_buf,
+                                &[_]string{ public_dir, entry.base() },
+                                .auto,
+                            );
 
                             this.load(
                                 ResolverType,
                                 resolver,
                                 dir_info,
-                                base_dir,
+                                child_public_dir,
                             );
                         }
                     },
@@ -441,14 +448,6 @@ const RouteLoader = struct {
 
                         for (this.config.extensions) |_extname| {
                             if (strings.eql(extname[1..], _extname)) {
-                                // length is extended by one
-                                // entry.dir is a string with a trailing slash
-                                if (comptime Environment.isDebug) {
-                                    bun.assert(bun.path.isSepAny(entry.dir[base_dir.len - 1]));
-                                }
-
-                                const public_dir = entry.dir.ptr[base_dir.len - 1 .. entry.dir.len];
-
                                 if (Route.parse(
                                     entry.base(),
                                     extname,
