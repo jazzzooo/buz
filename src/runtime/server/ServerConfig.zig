@@ -590,7 +590,7 @@ pub fn fromJS(
                     bun.default_allocator.free(path);
                     continue;
                 } else if (value.isObject()) {
-                    const methods = .{
+                    const methods = [_]HTTP.Method{
                         HTTP.Method.CONNECT,
                         HTTP.Method.DELETE,
                         HTTP.Method.GET,
@@ -602,7 +602,7 @@ pub fn fromJS(
                         HTTP.Method.TRACE,
                     };
                     var found = false;
-                    inline for (methods) |method| {
+                    for (methods) |method| {
                         if (try value.getOwn(global, @tagName(method))) |function| {
                             if (!found) {
                                 try validateRouteName(global, path);
