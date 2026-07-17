@@ -373,9 +373,9 @@ pub const FileSystemRouter = struct {
             return JSValue.jsNull();
         };
 
-        if (parsed.takeDecoded()) |decoded| {
+        if (parsed.takeOwned()) |owned| {
             path.deinit();
-            path = ZigString.Slice.init(globalThis.allocator(), decoded);
+            path = ZigString.Slice.init(globalThis.allocator(), owned);
         }
 
         const pathname_backing = path;
@@ -670,14 +670,10 @@ pub const MatchedRoute = struct {
             return JSValue.createEmptyObject(globalThis, 0);
 
         if (this.param_map == null) {
-            this.param_map = try QueryStringMap.initWithScanner(
+            this.param_map = try QueryStringMap.initWithParams(
                 globalThis.allocator(),
-                CombinedScanner.init(
-                    "",
-                    this.route.pathnameWithoutLeadingSlash(),
-                    this.route.name,
-                    this.route.params,
-                ),
+                "",
+                this.route.params,
             );
         }
 
@@ -696,13 +692,11 @@ pub const MatchedRoute = struct {
 
         if (this.query_string_map == null) {
             if (this.route.params.len > 0) {
-                this.query_string_map = try QueryStringMap.initWithScanner(globalThis.allocator(), CombinedScanner.init(
+                this.query_string_map = try QueryStringMap.initWithParams(
+                    globalThis.allocator(),
                     this.route.query_string,
-                    this.route.pathnameWithoutLeadingSlash(),
-                    this.route.name,
-
                     this.route.params,
-                ));
+                );
             } else {
                 this.query_string_map = try QueryStringMap.init(globalThis.allocator(), this.route.query_string);
             }
@@ -727,7 +721,6 @@ const URLPath = @import("../../http_types/URLPath.zig");
 const std = @import("std");
 const Resolver = @import("../../resolver/resolver.zig").Resolver;
 
-const CombinedScanner = @import("../../url/url.zig").CombinedScanner;
 const QueryStringMap = @import("../../url/url.zig").QueryStringMap;
 const URL = @import("../../url/url.zig").URL;
 

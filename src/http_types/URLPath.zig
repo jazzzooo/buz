@@ -32,59 +32,62 @@ pub fn pathWithoutAssetPrefix(this: *const URLPath, asset_prefix: string) string
     return out;
 }
 
-/// A borrowed URLPath view and the optional allocation backing its decoded slices.
+/// A borrowed URLPath view and the optional allocation backing its slices.
 pub const Parsed = struct {
     value: URLPath,
-    decoded: ?[]u8 = null,
+    owned: ?[]u8 = null,
 
     pub fn deinit(this: *Parsed, allocator: std.mem.Allocator) void {
-        if (this.decoded) |decoded| {
-            allocator.free(decoded);
+        if (this.owned) |owned| {
+            allocator.free(owned);
         }
         this.* = undefined;
     }
 
-    pub fn takeDecoded(this: *Parsed) ?[]u8 {
-        const decoded = this.decoded;
-        this.decoded = null;
-        return decoded;
+    pub fn takeOwned(this: *Parsed) ?[]u8 {
+        const owned = this.owned;
+        this.owned = null;
+        return owned;
     }
 };
 
-pub fn parseAlloc(allocator: std.mem.Allocator, pathname: string) !Parsed {
-    if (!strings.containsChar(pathname, '%')) {
-        return .{ .value = parseDecoded(pathname) };
-    }
+pub fn parseAlloc(allocator: std.mem.Allocator, input: string) !Parsed {
+    const query_start = std.mem.indexOfScalar(u8, input, '?') orelse input.len;
+    const encoded_pathname = input[0..query_start];
+    const query_string = input[query_start..];
 
-    const encoded = pathname[0..@min(pathname.len, 16384)];
-    var output = try std.Io.Writer.Allocating.initCapacity(allocator, encoded.len);
+    if (!strings.containsChar(encoded_pathname, '%'))
+        return .{ .value = parseDecodedWithRedirect(encoded_pathname, query_string, false) };
+
+    var output = try std.Io.Writer.Allocating.initCapacity(allocator, input.len);
     defer output.deinit();
 
     var needs_redirect = false;
-    const decoded_len = try PercentEncoding.decodeFaultTolerant(&output.writer, encoded, &needs_redirect, true);
-    bun.assert(@as(usize, decoded_len) == output.written().len);
+    var decoded_len: usize = try PercentEncoding.decodeFaultTolerant(&output.writer, encoded_pathname, &needs_redirect, true);
+    bun.assert(decoded_len == output.written().len);
 
-    const decoded = try output.toOwnedSlice();
-    if (decoded.len == 0) {
-        allocator.free(decoded);
-        return .{ .value = parseDecodedWithRedirect("/", needs_redirect) };
+    if (decoded_len == 0) {
+        try output.writer.writeByte('/');
+        decoded_len = 1;
     }
+    try output.writer.writeAll(query_string);
 
+    const owned = try output.toOwnedSlice();
     return .{
-        .value = parseDecodedWithRedirect(decoded, needs_redirect),
-        .decoded = decoded,
+        .value = parseDecodedWithRedirect(owned[0..decoded_len], owned[decoded_len..], needs_redirect),
+        .owned = owned,
     };
 }
 
-/// Parse an already-decoded pathname. The returned slices borrow from `pathname`.
-pub fn parseDecoded(pathname: string) URLPath {
-    return parseDecodedWithRedirect(pathname, false);
+/// Parse an already-decoded pathname. The returned slices borrow from `input`.
+pub fn parseDecoded(input: string) URLPath {
+    const query_start = std.mem.indexOfScalar(u8, input, '?') orelse input.len;
+    return parseDecodedWithRedirect(input[0..query_start], input[query_start..], false);
 }
 
-fn parseDecodedWithRedirect(pathname: string, needs_redirect: bool) URLPath {
+fn parseDecodedWithRedirect(pathname: string, query_string: string, needs_redirect: bool) URLPath {
     const decoded_pathname = if (pathname.len == 0) "/" else pathname;
 
-    var question_mark_i: ?usize = null;
     var period_i: ?usize = null;
 
     var first_segment_end = decoded_pathname.len;
@@ -96,16 +99,6 @@ fn parseDecodedWithRedirect(pathname: string, needs_redirect: bool) URLPath {
         const c = decoded_pathname[i];
 
         switch (c) {
-            '?' => {
-                if (question_mark_i == null) question_mark_i = i;
-                if (period_i) |period| {
-                    if (question_mark_i.? < period) period_i = null;
-                }
-
-                if (last_slash) |slash| {
-                    if (slash > question_mark_i.?) last_slash = null;
-                }
-            },
             '.' => {
                 if (period_i == null) period_i = i;
             },
@@ -131,16 +124,12 @@ fn parseDecodedWithRedirect(pathname: string, needs_redirect: bool) URLPath {
     const extname = brk: {
         if (period_i) |period| {
             const start = period + 1;
-            if (question_mark_i) |question_mark| {
-                break :brk decoded_pathname[start..question_mark];
-            }
             break :brk decoded_pathname[start..];
         }
         break :brk &([_]u8{});
     };
 
-    const path_end = question_mark_i orelse decoded_pathname.len;
-    var path = decoded_pathname[@min(1, path_end)..path_end];
+    var path = decoded_pathname[@min(1, decoded_pathname.len)..];
 
     const first_segment = decoded_pathname[@min(1, first_segment_end)..first_segment_end];
     const is_source_map = strings.eqlComptime(extname, "map");
@@ -159,7 +148,7 @@ fn parseDecodedWithRedirect(pathname: string, needs_redirect: bool) URLPath {
         .pathname = decoded_pathname,
         .first_segment = first_segment,
         .path = if (decoded_pathname.len == 1) "." else path,
-        .query_string = if (question_mark_i) |question_mark| decoded_pathname[question_mark..] else "",
+        .query_string = query_string,
         .needs_redirect = needs_redirect,
     };
 }

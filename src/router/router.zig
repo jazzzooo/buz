@@ -862,10 +862,6 @@ pub const Match = struct {
         return this.params.len > 0;
     }
 
-    pub fn paramsIterator(this: *const Match) PathnameScanner {
-        return PathnameScanner.init(this.pathname, this.name, this.params);
-    }
-
     pub fn nameWithBasename(file_path: string, dir: string) string {
         var name = file_path;
         if (strings.indexOf(name, dir)) |i| {
@@ -873,10 +869,6 @@ pub const Match = struct {
         }
 
         return name[0 .. name.len - std.fs.path.extension(name).len];
-    }
-
-    pub fn pathnameWithoutLeadingSlash(this: *const Match) string {
-        return std.mem.trimStart(u8, this.pathname, "/");
     }
 };
 
@@ -1844,18 +1836,15 @@ test "Dynamic routes" {
     try router.match(*MockServer, &server, MockRequestContextType, &ctx);
     try expectEqualStrings(ctx.matched_route.?.name, "/blog/hi");
 
-    var params = ctx.matched_route.?.paramsIterator();
-    try expect(params.next() == null);
+    try expect(ctx.matched_route.?.params.len == 0);
 
     ctx.matched_route = null;
 
     ctx.url = URLPath.parseDecoded("/posts/123");
     try router.match(*MockServer, &server, MockRequestContextType, &ctx);
 
-    params = ctx.matched_route.?.paramsIterator();
-
     try expectEqualStrings(ctx.matched_route.?.name, "/posts/[id]");
-    try expectEqualStrings(params.next().?.rawValue(ctx.matched_route.?.pathname), "123");
+    try expectEqualStrings(ctx.matched_route.?.params.get(0).value, "123");
 
     // ctx = MockRequestContextType{
     //     .url = URLPath.parseDecoded("/"),
@@ -1892,8 +1881,6 @@ const DirInfo = @import("../resolver/dir_info.zig");
 const Options = @import("../bundler/options.zig");
 const URLPath = @import("../http_types/URLPath.zig");
 const std = @import("std");
-const PathnameScanner = @import("../url/url.zig").PathnameScanner;
-
 const Fs = @import("../resolver/fs.zig");
 const FileSystem = Fs.FileSystem;
 

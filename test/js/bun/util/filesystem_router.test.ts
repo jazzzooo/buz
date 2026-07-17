@@ -688,7 +688,7 @@ it("decodes percent-encoded path segments and keeps params and pathname stable a
   expect(exitCode).toBe(0);
 });
 
-it(".params decodes percent escapes in a route segment exactly once", () => {
+it("decodes path and query components exactly once", () => {
   const { dir } = make(["index.tsx", "posts/[id].tsx"]);
 
   const router = new Bun.FileSystemRouter({
@@ -709,6 +709,11 @@ it(".params decodes percent escapes in a route segment exactly once", () => {
   const percent = router.match("/posts/100%2525")!;
   expect(percent.pathname).toBe("/posts/100%25");
   expect(percent.params.id).toBe("100%25");
+
+  const components = router.match("/posts/a%3Fb?escaped=%2525&form=%3Fx+y&invalid=%")!;
+  expect(components.pathname).toBe("/posts/a?b");
+  expect(components.params.id).toBe("a?b");
+  expect(components.query).toEqual({ id: "a?b", escaped: "%25", form: "?x y", invalid: "%" });
 });
 
 it("handles large query maps without truncation", async () => {
@@ -722,7 +727,7 @@ it("handles large query maps without truncation", async () => {
       style: "nextjs",
       fileExtensions: [".tsx"],
     });
-    const qs = Array.from({ length: 3000 }, (_, i) => "k" + i + "=v" + i).join("&");
+    const qs = Array.from({ length: 3000 }, (_, i) => (i === 0 ? "%6b0" : "k" + i) + "=v" + i).join("&");
     const match = router.match("/posts?" + qs);
     if (!match) throw new Error("expected /posts to match");
     const query = match.query;

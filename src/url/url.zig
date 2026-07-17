@@ -608,26 +608,22 @@ pub const QueryStringMap = struct {
         return map;
     }
 
-    pub fn initWithScanner(
+    pub fn initWithParams(
         allocator: std.mem.Allocator,
-        _scanner: CombinedScanner,
+        query_string: string,
+        route_params: *const ParamsList,
     ) bun.OOM!?QueryStringMap {
         var list = Param.List{};
         errdefer list.deinit(allocator);
-        var scanner = _scanner;
 
         var estimated_str_len: usize = 0;
-        var count: usize = 0;
-
-        while (scanner.pathname.next()) |result| {
-            estimated_str_len += result.name.length + result.value.length;
-            count += 1;
+        for (route_params.items(.name), route_params.items(.value)) |name, value| {
+            estimated_str_len += name.len + value.len;
         }
+        var count = route_params.len;
 
-        if (Environment.allow_assert)
-            bun.assert(count > 0); // We should not call initWithScanner when there are no path params
-
-        while (scanner.query.next()) |result| {
+        var scanner = Scanner.init(query_string);
+        while (scanner.next()) |result| {
             estimated_str_len += result.name.length + result.value.length;
             count += 1;
         }
@@ -635,27 +631,19 @@ pub const QueryStringMap = struct {
         if (count == 0) return null;
 
         try list.ensureTotalCapacity(allocator, count);
-        scanner.reset();
 
-        // this over-allocates
-        // TODO: refactor this to support multiple slices instead of copying the whole thing
         var buf = try std.Io.Writer.Allocating.initCapacity(allocator, estimated_str_len);
         errdefer buf.deinit();
         const writer = &buf.writer;
         var buf_writer_pos: u32 = 0;
 
-        while (scanner.pathname.next()) |result| {
-            var name = result.name;
-            var value = result.value;
-            const name_slice = result.rawName(scanner.pathname.routename);
-
-            name.length = @as(u32, @truncate(name_slice.len));
-            name.offset = buf_writer_pos;
+        for (route_params.items(.name), route_params.items(.value)) |name_slice, value_slice| {
+            const name = api.StringPointer{ .offset = buf_writer_pos, .length = @intCast(name_slice.len) };
             writer.writeAll(name_slice) catch return error.OutOfMemory;
-            buf_writer_pos += @as(u32, @truncate(name_slice.len));
+            buf_writer_pos += name.length;
 
-            value.length = PercentEncoding.decode(writer, result.rawValue(scanner.pathname.pathname)) catch continue;
-            value.offset = buf_writer_pos;
+            const value = api.StringPointer{ .offset = buf_writer_pos, .length = @intCast(value_slice.len) };
+            writer.writeAll(value_slice) catch return error.OutOfMemory;
             buf_writer_pos += value.length;
 
             list.appendAssumeCapacity(.{ .name = name, .value = value });
@@ -663,18 +651,19 @@ pub const QueryStringMap = struct {
 
         const route_parameter_begin = list.len;
 
-        while (scanner.query.next()) |result| {
+        scanner.reset();
+        while (scanner.next()) |result| {
             var name = result.name;
             var value = result.value;
 
             name.offset = buf_writer_pos;
-            name.length = PercentEncoding.decode(writer, result.rawName(scanner.query.query_string)) catch continue;
+            name.length = PercentEncoding.decodeFormComponent(writer, result.rawName(query_string)) catch continue;
             buf_writer_pos += name.length;
             const name_slice = buf.written()[name.offset..][0..name.length];
             if (containsName(list.slice(), buf.written(), route_parameter_begin, name_slice)) continue;
 
             value.offset = buf_writer_pos;
-            value.length = PercentEncoding.decode(writer, result.rawValue(scanner.query.query_string)) catch continue;
+            value.length = PercentEncoding.decodeFormComponent(writer, result.rawValue(query_string)) catch continue;
             buf_writer_pos += value.length;
 
             list.appendAssumeCapacity(.{ .name = name, .value = value });
@@ -733,11 +722,11 @@ pub const QueryStringMap = struct {
             var value = result.value;
 
             name.offset = buf_writer_pos;
-            name.length = PercentEncoding.decode(writer, result.rawName(query_string)) catch continue;
+            name.length = PercentEncoding.decodeFormComponent(writer, result.rawName(query_string)) catch continue;
             buf_writer_pos += name.length;
 
             value.offset = buf_writer_pos;
-            value.length = PercentEncoding.decode(writer, result.rawValue(query_string)) catch continue;
+            value.length = PercentEncoding.decodeFormComponent(writer, result.rawValue(query_string)) catch continue;
             buf_writer_pos += value.length;
 
             list.appendAssumeCapacity(.{ .name = name, .value = value });
@@ -757,8 +746,18 @@ pub const QueryStringMap = struct {
 };
 
 pub const PercentEncoding = struct {
+    const DecodeMode = enum {
+        strict,
+        path,
+        form,
+    };
+
     pub fn decode(writer: *std.Io.Writer, input: string) !u32 {
-        return @call(bun.callmod_inline, decodeFaultTolerant, .{ writer, input, null, false });
+        return @call(bun.callmod_inline, decodeImpl, .{ writer, input, null, .strict });
+    }
+
+    pub fn decodeFormComponent(writer: *std.Io.Writer, input: string) !u32 {
+        return @call(bun.callmod_inline, decodeImpl, .{ writer, input, null, .form });
     }
 
     /// Decode percent-encoded input into allocated memory.
@@ -780,33 +779,55 @@ pub const PercentEncoding = struct {
         needs_redirect: ?*bool,
         comptime fault_tolerant: bool,
     ) !u32 {
+        return @call(bun.callmod_inline, decodeImpl, .{ writer, input, needs_redirect, if (fault_tolerant) .path else .strict });
+    }
+
+    fn decodeImpl(
+        writer: *std.Io.Writer,
+        input: string,
+        needs_redirect: ?*bool,
+        comptime mode: DecodeMode,
+    ) !u32 {
         var i: usize = 0;
         var written: u32 = 0;
         // unlike JavaScript's decodeURIComponent, we are not handling invalid surrogate pairs
         // we are assuming the input is valid ascii
         while (i < input.len) {
+            if (mode == .form and input[i] == '+') {
+                try writer.writeByte(' ');
+                i += 1;
+                written += 1;
+                continue;
+            }
+
             switch (input[i]) {
                 '%' => {
-                    if (comptime fault_tolerant) {
-                        if (!(i + 3 <= input.len and strings.isASCIIHexDigit(input[i + 1]) and strings.isASCIIHexDigit(input[i + 2]))) {
-                            // i do not feel good about this
-                            // create-react-app's public/index.html uses %PUBLIC_URL% in various tags
-                            // This is an invalid %-encoded string, intended to be swapped out at build time by webpack-html-plugin
-                            // We don't process HTML, so rewriting this URL path won't happen
-                            // But we want to be a little more fault tolerant here than just throwing up an error for something that works in other tools
-                            // So we just skip over it and issue a redirect
-                            // We issue a redirect because various other tooling client-side may validate URLs
-                            // We can't expect other tools to be as fault tolerant
-                            if (i + "PUBLIC_URL%".len < input.len and strings.eqlComptime(input[i + 1 ..][0.."PUBLIC_URL%".len], "PUBLIC_URL%")) {
-                                i += "PUBLIC_URL%".len + 1;
-                                needs_redirect.?.* = true;
+                    if (!(i + 3 <= input.len and strings.isASCIIHexDigit(input[i + 1]) and strings.isASCIIHexDigit(input[i + 2]))) {
+                        switch (mode) {
+                            .strict => return error.DecodingError,
+                            .form => {
+                                try writer.writeByte('%');
+                                i += 1;
+                                written += 1;
                                 continue;
-                            }
-                            return error.DecodingError;
+                            },
+                            .path => {
+                                // i do not feel good about this
+                                // create-react-app's public/index.html uses %PUBLIC_URL% in various tags
+                                // This is an invalid %-encoded string, intended to be swapped out at build time by webpack-html-plugin
+                                // We don't process HTML, so rewriting this URL path won't happen
+                                // But we want to be a little more fault tolerant here than just throwing up an error for something that works in other tools
+                                // So we just skip over it and issue a redirect
+                                // We issue a redirect because various other tooling client-side may validate URLs
+                                // We can't expect other tools to be as fault tolerant
+                                if (i + "PUBLIC_URL%".len < input.len and strings.eqlComptime(input[i + 1 ..][0.."PUBLIC_URL%".len], "PUBLIC_URL%")) {
+                                    i += "PUBLIC_URL%".len + 1;
+                                    needs_redirect.?.* = true;
+                                    continue;
+                                }
+                                return error.DecodingError;
+                            },
                         }
-                    } else {
-                        if (!(i + 3 <= input.len and strings.isASCIIHexDigit(input[i + 1]) and strings.isASCIIHexDigit(input[i + 2])))
-                            return error.DecodingError;
                     }
 
                     try writer.writeByte((strings.toASCIIHexValue(input[i + 1]) << 4) | strings.toASCIIHexValue(input[i + 2]));
@@ -819,7 +840,7 @@ pub const PercentEncoding = struct {
                     i += 1;
 
                     // scan ahead assuming .writeAll is faster than .writeByte one at a time
-                    while (i < input.len and input[i] != '%') : (i += 1) {}
+                    while (i < input.len and input[i] != '%' and (mode != .form or input[i] != '+')) : (i += 1) {}
                     try writer.writeAll(input[start..i]);
                     written += @as(u32, @truncate(i - start));
                 },
@@ -831,88 +852,6 @@ pub const PercentEncoding = struct {
 };
 
 pub const FormData = @import("../runtime/webcore/FormData.zig").FormData;
-
-pub const CombinedScanner = struct {
-    query: Scanner,
-    pathname: PathnameScanner,
-    pub fn init(query_string: string, pathname: string, routename: string, url_params: *ParamsList) CombinedScanner {
-        return CombinedScanner{
-            .query = Scanner.init(query_string),
-            .pathname = PathnameScanner.init(pathname, routename, url_params),
-        };
-    }
-
-    pub fn reset(this: *CombinedScanner) void {
-        this.query.reset();
-        this.pathname.reset();
-    }
-
-    pub fn next(this: *CombinedScanner) ?Scanner.Result {
-        return this.pathname.next() orelse this.query.next();
-    }
-};
-
-fn stringPointerFromStrings(parent: string, in: string) api.StringPointer {
-    if (in.len == 0 or parent.len == 0) return api.StringPointer{};
-
-    if (bun.rangeOfSliceInBuffer(in, parent)) |range| {
-        return api.StringPointer{ .offset = range[0], .length = range[1] };
-    } else {
-        if (strings.indexOf(parent, in)) |i| {
-            if (comptime Environment.allow_assert) {
-                bun.assert(strings.eqlLong(parent[i..][0..in.len], in, false));
-            }
-
-            return api.StringPointer{
-                .offset = @as(u32, @truncate(i)),
-                .length = @as(u32, @truncate(in.len)),
-            };
-        }
-    }
-
-    return api.StringPointer{};
-}
-
-pub const PathnameScanner = struct {
-    params: *ParamsList,
-    pathname: string,
-    routename: string,
-    i: usize = 0,
-
-    pub inline fn isDone(this: *const PathnameScanner) bool {
-        return this.params.len <= this.i;
-    }
-
-    pub fn reset(this: *PathnameScanner) void {
-        this.i = 0;
-    }
-
-    pub fn init(pathname: string, routename: string, params: *ParamsList) PathnameScanner {
-        return PathnameScanner{
-            .pathname = pathname,
-            .routename = routename,
-            .params = params,
-        };
-    }
-
-    pub fn next(this: *PathnameScanner) ?Scanner.Result {
-        if (this.isDone()) {
-            return null;
-        }
-
-        defer this.i += 1;
-        const param = this.params.get(this.i);
-
-        return Scanner.Result{
-            // TODO: fix this technical debt
-            .name = stringPointerFromStrings(this.routename, param.name),
-            .name_needs_decoding = false,
-            // TODO: fix this technical debt
-            .value = stringPointerFromStrings(this.pathname, param.value),
-            .value_needs_decoding = strings.containsChar(param.value, '%'),
-        };
-    }
-};
 
 pub const Scanner = struct {
     query_string: string,
