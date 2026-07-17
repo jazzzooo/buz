@@ -314,6 +314,38 @@ it("assetPrefix, src, and origin", async () => {
   }
 });
 
+it("keeps shared router strings alive across GC", () => {
+  const { dir } = make(["posts/[id].tsx"]);
+  const code = /* ts */ `
+    const options = {
+      dir: ${JSON.stringify(dir)},
+      style: "nextjs",
+      assetPrefix: "/_next/static/",
+      origin: "https://example.com",
+    };
+    const routers = Array.from({ length: 2 }, () => new Bun.FileSystemRouter(options));
+    const survivor = routers.pop();
+    routers.length = 0;
+    Bun.gc(true);
+    const match = survivor.match("/posts/hello");
+    if (survivor.origin !== options.origin) throw new Error("bad origin");
+    if (match.src !== "https://example.com/_next/static/posts/[id].tsx") throw new Error("bad src");
+    console.log("ok");
+  `;
+
+  const proc = Bun.spawnSync({
+    cmd: [bunExe(), "-e", code],
+    env: bunEnv,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 2000,
+  });
+  expect(proc.stderr.toString()).toBe("");
+  expect(proc.stdout.toString().trim()).toBe("ok");
+  expect(proc.exitedDueToTimeout).toBe(false);
+  expect(proc.exitCode).toBe(0);
+});
+
 it(".query works", () => {
   // set up the test
   const { dir } = make(["posts.tsx"]);

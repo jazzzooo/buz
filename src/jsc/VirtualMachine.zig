@@ -1598,7 +1598,7 @@ pub fn refCountedResolvedSource(this: *VirtualMachine, code: []const u8, specifi
             .source_code_needs_deref = false,
         };
     }
-    var source = this.refCountedString(code, hash_, !add_double_ref);
+    const source = this.refCountedString(code, hash_, !add_double_ref);
     if (add_double_ref) {
         source.ref();
         source.ref();
@@ -1609,11 +1609,11 @@ pub fn refCountedResolvedSource(this: *VirtualMachine, code: []const u8, specifi
         .specifier = specifier,
         .source_url = specifier.createIfDifferent(source_url),
         .allocator = source,
-        .source_code_needs_deref = false,
+        .source_code_needs_deref = true,
     };
 }
 
-fn refCountedStringWithWasNew(this: *VirtualMachine, new: *bool, input_: []const u8, hash_: ?u32, comptime dupe: bool) *jsc.RefString {
+pub fn refCountedString(this: *VirtualMachine, input_: []const u8, hash_: ?u32, comptime dupe: bool) *jsc.RefString {
     jsc.markBinding(@src());
     bun.assert(input_.len > 0);
     const hash = hash_ orelse jsc.RefString.computeHash(input_);
@@ -1638,19 +1638,14 @@ fn refCountedStringWithWasNew(this: *VirtualMachine, new: *bool, input_: []const
             .onBeforeDeinit = VirtualMachine.clearRefString,
         };
         entry.value_ptr.* = ref;
+    } else {
+        entry.value_ptr.*.ref();
     }
-    new.* = !entry.found_existing;
     return entry.value_ptr.*;
 }
 
 fn freeRefString(str: *jsc.RefString, _: *anyopaque, _: u32) callconv(.c) void {
     str.deinit();
-}
-
-pub fn refCountedString(this: *VirtualMachine, input_: []const u8, hash_: ?u32, comptime dupe: bool) *jsc.RefString {
-    bun.assert(input_.len > 0);
-    var _was_new = false;
-    return this.refCountedStringWithWasNew(&_was_new, input_, hash_, comptime dupe);
 }
 
 pub fn fetchWithoutOnLoadPlugins(

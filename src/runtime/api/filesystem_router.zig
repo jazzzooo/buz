@@ -218,7 +218,7 @@ pub const FileSystemRouter = struct {
             return globalThis.throwValue(try err_value);
         }
 
-        var fs_router = globalThis.allocator().create(FileSystemRouter) catch unreachable;
+        const fs_router = globalThis.allocator().create(FileSystemRouter) catch unreachable;
         fs_router.* = .{
             .origin = if (origin_str.len > 0) vm.refCountedString(origin_str.slice(), null, true) else null,
             .base_dir = vm.refCountedString(if (root_dir_info.abs_real_path.len > 0)
@@ -230,7 +230,6 @@ pub const FileSystemRouter = struct {
             .snapshot = snapshot,
         };
 
-        fs_router.base_dir.?.ref();
         return fs_router;
     }
 
