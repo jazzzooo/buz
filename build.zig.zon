@@ -2,7 +2,7 @@
     .name = .bun,
     .version = "1.3.14",
     .fingerprint = 0x4c5007b06ab7c09c, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.17.0-dev.1414+80d06578a",
+    .minimum_zig_version = "0.17.0-dev.1422+e863bf3be",
 
     .dependencies = .{
         .bun_bootstrap = .{

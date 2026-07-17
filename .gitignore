@@ -162,9 +162,6 @@ test/js/third_party/prisma/prisma/sqlite/dev.db-journal
 tmp
 codegen-for-zig-team.tar.gz
 
-# Dependencies
-/zig-upstream
-
 # Dependencies (before CMake)
 # These can be removed in the far future
 /src/bun.js/WebKit
