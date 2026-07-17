@@ -6,8 +6,6 @@ const Router = @This();
 // It does not handle the framework parts of rendering pages.
 // All it does is resolve URL paths to the appropriate entry point and parse URL params/query.
 
-const index_route_hash = @as(u32, @truncate(bun.hash("$$/index-route$$-!(@*@#&*%-901823098123")));
-
 pub const Param = struct {
     name: string,
     value: string,
@@ -55,14 +53,6 @@ pub fn getPublicPaths(this: *const Router) []const string {
     return this.routes.list.items(.public_path);
 }
 
-pub fn routeIndexByHash(this: *const Router, hash: u32) ?usize {
-    if (hash == index_route_hash) {
-        return this.routes.index_id;
-    }
-
-    return std.mem.indexOfScalar(u32, this.routes.list.items(.hash), hash);
-}
-
 pub fn getNames(this: *const Router) []const string {
     return this.routes.list.items(.name);
 }
@@ -77,7 +67,6 @@ const RouteIndex = struct {
     match_name: string,
     filepath: string,
     public_path: string,
-    hash: u32,
 
     pub const List = std.MultiArrayList(RouteIndex);
 };
@@ -97,7 +86,6 @@ pub const Routes = struct {
 
     /// Corresponds to "index.js" on the filesystem
     index: ?*Route = null,
-    index_id: ?usize = 0,
 
     allocator: std.mem.Allocator,
     config: Options.RouteConfig,
@@ -150,7 +138,6 @@ pub const Routes = struct {
                     .path = index.abs_path.slice(),
                     .pathname = url_path.pathname,
                     .basename = index.basename,
-                    .hash = index_route_hash,
                     .file_path = index.abs_path.slice(),
                     .query_string = url_path.query_string,
                     .client_framework_enabled = this.client_framework_enabled,
@@ -173,7 +160,6 @@ pub const Routes = struct {
                 .path = route.abs_path.slice(),
                 .pathname = url_path.pathname,
                 .basename = route.basename,
-                .hash = route.full_hash,
                 .file_path = route.abs_path.slice(),
                 .query_string = url_path.query_string,
                 .client_framework_enabled = this.client_framework_enabled,
@@ -216,7 +202,7 @@ const RouteLoader = struct {
     config: Options.RouteConfig,
     route_dirname_len: u16 = 0,
 
-    dedupe_dynamic: std.array_hash_map.Auto(u32, string),
+    dedupe_dynamic: bun.StringHashMap(string),
     log: *Logger.Log,
     index: ?*Route = null,
     static_list: bun.StringHashMap(*Route),
@@ -224,7 +210,7 @@ const RouteLoader = struct {
 
     pub fn appendRoute(this: *RouteLoader, route: Route) void {
         // /index.js
-        if (route.full_hash == index_route_hash) {
+        if (strings.eqlComptime(route.name, Route.index_route_name)) {
             const new_route = this.allocator.create(Route) catch unreachable;
             this.index = new_route;
             new_route.* = route;
@@ -283,7 +269,7 @@ const RouteLoader = struct {
         }
 
         {
-            const entry = this.dedupe_dynamic.getOrPutValue(this.allocator, route.full_hash, route.abs_path.slice()) catch unreachable;
+            const entry = this.dedupe_dynamic.getOrPut(route.name) catch unreachable;
             if (entry.found_existing) {
                 const source = Logger.Source.initEmptyFile(route.abs_path.slice());
                 this.log.addErrorFmt(
@@ -295,6 +281,7 @@ const RouteLoader = struct {
                 ) catch unreachable;
                 return;
             }
+            entry.value_ptr.* = route.abs_path.slice();
         }
 
         {
@@ -327,11 +314,11 @@ const RouteLoader = struct {
             .fs = resolver.fs,
             .config = config,
             .static_list = bun.StringHashMap(*Route).init(allocator),
-            .dedupe_dynamic = std.array_hash_map.Auto(u32, string).empty,
+            .dedupe_dynamic = bun.StringHashMap(string).init(allocator),
             .all_routes = .empty,
             .route_dirname_len = route_dirname_len,
         };
-        defer this.dedupe_dynamic.deinit(allocator);
+        defer this.dedupe_dynamic.deinit();
         this.load(ResolverType, resolver, root_dir_info, root_public_dir);
         if (this.all_routes.items.len == 0) return Routes{
             .static = this.static_list,
@@ -345,14 +332,10 @@ const RouteLoader = struct {
         route_list.setCapacity(allocator, this.all_routes.items.len) catch unreachable;
 
         var dynamic_start: ?usize = null;
-        var index_id: ?usize = null;
-
-        for (this.all_routes.items, 0..) |route, i| {
+        for (this.all_routes.items) |route| {
             if (@intFromEnum(route.kind) > @intFromEnum(Pattern.Tag.static) and dynamic_start == null) {
-                dynamic_start = i;
+                dynamic_start = route_list.len;
             }
-
-            if (route.full_hash == index_route_hash) index_id = i;
 
             route_list.appendAssumeCapacity(.{
                 .name = route.name,
@@ -360,7 +343,6 @@ const RouteLoader = struct {
                 .match_name = route.match_name.slice(),
                 .public_path = route.public_path.slice(),
                 .route = route,
-                .hash = route.full_hash,
             });
         }
 
@@ -372,16 +354,6 @@ const RouteLoader = struct {
             dynamic = route_list.items(.route)[dynamic_i..];
             dynamic_names = route_list.items(.name)[dynamic_i..];
             dynamic_match_names = route_list.items(.match_name)[dynamic_i..];
-
-            if (index_id) |index_i| {
-                if (index_i > dynamic_i) {
-                    // Due to the sorting order, the index route can be the last route.
-                    // We don't want to attempt to match the index route or different stuff will break.
-                    dynamic = dynamic[0 .. dynamic.len - 1];
-                    dynamic_names = dynamic_names[0 .. dynamic_names.len - 1];
-                    dynamic_match_names = dynamic_match_names[0 .. dynamic_match_names.len - 1];
-                }
-            }
         }
 
         return Routes{
@@ -393,7 +365,6 @@ const RouteLoader = struct {
             .index = this.index,
             .config = config,
             .allocator = allocator,
-            .index_id = index_id,
         };
     }
 
@@ -528,7 +499,6 @@ pub const Route = struct {
     match_name: PathString,
 
     basename: string,
-    full_hash: u32,
     param_count: u16,
 
     // On windows we need to normalize this path to have forward slashes.
@@ -694,8 +664,6 @@ pub const Route = struct {
         var match_name: string = name;
 
         var validation_result = Pattern.ValidationResult{};
-        const is_index = name.len == 0;
-
         var has_uppercase = false;
         if (name.len > 0) {
             validation_result = Pattern.validate(
@@ -777,10 +745,6 @@ pub const Route = struct {
             .basename = entry.base(),
             .public_path = PathString.init(public_path),
             .match_name = PathString.init(match_name),
-            .full_hash = if (is_index)
-                index_route_hash
-            else
-                @as(u32, @truncate(bun.hash(name))),
             .param_count = validation_result.param_count,
             .kind = validation_result.kind,
             .abs_path = if (comptime Environment.isWindows) .{
@@ -853,7 +817,6 @@ pub const Match = struct {
     /// basename of the route in the file system, including file extension
     basename: string,
 
-    hash: u32,
     params: *Param.List,
     redirect_path: ?string = null,
     query_string: string = "",
