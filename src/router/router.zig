@@ -1071,9 +1071,9 @@ const Pattern = struct {
             offset = pattern.len;
 
             switch (pattern.value) {
-                .static => |str| {
+                .static => |static_segment| {
                     const segment = path_[0 .. std.mem.indexOfScalar(u8, path_, '/') orelse path_.len];
-                    if (!str.eql(segment)) {
+                    if (!std.mem.eql(u8, static_segment, segment)) {
                         params.shrinkRetainingCapacity(0);
                         return false;
                     }
@@ -1178,7 +1178,7 @@ const Pattern = struct {
         var kind: u4 = @intFromEnum(Tag.static);
         const end = @as(u32, @truncate(input.len - 1));
         while (offset < end) {
-            const pattern: Pattern = Pattern.initUnhashed(input, offset) catch |err| {
+            const pattern: Pattern = Pattern.init(input, offset) catch |err| {
                 const source = Logger.Source.initEmptyFile(input);
                 switch (err) {
                     error.CatchAllMustBeAtTheEnd => {
@@ -1262,20 +1262,6 @@ const Pattern = struct {
     const RoutePathInt = u16;
 
     pub fn init(input: string, offset_: RoutePathInt) PatternParseError!Pattern {
-        return initMaybeHash(input, offset_, true);
-    }
-
-    pub fn isEnd(this: Pattern, input: string) bool {
-        return @as(usize, this.len) >= input.len - 1;
-    }
-
-    pub fn initUnhashed(input: string, offset_: RoutePathInt) PatternParseError!Pattern {
-        return initMaybeHash(input, offset_, false);
-    }
-
-    inline fn initMaybeHash(input: string, offset_: RoutePathInt, comptime do_hash: bool) PatternParseError!Pattern {
-        const initHashedString = if (comptime do_hash) HashedString.init else HashedString.initNoHash;
-
         var offset: RoutePathInt = offset_;
 
         while (input.len > @as(usize, offset) and input[offset] == '/') {
@@ -1283,7 +1269,7 @@ const Pattern = struct {
         }
 
         if (input.len == 0 or input.len <= @as(usize, offset)) return Pattern{
-            .value = .{ .static = HashedString.empty },
+            .value = .{ .static = "" },
             .len = @as(RoutePathInt, @truncate(@min(input.len, @as(usize, offset)))),
         };
 
@@ -1292,16 +1278,16 @@ const Pattern = struct {
         var tag = Tag.static;
         const end = @as(RoutePathInt, @intCast(input.len - 1));
 
-        if (offset == end) return Pattern{ .len = offset, .value = .{ .static = HashedString.empty } };
+        if (offset == end) return Pattern{ .len = offset, .value = .{ .static = "" } };
 
         while (i <= end) : (i += 1) {
             switch (input[i]) {
                 '/' => {
-                    return Pattern{ .len = @min(i + 1, end), .value = .{ .static = initHashedString(input[offset..i]) } };
+                    return Pattern{ .len = @min(i + 1, end), .value = .{ .static = input[offset..i] } };
                 },
                 '[' => {
                     if (i > offset) {
-                        return Pattern{ .len = i, .value = .{ .static = initHashedString(input[offset..i]) } };
+                        return Pattern{ .len = i, .value = .{ .static = input[offset..i] } };
                     }
 
                     tag = Tag.dynamic;
@@ -1378,7 +1364,11 @@ const Pattern = struct {
                 else => {},
             }
         }
-        return Pattern{ .len = i, .value = .{ .static = HashedString.init(input[offset..i]) } };
+        return Pattern{ .len = i, .value = .{ .static = input[offset..i] } };
+    }
+
+    pub fn isEnd(this: Pattern, input: string) bool {
+        return @as(usize, this.len) >= input.len - 1;
     }
 
     pub const Tag = enum(u4) {
@@ -1389,14 +1379,14 @@ const Pattern = struct {
     };
 
     pub const Value = union(Tag) {
-        static: HashedString,
+        static: string,
         dynamic: TinyPtr,
         catch_all: TinyPtr,
         optional_catch_all: TinyPtr,
 
         pub fn eql(a: Value, b: Value) bool {
             return @as(Tag, a) == @as(Tag, b) and switch (a) {
-                .static => HashedString.eql(a.static, b.static),
+                .static => std.mem.eql(u8, a.static, b.static),
                 .dynamic => a.dynamic.eql(b.dynamic),
                 .catch_all => a.catch_all.eql(b.catch_all),
                 .optional_catch_all => a.optional_catch_all.eql(b.optional_catch_all),
@@ -1869,9 +1859,9 @@ test "Pattern" {
     try expectStr(@tagName(catch_all.value), "catch_all");
 
     try expectStr(dynamic.value.dynamic.str(pattern), "dynamic");
-    try expectStr(static.value.static.str(), "static");
+    try expectStr(static.value.static, "static");
     try expectStr(dynamic2.value.dynamic.str(pattern), "dynamic2");
-    try expectStr(static2.value.static.str(), "static2");
+    try expectStr(static2.value.static, "static2");
     try expectStr(catch_all.value.catch_all.str(pattern), "catch_all");
 }
 
@@ -1887,7 +1877,6 @@ const FileSystem = Fs.FileSystem;
 const bun = @import("bun");
 const Environment = bun.Environment;
 const FD = bun.FD;
-const HashedString = bun.HashedString;
 const Logger = bun.logger;
 const Output = bun.Output;
 const PathString = bun.PathString;

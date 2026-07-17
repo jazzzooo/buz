@@ -1,6 +1,5 @@
 pub const immutable = @import("./immutable.zig");
 
-pub const HashedString = @import("./HashedString.zig");
 pub const MutableString = @import("./MutableString.zig");
 pub const PathString = @import("./PathString.zig").PathString;
 pub const SmolStr = @import("./SmolStr.zig").SmolStr;

@@ -1812,7 +1812,6 @@ pub const ZigString = jsc.ZigString;
 pub const StringJoiner = string.StringJoiner;
 pub const SliceWithUnderlyingString = string.SliceWithUnderlyingString;
 pub const PathString = string.PathString;
-pub const HashedString = string.HashedString;
 pub const MutableString = string.MutableString;
 pub const StringBuilder = string.StringBuilder;
 
