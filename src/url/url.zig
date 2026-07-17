@@ -473,81 +473,57 @@ pub const QueryStringMap = struct {
     slice: string,
     buffer: []u8,
     list: Param.List,
-    name_count: ?usize = null,
+    groups: bun.StringArrayHashMap(Group),
 
-    threadlocal var _name_count: [8]string = undefined;
-    pub fn getNameCount(this: *QueryStringMap) usize {
-        return this.list.len;
-        // if (this.name_count == null) {
-        //     var count: usize = 0;
-        //     var iterate = this.iter();
-        //     while (iterate.next(&_name_count) != null) {
-        //         count += 1;
-        //     }
-        //     this.name_count = count;
-        // }
-        // return this.name_count.?;
+    const no_param = std.math.maxInt(u32);
+
+    pub fn getNameCount(this: *const QueryStringMap) usize {
+        return this.groups.count();
     }
 
     pub fn iter(this: *const QueryStringMap) Iterator {
         return Iterator.init(this);
     }
 
-    pub const Iterator = struct {
-        // Assume no query string param map will exceed 2048 keys
-        // Browsers typically limit URL lengths to around 64k
-        const VisitedMap = bun.bit_set.ArrayBitSet(usize, 2048);
+    pub const ValueIterator = struct {
+        map: *const QueryStringMap,
+        next_index: u32,
 
+        pub fn next(this: *ValueIterator) ?string {
+            if (this.next_index == no_param) return null;
+
+            const index: usize = @intCast(this.next_index);
+            const params = this.map.list.slice();
+            this.next_index = params.items(.next_same_name)[index];
+            return this.map.str(params.items(.value)[index]);
+        }
+    };
+
+    pub const Iterator = struct {
         i: usize = 0,
         map: *const QueryStringMap,
-        visited: VisitedMap,
 
         const Result = struct {
             name: string,
-            values: []string,
+            values: ValueIterator,
+            value_count: usize,
         };
 
         pub fn init(map: *const QueryStringMap) Iterator {
-            return Iterator{ .i = 0, .map = map, .visited = VisitedMap.initEmpty() };
+            return .{ .map = map };
         }
 
-        pub fn next(this: *Iterator, target: []string) ?Result {
-            while (this.visited.isSet(this.i)) : (this.i += 1) {}
-            if (this.i >= this.map.list.len) return null;
+        pub fn next(this: *Iterator) ?Result {
+            if (this.i >= this.map.groups.count()) return null;
 
-            var slice = this.map.list.slice();
-            const hash = slice.items(.name_hash)[this.i];
-            const name_slice = slice.items(.name)[this.i];
-            bun.assert(name_slice.length > 0);
-            var result = Result{ .name = this.map.str(name_slice), .values = target[0..1] };
-            target[0] = this.map.str(slice.items(.value)[this.i]);
-
-            this.visited.set(this.i);
+            const name = this.map.groups.keys()[this.i];
+            const group = this.map.groups.values()[this.i];
             this.i += 1;
-
-            var remainder_hashes = slice.items(.name_hash)[this.i..];
-            const remainder_values = slice.items(.value)[this.i..];
-
-            var target_i: usize = 1;
-            var current_i: usize = 0;
-
-            while (std.mem.indexOfScalar(u64, remainder_hashes[current_i..], hash)) |next_index| {
-                const real_i = current_i + next_index + this.i;
-                if (comptime Environment.isDebug) {
-                    bun.assert(!this.visited.isSet(real_i));
-                }
-
-                this.visited.set(real_i);
-                target[target_i] = this.map.str(remainder_values[current_i + next_index]);
-                target_i += 1;
-                result.values = target[0..target_i];
-
-                current_i += next_index + 1;
-                if (target_i >= target.len) return result;
-                if (real_i + 1 >= this.map.list.len) return result;
-            }
-
-            return result;
+            return .{
+                .name = name,
+                .values = .{ .map = this.map, .next_index = group.first },
+                .value_count = group.count,
+            };
         }
     };
 
@@ -556,36 +532,25 @@ pub const QueryStringMap = struct {
     }
 
     pub fn getIndex(this: *const QueryStringMap, input: string) ?usize {
-        const hash = bun.hash(input);
-        return std.mem.indexOfScalar(u64, this.list.items(.name_hash), hash);
+        const group = this.groups.get(input) orelse return null;
+        return group.first;
     }
 
     pub fn get(this: *const QueryStringMap, input: string) ?string {
-        const hash = bun.hash(input);
-        const _slice = this.list.slice();
-        const i = std.mem.indexOfScalar(u64, _slice.items(.name_hash), hash) orelse return null;
-        return this.str(_slice.items(.value)[i]);
+        const index = this.getIndex(input) orelse return null;
+        return this.str(this.list.items(.value)[index]);
     }
 
     pub fn has(this: *const QueryStringMap, input: string) bool {
-        return this.getIndex(input) != null;
+        return this.groups.contains(input);
     }
 
     pub fn getAll(this: *const QueryStringMap, input: string, target: []string) usize {
-        const hash = bun.hash(input);
-        const _slice = this.list.slice();
-        return @call(bun.callmod_inline, getAllWithHashFromOffset, .{ this, target, hash, 0, _slice });
-    }
-
-    pub fn getAllWithHashFromOffset(this: *const QueryStringMap, target: []string, hash: u64, offset: usize, _slice: Param.List.Slice) usize {
-        var remainder_hashes = _slice.items(.name_hash)[offset..];
-        var remainder_values = _slice.items(.value)[offset..];
+        const group = this.groups.get(input) orelse return 0;
+        var values = ValueIterator{ .map = this, .next_index = group.first };
         var target_i: usize = 0;
-        while (remainder_hashes.len > 0 and target_i < target.len) {
-            const i = std.mem.indexOfScalar(u64, remainder_hashes, hash) orelse break;
-            target[target_i] = this.str(remainder_values[i]);
-            remainder_values = remainder_values[i + 1 ..];
-            remainder_hashes = remainder_hashes[i + 1 ..];
+        while (target_i < target.len) {
+            target[target_i] = values.next() orelse break;
             target_i += 1;
         }
         return target_i;
@@ -593,28 +558,68 @@ pub const QueryStringMap = struct {
 
     pub const Param = struct {
         name: api.StringPointer,
-        name_hash: u64,
         value: api.StringPointer,
+        next_same_name: u32 = no_param,
 
         pub const List = std.MultiArrayList(Param);
     };
+
+    const Group = struct {
+        first: u32,
+        last: u32,
+        count: u32,
+    };
+
+    fn buildGroups(this: *QueryStringMap) bun.OOM!void {
+        try this.groups.ensureTotalCapacity(this.allocator, this.list.len);
+        var params = this.list.slice();
+        for (params.items(.name), 0..) |name, i| {
+            const index: u32 = @intCast(i);
+            const result = this.groups.getOrPutAssumeCapacity(this.str(name));
+            if (result.found_existing) {
+                params.items(.next_same_name)[result.value_ptr.last] = index;
+                result.value_ptr.last = index;
+                result.value_ptr.count += 1;
+            } else {
+                result.value_ptr.* = .{ .first = index, .last = index, .count = 1 };
+            }
+        }
+    }
+
+    fn containsName(params: Param.List.Slice, backing: string, end: usize, name: string) bool {
+        for (params.items(.name)[0..end]) |pointer| {
+            const existing = backing[pointer.offset..][0..pointer.length];
+            if (strings.eqlLong(existing, name, true)) return true;
+        }
+        return false;
+    }
+
+    fn finish(allocator: std.mem.Allocator, backing: string, buffer: []u8, list: *Param.List) bun.OOM!QueryStringMap {
+        var map = QueryStringMap{
+            .allocator = allocator,
+            .slice = backing,
+            .buffer = buffer,
+            .list = list.*,
+            .groups = .empty,
+        };
+        list.* = .{};
+        errdefer map.deinit();
+        try map.buildGroups();
+        return map;
+    }
 
     pub fn initWithScanner(
         allocator: std.mem.Allocator,
         _scanner: CombinedScanner,
     ) bun.OOM!?QueryStringMap {
         var list = Param.List{};
+        errdefer list.deinit(allocator);
         var scanner = _scanner;
 
         var estimated_str_len: usize = 0;
         var count: usize = 0;
 
-        var nothing_needs_decoding = true;
-
         while (scanner.pathname.next()) |result| {
-            if (result.name_needs_decoding or result.value_needs_decoding) {
-                nothing_needs_decoding = false;
-            }
             estimated_str_len += result.name.length + result.value.length;
             count += 1;
         }
@@ -623,9 +628,6 @@ pub const QueryStringMap = struct {
             bun.assert(count > 0); // We should not call initWithScanner when there are no path params
 
         while (scanner.query.next()) |result| {
-            if (result.name_needs_decoding or result.value_needs_decoding) {
-                nothing_needs_decoding = false;
-            }
             estimated_str_len += result.name.length + result.value.length;
             count += 1;
         }
@@ -652,60 +654,34 @@ pub const QueryStringMap = struct {
             writer.writeAll(name_slice) catch return error.OutOfMemory;
             buf_writer_pos += @as(u32, @truncate(name_slice.len));
 
-            const name_hash: u64 = bun.hash(name_slice);
-
             value.length = PercentEncoding.decode(writer, result.rawValue(scanner.pathname.pathname)) catch continue;
             value.offset = buf_writer_pos;
             buf_writer_pos += value.length;
 
-            list.appendAssumeCapacity(Param{ .name = name, .value = value, .name_hash = name_hash });
+            list.appendAssumeCapacity(.{ .name = name, .value = value });
         }
 
         const route_parameter_begin = list.len;
 
         while (scanner.query.next()) |result| {
-            var list_slice = list.slice();
-
             var name = result.name;
             var value = result.value;
-            var name_hash: u64 = undefined;
-            if (result.name_needs_decoding) {
-                name.length = PercentEncoding.decode(writer, scanner.query.query_string[name.offset..][0..name.length]) catch continue;
-                name.offset = buf_writer_pos;
-                buf_writer_pos += name.length;
-                name_hash = bun.hash(buf.written()[name.offset..][0..name.length]);
-            } else {
-                name_hash = bun.hash(result.rawName(scanner.query.query_string));
-                if (std.mem.indexOfScalar(u64, list_slice.items(.name_hash), name_hash)) |index| {
 
-                    // query string parameters should not override route parameters
-                    // see https://nextjs.org/docs/routing/dynamic-routes
-                    if (index < route_parameter_begin) {
-                        continue;
-                    }
+            name.offset = buf_writer_pos;
+            name.length = PercentEncoding.decode(writer, result.rawName(scanner.query.query_string)) catch continue;
+            buf_writer_pos += name.length;
+            const name_slice = buf.written()[name.offset..][0..name.length];
+            if (containsName(list.slice(), buf.written(), route_parameter_begin, name_slice)) continue;
 
-                    name = list_slice.items(.name)[index];
-                } else {
-                    name.length = PercentEncoding.decode(writer, scanner.query.query_string[name.offset..][0..name.length]) catch continue;
-                    name.offset = buf_writer_pos;
-                    buf_writer_pos += name.length;
-                }
-            }
-
-            value.length = PercentEncoding.decode(writer, scanner.query.query_string[value.offset..][0..value.length]) catch continue;
             value.offset = buf_writer_pos;
+            value.length = PercentEncoding.decode(writer, result.rawValue(scanner.query.query_string)) catch continue;
             buf_writer_pos += value.length;
 
-            list.appendAssumeCapacity(Param{ .name = name, .value = value, .name_hash = name_hash });
+            list.appendAssumeCapacity(.{ .name = name, .value = value });
         }
 
         const owned = try buf.toOwnedSlice();
-        return QueryStringMap{
-            .list = list,
-            .buffer = owned,
-            .slice = owned[0..buf_writer_pos],
-            .allocator = allocator,
-        };
+        return try finish(allocator, owned[0..buf_writer_pos], owned, &list);
     }
 
     pub fn init(
@@ -713,6 +689,7 @@ pub const QueryStringMap = struct {
         query_string: string,
     ) bun.OOM!?QueryStringMap {
         var list = Param.List{};
+        errdefer list.deinit(allocator);
 
         var scanner = Scanner.init(query_string);
         var count: usize = 0;
@@ -740,16 +717,10 @@ pub const QueryStringMap = struct {
 
                 const name = result.name;
                 const value = result.value;
-                const name_hash: u64 = bun.hash(result.rawName(query_string));
-                list.appendAssumeCapacity(Param{ .name = name, .value = value, .name_hash = name_hash });
+                list.appendAssumeCapacity(.{ .name = name, .value = value });
             }
 
-            return QueryStringMap{
-                .list = list,
-                .buffer = &[_]u8{},
-                .slice = query_string,
-                .allocator = allocator,
-            };
+            return try finish(allocator, query_string, &[_]u8{}, &list);
         }
 
         var buf = try std.Io.Writer.Allocating.initCapacity(allocator, estimated_str_len);
@@ -757,50 +728,30 @@ pub const QueryStringMap = struct {
         const writer = &buf.writer;
         var buf_writer_pos: u32 = 0;
 
-        var list_slice = list.slice();
         while (scanner.next()) |result| {
             var name = result.name;
             var value = result.value;
-            var name_hash: u64 = undefined;
-            if (result.name_needs_decoding) {
-                name.length = PercentEncoding.decode(writer, query_string[name.offset..][0..name.length]) catch continue;
-                name.offset = buf_writer_pos;
-                buf_writer_pos += name.length;
-                name_hash = bun.hash(buf.written()[name.offset..][0..name.length]);
-            } else {
-                name_hash = bun.hash(result.rawName(query_string));
-                if (std.mem.indexOfScalar(u64, list_slice.items(.name_hash), name_hash)) |index| {
-                    name = list_slice.items(.name)[index];
-                } else {
-                    name.length = PercentEncoding.decode(writer, query_string[name.offset..][0..name.length]) catch continue;
-                    name.offset = buf_writer_pos;
-                    buf_writer_pos += name.length;
-                }
-            }
 
-            value.length = PercentEncoding.decode(writer, query_string[value.offset..][0..value.length]) catch continue;
+            name.offset = buf_writer_pos;
+            name.length = PercentEncoding.decode(writer, result.rawName(query_string)) catch continue;
+            buf_writer_pos += name.length;
+
             value.offset = buf_writer_pos;
+            value.length = PercentEncoding.decode(writer, result.rawValue(query_string)) catch continue;
             buf_writer_pos += value.length;
 
-            list.appendAssumeCapacity(Param{ .name = name, .value = value, .name_hash = name_hash });
+            list.appendAssumeCapacity(.{ .name = name, .value = value });
         }
 
         const owned = try buf.toOwnedSlice();
-        return QueryStringMap{
-            .list = list,
-            .buffer = owned,
-            .slice = owned[0..buf_writer_pos],
-            .allocator = allocator,
-        };
+        return try finish(allocator, owned[0..buf_writer_pos], owned, &list);
     }
 
     pub fn deinit(this: *QueryStringMap) void {
+        this.groups.deinit(this.allocator);
+        this.list.deinit(this.allocator);
         if (this.buffer.len > 0) {
             this.allocator.free(this.buffer);
-        }
-
-        if (this.list.len > 0) {
-            this.list.deinit(this.allocator);
         }
     }
 };

@@ -84,33 +84,33 @@ pub fn parseDecoded(pathname: string) URLPath {
 fn parseDecodedWithRedirect(pathname: string, needs_redirect: bool) URLPath {
     const decoded_pathname = if (pathname.len == 0) "/" else pathname;
 
-    var question_mark_i: i16 = -1;
-    var period_i: i16 = -1;
+    var question_mark_i: ?usize = null;
+    var period_i: ?usize = null;
 
-    var first_segment_end: i16 = std.math.maxInt(i16);
-    var last_slash: i16 = -1;
+    var first_segment_end = decoded_pathname.len;
+    var last_slash: ?usize = null;
 
-    var i: i16 = @as(i16, @intCast(decoded_pathname.len)) - 1;
-
-    while (i >= 0) : (i -= 1) {
-        const c = decoded_pathname[@as(usize, @intCast(i))];
+    var i = decoded_pathname.len;
+    while (i > 0) {
+        i -= 1;
+        const c = decoded_pathname[i];
 
         switch (c) {
             '?' => {
-                question_mark_i = @max(question_mark_i, i);
-                if (question_mark_i < period_i) {
-                    period_i = -1;
+                if (question_mark_i == null) question_mark_i = i;
+                if (period_i) |period| {
+                    if (question_mark_i.? < period) period_i = null;
                 }
 
-                if (last_slash > question_mark_i) {
-                    last_slash = -1;
+                if (last_slash) |slash| {
+                    if (slash > question_mark_i.?) last_slash = null;
                 }
             },
             '.' => {
-                period_i = @max(period_i, i);
+                if (period_i == null) period_i = i;
             },
             '/' => {
-                last_slash = @max(last_slash, i);
+                if (last_slash == null) last_slash = i;
 
                 if (i > 0) {
                     first_segment_end = @min(first_segment_end, i);
@@ -120,32 +120,29 @@ fn parseDecodedWithRedirect(pathname: string, needs_redirect: bool) URLPath {
         }
     }
 
-    if (last_slash > period_i) {
-        period_i = -1;
+    if (last_slash) |slash| {
+        if (period_i) |period| {
+            if (slash > period) period_i = null;
+        }
     }
 
     // .js.map
     //    ^
     const extname = brk: {
-        if (question_mark_i > -1 and period_i > -1) {
-            period_i += 1;
-            break :brk decoded_pathname[@as(usize, @intCast(period_i))..@as(usize, @intCast(question_mark_i))];
-        } else if (period_i > -1) {
-            period_i += 1;
-            break :brk decoded_pathname[@as(usize, @intCast(period_i))..];
-        } else {
-            break :brk &([_]u8{});
+        if (period_i) |period| {
+            const start = period + 1;
+            if (question_mark_i) |question_mark| {
+                break :brk decoded_pathname[start..question_mark];
+            }
+            break :brk decoded_pathname[start..];
         }
+        break :brk &([_]u8{});
     };
 
-    const path_end = if (question_mark_i < 0)
-        decoded_pathname.len
-    else
-        @as(usize, @intCast(question_mark_i));
+    const path_end = question_mark_i orelse decoded_pathname.len;
     var path = decoded_pathname[@min(1, path_end)..path_end];
 
-    const first_segment_end_ = @min(@as(usize, @intCast(first_segment_end)), decoded_pathname.len);
-    const first_segment = decoded_pathname[@min(1, first_segment_end_)..first_segment_end_];
+    const first_segment = decoded_pathname[@min(1, first_segment_end)..first_segment_end];
     const is_source_map = strings.eqlComptime(extname, "map");
     var backup_extname: string = extname;
     if (is_source_map and path.len > ".map".len) {
@@ -162,7 +159,7 @@ fn parseDecodedWithRedirect(pathname: string, needs_redirect: bool) URLPath {
         .pathname = decoded_pathname,
         .first_segment = first_segment,
         .path = if (decoded_pathname.len == 1) "." else path,
-        .query_string = if (question_mark_i > -1) decoded_pathname[@as(usize, @intCast(question_mark_i))..@as(usize, @intCast(decoded_pathname.len))] else "",
+        .query_string = if (question_mark_i) |question_mark| decoded_pathname[question_mark..] else "",
         .needs_redirect = needs_redirect,
     };
 }

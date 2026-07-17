@@ -472,6 +472,7 @@ it(".query works with dynamic routes, including params", () => {
 
   for (let [current, object] of [
     [new URL("https://example.com/posts/123?hello=world").href, { id: "123", hello: "world" }],
+    [new URL("https://example.com/posts/123?%69d=456&hello=world").href, { id: "123", hello: "world" }],
     [new URL("https://example.com/posts/123?hello=world&second=2").href, { id: "123", hello: "world", second: "2" }],
     [
       new URL("https://example.com/posts/123?hello=world&second=2&third=3").href,
@@ -710,11 +711,7 @@ it(".params decodes percent escapes in a route segment exactly once", () => {
   expect(percent.params.id).toBe("100%25");
 });
 
-it("caps the number of parsed query string parameters instead of crashing", async () => {
-  // A query string with more parameters than the iterator's fixed-size visited
-  // bitset (2048 entries) must not be able to take down the process when
-  // `.query` is read. Run in a subprocess so an abort is observable as output
-  // on stderr / a nonzero exit code instead of killing the test runner.
+it("handles large query maps without truncation", async () => {
   using dir = tempDir("fsr-many-query-params", {
     "pages/posts.tsx": "export default 1;",
   });
@@ -730,9 +727,18 @@ it("caps the number of parsed query string parameters instead of crashing", asyn
     if (!match) throw new Error("expected /posts to match");
     const query = match.query;
     const keys = Object.keys(query);
-    if (keys.length < 1 || keys.length > 3000) throw new Error("unexpected key count: " + keys.length);
+    if (keys.length !== 3000) throw new Error("unexpected key count: " + keys.length);
     if (query.k0 !== "v0") throw new Error("first param wrong: " + JSON.stringify(query.k0));
-    console.log("ok " + keys.length);
+    const repeated = router.match(
+      "/posts?" + Array.from({ length: 300 }, (_, i) => (i === 0 ? "%72epeat" : "repeat") + "=v" + i).join("&"),
+    ).query.repeat;
+    if (!Array.isArray(repeated) || repeated.length !== 300) {
+      throw new Error("repeated params wrong: " + JSON.stringify(repeated));
+    }
+    if (repeated[0] !== "v0" || repeated[299] !== "v299") {
+      throw new Error("repeated param order wrong");
+    }
+    console.log("ok");
   `;
 
   await using proc = Bun.spawn({
@@ -743,7 +749,7 @@ it("caps the number of parsed query string parameters instead of crashing", asyn
   });
   const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
   expect(stderr).toBe("");
-  expect(stdout.trim()).toMatch(/^ok \d+$/);
+  expect(stdout.trim()).toBe("ok");
   expect(exitCode).toBe(0);
 });
 

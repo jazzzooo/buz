@@ -587,28 +587,27 @@ pub const MatchedRoute = struct {
         return KindEnum.init(this.route.name).toJS(globalThis);
     }
 
-    threadlocal var query_string_values_buf: [256]string = undefined;
-    threadlocal var query_string_value_refs_buf: [256]ZigString = undefined;
     pub fn createQueryObject(ctx: *jsc.JSGlobalObject, map: *QueryStringMap) JSValue {
         const QueryObjectCreator = struct {
             query: *QueryStringMap,
             pub fn create(this: *@This(), obj: *JSObject, global: *JSGlobalObject) bun.JSError!void {
+                var value_refs_buffer: [256 * @sizeOf(ZigString)]u8 align(@alignOf(ZigString)) = undefined;
+                var value_refs_allocator: std.heap.BufferFirstAllocator = .init(&value_refs_buffer, global.allocator());
+                const allocator = value_refs_allocator.allocator();
+                var value_refs: std.ArrayListUnmanaged(ZigString) = .empty;
+                defer value_refs.deinit(allocator);
+
                 var iter = this.query.iter();
-                while (iter.next(&query_string_values_buf)) |entry| {
+                while (iter.next()) |entry| {
                     const entry_name = entry.name;
                     var str = ZigString.init(entry_name).withEncoding();
 
-                    bun.assert(entry.values.len > 0);
-                    if (entry.values.len > 1) {
-                        var values = query_string_value_refs_buf[0..entry.values.len];
-                        for (entry.values, 0..) |value, i| {
-                            values[i] = ZigString.init(value).withEncoding();
-                        }
-                        try obj.putRecord(global, &str, values);
-                    } else {
-                        query_string_value_refs_buf[0] = ZigString.init(entry.values[0]).withEncoding();
-                        try obj.putRecord(global, &str, query_string_value_refs_buf[0..1]);
+                    try value_refs.resize(allocator, entry.value_count);
+                    var values = entry.values;
+                    for (value_refs.items) |*value_ref| {
+                        value_ref.* = ZigString.init(values.next().?).withEncoding();
                     }
+                    try obj.putRecord(global, &str, value_refs.items);
                 }
             }
         };
