@@ -310,6 +310,7 @@ pub const FileSystemRouter = struct {
 
             return globalThis.throwInvalidArguments("Expected string, Request or Response", .{});
         };
+        defer path.deinit();
 
         if (path.len == 0 or (path.len == 1 and path.ptr[0] == '/')) {
             path.deinit();
@@ -322,34 +323,37 @@ pub const FileSystemRouter = struct {
             path = try .initDupe(globalThis.allocator(), URL.parse(path.slice()).pathname);
         }
 
-        const url_path = URLPath.parse(path.slice()) catch |err| {
+        var parsed = URLPath.parseAlloc(globalThis.allocator(), path.slice()) catch |err| {
             return globalThis.throw("{s} parsing path: {s}", .{ @errorName(err), path.slice() });
         };
+        defer parsed.deinit(globalThis.allocator());
         var params = Router.Param.List{};
         defer params.deinit(globalThis.allocator());
         const route = this.router.routes.matchPageWithAllocator(
             "",
-            url_path,
+            parsed.value,
             &params,
             globalThis.allocator(),
         ) orelse {
             return JSValue.jsNull();
         };
 
+        if (parsed.takeDecoded()) |decoded| {
+            path.deinit();
+            path = ZigString.Slice.init(globalThis.allocator(), decoded);
+        }
+
+        const pathname_backing = path;
+        path = .empty;
+
         var result = MatchedRoute.init(
             globalThis.allocator(),
             route,
+            pathname_backing,
             this.origin,
             this.asset_prefix,
             this.base_dir.?,
         ) catch unreachable;
-
-        // TODO: Memory leak? We haven't freed `path`, but we can't do so because the underlying
-        // string is borrowed in `result.route_holder.pathname` and `result.route_holder.query_string`
-        // (see `Routes.matchPageWithAllocator`, which does not clone these fields but rather
-        // directly reuses parts of the `URLPath`, which itself borrows from `path`).
-        // `MatchedRoute.deinit` doesn't free any fields of `route_holder`, so the string is not
-        // freed.
         return result.toJS(globalThis);
     }
 
@@ -418,9 +422,10 @@ pub const MatchedRoute = struct {
     query_string_map: ?QueryStringMap = null,
     param_map: ?QueryStringMap = null,
     params_list_holder: Router.Param.List = .{},
+    pathname_backing: ZigString.Slice = .empty,
+    allocator: std.mem.Allocator,
     origin: ?*jsc.RefString = null,
     asset_prefix: ?*jsc.RefString = null,
-    needs_deinit: bool = true,
     base_dir: ?*jsc.RefString = null,
 
     pub const js = jsc.Codegen.JSMatchedRoute;
@@ -435,17 +440,22 @@ pub const MatchedRoute = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         match: Router.Match,
+        pathname_backing: ZigString.Slice,
         origin: ?*jsc.RefString,
         asset_prefix: ?*jsc.RefString,
         base_dir: *jsc.RefString,
     ) !*MatchedRoute {
-        const params_list = try match.params.clone(allocator);
+        errdefer pathname_backing.deinit();
+        var params_list = try match.params.clone(allocator);
+        errdefer params_list.deinit(allocator);
 
         var route = try allocator.create(MatchedRoute);
 
         route.* = MatchedRoute{
             .route_holder = match,
             .route = undefined,
+            .pathname_backing = pathname_backing,
+            .allocator = allocator,
             .asset_prefix = asset_prefix,
             .origin = origin,
             .base_dir = base_dir,
@@ -472,14 +482,10 @@ pub const MatchedRoute = struct {
         if (this.param_map) |*map| {
             map.deinit();
         }
-        if (this.needs_deinit) {
-            if (this.route.pathname.len > 0 and bun.mimalloc.mi_is_in_heap_region(this.route.pathname.ptr)) {
-                bun.mimalloc.mi_free(@constCast(this.route.pathname.ptr));
-            }
-
-            this.params_list_holder.deinit(bun.default_allocator);
-            this.params_list_holder = .{};
-        }
+        this.params_list_holder.deinit(this.allocator);
+        this.params_list_holder = .{};
+        this.pathname_backing.deinit();
+        this.pathname_backing = .empty;
 
         if (this.origin) |o| {
             o.deref();
@@ -492,7 +498,7 @@ pub const MatchedRoute = struct {
         if (this.base_dir) |base|
             base.deref();
 
-        bun.default_allocator.destroy(this);
+        this.allocator.destroy(this);
     }
 
     pub fn getFilePath(

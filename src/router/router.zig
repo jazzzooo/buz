@@ -1570,13 +1570,13 @@ test "Pattern Match" {
 test "Github API Route Loader" {
     var server = MockServer{};
     var ctx = MockRequestContextType{
-        .url = try URLPath.parse("/hi"),
+        .url = URLPath.parseDecoded("/hi"),
     };
     const fixtures = @import("../test_runner/harness/fixtures.zig");
     var router = try Test.make("routes-github-api", fixtures.github_api_routes_list);
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/organizations") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/organizations") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(!route.hasParams());
@@ -1584,7 +1584,7 @@ test "Github API Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/app/installations/") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/app/installations/") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(!route.hasParams());
@@ -1592,7 +1592,7 @@ test "Github API Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/app/installations/123") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/app/installations/123") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try expectEqualStrings(route.name, "/app/installations/[installation_id]");
@@ -1601,7 +1601,7 @@ test "Github API Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/codes_of_conduct/") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/codes_of_conduct/") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(!route.hasParams());
@@ -1609,7 +1609,7 @@ test "Github API Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/codes_of_conduct/123") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/codes_of_conduct/123") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try expectEqualStrings(route.name, "/codes_of_conduct/[key]");
@@ -1618,7 +1618,7 @@ test "Github API Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/codes_of_conduct/123/") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/codes_of_conduct/123/") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try expectEqualStrings(route.name, "/codes_of_conduct/[key]");
@@ -1627,7 +1627,7 @@ test "Github API Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/orgs/123/index") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/orgs/123/index") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try expectEqualStrings(route.name, "/orgs/[org]");
@@ -1636,7 +1636,7 @@ test "Github API Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/orgs/123/actions/permissions") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/orgs/123/actions/permissions") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try expectEqualStrings(route.name, "/orgs/[org]/actions/permissions");
@@ -1645,7 +1645,7 @@ test "Github API Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/orgs/orgg/teams/teamm/discussions/123/comments/999/reactions") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/orgs/orgg/teams/teamm/discussions/123/comments/999/reactions") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try expectEqualStrings(route.name, "/orgs/[org]/teams/[team_slug]/discussions/[discussion_number]/comments/[comment_number]/reactions");
@@ -1662,7 +1662,7 @@ test "Github API Route Loader" {
         try expectEqualStrings(route.params.get(3).value, "999");
     }
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/repositories/123/environments/production/not-real") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/repositories/123/environments/production/not-real") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try expectEqualStrings(route.name, "/repositories/[repository_id]/[...jarred-fake-catch-all]");
@@ -1679,13 +1679,13 @@ test "Github API Route Loader" {
 test "Sample Route Loader" {
     var server = MockServer{};
     var ctx = MockRequestContextType{
-        .url = try URLPath.parse("/hi"),
+        .url = URLPath.parseDecoded("/hi"),
     };
     const fixtures = @import("../test_runner/harness/fixtures.zig");
     var router = try Test.make("routes-sample", fixtures.sample_route_list);
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/foo") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/foo") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(!route.hasParams());
@@ -1693,7 +1693,7 @@ test "Sample Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/Foo") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/Foo") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(!route.hasParams());
@@ -1701,7 +1701,7 @@ test "Sample Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(!route.hasParams());
@@ -1709,7 +1709,7 @@ test "Sample Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/index") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/index") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(!route.hasParams());
@@ -1717,7 +1717,7 @@ test "Sample Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/Bacon/file") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/Bacon/file") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(route.hasParams());
@@ -1725,7 +1725,7 @@ test "Sample Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/Bacon") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/Bacon") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(route.hasParams());
@@ -1733,7 +1733,7 @@ test "Sample Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/Bacon/snow") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/Bacon/snow") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(route.hasParams());
@@ -1741,7 +1741,7 @@ test "Sample Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/Bacon/snow/file") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/Bacon/snow/file") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(route.hasParams());
@@ -1749,7 +1749,7 @@ test "Sample Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/Bacon/snow/bacon") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/Bacon/snow/bacon") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(route.hasParams());
@@ -1757,7 +1757,7 @@ test "Sample Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/Bacon/snow/bacon/index") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/Bacon/snow/bacon/index") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(route.hasParams());
@@ -1770,7 +1770,7 @@ test "Sample Route Loader" {
     }
 
     {
-        ctx = MockRequestContextType{ .url = try URLPath.parse("/Bacon/snow/bacon/catch-all-should-happen") };
+        ctx = MockRequestContextType{ .url = URLPath.parseDecoded("/Bacon/snow/bacon/catch-all-should-happen") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
         var route = ctx.matched_route.?;
         try std.testing.expect(route.hasParams());
@@ -1783,7 +1783,7 @@ test "Sample Route Loader" {
 test "Routes basic" {
     var server = MockServer{};
     var ctx = MockRequestContextType{
-        .url = try URLPath.parse("/hi"),
+        .url = URLPath.parseDecoded("/hi"),
     };
 
     var router = try Test.make("routes-basic", .{
@@ -1795,35 +1795,35 @@ test "Routes basic" {
     try expectEqualStrings(ctx.matched_route.?.name, "/hi");
 
     ctx = MockRequestContextType{
-        .url = try URLPath.parse("/"),
+        .url = URLPath.parseDecoded("/"),
     };
 
     try router.match(*MockServer, &server, MockRequestContextType, &ctx);
     try expectEqualStrings(ctx.matched_route.?.name, "/");
 
     ctx = MockRequestContextType{
-        .url = try URLPath.parse("/blog/hi"),
+        .url = URLPath.parseDecoded("/blog/hi"),
     };
 
     try router.match(*MockServer, &server, MockRequestContextType, &ctx);
     try expectEqualStrings(ctx.matched_route.?.name, "/blog/hi");
 
     ctx = MockRequestContextType{
-        .url = try URLPath.parse("/blog/hey"),
+        .url = URLPath.parseDecoded("/blog/hey"),
     };
 
     try router.match(*MockServer, &server, MockRequestContextType, &ctx);
     try expect(ctx.matched_route == null);
 
     ctx = MockRequestContextType{
-        .url = try URLPath.parse("/blog/"),
+        .url = URLPath.parseDecoded("/blog/"),
     };
 
     try router.match(*MockServer, &server, MockRequestContextType, &ctx);
     try expect(ctx.matched_route == null);
 
     ctx = MockRequestContextType{
-        .url = try URLPath.parse("/pages/hi"),
+        .url = URLPath.parseDecoded("/pages/hi"),
     };
 
     try router.match(*MockServer, &server, MockRequestContextType, &ctx);
@@ -1833,7 +1833,7 @@ test "Routes basic" {
 test "Dynamic routes" {
     var server = MockServer{};
     var ctx = MockRequestContextType{
-        .url = try URLPath.parse("/blog/hi"),
+        .url = URLPath.parseDecoded("/blog/hi"),
     };
     var router = try Test.make("routes-dynamic", .{
         .@"pages/index.js" = "//index.js",
@@ -1850,7 +1850,7 @@ test "Dynamic routes" {
 
     ctx.matched_route = null;
 
-    ctx.url = try URLPath.parse("/posts/123");
+    ctx.url = URLPath.parseDecoded("/posts/123");
     try router.match(*MockServer, &server, MockRequestContextType, &ctx);
 
     params = ctx.matched_route.?.paramsIterator();
@@ -1859,7 +1859,7 @@ test "Dynamic routes" {
     try expectEqualStrings(params.next().?.rawValue(ctx.matched_route.?.pathname), "123");
 
     // ctx = MockRequestContextType{
-    //     .url = try URLPath.parse("/"),
+    //     .url = URLPath.parseDecoded("/"),
     // };
 
     // try router.match(*MockServer, &server,  &server, MockRequestContextType, &ctx);

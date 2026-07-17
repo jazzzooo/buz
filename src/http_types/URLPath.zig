@@ -32,35 +32,57 @@ pub fn pathWithoutAssetPrefix(this: *const URLPath, asset_prefix: string) string
     return out;
 }
 
-// optimization: very few long strings will be URL-encoded
-// we're allocating virtual memory here, so if we never use it, it won't be allocated
-// and even when they're, they're probably rarely going to be > 1024 chars long
-// so we can have a big and little one and almost always use the little one
-threadlocal var temp_path_buf: [1024]u8 = undefined;
-threadlocal var big_temp_path_buf: [16384]u8 = undefined;
+/// A borrowed URLPath view and the optional allocation backing its decoded slices.
+pub const Parsed = struct {
+    value: URLPath,
+    decoded: ?[]u8 = null,
 
-pub fn parse(possibly_encoded_pathname_: string) !URLPath {
-    var decoded_pathname = possibly_encoded_pathname_;
-    var needs_redirect = false;
-
-    if (strings.containsChar(decoded_pathname, '%')) {
-        // https://github.com/ziglang/zig/issues/14148
-        var possibly_encoded_pathname: []u8 = switch (decoded_pathname.len) {
-            0...1024 => &temp_path_buf,
-            else => &big_temp_path_buf,
-        };
-        possibly_encoded_pathname = possibly_encoded_pathname[0..@min(
-            possibly_encoded_pathname_.len,
-            possibly_encoded_pathname.len,
-        )];
-
-        bun.copy(u8, possibly_encoded_pathname, possibly_encoded_pathname_[0..possibly_encoded_pathname.len]);
-        const clone = possibly_encoded_pathname[0..possibly_encoded_pathname.len];
-
-        var writer = std.Io.Writer.fixed(possibly_encoded_pathname);
-
-        decoded_pathname = possibly_encoded_pathname[0..try PercentEncoding.decodeFaultTolerant(&writer, clone, &needs_redirect, true)];
+    pub fn deinit(this: *Parsed, allocator: std.mem.Allocator) void {
+        if (this.decoded) |decoded| {
+            allocator.free(decoded);
+        }
+        this.* = undefined;
     }
+
+    pub fn takeDecoded(this: *Parsed) ?[]u8 {
+        const decoded = this.decoded;
+        this.decoded = null;
+        return decoded;
+    }
+};
+
+pub fn parseAlloc(allocator: std.mem.Allocator, pathname: string) !Parsed {
+    if (!strings.containsChar(pathname, '%')) {
+        return .{ .value = parseDecoded(pathname) };
+    }
+
+    const encoded = pathname[0..@min(pathname.len, 16384)];
+    var output = try std.Io.Writer.Allocating.initCapacity(allocator, encoded.len);
+    defer output.deinit();
+
+    var needs_redirect = false;
+    const decoded_len = try PercentEncoding.decodeFaultTolerant(&output.writer, encoded, &needs_redirect, true);
+    bun.assert(@as(usize, decoded_len) == output.written().len);
+
+    const decoded = try output.toOwnedSlice();
+    if (decoded.len == 0) {
+        allocator.free(decoded);
+        return .{ .value = parseDecodedWithRedirect("/", needs_redirect) };
+    }
+
+    return .{
+        .value = parseDecodedWithRedirect(decoded, needs_redirect),
+        .decoded = decoded,
+    };
+}
+
+/// Parse an already-decoded pathname. The returned slices borrow from `pathname`.
+pub fn parseDecoded(pathname: string) URLPath {
+    return parseDecodedWithRedirect(pathname, false);
+}
+
+fn parseDecodedWithRedirect(pathname: string, needs_redirect: bool) URLPath {
+    const decoded_pathname = if (pathname.len == 0) "/" else pathname;
 
     var question_mark_i: i16 = -1;
     var period_i: i16 = -1;
@@ -116,9 +138,14 @@ pub fn parse(possibly_encoded_pathname_: string) !URLPath {
         }
     };
 
-    var path = if (question_mark_i < 0) decoded_pathname[1..] else decoded_pathname[1..@as(usize, @intCast(question_mark_i))];
+    const path_end = if (question_mark_i < 0)
+        decoded_pathname.len
+    else
+        @as(usize, @intCast(question_mark_i));
+    var path = decoded_pathname[@min(1, path_end)..path_end];
 
-    const first_segment = decoded_pathname[1..@min(@as(usize, @intCast(first_segment_end)), decoded_pathname.len)];
+    const first_segment_end_ = @min(@as(usize, @intCast(first_segment_end)), decoded_pathname.len);
+    const first_segment = decoded_pathname[@min(1, first_segment_end_)..first_segment_end_];
     const is_source_map = strings.eqlComptime(extname, "map");
     var backup_extname: string = extname;
     if (is_source_map and path.len > ".map".len) {
