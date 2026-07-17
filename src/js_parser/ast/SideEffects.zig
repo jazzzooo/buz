@@ -472,7 +472,7 @@ pub const SideEffects = enum(u1) {
                 }
 
                 local.decls = .moveFromList(&decls);
-                return true;
+                return local.decls.len > 0;
             },
 
             .s_block => |block| {
