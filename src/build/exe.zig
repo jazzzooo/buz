@@ -1558,14 +1558,25 @@ pub fn addLink(
     run.addArgs(&.{ "-L/usr/lib", "-L/lib", "-lc", "-lm", "-lpthread", "-ldl" });
     run.addArgs(&.{ gcc.crtend, gcc.crtn });
 
-    const install = b.addInstallBinFile(exe, exe_name);
+    // Hardlink install: a copying install would rewrite (and, as a cached
+    // step, content-hash) the gigabyte-scale binary every cycle. Always
+    // runs; the script is its own no-op check.
+    const install = b.addRunFile(deps.bun);
+    install.addFileArg(b.path("src/build/install-exe.ts"));
+    install.addFileArg(exe);
+    install.addFileArg(.{ .relative = .{ .base = .install_bin, .sub_path = exe_name } });
+    install.has_side_effects = true;
+    install.step.name = b.fmt("install {s}", .{exe_name});
     install.step.dependOn(cg.sync_step);
 
     // Smoke test: catches load-time breakage (missing symbols, static
-    // initializer failures) before anything else runs the binary.
+    // initializer failures) before anything else runs the binary. Always
+    // runs: caching it would hash the whole binary to skip a millisecond
+    // run.
     const smoke = b.addRunFile(exe);
     smoke.addArg("--revision");
     smoke.expectExitCode(0);
+    smoke.has_side_effects = true;
     smoke.step.dependOn(&install.step);
     smoke.step.name = b.fmt("smoke test {s} --revision", .{exe_name});
 
