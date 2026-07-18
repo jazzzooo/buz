@@ -927,29 +927,16 @@ pub const Putter = struct {
     fields: []const protocol.FieldDescription,
     binary: bool = false,
     bigint: bool = false,
-    count: usize = 0,
     globalObject: *jsc.JSGlobalObject,
 
-    pub fn toJS(this: *Putter, globalObject: *jsc.JSGlobalObject, array: JSValue, structure: JSValue, flags: SQLDataCell.Flags, result_mode: PostgresSQLQueryResultMode, cached_structure: ?PostgresCachedStructure) !JSValue {
-        var names: ?[*]jsc.JSObject.ExternColumnIdentifier = null;
-        var names_count: u32 = 0;
-        if (cached_structure) |c| {
-            if (c.fields) |f| {
-                names = f.ptr;
-                names_count = @truncate(f.len);
-            }
-        }
-
+    pub fn toJS(this: *Putter, array: JSValue, result_mode: PostgresSQLQueryResultMode, layout: ?*const ResultLayout) !JSValue {
         return SQLDataCell.constructObjectFromDataCell(
-            globalObject,
+            this.globalObject,
             array,
-            structure,
             this.list.ptr,
             @truncate(this.fields.len),
-            flags,
             @intFromEnum(result_mode),
-            names,
-            names_count,
+            layout,
         );
     }
 
@@ -982,22 +969,6 @@ pub const Putter = struct {
                     },
                 };
         }
-        this.count += 1;
-        cell.index = switch (field.name_or_index) {
-            // The indexed columns can be out of order.
-            .index => |i| i,
-
-            else => @intCast(index),
-        };
-
-        // TODO: when duplicate and we know the result will be an object
-        // and not a .values() array, we can discard the data
-        // immediately.
-        cell.isIndexedColumn = switch (field.name_or_index) {
-            .duplicate => 2,
-            .index => 1,
-            .name => 0,
-        };
         return true;
     }
 
@@ -1017,7 +988,7 @@ extern fn Postgres__formatTimeTz(microseconds: i64, tzOffsetSeconds: i32, buffer
 
 const log = bun.Output.scoped(.PostgresDataCell, .visible);
 
-const PostgresCachedStructure = @import("../shared/CachedStructure.zig");
+const ResultLayout = @import("../shared/ResultLayout.zig");
 const protocol = @import("../../sql/postgres/PostgresProtocol.zig");
 const std = @import("std");
 const Data = @import("../../sql/shared/Data.zig").Data;

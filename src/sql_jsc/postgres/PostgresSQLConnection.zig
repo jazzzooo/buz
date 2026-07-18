@@ -1444,18 +1444,11 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), re
             const request = this.current() orelse return error.ExpectedRequest;
 
             var statement = request.statement orelse return error.ExpectedStatement;
-            var structure: JSValue = .js_undefined;
-            var cached_structure: ?PostgresCachedStructure = null;
             // explicit use switch without else so if new modes are added, we don't forget to check for duplicate fields
-            switch (request.flags.result_mode) {
-                .objects => {
-                    cached_structure = statement.structure(this.js_value, this.globalObject);
-                    structure = cached_structure.?.jsValue() orelse .js_undefined;
-                },
-                .raw, .values => {
-                    // no need to check for duplicate fields or structure
-                },
-            }
+            const result_layout: ?*const ResultLayout = switch (request.flags.result_mode) {
+                .objects => statement.layout(this.js_value, this.globalObject),
+                .raw, .values => null,
+            };
 
             var putter = DataCell.Putter{
                 .list = &.{},
@@ -1469,7 +1462,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), re
             var cells: []DataCell.SQLDataCell = stack_buf[0..@min(statement.fields.len, jsc.JSObject.maxInlineCapacity())];
             var free_cells = false;
             defer {
-                for (cells[0..putter.count]) |*cell| {
+                for (cells) |*cell| {
                     cell.deinit();
                 }
                 if (free_cells) bun.default_allocator.free(cells);
@@ -1503,12 +1496,9 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), re
             const pending_value = PostgresSQLQuery.js.pendingValueGetCached(thisValue) orelse .zero;
             pending_value.ensureStillAlive();
             const result = try putter.toJS(
-                this.globalObject,
                 pending_value,
-                structure,
-                statement.fields_flags,
                 request.flags.result_mode,
-                cached_structure,
+                result_layout,
             );
 
             if (pending_value == .zero) {
@@ -1612,11 +1602,8 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), re
                     field.deinit();
                 }
                 bun.default_allocator.free(statement.fields);
-                statement.cached_structure.deinit();
-                statement.cached_structure = .{};
-                statement.needs_duplicate_check = true;
-                statement.fields_flags = .{};
             }
+            statement.result_layout.deinit();
             statement.fields = description.fields;
         },
         .Authentication => {
@@ -1942,7 +1929,7 @@ pub const fromJSDirect = js.fromJSDirect;
 pub const toJS = js.toJS;
 
 const DataCell = @import("./DataCell.zig");
-const PostgresCachedStructure = @import("../../sql_jsc/shared/CachedStructure.zig");
+const ResultLayout = @import("../../sql_jsc/shared/ResultLayout.zig");
 const PostgresRequest = @import("./PostgresRequest.zig");
 const PostgresSQLQuery = @import("./PostgresSQLQuery.zig");
 const PostgresSQLStatement = @import("./PostgresSQLStatement.zig");

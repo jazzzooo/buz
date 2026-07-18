@@ -896,8 +896,7 @@ pub fn handlePreparedStatement(this: *MySQLConnection, comptime Context: type, r
             };
             statement.params_received += 1;
         } else if (statement.columns_received < statement.columns.len) {
-            try statement.columns[statement.columns_received].decode(reader);
-            statement.columns_received += 1;
+            try statement.decodeColumn(reader);
         }
         // In CLIENT_DEPRECATE_EOF mode, there are no trailing EOF packets, so
         // we check completion after each column/param definition. In legacy mode,
@@ -926,12 +925,7 @@ pub fn handlePreparedStatement(this: *MySQLConnection, comptime Context: type, r
                 statement.params_received = 0;
             }
 
-            // Read column definitions if any
-            if (ok.num_columns > 0) {
-                statement.columns = try bun.default_allocator.alloc(ColumnDefinition41, ok.num_columns);
-                for (statement.columns) |*col| col.* = .{};
-                statement.columns_received = 0;
-            }
+            try statement.beginColumns(ok.num_columns);
 
             this.checkIfPreparedStatementIsDone(statement);
         },
@@ -1056,30 +1050,11 @@ fn handleResultSet(this: *MySQLConnection, comptime Context: type, reader: NewRe
                     // Can't be 0
                     return error.UnexpectedPacket;
                 }
-                if (statement.columns.len != header.field_count) {
-                    debug("header field count mismatch: {d} != {d}", .{ statement.columns.len, header.field_count });
-                    statement.cached_structure.deinit();
-                    statement.cached_structure = .{};
-                    if (statement.columns.len > 0) {
-                        for (statement.columns) |*column| {
-                            column.deinit();
-                        }
-                        bun.default_allocator.free(statement.columns);
-                        // Clear the slice before the fallible alloc below. If the alloc
-                        // fails, MySQLStatement.deinit() would otherwise iterate and free
-                        // the already-freed columns again (use-after-free / double-free).
-                        statement.columns = &.{};
-                    }
-                    statement.columns = try bun.default_allocator.alloc(ColumnDefinition41, header.field_count);
-                    for (statement.columns) |*col| col.* = .{};
-                    statement.columns_received = 0;
-                }
-                statement.execution_flags.needs_duplicate_check = true;
+                try statement.beginColumns(header.field_count);
                 statement.execution_flags.header_received = true;
                 return;
             } else if (statement.columns_received < statement.columns.len) {
-                try statement.columns[statement.columns_received].decode(reader);
-                statement.columns_received += 1;
+                try statement.decodeColumn(reader);
             } else {
                 // A 0xFE-prefixed packet at this point is either the end-of-result
                 // terminator or a row whose first column is a length-encoded integer

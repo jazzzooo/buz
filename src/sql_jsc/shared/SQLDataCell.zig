@@ -3,8 +3,6 @@ pub const SQLDataCell = extern struct {
 
     value: Value,
     free_value: u8 = 0,
-    isIndexedColumn: u8 = 0,
-    index: u32 = 0,
 
     pub const Tag = enum(u8) {
         null = 0,
@@ -134,34 +132,29 @@ pub const SQLDataCell = extern struct {
         };
     }
 
-    pub const Flags = packed struct(u32) {
-        has_indexed_columns: bool = false,
-        has_named_columns: bool = false,
-        has_duplicate_columns: bool = false,
-        _: u29 = 0,
-    };
-
     // TODO: cppbind isn't yet able to detect slice parameters when the next is uint32_t
     pub fn constructObjectFromDataCell(
         globalObject: *jsc.JSGlobalObject,
         encodedArrayValue: jsc.JSValue,
-        encodedStructureValue: jsc.JSValue,
         cells: [*]SQLDataCell,
         count: u32,
-        flags: SQLDataCell.Flags,
         result_mode: u8,
-        namesPtr: ?[*]bun.jsc.JSObject.ExternColumnIdentifier,
-        namesCount: u32,
+        layout: ?*const ResultLayout,
     ) !jsc.JSValue {
+        const slots = if (layout) |value| value.slots else &.{};
+        const flags: u32 = if (layout) |value| @bitCast(value.flags) else 0;
+        const structure = if (layout) |value| value.jsValue() orelse .js_undefined else .js_undefined;
+        const slots_ptr: ?[*]const ResultLayout.Slot = if (slots.len > 0) slots.ptr else null;
+
         if (comptime bun.Environment.ci_assert) {
             var scope: jsc.ExceptionValidationScope = undefined;
             scope.init(globalObject, @src());
             defer scope.deinit();
-            const value = JSC__constructObjectFromDataCell(globalObject, encodedArrayValue, encodedStructureValue, cells, count, flags, result_mode, namesPtr, namesCount);
+            const value = JSC__constructObjectFromDataCell(globalObject, encodedArrayValue, structure, cells, count, flags, result_mode, slots_ptr, @intCast(slots.len));
             scope.assertExceptionPresenceMatches(value == .zero);
             return if (value == .zero) error.JSError else value;
         } else {
-            const value = JSC__constructObjectFromDataCell(globalObject, encodedArrayValue, encodedStructureValue, cells, count, flags, result_mode, namesPtr, namesCount);
+            const value = JSC__constructObjectFromDataCell(globalObject, encodedArrayValue, structure, cells, count, flags, result_mode, slots_ptr, @intCast(slots.len));
             if (value == .zero) return error.JSError;
             return value;
         }
@@ -173,15 +166,16 @@ pub const SQLDataCell = extern struct {
         JSValue,
         [*]SQLDataCell,
         u32,
-        SQLDataCell.Flags,
+        u32, // layout flags
         u8, // result_mode
-        ?[*]jsc.JSObject.ExternColumnIdentifier, // names
-        u32, // names count
+        ?[*]const ResultLayout.Slot,
+        u32,
     ) JSValue;
 };
 
 const bun = @import("bun");
 const Data = @import("../../sql/shared/Data.zig").Data;
+const ResultLayout = @import("./ResultLayout.zig");
 
 const jsc = bun.jsc;
 const JSValue = jsc.JSValue;

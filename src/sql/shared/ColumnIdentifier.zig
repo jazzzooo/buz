@@ -32,6 +32,23 @@ pub const ColumnIdentifier = union(enum) {
             else => {},
         }
     }
+
+    pub fn eql(this: @This(), other: @This()) bool {
+        return switch (this) {
+            .name => |name| switch (other) {
+                .name => |other_name| std.mem.eql(u8, name.slice(), other_name.slice()),
+                else => false,
+            },
+            .index => |index| switch (other) {
+                .index => |other_index| index == other_index,
+                else => false,
+            },
+            .duplicate => switch (other) {
+                .duplicate => true,
+                else => false,
+            },
+        };
+    }
 };
 
 const std = @import("std");

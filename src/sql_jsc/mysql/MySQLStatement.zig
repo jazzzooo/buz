@@ -1,7 +1,7 @@
 const MySQLStatement = @This();
 const RefCount = bun.ptr.RefCount(@This(), "ref_count", deinit, .{});
 
-cached_structure: CachedStructure = .{},
+result_layout: ResultLayout = .{},
 ref_count: RefCount = RefCount.init(),
 statement_id: u32 = 0,
 params: []Param = &[_]Param{},
@@ -14,19 +14,17 @@ signature: Signature,
 status: Status = Status.parsing,
 error_response: ErrorPacket = .{ .error_code = 0 },
 execution_flags: ExecutionFlags = .{},
-fields_flags: SQLDataCell.Flags = .{},
 result_count: u64 = 0,
 
 pub const ExecutionFlags = packed struct(u8) {
     header_received: bool = false,
-    needs_duplicate_check: bool = true,
     need_to_send_params: bool = true,
     /// In legacy protocol (CLIENT_DEPRECATE_EOF not negotiated), tracks whether
     /// the intermediate EOF packet between column definitions and row data has
     /// been consumed. This prevents the intermediate EOF from being mistakenly
     /// treated as end-of-result-set.
     columns_eof_received: bool = false,
-    _: u4 = 0,
+    _: u5 = 0,
 };
 
 pub const Status = enum {
@@ -45,6 +43,35 @@ pub fn reset(this: *MySQLStatement) void {
     this.execution_flags = .{};
 }
 
+pub fn beginColumns(this: *MySQLStatement, count: usize) !void {
+    this.columns_received = 0;
+    if (this.columns.len == count) return;
+
+    this.result_layout.deinit();
+    for (this.columns) |*column| column.deinit();
+    if (this.columns.len > 0) bun.default_allocator.free(this.columns);
+
+    this.columns = &.{};
+    this.columns = try bun.default_allocator.alloc(ColumnDefinition41, count);
+    for (this.columns) |*column| column.* = .{};
+}
+
+pub fn decodeColumn(this: *MySQLStatement, reader: anytype) !void {
+    bun.debugAssert(this.columns_received < this.columns.len);
+
+    var column: ColumnDefinition41 = .{};
+    errdefer column.deinit();
+    try column.decode(reader);
+
+    const existing = &this.columns[this.columns_received];
+    if (this.result_layout.initialized and !existing.name_or_index.eql(column.name_or_index)) {
+        this.result_layout.deinit();
+    }
+    existing.deinit();
+    existing.* = column;
+    this.columns_received += 1;
+}
+
 pub fn deinit(this: *MySQLStatement) void {
     debug("MySQLStatement deinit", .{});
 
@@ -57,111 +84,17 @@ pub fn deinit(this: *MySQLStatement) void {
     if (this.params.len > 0) {
         bun.default_allocator.free(this.params);
     }
-    this.cached_structure.deinit();
+    this.result_layout.deinit();
     this.error_response.deinit();
     this.signature.deinit();
     bun.destroy(this);
 }
 
-pub fn checkForDuplicateFields(this: *@This()) void {
-    if (!this.execution_flags.needs_duplicate_check) return;
-    this.execution_flags.needs_duplicate_check = false;
-
-    var seen_numbers = std.array_list.Managed(u32).init(bun.default_allocator);
-    defer seen_numbers.deinit();
-    var seen_fields = bun.StringHashMap(void).init(bun.default_allocator);
-    bun.handleOom(seen_fields.ensureUnusedCapacity(@intCast(this.columns.len)));
-    defer seen_fields.deinit();
-
-    // iterate backwards
-    var remaining = this.columns.len;
-    var flags: SQLDataCell.Flags = .{};
-    while (remaining > 0) {
-        remaining -= 1;
-        const field: *ColumnDefinition41 = &this.columns[remaining];
-        switch (field.name_or_index) {
-            .name => |*name| {
-                const seen = seen_fields.getOrPut(name.slice()) catch unreachable;
-                if (seen.found_existing) {
-                    field.name_or_index.deinit();
-                    field.name_or_index = .duplicate;
-                    flags.has_duplicate_columns = true;
-                }
-
-                flags.has_named_columns = true;
-            },
-            .index => |index| {
-                if (std.mem.indexOfScalar(u32, seen_numbers.items, index) != null) {
-                    field.name_or_index = .duplicate;
-                    flags.has_duplicate_columns = true;
-                } else {
-                    bun.handleOom(seen_numbers.append(index));
-                }
-
-                flags.has_indexed_columns = true;
-            },
-            .duplicate => {
-                flags.has_duplicate_columns = true;
-            },
-        }
+pub fn layout(this: *MySQLStatement, owner: ?JSValue, globalObject: *jsc.JSGlobalObject) *const ResultLayout {
+    if (!this.result_layout.initialized) {
+        this.result_layout.init(this.columns, owner, globalObject);
     }
-
-    this.fields_flags = flags;
-}
-
-pub fn structure(this: *MySQLStatement, owner: JSValue, globalObject: *jsc.JSGlobalObject) CachedStructure {
-    if (this.cached_structure.has()) {
-        return this.cached_structure;
-    }
-    this.checkForDuplicateFields();
-
-    // lets avoid most allocations
-    var stack_ids: [70]jsc.JSObject.ExternColumnIdentifier = @splat(.{ .tag = 0, .value = .{ .index = 0 } });
-    // lets de duplicate the fields early
-    var nonDuplicatedCount = this.columns.len;
-    for (this.columns) |*column| {
-        if (column.name_or_index == .duplicate) {
-            nonDuplicatedCount -= 1;
-        }
-    }
-    const ids = if (nonDuplicatedCount <= jsc.JSObject.maxInlineCapacity()) stack_ids[0..nonDuplicatedCount] else bun.handleOom(bun.default_allocator.alloc(jsc.JSObject.ExternColumnIdentifier, nonDuplicatedCount));
-
-    var i: usize = 0;
-    for (this.columns) |*column| {
-        if (column.name_or_index == .duplicate) continue;
-
-        var id: *jsc.JSObject.ExternColumnIdentifier = &ids[i];
-        switch (column.name_or_index) {
-            .name => |name| {
-                id.value.name = String.createAtomIfPossible(name.slice());
-            },
-            .index => |index| {
-                id.value.index = index;
-            },
-            .duplicate => unreachable,
-        }
-
-        id.tag = switch (column.name_or_index) {
-            .name => 2,
-            .index => 1,
-            .duplicate => 0,
-        };
-
-        i += 1;
-    }
-
-    if (nonDuplicatedCount > jsc.JSObject.maxInlineCapacity()) {
-        this.cached_structure.set(globalObject, null, ids);
-    } else {
-        this.cached_structure.set(globalObject, jsc.JSObject.createStructure(
-            globalObject,
-            owner,
-            @truncate(ids.len),
-            ids.ptr,
-        ), null);
-    }
-
-    return this.cached_structure;
+    return &this.result_layout;
 }
 pub const Param = @import("../../sql/mysql/MySQLParam.zig").Param;
 const _ParamUnused = struct {
@@ -170,16 +103,13 @@ const _ParamUnused = struct {
 };
 const debug = bun.Output.scoped(.MySQLStatement, .hidden);
 
-const CachedStructure = @import("../shared/CachedStructure.zig");
+const ResultLayout = @import("../shared/ResultLayout.zig");
 const ColumnDefinition41 = @import("../../sql/mysql/protocol/ColumnDefinition41.zig");
 const ErrorPacket = @import("../../sql/mysql/protocol/ErrorPacket.zig");
 const Signature = @import("./protocol/Signature.zig");
-const std = @import("std");
 const types = @import("../../sql/mysql/MySQLTypes.zig");
-const SQLDataCell = @import("../shared/SQLDataCell.zig").SQLDataCell;
 
 const bun = @import("bun");
-const String = bun.String;
 
 const jsc = bun.jsc;
 const JSValue = jsc.JSValue;

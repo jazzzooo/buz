@@ -7,7 +7,7 @@ pub const JSObject = opaque {
 
     extern fn JSC__JSObject__getIndex(this: JSValue, globalThis: *JSGlobalObject, i: u32) JSValue;
     extern fn Bun__JSObject__getCodePropertyVMInquiry(global: *JSGlobalObject, obj: *JSObject) JSValue;
-    extern fn JSC__createStructure(global: *jsc.JSGlobalObject, owner: *jsc.JSCell, length: u32, names: [*]ExternColumnIdentifier) jsc.JSValue;
+    extern fn JSC__createStructure(global: *jsc.JSGlobalObject, owner: ?*jsc.JSCell, length: u32, slots: [*]const ExternColumnSlot) jsc.JSValue;
     extern fn JSC__JSObject__create(global_object: *JSGlobalObject, length: usize, ctx: *anyopaque, initializer: InitializeCallback) JSValue;
 
     pub fn toJS(obj: *JSObject) JSValue {
@@ -94,30 +94,37 @@ pub const JSObject = opaque {
         std.mem.doNotOptimizeAway(this);
     }
 
-    pub const ExternColumnIdentifier = extern struct {
-        tag: u8 = 0,
+    pub const ExternColumnSlot = extern struct {
+        tag: Tag = .duplicate,
         value: extern union {
             index: u32,
             name: bun.String,
         },
 
-        pub fn string(this: *ExternColumnIdentifier) ?*bun.String {
+        pub const Tag = enum(u8) {
+            duplicate,
+            indexed,
+            named,
+            named_offset,
+        };
+
+        pub fn string(this: *ExternColumnSlot) ?*bun.String {
             return switch (this.tag) {
-                2 => &this.value.name,
+                .named => &this.value.name,
                 else => null,
             };
         }
 
-        pub fn deinit(this: *ExternColumnIdentifier) void {
+        pub fn deinit(this: *ExternColumnSlot) void {
             if (this.string()) |str| {
                 str.deref();
             }
         }
     };
 
-    pub fn createStructure(global: *JSGlobalObject, owner: jsc.JSValue, length: u32, names: [*]ExternColumnIdentifier) JSValue {
+    pub fn createStructure(global: *JSGlobalObject, owner: ?jsc.JSValue, slots: []const ExternColumnSlot) JSValue {
         jsc.markBinding(@src());
-        return JSC__createStructure(global, owner.asCell(), length, names);
+        return JSC__createStructure(global, if (owner) |value| value.asCell() else null, @intCast(slots.len), slots.ptr);
     }
 
     const InitializeCallback = *const fn (ctx: *anyopaque, obj: *JSObject, global: *JSGlobalObject) callconv(.c) void;

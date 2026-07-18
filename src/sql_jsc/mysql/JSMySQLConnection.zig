@@ -674,17 +674,10 @@ pub fn onResultRow(this: *@This(), request: *JSMySQLQuery, statement: *MySQLStat
         .raw = result_mode == .raw,
         .bigint = request.isBigintSupported(),
     };
-    var structure: JSValue = .js_undefined;
-    var cached_structure: ?CachedStructure = null;
-    switch (result_mode) {
-        .objects => {
-            cached_structure = if (this.js_value.tryGet()) |value| statement.structure(value, this.globalObject) else null;
-            structure = cached_structure.?.jsValue() orelse .js_undefined;
-        },
-        .raw, .values => {
-            // no need to check for duplicate fields or structure
-        },
-    }
+    const result_layout: ?*const ResultLayout = switch (result_mode) {
+        .objects => statement.layout(this.js_value.tryGet(), this.globalObject),
+        .raw, .values => null,
+    };
     defer row.deinit(allocator);
     row.decode(allocator, reader) catch |err| {
         if (err == error.ShortRead) {
@@ -697,12 +690,9 @@ pub fn onResultRow(this: *@This(), request: *JSMySQLQuery, statement: *MySQLStat
     const pending_value = request.getPendingValue() orelse .js_undefined;
     // Process row data
     const row_value = try row.toJS(
-        this.globalObject,
         pending_value,
-        structure,
-        statement.fields_flags,
         result_mode,
-        cached_structure,
+        result_layout,
     );
     if (this.globalObject.tryTakeException()) |err| {
         this.connection.queue.markCurrentRequestAsFinished(request);
@@ -781,7 +771,7 @@ pub const Writer = MySQLConnection.Writer;
 const debug = bun.Output.scoped(.MySQLConnection, .visible);
 
 const AnyMySQLError = @import("../../sql/mysql/protocol/AnyMySQLError.zig");
-const CachedStructure = @import("../../sql_jsc/shared/CachedStructure.zig");
+const ResultLayout = @import("../../sql_jsc/shared/ResultLayout.zig");
 const ErrorPacket = @import("../../sql/mysql/protocol/ErrorPacket.zig");
 const JSMySQLQuery = @import("./JSMySQLQuery.zig");
 const MySQLConnection = @import("./MySQLConnection.zig");

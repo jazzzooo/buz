@@ -8,26 +8,14 @@ pub const Row = struct {
     bigint: bool = false,
     globalObject: *jsc.JSGlobalObject,
 
-    pub fn toJS(this: *Row, globalObject: *jsc.JSGlobalObject, array: JSValue, structure: JSValue, flags: SQLDataCell.Flags, result_mode: SQLQueryResultMode, cached_structure: ?CachedStructure) !JSValue {
-        var names: ?[*]jsc.JSObject.ExternColumnIdentifier = null;
-        var names_count: u32 = 0;
-        if (cached_structure) |c| {
-            if (c.fields) |f| {
-                names = f.ptr;
-                names_count = @truncate(f.len);
-            }
-        }
-
+    pub fn toJS(this: *Row, array: JSValue, result_mode: SQLQueryResultMode, layout: ?*const ResultLayout) !JSValue {
         return SQLDataCell.constructObjectFromDataCell(
-            globalObject,
+            this.globalObject,
             array,
-            structure,
             this.values.ptr,
             @truncate(this.values.len),
-            flags,
             @intFromEnum(result_mode),
-            names,
-            names_count,
+            layout,
         );
     }
 
@@ -184,17 +172,6 @@ pub const Row = struct {
                         this.parseValueAndSetCell(value, &column, &string_data);
                     }
                 }
-                value.index = switch (column.name_or_index) {
-                    // The indexed columns can be out of order.
-                    .index => |i| i,
-
-                    else => @intCast(index),
-                };
-                value.isIndexedColumn = switch (column.name_or_index) {
-                    .duplicate => 2,
-                    .index => 1,
-                    .name => 0,
-                };
             } else {
                 return error.InvalidResultRow;
             }
@@ -235,17 +212,6 @@ pub const Row = struct {
 
             const column = this.columns[i];
             value.* = try decodeBinaryValue(this.globalObject, column.column_type, column.column_length, this.raw, this.bigint, column.flags.UNSIGNED, column.flags.BINARY, column.character_set, Context, reader);
-            value.index = switch (column.name_or_index) {
-                // The indexed columns can be out of order.
-                .index => |idx| idx,
-
-                else => @intCast(i),
-            };
-            value.isIndexedColumn = switch (column.name_or_index) {
-                .duplicate => 2,
-                .index => 1,
-                .name => 0,
-            };
         }
 
         this.values = cells;
@@ -257,7 +223,7 @@ pub const Row = struct {
 const debug = bun.Output.scoped(.MySQLResultSet, .visible);
 
 const AnyMySQLError = @import("../../../sql/mysql/protocol/AnyMySQLError.zig");
-const CachedStructure = @import("../../shared/CachedStructure.zig");
+const ResultLayout = @import("../../shared/ResultLayout.zig");
 const ColumnDefinition41 = @import("../../../sql/mysql/protocol/ColumnDefinition41.zig");
 const bun = @import("bun");
 const std = @import("std");
