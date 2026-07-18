@@ -1801,8 +1801,14 @@ fn dumpTrace(trace: std.debug.StackTrace, limits: WriteStackTraceLimits) void {
 }
 
 fn spawnSymbolizer(program: [:0]const u8, alloc: std.mem.Allocator, trace: std.debug.StackTrace) !void {
+    // bun.spawnSync execs argv[0] verbatim (no PATH search); FileNotFound
+    // lets the caller try the next candidate.
+    var which_buf: bun.PathBuffer = undefined;
+    const resolved = bun.which(&which_buf, bun.getenvZ("PATH") orelse "", "", program) orelse
+        return error.FileNotFound;
+
     var argv = std.array_list.Managed([]const u8).init(alloc);
-    try argv.append(program);
+    try argv.append(resolved);
     try argv.append("--exe");
     try argv.append(
         switch (bun.Environment.os) {
