@@ -1819,7 +1819,14 @@ fn spawnSymbolizer(program: [:0]const u8, alloc: std.mem.Allocator, trace: std.d
                     "pdb",
                 });
             },
-            else => try bun.selfExePath(),
+            else => brk: {
+                // Debug links split debug info into a sibling .dbg.
+                // llvm-symbolizer resolves the .gnu_debuglink but ignores
+                // its symbols (LLVM 22), so pass the .dbg itself.
+                const self_path = try bun.selfExePath();
+                const with_dbg = try std.mem.concat(alloc, u8, &.{ self_path, ".dbg" });
+                break :brk if (bun.sys.exists(with_dbg)) with_dbg else self_path;
+            },
         },
     );
 
