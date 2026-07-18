@@ -753,6 +753,11 @@ pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options
         for (split.bundles) |bundle| {
             lib_cxx.root_module.addCSourceFile(.{ .file = bundle, .flags = cxx_flags.items, .language = .cpp });
         }
+        lib_cxx.root_module.addCSourceFile(.{
+            .file = cxxInputStamp(b, deps),
+            .flags = &.{},
+            .language = .cpp,
+        });
         for (cg.cpp_sources) |f| {
             lib_cxx.root_module.addCSourceFile(.{ .file = f, .flags = cxx_flags.items, .language = .cpp });
         }
@@ -1241,6 +1246,17 @@ fn addInclude(
 // Unified sources
 // ───────────────────────────────────────────────────────────────────────────
 
+/// Makes mutable C++ inputs part of bun-cxx's direct input identity so its
+/// whole-cache entry cannot hide changes omitted from its parent manifest.
+fn cxxInputStamp(b: *Build, deps: *const DepPkgs) LazyPath {
+    const run = b.addRunFile(deps.bun);
+    run.addFileArg(b.path("src/build/write-input-stamp.ts"));
+    const stamp = run.addOutputFileArg("cxx-input-stamp.cpp");
+    for (allCxxWatchInputs(b)) |f| run.addFileInput(b.path(f));
+    run.step.name = "C++ input stamp";
+    return stamp;
+}
+
 const UnifiedSplit = struct {
     standalone: []const []const u8, // repo-relative
     bundles: []const LazyPath,
@@ -1323,6 +1339,21 @@ fn lessThanBasename(_: void, a: []const u8, bb: []const u8) bool {
 
 var cxx_sources_cache: ?[]const []const u8 = null;
 var c_sources_cache: ?[]const []const u8 = null;
+var cxx_watch_inputs_cache: ?[]const []const u8 = null;
+
+fn allCxxWatchInputs(b: *Build) []const []const u8 {
+    if (cxx_watch_inputs_cache) |c| return c;
+    const arena = b.graph.arena;
+    var out: std.ArrayList([]const u8) = .empty;
+    out.appendSlice(arena, allCxxSources(b)) catch @panic("OOM");
+    const header_suffixes = [_][]const u8{ ".h", ".hh", ".hpp", ".hxx", ".inc", ".inl", ".ipp", ".def" };
+    for ([_][]const u8{ "src", "packages" }) |dir| {
+        out.appendSlice(arena, listFilesAny(b, dir, &header_suffixes, true)) catch @panic("OOM");
+    }
+    std.mem.sort([]const u8, out.items, {}, lessThanString);
+    cxx_watch_inputs_cache = out.items;
+    return out.items;
+}
 
 fn allCxxSources(b: *Build) []const []const u8 {
     if (cxx_sources_cache) |c| return c;
@@ -1363,6 +1394,10 @@ fn allCSources(b: *Build) []const []const u8 {
 /// configure, so new files there need a watch restart. The directory
 /// registration is what a future config cache would key on.
 fn listFiles(b: *Build, dir: []const u8, suffix: []const u8, recursive: bool) []const []const u8 {
+    return listFilesAny(b, dir, &.{suffix}, recursive);
+}
+
+fn listFilesAny(b: *Build, dir: []const u8, suffixes: []const []const u8, recursive: bool) []const []const u8 {
     const arena = b.graph.arena;
     const io = b.graph.io;
     b.dependOnDirectory(b.path(dir));
@@ -1376,19 +1411,26 @@ fn listFiles(b: *Build, dir: []const u8, suffix: []const u8, recursive: bool) []
         while (walker.next(io) catch @panic("walk failed")) |entry| {
             if (entry.kind != .file) continue;
             if (std.mem.indexOf(u8, entry.path, "node_modules") != null) continue;
-            if (!std.mem.endsWith(u8, entry.path, suffix)) continue;
+            if (!hasAnySuffix(entry.path, suffixes)) continue;
             out.append(arena, b.fmt("{s}/{s}", .{ dir, entry.path })) catch @panic("OOM");
         }
     } else {
         var it = handle.iterate();
         while (it.next(io) catch @panic("iterate failed")) |entry| {
             if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.name, suffix)) continue;
+            if (!hasAnySuffix(entry.name, suffixes)) continue;
             out.append(arena, b.fmt("{s}/{s}", .{ dir, entry.name })) catch @panic("OOM");
         }
     }
     std.mem.sort([]const u8, out.items, {}, lessThanString);
     return out.items;
+}
+
+fn hasAnySuffix(path: []const u8, suffixes: []const []const u8) bool {
+    for (suffixes) |suffix| {
+        if (std.mem.endsWith(u8, path, suffix)) return true;
+    }
+    return false;
 }
 
 fn listDirs(b: *Build, dir: []const u8) []const []const u8 {
