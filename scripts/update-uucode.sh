@@ -7,18 +7,18 @@
 #   ./scripts/update-uucode.sh https://url.tar.gz # update from URL
 #
 # After running, verify with:
-#   bun bd test test/js/bun/util/stringWidth.test.ts
+#   node scripts/runner.node.mjs --exec-path ./zig-out/bin/bun-debug test/js/bun/util/stringWidth.test.ts
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 UUCODE_DIR="$BUN_ROOT/src/unicode/uucode_lib"
-ZIG="$BUN_ROOT/vendor/zig/zig"
+ZIG="$BUN_ROOT/zig"
 
 if [ ! -x "$ZIG" ]; then
     echo "error: zig not found at $ZIG"
-    echo "       run scripts/bootstrap.sh first"
+    echo "       bootstrap zig-upstream/build/stage3/bin/zig first"
     exit 1
 fi
 
@@ -77,6 +77,6 @@ echo "  src/unicode/uucode_lib/         (vendored library)"
 echo "  src/string/immutable/grapheme_tables.zig (regenerated)"
 echo ""
 echo "Next steps:"
-echo "  1. bun bd test test/js/bun/util/stringWidth.test.ts"
+echo "  1. node scripts/runner.node.mjs --exec-path ./zig-out/bin/bun-debug test/js/bun/util/stringWidth.test.ts"
 echo "  2. git add src/unicode/uucode_lib src/string/immutable/grapheme_tables.zig"
 echo "  3. git commit -m 'Update uucode to <version>'"
