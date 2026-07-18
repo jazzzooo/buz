@@ -7,8 +7,6 @@
 .gdb_history
 .idea
 .next
-.ninja_deps
-.ninja_log
 .npm
 .npmrc
 .npm.gz
@@ -53,8 +51,6 @@
 **/package-lock.json
 /.cache
 /.webkit-cache
-/build-*/
-/bun-webkit
 /kcov-out
 /test-report.json
 /test-report.md
@@ -63,17 +59,7 @@
 /test.zig
 /testdir
 /build/
-cmake/sources
-build.ninja
-bun-binary
-bun-mimalloc
-bun-nomimalloc
-bun-singlehtreaded
 bun-test-scratch
-bun-zigld
-cmake_install.cmake
-CMakeCache.txt
-CMakeFiles
 cold-jsc-start
 cold-jsc-start.d
 compile_commands.json
@@ -128,10 +114,6 @@ src/jsc/bindings-obj
 src/jsc/bindings/GeneratedJS2Native.zig
 src/jsc/bindings/GeneratedBindings.zig
 src/bun.js/debug-bindings-obj
-src/deps/zig-clap/.gitattributes
-src/deps/zig-clap/.github
-src/deps/zig-clap/example
-src/deps/zig-clap/README.md
 src/fallback.version
 src/js/out/DebugPath.h
 src/js/out/functions*
@@ -151,39 +133,14 @@ yarn.lock
 zig-cache
 zig-out
 zig-pkg
-test/node.js/upstream
-.zig-cache
-scripts/env.local
-*.generated.ts
-src/bake/generated.ts
 test/cli/install/registry/packages/publish-pkg-*
 test/cli/install/registry/packages/@secret/publish-pkg-8
 test/js/third_party/prisma/prisma/sqlite/dev.db-journal
 tmp
 codegen-for-zig-team.tar.gz
 
-# Dependencies (before CMake)
-# These can be removed in the far future
-/src/bun.js/WebKit
-/src/deps/boringssl
-/src/deps/brotli
-/src/deps/c*ares
-/src/deps/libarchive
-/src/deps/libdeflate
-/src/deps/libuv
-/src/deps/lol*html
-/src/deps/ls*hpack
-/src/deps/mimalloc
-/src/deps/picohttpparser
-/src/deps/tinycc
-/src/deps/WebKit
-/src/deps/zig
-/src/deps/zlib
-/src/deps/zstd
-
 # Generated files
 
-.buildkite/ci.yml
 *.sock
 scratch*.{js,ts,tsx,cjs,mjs}
 

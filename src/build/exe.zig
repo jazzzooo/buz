@@ -1503,8 +1503,6 @@ pub fn addLink(
     for (archives) |lib| run.addArtifactArg(lib);
     run.addArg("--no-whole-archive");
     run.addFileArg(zig_obj);
-    // Prebuilt from the zon-pinned lolhtml source; rebuild recipe in
-    // src/build/prebuilt/README.md.
     run.addFileArg(b.path("src/build/prebuilt/liblolhtml.a"));
     for ([_][]const u8{ "libWTF.a", "libJavaScriptCore.a", "libicudata.a", "libicui18n.a", "libicuuc.a", "libbmalloc.a" }) |lib| {
         run.addFileArg(deps.webkit.path(b.fmt("lib/{s}", .{lib})));
