@@ -1,57 +1,33 @@
-pub fn NewReaderWrap(
-    comptime Context: type,
-    comptime markMessageStartFn_: (fn (ctx: Context) void),
-    comptime peekFn_: (fn (ctx: Context) []const u8),
-    comptime skipFn_: (fn (ctx: Context, count: usize) void),
-    comptime ensureCapacityFn_: (fn (ctx: Context, count: usize) bool),
-    comptime readFunction_: (fn (ctx: Context, count: usize) AnyPostgresError!Data),
-    comptime readZ_: (fn (ctx: Context) AnyPostgresError!Data),
-) type {
+pub fn NewReader(comptime Context: type) type {
     return struct {
         wrapped: Context,
-        const readFn = readFunction_;
-        const readZFn = readZ_;
-        const ensureCapacityFn = ensureCapacityFn_;
-        const skipFn = skipFn_;
-        const peekFn = peekFn_;
-        const markMessageStartFn = markMessageStartFn_;
-
-        pub const Ctx = Context;
 
         pub inline fn markMessageStart(this: @This()) void {
-            markMessageStartFn(this.wrapped);
+            this.wrapped.markMessageStart();
         }
 
         pub inline fn read(this: @This(), count: usize) AnyPostgresError!Data {
-            return try readFn(this.wrapped, count);
-        }
-
-        pub inline fn eatMessage(this: @This(), comptime msg_: anytype) AnyPostgresError!void {
-            const msg = msg_[1..];
-            try this.ensureCapacity(msg.len);
-
-            var input = try readFn(this.wrapped, msg.len);
-            defer input.deinit();
-            if (bun.strings.eqlComptime(input.slice(), msg)) return;
-            return error.InvalidMessage;
+            return this.wrapped.read(count);
         }
 
         pub fn skip(this: @This(), count: usize) AnyPostgresError!void {
-            skipFn(this.wrapped, count);
+            try this.wrapped.skip(count);
         }
 
         pub fn peek(this: @This()) []const u8 {
-            return peekFn(this.wrapped);
+            return this.wrapped.peek();
         }
 
         pub inline fn readZ(this: @This()) AnyPostgresError!Data {
-            return try readZFn(this.wrapped);
+            return this.wrapped.readZ();
         }
 
-        pub inline fn ensureCapacity(this: @This(), count: usize) AnyPostgresError!void {
-            if (!ensureCapacityFn(this.wrapped, count)) {
-                return error.ShortRead;
-            }
+        pub inline fn expectLength(this: @This(), length: usize) AnyPostgresError!void {
+            if (this.peek().len != length) return error.InvalidMessageLength;
+        }
+
+        pub inline fn expectEnd(this: @This()) AnyPostgresError!void {
+            try this.expectLength(0);
         }
 
         pub fn int(this: @This(), comptime Int: type) !Int {
@@ -75,11 +51,6 @@ pub fn NewReaderWrap(
             return @byteSwap(@as(Int, @bitCast(remain[0..@sizeOf(Int)].*)));
         }
 
-        pub fn expectInt(this: @This(), comptime Int: type, comptime value: comptime_int) !bool {
-            const actual = try this.int(Int);
-            return actual == value;
-        }
-
         pub fn int4(this: @This()) !PostgresInt32 {
             return this.int(PostgresInt32);
         }
@@ -88,13 +59,10 @@ pub fn NewReaderWrap(
             return this.int(PostgresShort);
         }
 
-        pub fn length(this: @This()) !PostgresInt32 {
-            const expected = try this.int(PostgresInt32);
-            if (expected > -1) {
-                try this.ensureCapacity(@intCast(expected -| 4));
-            }
-
-            return expected;
+        pub fn readFrame(this: @This()) AnyPostgresError!Frame {
+            const encoded_length = try this.int(i32);
+            if (encoded_length < 4) return error.InvalidMessageLength;
+            return .{ .data = try this.read(@intCast(encoded_length - 4)) };
         }
 
         pub const bytes = read;
@@ -107,9 +75,49 @@ pub fn NewReaderWrap(
     };
 }
 
-pub fn NewReader(comptime Context: type) type {
-    return NewReaderWrap(Context, Context.markMessageStart, Context.peek, Context.skip, Context.ensureLength, Context.read, Context.readZ);
-}
+pub const Frame = struct {
+    data: Data,
+    offset: usize = 0,
+
+    pub fn deinit(this: *Frame) void {
+        this.data.deinit();
+    }
+
+    pub fn reader(this: *Frame) PayloadReader {
+        return .{ .wrapped = .{ .frame = this } };
+    }
+};
+
+const Payload = struct {
+    frame: *Frame,
+
+    pub fn markMessageStart(_: Payload) void {}
+
+    pub fn peek(this: Payload) []const u8 {
+        return this.frame.data.slice()[this.frame.offset..];
+    }
+
+    pub fn skip(this: Payload, count: usize) AnyPostgresError!void {
+        if (count > this.peek().len) return error.InvalidMessageLength;
+        this.frame.offset += count;
+    }
+
+    pub fn read(this: Payload, count: usize) AnyPostgresError!Data {
+        const remaining = this.peek();
+        if (count > remaining.len) return error.InvalidMessageLength;
+        this.frame.offset += count;
+        return .{ .temporary = remaining[0..count] };
+    }
+
+    pub fn readZ(this: Payload) AnyPostgresError!Data {
+        const remaining = this.peek();
+        const zero = bun.strings.indexOfChar(remaining, 0) orelse return error.InvalidMessageLength;
+        this.frame.offset += zero + 1;
+        return .{ .temporary = remaining[0..zero] };
+    }
+};
+
+pub const PayloadReader = NewReader(Payload);
 
 const bun = @import("bun");
 const AnyPostgresError = @import("../AnyPostgresError.zig").AnyPostgresError;

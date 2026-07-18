@@ -1032,24 +1032,16 @@ pub const Reader = struct {
         this.connection.last_message_start = this.connection.read_buffer.head;
     }
 
-    pub const ensureLength = ensureCapacity;
-
     pub fn peek(this: Reader) []const u8 {
         return this.connection.read_buffer.remaining();
     }
-    pub fn skip(this: Reader, count: usize) void {
-        this.connection.read_buffer.head = @min(this.connection.read_buffer.head + @as(u32, @truncate(count)), this.connection.read_buffer.byte_list.len);
-    }
-    pub fn ensureCapacity(this: Reader, count: usize) bool {
-        return @as(usize, this.connection.read_buffer.head) + count <= @as(usize, this.connection.read_buffer.byte_list.len);
+    pub fn skip(this: Reader, count: usize) AnyPostgresError!void {
+        if (count > this.connection.read_buffer.byte_list.len - this.connection.read_buffer.head) return error.ShortRead;
+        this.connection.read_buffer.head += @intCast(count);
     }
     pub fn read(this: Reader, count: usize) AnyPostgresError!Data {
-        var remaining = this.connection.read_buffer.remaining();
-        if (@as(usize, remaining.len) < count) {
-            return error.ShortRead;
-        }
-
-        this.skip(count);
+        const remaining = this.connection.read_buffer.remaining();
+        try this.skip(count);
         return Data{
             .temporary = remaining[0..count],
         };
@@ -1058,7 +1050,7 @@ pub const Reader = struct {
         const remain = this.connection.read_buffer.remaining();
 
         if (bun.strings.indexOfChar(remain, 0)) |zero| {
-            this.skip(zero + 1);
+            try this.skip(zero + 1);
             return Data{
                 .temporary = remain[0..zero],
             };
@@ -1444,7 +1436,7 @@ pub fn getQueriesArray(this: *const PostgresSQLConnection) JSValue {
     return js.queriesGetCached(this.js_value) orelse .js_undefined;
 }
 
-pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), comptime Context: type, reader: protocol.NewReader(Context)) AnyPostgresError!void {
+pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), reader: protocol.PayloadReader) AnyPostgresError!void {
     debug("on({s})", .{@tagName(MessageType)});
 
     switch (comptime MessageType) {
@@ -1494,14 +1486,12 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
             if (request.flags.result_mode == .raw) {
                 try protocol.DataRow.decode(
                     &putter,
-                    Context,
                     reader,
                     DataCell.Putter.putRaw,
                 );
             } else {
                 try protocol.DataRow.decode(
                     &putter,
-                    Context,
                     reader,
                     DataCell.Putter.put,
                 );
@@ -1527,12 +1517,12 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
         },
         .CopyData => {
             var copy_data: protocol.CopyData = undefined;
-            try copy_data.decodeInternal(Context, reader);
+            try copy_data.decode(reader);
             copy_data.data.deinit();
         },
         .ParameterStatus => {
             var parameter_status: protocol.ParameterStatus = undefined;
-            try parameter_status.decodeInternal(Context, reader);
+            try parameter_status.decode(reader);
             defer {
                 parameter_status.deinit();
             }
@@ -1540,7 +1530,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
         },
         .ReadyForQuery => {
             var ready_for_query: protocol.ReadyForQuery = undefined;
-            try ready_for_query.decodeInternal(Context, reader);
+            try ready_for_query.decode(reader);
 
             this.setStatus(.connected);
             this.flags.waiting_to_prepare = false;
@@ -1563,7 +1553,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
             var request = this.current() orelse return error.ExpectedRequest;
 
             var cmd: protocol.CommandComplete = undefined;
-            try cmd.decodeInternal(Context, reader);
+            try cmd.decode(reader);
             defer {
                 cmd.deinit();
             }
@@ -1573,14 +1563,14 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
             request.onResult(cmd.command_tag.slice(), this.globalObject, this.js_value, false);
         },
         .BindComplete => {
-            try reader.eatMessage(protocol.BindComplete);
+            try reader.expectEnd();
             var request = this.current() orelse return error.ExpectedRequest;
             if (request.status == .binding) {
                 request.status = .running;
             }
         },
         .ParseComplete => {
-            try reader.eatMessage(protocol.ParseComplete);
+            try reader.expectEnd();
             const request = this.current() orelse return error.ExpectedRequest;
             if (request.statement) |statement| {
                 // if we have params wait for parameter description
@@ -1592,7 +1582,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
         },
         .ParameterDescription => {
             var description: protocol.ParameterDescription = undefined;
-            try description.decodeInternal(Context, reader);
+            try description.decode(reader);
             errdefer bun.default_allocator.free(description.parameters);
             const request = this.current() orelse return error.ExpectedRequest;
             var statement = request.statement orelse return error.ExpectedStatement;
@@ -1607,7 +1597,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
         },
         .RowDescription => {
             var description: protocol.RowDescription = undefined;
-            try description.decodeInternal(Context, reader);
+            try description.decode(reader);
             errdefer description.deinit();
             const request = this.current() orelse return error.ExpectedRequest;
             var statement = request.statement orelse return error.ExpectedStatement;
@@ -1631,7 +1621,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
         },
         .Authentication => {
             var auth: protocol.Authentication = undefined;
-            try auth.decodeInternal(Context, reader);
+            try auth.decode(reader);
             defer auth.deinit();
 
             switch (auth) {
@@ -1819,18 +1809,18 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
             }
         },
         .NoData => {
-            try reader.eatMessage(protocol.NoData);
+            try reader.expectEnd();
             var request = this.current() orelse return error.ExpectedRequest;
             if (request.status == .binding) {
                 request.status = .running;
             }
         },
         .BackendKeyData => {
-            try this.backend_key_data.decodeInternal(Context, reader);
+            try this.backend_key_data.decode(reader);
         },
         .ErrorResponse => {
             var err: protocol.ErrorResponse = undefined;
-            try err.decodeInternal(Context, reader);
+            try err.decode(reader);
 
             if (this.status == .connecting or this.status == .sent_startup_message) {
                 defer {
@@ -1869,13 +1859,13 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
             request.onError(.{ .protocol = err }, this.globalObject);
         },
         .PortalSuspended => {
-            // try reader.eatMessage(&protocol.PortalSuspended);
+            try reader.expectEnd();
             // var request = this.current() orelse return error.ExpectedRequest;
             // _ = request;
             debug("TODO PortalSuspended", .{});
         },
         .CloseComplete => {
-            try reader.eatMessage(protocol.CloseComplete);
+            try reader.expectEnd();
             var request = this.current() orelse return error.ExpectedRequest;
             defer this.updateRef();
             request.onResult("CLOSECOMPLETE", this.globalObject, this.js_value, false);
@@ -1887,11 +1877,11 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
             debug("UNSUPPORTED NoticeResponse", .{});
             var resp: protocol.NoticeResponse = undefined;
 
-            try resp.decodeInternal(Context, reader);
+            try resp.decode(reader);
             resp.deinit();
         },
         .EmptyQueryResponse => {
-            try reader.eatMessage(protocol.EmptyQueryResponse);
+            try reader.expectEnd();
             var request = this.current() orelse return error.ExpectedRequest;
             defer this.updateRef();
             request.onResult("", this.globalObject, this.js_value, false);
@@ -1900,6 +1890,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @EnumLiteral(), co
             debug("TODO CopyOutResponse", .{});
         },
         .CopyDone => {
+            try reader.expectEnd();
             debug("TODO CopyDone", .{});
         },
         .CopyBothResponse => {

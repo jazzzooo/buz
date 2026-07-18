@@ -1,14 +1,10 @@
 version: int4 = 0,
 unrecognized_options: std.ArrayListUnmanaged(String) = .empty,
 
-pub fn decodeInternal(
+pub fn decode(
     this: *@This(),
-    comptime Container: type,
-    reader: NewReader(Container),
+    reader: PayloadReader,
 ) !void {
-    const length = try reader.length();
-    bun.assert(length >= 4);
-
     const version = try reader.int4();
     this.* = .{
         .version = version,
@@ -30,10 +26,11 @@ pub fn decodeInternal(
             String.borrowUTF8(option),
         );
     }
+    try reader.expectEnd();
 }
 
 const std = @import("std");
-const NewReader = @import("./NewReader.zig").NewReader;
+const PayloadReader = @import("./NewReader.zig").PayloadReader;
 
 const int_types = @import("../types/int_types.zig");
 const int4 = int_types.int4;

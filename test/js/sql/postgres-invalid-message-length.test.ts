@@ -73,12 +73,12 @@ async function queryError(frames: Buffer[]): Promise<any> {
   }
 }
 
-// Each entry drives a backend-message decoder with a length field that cannot
-// be valid: below the 4 bytes the field itself occupies, or negative (the
-// field is a signed Int32). All of them must fail the connection with the
-// same protocol error.
+// Each entry drives a backend-message decoder with a length field that is
+// smaller than the message requires or negative. All of them must fail the
+// connection with the same protocol error.
 const malformed: { name: string; frame: Buffer }[] = [
   // ReadyForQuery is Byte1('Z') Int32(5) Byte1(status); only the length lies.
+  { name: "ReadyForQuery declaring length 4", frame: pgRaw("Z", Buffer.from("I"), 4) },
   { name: "ReadyForQuery declaring length 3", frame: pgRaw("Z", Buffer.from("I"), 3) },
   { name: "ReadyForQuery declaring length 0", frame: pgRaw("Z", Buffer.from("I"), 0) },
   // writeInt32BE(-1) puts 0xFFFFFFFF on the wire, the signed high half.
@@ -110,10 +110,9 @@ test("postgres: CommandComplete declaring length 3 fails the in-flight query", a
   });
 });
 
-// Boundary: a length of exactly 4 (an empty NoticeResponse) is the smallest
-// valid value and must still be accepted.
-test("postgres: an empty NoticeResponse (length exactly 4) is accepted", async () => {
-  current = { atStartup: [pgRaw("N", Buffer.alloc(0)), pgReadyForQuery()] };
+// Boundary: a length of exactly 4 is a complete frame with an empty payload.
+test("postgres: an unknown message with length exactly 4 is skipped", async () => {
+  current = { atStartup: [pgRaw("X", Buffer.alloc(0)), pgReadyForQuery()] };
   const db = new SQL({ url: `postgres://postgres@127.0.0.1:${port}/postgres`, max: 1 });
   try {
     await expect(db.connect()).resolves.toBeDefined();

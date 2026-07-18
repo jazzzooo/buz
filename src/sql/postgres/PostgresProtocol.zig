@@ -1,16 +1,7 @@
-pub const CloseComplete = [_]u8{'3'} ++ toBytes(Int32(4));
-pub const EmptyQueryResponse = [_]u8{'I'} ++ toBytes(Int32(4));
 pub const Terminate = [_]u8{'X'} ++ toBytes(Int32(4));
-
-pub const BindComplete = [_]u8{'2'} ++ toBytes(Int32(4));
-
-pub const ParseComplete = [_]u8{'1'} ++ toBytes(Int32(4));
-
-pub const CopyDone = [_]u8{'c'} ++ toBytes(Int32(4));
 pub const Sync = [_]u8{'S'} ++ toBytes(Int32(4));
 pub const Flush = [_]u8{'H'} ++ toBytes(Int32(4));
 pub const SSLRequest = toBytes(Int32(8)) ++ toBytes(Int32(80877103));
-pub const NoData = [_]u8{'n'} ++ toBytes(Int32(4));
 
 pub fn writeQuery(query: []const u8, comptime Context: type, writer: NewWriter(Context)) !void {
     const count: u32 = @sizeOf((u32)) + @as(u32, @intCast(query.len)) + 1;
@@ -46,10 +37,10 @@ pub const StackReader = @import("./protocol/StackReader.zig");
 pub const StartupMessage = @import("./protocol/StartupMessage.zig");
 pub const Authentication = @import("./protocol/Authentication.zig").Authentication;
 pub const ColumnIdentifier = @import("../shared/ColumnIdentifier.zig").ColumnIdentifier;
-pub const DecoderWrap = @import("./protocol/DecoderWrap.zig").DecoderWrap;
 pub const FieldMessage = @import("./protocol/FieldMessage.zig").FieldMessage;
 pub const FieldType = @import("./protocol/FieldType.zig").FieldType;
 pub const NewReader = @import("./protocol/NewReader.zig").NewReader;
+pub const PayloadReader = @import("./protocol/NewReader.zig").PayloadReader;
 pub const NewWriter = @import("./protocol/NewWriter.zig").NewWriter;
 pub const PortalOrPreparedStatement = @import("./protocol/PortalOrPreparedStatement.zig").PortalOrPreparedStatement;
 pub const WriteWrap = @import("./protocol/WriteWrap.zig").WriteWrap;

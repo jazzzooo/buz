@@ -34,8 +34,12 @@ pub const FieldMessage = union(FieldType) {
         }
     }
 
-    pub fn decodeList(comptime Context: type, reader: NewReader(Context)) !std.ArrayListUnmanaged(FieldMessage) {
+    pub fn decodeList(reader: PayloadReader) !std.ArrayListUnmanaged(FieldMessage) {
         var messages = std.ArrayListUnmanaged(FieldMessage).empty;
+        errdefer {
+            for (messages.items) |*message| message.deinit();
+            messages.deinit(bun.default_allocator);
+        }
         while (true) {
             const field_int = try reader.int(u8);
             if (field_int == 0) break;
@@ -79,7 +83,7 @@ pub const FieldMessage = union(FieldType) {
 
 const std = @import("std");
 const FieldType = @import("./FieldType.zig").FieldType;
-const NewReader = @import("./NewReader.zig").NewReader;
+const PayloadReader = @import("./NewReader.zig").PayloadReader;
 
 const bun = @import("bun");
 const String = bun.String;

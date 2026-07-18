@@ -59,21 +59,18 @@ describeWithContainer("postgres", { image: "postgres_plain" }, container => {
 // All wire-protocol bytes come from test/js/sql/wire-frames.ts; do not inline
 // Buffer.alloc frame construction here.
 //
-// NotificationResponse ('A', sent by NOTIFY), a degenerate empty NoticeResponse,
-// and unknown async messages can arrive between result sets. A real Postgres
+// NotificationResponse ('A', sent by NOTIFY) and unknown async messages can
+// arrive between result sets. A real Postgres
 // will not emit a NotificationResponse mid-result-set (it defers to the
-// ReadyForQuery boundary), nor a length-4 NoticeResponse with no field list,
-// nor a NegotiateProtocolVersion mid-stream — so these stay mocked. The
-// protocol reader must consume exactly the message body so the following
-// messages stay correctly framed.
+// ReadyForQuery boundary), nor a NegotiateProtocolVersion mid-stream — so
+// these stay mocked. The protocol reader must consume exactly the message body
+// so the following messages stay correctly framed.
 for (const [name, asyncMessage] of [
   // PostgreSQL FE/BE protocol §55.7 NotificationResponse: Byte1('A') Int32(len) Int32(pid) String(channel) String(payload)
   [
     "NotificationResponse",
     pgRaw("A", Buffer.concat([pgInt32(4321), pgCString("some_channel"), pgCString("some payload")])),
   ],
-  // Degenerate notice: declared length 4, no field list at all.
-  ["empty NoticeResponse", pgRaw("N", Buffer.alloc(0))],
   // 'v' = NegotiateProtocolVersion, which the client does not handle explicitly
   ["unknown message type", pgRaw("v", Buffer.concat([pgInt32(0), pgInt32(0)]))],
 ] as const) {

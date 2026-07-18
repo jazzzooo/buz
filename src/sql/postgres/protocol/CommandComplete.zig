@@ -6,19 +6,13 @@ pub fn deinit(this: *@This()) void {
     this.command_tag.deinit();
 }
 
-pub fn decodeInternal(this: *@This(), comptime Container: type, reader: NewReader(Container)) !void {
-    const length = try reader.length();
-    bun.assert(length >= 4);
-
-    const tag = try reader.readZ();
-    this.* = .{
-        .command_tag = tag,
-    };
+pub fn decode(this: *@This(), reader: PayloadReader) !void {
+    var result: CommandComplete = .{};
+    errdefer result.deinit();
+    result.command_tag = try reader.readZ();
+    try reader.expectEnd();
+    this.* = result;
 }
 
-pub const decode = DecoderWrap(CommandComplete, decodeInternal).decode;
-
-const bun = @import("bun");
 const Data = @import("../../shared/Data.zig").Data;
-const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;
-const NewReader = @import("./NewReader.zig").NewReader;
+const PayloadReader = @import("./NewReader.zig").PayloadReader;

@@ -15,24 +15,18 @@ pub fn deinit(this: *ErrorResponse) void {
     this.messages.deinit(bun.default_allocator);
 }
 
-pub fn decodeInternal(this: *@This(), comptime Container: type, reader: NewReader(Container)) !void {
-    var remaining_bytes = try reader.length();
-    if (remaining_bytes < 4) return error.InvalidMessageLength;
-    remaining_bytes -|= 4;
-
-    if (remaining_bytes > 0) {
-        this.* = .{
-            .messages = try FieldMessage.decodeList(Container, reader),
-        };
-    }
+pub fn decode(this: *@This(), reader: PayloadReader) !void {
+    var result: ErrorResponse = .{
+        .messages = try FieldMessage.decodeList(reader),
+    };
+    errdefer result.deinit();
+    try reader.expectEnd();
+    this.* = result;
 }
-
-pub const decode = DecoderWrap(ErrorResponse, decodeInternal).decode;
 
 pub const toJS = @import("../../../sql_jsc/postgres/protocol/error_response_jsc.zig").toJS;
 
 const bun = @import("bun");
 const std = @import("std");
-const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;
 const FieldMessage = @import("./FieldMessage.zig").FieldMessage;
-const NewReader = @import("./NewReader.zig").NewReader;
+const PayloadReader = @import("./NewReader.zig").PayloadReader;

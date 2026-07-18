@@ -8,10 +8,6 @@ pub fn markMessageStart(this: @This()) void {
     this.message_start.* = this.offset.*;
 }
 
-pub fn ensureLength(this: @This(), length: usize) bool {
-    return this.buffer.len >= (this.offset.* + length);
-}
-
 pub fn init(buffer: []const u8, offset: *usize, message_start: *usize) NewReader(StackReader) {
     return .{
         .wrapped = .{
@@ -25,24 +21,13 @@ pub fn init(buffer: []const u8, offset: *usize, message_start: *usize) NewReader
 pub fn peek(this: StackReader) []const u8 {
     return this.buffer[this.offset.*..];
 }
-pub fn skip(this: StackReader, count: usize) void {
-    if (this.offset.* + count > this.buffer.len) {
-        this.offset.* = this.buffer.len;
-        return;
-    }
-
+pub fn skip(this: StackReader, count: usize) AnyPostgresError!void {
+    if (count > this.buffer.len - this.offset.*) return error.ShortRead;
     this.offset.* += count;
-}
-pub fn ensureCapacity(this: StackReader, count: usize) bool {
-    return this.buffer.len >= (this.offset.* + count);
 }
 pub fn read(this: StackReader, count: usize) AnyPostgresError!Data {
     const offset = this.offset.*;
-    if (!this.ensureCapacity(count)) {
-        return error.ShortRead;
-    }
-
-    this.skip(count);
+    try this.skip(count);
     return Data{
         .temporary = this.buffer[offset..this.offset.*],
     };
@@ -50,7 +35,7 @@ pub fn read(this: StackReader, count: usize) AnyPostgresError!Data {
 pub fn readZ(this: StackReader) AnyPostgresError!Data {
     const remaining = this.peek();
     if (bun.strings.indexOfChar(remaining, 0)) |zero| {
-        this.skip(zero + 1);
+        try this.skip(zero + 1);
         return Data{
             .temporary = remaining[0..zero],
         };

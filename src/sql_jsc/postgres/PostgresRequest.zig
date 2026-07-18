@@ -335,56 +335,51 @@ pub fn onData(
         reader.markMessageStart();
         const c = try reader.int(u8);
         debug("read: {c}", .{c});
+
+        if (c == 'S' and connection.tls_status == .message_sent) {
+            bun.debugAssert(connection.tls_status.message_sent == 8);
+            connection.tls_status = .ssl_ok;
+            connection.setupTLS();
+            return;
+        }
+
+        if (c == 'N' and connection.tls_status == .message_sent) {
+            connection.tls_status = .ssl_not_available;
+            debug("Server does not support SSL", .{});
+            if (connection.ssl_mode == .require) {
+                connection.fail("Server does not support SSL", error.TLSNotAvailable);
+                return;
+            }
+            continue;
+        }
+
+        var frame = try reader.readFrame();
+        defer frame.deinit();
+        const payload_reader = frame.reader();
+
         switch (c) {
-            'D' => try connection.on(.DataRow, Context, reader),
-            'd' => try connection.on(.CopyData, Context, reader),
-            'S' => {
-                if (connection.tls_status == .message_sent) {
-                    bun.debugAssert(connection.tls_status.message_sent == 8);
-                    connection.tls_status = .ssl_ok;
-                    connection.setupTLS();
-                    return;
-                }
-
-                try connection.on(.ParameterStatus, Context, reader);
-            },
-            'Z' => try connection.on(.ReadyForQuery, Context, reader),
-            'C' => try connection.on(.CommandComplete, Context, reader),
-            '2' => try connection.on(.BindComplete, Context, reader),
-            '1' => try connection.on(.ParseComplete, Context, reader),
-            't' => try connection.on(.ParameterDescription, Context, reader),
-            'T' => try connection.on(.RowDescription, Context, reader),
-            'R' => try connection.on(.Authentication, Context, reader),
-            'n' => try connection.on(.NoData, Context, reader),
-            'K' => try connection.on(.BackendKeyData, Context, reader),
-            'E' => try connection.on(.ErrorResponse, Context, reader),
-            's' => try connection.on(.PortalSuspended, Context, reader),
-            '3' => try connection.on(.CloseComplete, Context, reader),
-            'G' => try connection.on(.CopyInResponse, Context, reader),
-            'N' => {
-                if (connection.tls_status == .message_sent) {
-                    connection.tls_status = .ssl_not_available;
-                    debug("Server does not support SSL", .{});
-                    if (connection.ssl_mode == .require) {
-                        connection.fail("Server does not support SSL", error.TLSNotAvailable);
-                        return;
-                    }
-                    continue;
-                }
-
-                try connection.on(.NoticeResponse, Context, reader);
-            },
-            'I' => try connection.on(.EmptyQueryResponse, Context, reader),
-            'H' => try connection.on(.CopyOutResponse, Context, reader),
-            'c' => try connection.on(.CopyDone, Context, reader),
-            'W' => try connection.on(.CopyBothResponse, Context, reader),
-
-            else => {
-                debug("Unknown message: {c}", .{c});
-                const to_skip = try reader.length() -| 1;
-                debug("to_skip: {d}", .{to_skip});
-                try reader.skip(@intCast(@max(to_skip, 0)));
-            },
+            'D' => try connection.on(.DataRow, payload_reader),
+            'd' => try connection.on(.CopyData, payload_reader),
+            'S' => try connection.on(.ParameterStatus, payload_reader),
+            'Z' => try connection.on(.ReadyForQuery, payload_reader),
+            'C' => try connection.on(.CommandComplete, payload_reader),
+            '2' => try connection.on(.BindComplete, payload_reader),
+            '1' => try connection.on(.ParseComplete, payload_reader),
+            't' => try connection.on(.ParameterDescription, payload_reader),
+            'T' => try connection.on(.RowDescription, payload_reader),
+            'R' => try connection.on(.Authentication, payload_reader),
+            'n' => try connection.on(.NoData, payload_reader),
+            'K' => try connection.on(.BackendKeyData, payload_reader),
+            'E' => try connection.on(.ErrorResponse, payload_reader),
+            's' => try connection.on(.PortalSuspended, payload_reader),
+            '3' => try connection.on(.CloseComplete, payload_reader),
+            'G' => try connection.on(.CopyInResponse, payload_reader),
+            'N' => try connection.on(.NoticeResponse, payload_reader),
+            'I' => try connection.on(.EmptyQueryResponse, payload_reader),
+            'H' => try connection.on(.CopyOutResponse, payload_reader),
+            'c' => try connection.on(.CopyDone, payload_reader),
+            'W' => try connection.on(.CopyBothResponse, payload_reader),
+            else => debug("Unknown message: {c}", .{c}),
         }
     }
 }

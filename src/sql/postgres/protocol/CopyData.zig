@@ -2,16 +2,11 @@ const CopyData = @This();
 
 data: Data = .{ .empty = {} },
 
-pub fn decodeInternal(this: *@This(), comptime Container: type, reader: NewReader(Container)) !void {
-    const length = try reader.length();
-
-    const data = try reader.read(@intCast(length -| 5));
+pub fn decode(this: *@This(), reader: PayloadReader) !void {
     this.* = .{
-        .data = data,
+        .data = try reader.read(reader.peek().len),
     };
 }
-
-pub const decode = DecoderWrap(CopyData, decodeInternal).decode;
 
 pub fn writeInternal(
     this: *const @This(),
@@ -31,9 +26,8 @@ pub const write = WriteWrap(@This(), writeInternal).write;
 
 const std = @import("std");
 const Data = @import("../../shared/Data.zig").Data;
-const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;
 const Int32 = @import("../types/int_types.zig").Int32;
-const NewReader = @import("./NewReader.zig").NewReader;
 const NewWriter = @import("./NewWriter.zig").NewWriter;
+const PayloadReader = @import("./NewReader.zig").PayloadReader;
 const WriteWrap = @import("./WriteWrap.zig").WriteWrap;
 const toBytes = std.mem.toBytes;

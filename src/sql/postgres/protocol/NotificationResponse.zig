@@ -9,22 +9,25 @@ pub fn deinit(this: *@This()) void {
     this.payload.clearAndFree(bun.default_allocator);
 }
 
-pub fn decodeInternal(this: *@This(), comptime Container: type, reader: NewReader(Container)) !void {
-    const length = try reader.length();
-    bun.assert(length >= 4);
+pub fn decode(this: *@This(), reader: PayloadReader) !void {
+    var result: NotificationResponse = .{};
+    errdefer result.deinit();
+    result.pid = try reader.int4();
 
-    this.* = .{
-        .pid = try reader.int4(),
-        .channel = (try reader.readZ()).toOwned(),
-        .payload = (try reader.readZ()).toOwned(),
-    };
+    var channel = try reader.readZ();
+    defer channel.deinit();
+    result.channel = try channel.toOwned();
+
+    var payload = try reader.readZ();
+    defer payload.deinit();
+    result.payload = try payload.toOwned();
+
+    try reader.expectEnd();
+    this.* = result;
 }
 
-pub const decode = DecoderWrap(NotificationResponse, decodeInternal).decode;
-
 const bun = @import("bun");
-const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;
-const NewReader = @import("./NewReader.zig").NewReader;
+const PayloadReader = @import("./NewReader.zig").PayloadReader;
 
 const types = @import("../PostgresTypes.zig");
 const int4 = types.int4;

@@ -17,7 +17,7 @@ pub fn deinit(this: *@This()) void {
     this.name_or_index.deinit();
 }
 
-pub fn decodeInternal(this: *@This(), comptime Container: type, reader: NewReader(Container)) AnyPostgresError!void {
+pub fn decode(this: *@This(), reader: PayloadReader) AnyPostgresError!void {
     var name = try reader.readZ();
     errdefer {
         name.deinit();
@@ -57,12 +57,9 @@ pub fn decodeInternal(this: *@This(), comptime Container: type, reader: NewReade
     };
 }
 
-pub const decode = DecoderWrap(FieldDescription, decodeInternal).decode;
-
 const AnyPostgresError = @import("../AnyPostgresError.zig").AnyPostgresError;
 const ColumnIdentifier = @import("../../shared/ColumnIdentifier.zig").ColumnIdentifier;
-const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;
-const NewReader = @import("./NewReader.zig").NewReader;
+const PayloadReader = @import("./NewReader.zig").PayloadReader;
 
 const types = @import("../PostgresTypes.zig");
 const int4 = types.int4;
