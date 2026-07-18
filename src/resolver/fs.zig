@@ -780,6 +780,16 @@ pub const FileSystem = struct {
             return rfs.entries.remove(file_path);
         }
 
+        pub fn bustEntriesFailure(rfs: *RealFS, file_path: string) void {
+            rfs.entries_mutex.lock();
+            defer rfs.entries_mutex.unlock();
+
+            if (rfs.entries.get(file_path)) |entry| {
+                if (entry.* == .entries) return;
+            }
+            _ = rfs.entries.remove(file_path);
+        }
+
         pub const Limit = struct {
             pub var handles: usize = 0;
             pub var handles_before = std.mem.zeroes(if (Environment.isPosix) std.posix.rlimit else struct {});
@@ -933,6 +943,13 @@ pub const FileSystem = struct {
                 entries,
                 err,
             };
+
+            pub fn unwrap(this: *const EntriesOption) anyerror!*DirEntry {
+                return switch (this.*) {
+                    .entries => |entries| entries,
+                    .err => |err| err.canonical_error,
+                };
+            }
 
             // This custom map implementation:
             // - Preallocates a fixed amount of directory name space

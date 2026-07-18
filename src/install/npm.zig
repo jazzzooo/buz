@@ -459,7 +459,7 @@ pub const Registry = struct {
             if (package_manager.options.enable.manifest_cache) {
                 PackageManifest.Serializer.saveAsync(
                     &package,
-                    package_manager.io,
+                    package_manager,
                     scope,
                     package_manager.getTemporaryDirectory().handle,
                     package_manager.getCacheDirectory(),
@@ -1010,6 +1010,7 @@ pub const PackageManifest = struct {
 
         fn writeFile(
             this: *const PackageManifest,
+            manager: *PackageManager,
             scope: *const Registry.Scope,
             tmp_path: [:0]const u8,
             tmpdir: std.Io.Dir,
@@ -1054,7 +1055,7 @@ pub const PackageManifest = struct {
             // This needs many more call sites, doesn't have much impact on this location.
             var realpath_buf: bun.PathBuffer = undefined;
             const path_to_use_for_opening_file = if (Environment.isWindows)
-                bun.path.joinAbsStringBufZ(PackageManager.get().getTemporaryDirectory().path, &realpath_buf, &.{tmp_path}, .auto)
+                bun.path.joinAbsStringBufZ(manager.getTemporaryDirectory().path, &realpath_buf, &.{tmp_path}, .auto)
             else
                 tmp_path;
 
@@ -1110,7 +1111,7 @@ pub const PackageManifest = struct {
                 var did_close = false;
                 errdefer if (!did_close) file.close();
 
-                const cache_dir_abs = PackageManager.get().cache_directory_path;
+                const cache_dir_abs = manager.cache_directory_path;
                 const cache_path_abs = bun.path.joinAbsStringBufZ(cache_dir_abs, &realpath2_buf, &.{ cache_dir_abs, outpath }, .auto);
                 file.close();
                 did_close = true;
@@ -1171,10 +1172,10 @@ pub const PackageManifest = struct {
         /// Therefore, we choose to not increment the pending task count or wake up the main thread.
         ///
         /// This might leave temporary files in the temporary directory that will never be moved to the cache directory. We'll see if anyone asks about that.
-        pub fn saveAsync(this: *const PackageManifest, io: std.Io, scope: *const Registry.Scope, tmpdir: std.Io.Dir, cache_dir: std.Io.Dir) void {
+        pub fn saveAsync(this: *const PackageManifest, manager: *PackageManager, scope: *const Registry.Scope, tmpdir: std.Io.Dir, cache_dir: std.Io.Dir) void {
             const SaveTask = struct {
                 manifest: PackageManifest,
-                io: std.Io,
+                manager: *PackageManager,
                 scope: *const Registry.Scope,
                 tmpdir: std.Io.Dir,
                 cache_dir: std.Io.Dir,
@@ -1189,7 +1190,7 @@ pub const PackageManifest = struct {
                     const save_task: *@This() = @fieldParentPtr("task", task);
                     defer bun.destroy(save_task);
 
-                    Serializer.save(&save_task.manifest, save_task.io, save_task.scope, save_task.tmpdir, save_task.cache_dir) catch |err| {
+                    Serializer.save(&save_task.manifest, save_task.manager, save_task.scope, save_task.tmpdir, save_task.cache_dir) catch |err| {
                         if (PackageManager.verbose_install) {
                             Output.warn("Error caching manifest for {s}: {s}", .{ save_task.manifest.name(), @errorName(err) });
                             Output.flush();
@@ -1200,14 +1201,14 @@ pub const PackageManifest = struct {
 
             const task = SaveTask.new(.{
                 .manifest = this.*,
-                .io = io,
+                .manager = manager,
                 .scope = scope,
                 .tmpdir = tmpdir,
                 .cache_dir = cache_dir,
             });
 
             const batch = bun.ThreadPool.Batch.from(&task.task);
-            PackageManager.get().thread_pool.schedule(batch);
+            manager.thread_pool.schedule(batch);
         }
 
         fn manifestFileName(buf: []u8, file_id: u64, scope: *const Registry.Scope) ![:0]const u8 {
@@ -1218,19 +1219,19 @@ pub const PackageManifest = struct {
                 try std.mem.printSentinel(buf, "{f}-{f}.npm", .{ file_id_hex_fmt, bun.fmt.hexIntLower(scope.url_hash) }, 0);
         }
 
-        pub fn save(this: *const PackageManifest, io: std.Io, scope: *const Registry.Scope, tmpdir: std.Io.Dir, cache_dir: std.Io.Dir) !void {
+        pub fn save(this: *const PackageManifest, manager: *PackageManager, scope: *const Registry.Scope, tmpdir: std.Io.Dir, cache_dir: std.Io.Dir) !void {
             const file_id = bun.Wyhash11.hash(0, this.name());
             var dest_path_buf: [512 + 64]u8 = undefined;
             var out_path_buf: [("18446744073709551615".len * 2) + "_".len + ".npm".len + 1]u8 = undefined;
             var dest_path_stream_writer = std.Io.Writer.fixed(&dest_path_buf);
             const file_id_hex_fmt = bun.fmt.hexIntLower(file_id);
-            const hex_timestamp: usize = @intCast(@max(bun.realMilliseconds(io), 0));
+            const hex_timestamp: usize = @intCast(@max(bun.realMilliseconds(manager.io), 0));
             const hex_timestamp_fmt = bun.fmt.hexIntLower(hex_timestamp);
             try dest_path_stream_writer.print("{f}.npm-{f}", .{ file_id_hex_fmt, hex_timestamp_fmt });
             try dest_path_stream_writer.writeByte(0);
             const tmp_path: [:0]u8 = dest_path_buf[0 .. dest_path_stream_writer.end - 1 :0];
             const out_path = try manifestFileName(&out_path_buf, file_id, scope);
-            try writeFile(this, scope, tmp_path, tmpdir, cache_dir, out_path);
+            try writeFile(this, manager, scope, tmp_path, tmpdir, cache_dir, out_path);
         }
 
         pub fn loadByFileID(allocator: std.mem.Allocator, scope: *const Registry.Scope, cache_dir: std.Io.Dir, file_id: u64) !?PackageManifest {

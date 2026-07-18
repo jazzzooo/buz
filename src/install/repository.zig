@@ -352,16 +352,17 @@ pub const Repository = extern struct {
     };
 
     fn exec(
-        allocator: std.mem.Allocator,
+        manager: *PackageManager,
         _env: DotEnv.Map,
         argv: []const string,
     ) !string {
+        const allocator = manager.allocator;
         var env = _env;
         var std_map = try env.stdEnvMap(allocator);
 
         defer std_map.deinit();
 
-        const result = try std.process.run(allocator, PackageManager.get().io, .{
+        const result = try std.process.run(allocator, manager.io, .{
             .argv = argv,
             .environ_map = std_map.get(),
         });
@@ -492,7 +493,7 @@ pub const Repository = extern struct {
     }
 
     pub fn download(
-        allocator: std.mem.Allocator,
+        manager: *PackageManager,
         env: DotEnv.Map,
         log: *logger.Log,
         cache_dir: std.Io.Dir,
@@ -502,16 +503,17 @@ pub const Repository = extern struct {
         attempt: u8,
     ) !std.Io.Dir {
         bun.analytics.Features.git_dependencies += 1;
-        const io = PackageManager.get().io;
+        const allocator = manager.allocator;
+        const io = manager.io;
         const folder_name = try std.mem.printSentinel(&tl_bufs.get().folder_name_buf, "{f}.git", .{
             bun.fmt.hexIntLower(task_id.get()),
         }, 0);
 
         return if (cache_dir.openDir(io, folder_name, .{})) |dir| fetch: {
-            const path = Path.joinAbsString(PackageManager.get().cache_directory_path, &.{folder_name}, .auto);
+            const path = Path.joinAbsString(manager.cache_directory_path, &.{folder_name}, .auto);
 
             _ = exec(
-                allocator,
+                manager,
                 env,
                 &[_]string{ "git", "-C", path, "fetch", "--quiet" },
             ) catch |err| {
@@ -528,9 +530,9 @@ pub const Repository = extern struct {
         } else |not_found| clone: {
             if (not_found != error.FileNotFound) return not_found;
 
-            const target = Path.joinAbsString(PackageManager.get().cache_directory_path, &.{folder_name}, .auto);
+            const target = Path.joinAbsString(manager.cache_directory_path, &.{folder_name}, .auto);
 
-            _ = exec(allocator, env, &[_]string{
+            _ = exec(manager, env, &[_]string{
                 "git",
                 "clone",
                 "-c",
@@ -557,7 +559,7 @@ pub const Repository = extern struct {
     }
 
     pub fn findCommit(
-        allocator: std.mem.Allocator,
+        manager: *PackageManager,
         env: *DotEnv.Loader,
         log: *logger.Log,
         repo_dir: std.Io.Dir,
@@ -565,14 +567,15 @@ pub const Repository = extern struct {
         committish: string,
         task_id: Install.Task.Id,
     ) !string {
-        const path = Path.joinAbsString(PackageManager.get().cache_directory_path, &.{try std.fmt.bufPrint(&tl_bufs.get().folder_name_buf, "{f}.git", .{
+        const allocator = manager.allocator;
+        const path = Path.joinAbsString(manager.cache_directory_path, &.{try std.fmt.bufPrint(&tl_bufs.get().folder_name_buf, "{f}.git", .{
             bun.fmt.hexIntLower(task_id.get()),
         })}, .auto);
 
         _ = repo_dir;
 
         return std.mem.trim(u8, exec(
-            allocator,
+            manager,
             shared_env.get(allocator, env),
             if (committish.len > 0)
                 &[_]string{ "git", "-C", path, "log", "--format=%H", "-1", committish }
@@ -591,7 +594,7 @@ pub const Repository = extern struct {
     }
 
     pub fn checkout(
-        allocator: std.mem.Allocator,
+        manager: *PackageManager,
         env: DotEnv.Map,
         log: *logger.Log,
         cache_dir: std.Io.Dir,
@@ -601,16 +604,17 @@ pub const Repository = extern struct {
         resolved: string,
     ) !ExtractData {
         bun.analytics.Features.git_dependencies += 1;
-        const io = PackageManager.get().io;
+        const allocator = manager.allocator;
+        const io = manager.io;
         const bufs = tl_bufs.get();
         const folder_name = PackageManager.cachedGitFolderNamePrint(&bufs.folder_name_buf, resolved, null);
 
         var package_dir = bun.openDir(cache_dir, folder_name) catch |not_found| brk: {
             if (not_found != error.ENOENT) return not_found;
 
-            const target = Path.joinAbsString(PackageManager.get().cache_directory_path, &.{folder_name}, .auto);
+            const target = Path.joinAbsString(manager.cache_directory_path, &.{folder_name}, .auto);
 
-            _ = exec(allocator, env, &[_]string{
+            _ = exec(manager, env, &[_]string{
                 "git",
                 "clone",
                 "-c",
@@ -630,9 +634,9 @@ pub const Repository = extern struct {
                 return err;
             };
 
-            const folder = Path.joinAbsString(PackageManager.get().cache_directory_path, &.{folder_name}, .auto);
+            const folder = Path.joinAbsString(manager.cache_directory_path, &.{folder_name}, .auto);
 
-            _ = exec(allocator, env, &[_]string{ "git", "-C", folder, "checkout", "--quiet", resolved }) catch |err| {
+            _ = exec(manager, env, &[_]string{ "git", "-C", folder, "checkout", "--quiet", resolved }) catch |err| {
                 log.addErrorFmt(
                     null,
                     logger.Loc.Empty,

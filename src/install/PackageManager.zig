@@ -69,6 +69,7 @@ patch_task_queue: PatchTaskQueue = .{},
 pending_pre_calc_hashes: std.atomic.Value(u32) = .init(0),
 pending_tasks: std.atomic.Value(u32) = .init(0),
 total_tasks: u32 = 0,
+last_waiting_message_iteration: u64 = 0,
 preallocated_network_tasks: PreallocatedNetworkTasks,
 preallocated_resolve_tasks: PreallocatedTaskStore,
 
@@ -294,14 +295,10 @@ pub const ScriptRunEnvironment = struct {
     transpiler: bun.Transpiler,
 };
 
-const TimePasser = struct {
-    pub var last_time: u64 = 0;
-};
-
-pub fn hasEnoughTimePassedBetweenWaitingMessages() bool {
-    const iter = get().event_loop.loop().iterationNumber();
-    if (TimePasser.last_time < iter) {
-        TimePasser.last_time = iter;
+pub fn hasEnoughTimePassedBetweenWaitingMessages(this: *PackageManager) bool {
+    const iter = this.event_loop.loop().iterationNumber();
+    if (this.last_waiting_message_iteration < iter) {
+        this.last_waiting_message_iteration = iter;
         return true;
     }
 
@@ -430,18 +427,6 @@ pub fn sleepUntil(this: *PackageManager, closure: anytype, comptime isDoneFn: an
 const cached_package_folder_name_bufs = bun.ThreadlocalBuffers(struct { buf: bun.PathBuffer = undefined });
 pub inline fn cached_package_folder_name_buf() *bun.PathBuffer {
     return &cached_package_folder_name_bufs.get().buf;
-}
-
-const Holder = struct {
-    pub var ptr: *PackageManager = undefined;
-};
-
-pub fn allocatePackageManager() void {
-    Holder.ptr = bun.handleOom(bun.default_allocator.create(PackageManager));
-}
-
-pub fn get() *PackageManager {
-    return Holder.ptr;
 }
 
 pub const SuccessFn = *const fn (*PackageManager, DependencyID, PackageID) void;
@@ -774,9 +759,7 @@ pub fn init(
     root_package_json_path = try bun.getFdPathZ(.fromStdFile(root_package_json_file), &root_package_json_path_buf);
 
     const entries_option = try fs.fs.readDirectory(fs.top_level_dir, null, 0, true);
-    if (entries_option.* == .err) {
-        return entries_option.err.canonical_error;
-    }
+    const root_dir = try entries_option.unwrap();
 
     var env: *DotEnv.Loader = brk: {
         const map = try ctx.allocator.create(DotEnv.Map);
@@ -788,7 +771,7 @@ pub fn init(
     };
 
     try env.loadProcess();
-    try env.load(entries_option.entries, &[_][]u8{}, .production, false);
+    try env.load(root_dir, &[_][]u8{}, .production, false);
 
     initializeStore();
 
@@ -843,8 +826,7 @@ pub fn init(
 
     workspace_names.deinit();
 
-    PackageManager.allocatePackageManager();
-    const manager = PackageManager.get();
+    const manager = bun.handleOom(bun.default_allocator.create(PackageManager));
     // var progress = Progress{};
     // var node = progress.start(name: []const u8, estimated_total_items: usize)
     manager.* = PackageManager{
@@ -858,7 +840,7 @@ pub fn init(
         .patch_task_fifo = PatchTaskFifo.init(),
         .allocator = ctx.allocator,
         .log = ctx.log,
-        .root_dir = entries_option.entries,
+        .root_dir = root_dir,
         .env = env,
         .cpu_count = cpu_count,
         .thread_pool = ThreadPool.init(.{
@@ -983,44 +965,21 @@ pub fn initWithRuntime(
     io: std.Io,
     cli: CommandLineArguments,
     env: *DotEnv.Loader,
-) *PackageManager {
-    init_with_runtime_once.call(.{
-        log,
-        bun_install,
-        allocator,
-        io,
-        cli,
-        env,
-    });
-    return PackageManager.get();
-}
-
-var init_with_runtime_once = bun.once(initWithRuntimeOnce);
-
-pub fn initWithRuntimeOnce(
-    log: *logger.Log,
-    bun_install: ?*Api.BunInstall,
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    cli: CommandLineArguments,
-    env: *DotEnv.Loader,
-) void {
+) !*PackageManager {
     if (env.get("BUN_INSTALL_VERBOSE") != null) {
         PackageManager.verbose_install = true;
     }
 
-    const cpu_count = bun.getThreadCount();
-    PackageManager.allocatePackageManager();
-    const manager = PackageManager.get();
-    var root_dir = Fs.FileSystem.instance.fs.readDirectory(
+    const root_dir_option = bun.handleOom(Fs.FileSystem.instance.fs.readDirectory(
         Fs.FileSystem.instance.top_level_dir,
         null,
         0,
         true,
-    ) catch |err| {
-        Output.err(err, "failed to read root directory: '{s}'", .{Fs.FileSystem.instance.top_level_dir});
-        @panic("Failed to initialize package manager");
-    };
+    ));
+    const root_dir = try root_dir_option.unwrap();
+
+    const cpu_count = bun.getThreadCount();
+    const manager = bun.handleOom(allocator.create(PackageManager));
 
     // var progress = Progress{};
     // var node = progress.start(name: []const u8, estimated_total_items: usize)
@@ -1042,7 +1001,7 @@ pub fn initWithRuntimeOnce(
         .network_task_fifo = NetworkQueue.init(),
         .allocator = allocator,
         .log = log,
-        .root_dir = root_dir.entries,
+        .root_dir = root_dir,
         .env = env,
         .cpu_count = cpu_count,
         .thread_pool = ThreadPool.init(.{
@@ -1110,7 +1069,7 @@ pub fn initWithRuntimeOnce(
         // When using bun, we only do staleness checks once per day
     ) -| std.time.s_per_day;
 
-    if (root_dir.entries.hasComptimeQuery("bun.lockb")) {
+    if (root_dir.hasComptimeQuery("bun.lockb")) {
         switch (manager.lockfile.loadFromCwd(
             manager,
             allocator,
@@ -1123,6 +1082,8 @@ pub fn initWithRuntimeOnce(
     } else {
         manager.lockfile.initEmpty(allocator);
     }
+
+    return manager;
 }
 var cwd_buf: bun.PathBuffer = undefined;
 var root_package_json_path_buf: bun.PathBuffer = undefined;

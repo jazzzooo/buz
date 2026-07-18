@@ -296,7 +296,7 @@ pub const PatchTask = struct {
         // 3. copy the unpatched files into temp dir
         var pkg_install: PackageInstall = .{
             .allocator = bun.default_allocator,
-            .io = this.manager.io,
+            .manager = this.manager,
             .cache_dir = this.callback.apply.cache_dir,
             .cache_dir_subpath = this.callback.apply.cache_dir_subpath_without_patch_hash,
             .destination_dir_subpath = tempdir_name,

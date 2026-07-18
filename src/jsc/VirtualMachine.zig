@@ -748,7 +748,7 @@ pub fn defaultOnUnhandledRejection(this: *jsc.VirtualMachine, _: *JSGlobalObject
 }
 
 pub inline fn packageManager(this: *VirtualMachine) *PackageManager {
-    return this.transpiler.getPackageManager();
+    return this.transpiler.resolver.package_manager orelse @panic("package manager accessed before successful initialization");
 }
 
 pub fn garbageCollect(this: *const VirtualMachine, sync: bool) usize {

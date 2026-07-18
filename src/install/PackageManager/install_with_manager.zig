@@ -561,7 +561,7 @@ pub fn installWithManager(
                         const pending_tasks = this.pendingTaskCount();
 
                         if (PackageManager.verbose_install and pending_tasks > 0) {
-                            if (PackageManager.hasEnoughTimePassedBetweenWaitingMessages()) Output.prettyErrorln("<d>[PackageManager]<r> waiting for {d} tasks\n", .{pending_tasks});
+                            if (this.hasEnoughTimePassedBetweenWaitingMessages()) Output.prettyErrorln("<d>[PackageManager]<r> waiting for {d} tasks\n", .{pending_tasks});
                         }
 
                         return pending_tasks == 0;

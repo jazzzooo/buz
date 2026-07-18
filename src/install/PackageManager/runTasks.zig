@@ -299,7 +299,7 @@ pub fn runTasks(
                         if (manager.options.enable.manifest_cache) {
                             Npm.PackageManifest.Serializer.saveAsync(
                                 &entry.value_ptr.manifest,
-                                manager.io,
+                                manager,
                                 manager.scopeForPackageName(name.slice()),
                                 manager.getTemporaryDirectory().handle,
                                 manager.getCacheDirectory(),
@@ -912,7 +912,7 @@ pub fn runTasks(
                     const repo = git.repo.slice(manager.lockfile.buffers.string_bytes.items);
 
                     const resolved = try Repository.findCommit(
-                        manager.allocator,
+                        manager,
                         manager.env,
                         manager.log,
                         task.data.git_clone.stdDir(),

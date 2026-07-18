@@ -6,7 +6,7 @@ pub const PackageInstall = struct {
     destination_dir_subpath_buf: []u8,
 
     allocator: std.mem.Allocator,
-    io: std.Io,
+    manager: *PackageManager,
 
     progress: ?*Progress,
 
@@ -117,7 +117,7 @@ pub const PackageInstall = struct {
 
         const destination_dir = this.node_modules.openDir(root_node_modules_dir) catch return false;
         defer {
-            if (std.Io.Dir.cwd().handle != destination_dir.handle) destination_dir.close(this.io);
+            if (std.Io.Dir.cwd().handle != destination_dir.handle) destination_dir.close(this.manager.io);
         }
 
         if (comptime bun.Environment.isPosix) {
@@ -378,7 +378,7 @@ pub const PackageInstall = struct {
 
     fn installWithClonefileEachDir(this: *@This(), destination_dir: std.Io.Dir) !Result {
         var cached_package_dir = bun.openDir(this.cache_dir, this.cache_dir_subpath) catch |err| return Result.fail(err, .opening_cache_dir, @errorReturnTrace());
-        defer cached_package_dir.close(this.io);
+        defer cached_package_dir.close(this.manager.io);
         var walker_ = Walker.walk(
             .fromStdDir(cached_package_dir),
             this.allocator,
@@ -434,8 +434,8 @@ pub const PackageInstall = struct {
             }
         };
 
-        var subdir = bun.MakePath.makeOpenPath(this.io, destination_dir, bun.span(this.destination_dir_subpath), .{}) catch |err| return Result.fail(err, .opening_dest_dir, @errorReturnTrace());
-        defer subdir.close(this.io);
+        var subdir = bun.MakePath.makeOpenPath(this.manager.io, destination_dir, bun.span(this.destination_dir_subpath), .{}) catch |err| return Result.fail(err, .opening_dest_dir, @errorReturnTrace());
+        defer subdir.close(this.manager.io);
 
         this.file_count = FileCopier.copy(
             subdir,
@@ -453,7 +453,7 @@ pub const PackageInstall = struct {
             if (strings.indexOfCharZ(this.destination_dir_subpath, std.fs.path.sep)) |slash| {
                 this.destination_dir_subpath_buf[slash] = 0;
                 const subdir = this.destination_dir_subpath_buf[0..slash :0];
-                destination_dir.createDir(this.io, subdir, .default_dir) catch {};
+                destination_dir.createDir(this.manager.io, subdir, .default_dir) catch {};
                 this.destination_dir_subpath_buf[slash] = std.fs.path.sep;
             }
         }
@@ -506,6 +506,7 @@ pub const PackageInstall = struct {
     }
 
     fn initInstallDir(this: *@This(), state: *InstallDirState, destination_dir: std.Io.Dir, method: Method) Result {
+        const io = this.manager.io;
         const destbase = destination_dir;
         const destpath = this.destination_dir_subpath;
 
@@ -530,11 +531,11 @@ pub const PackageInstall = struct {
         state.walker.resolve_unknown_entry_types = true;
 
         if (!Environment.isWindows) {
-            state.subdir = bun.MakePath.makeOpenPath(this.io, destbase, bun.span(destpath), .{
+            state.subdir = bun.MakePath.makeOpenPath(io, destbase, bun.span(destpath), .{
                 .iterate = true,
                 .access_sub_paths = true,
             }) catch |err| {
-                state.cached_package_dir.close(this.io);
+                state.cached_package_dir.close(io);
                 state.walker.deinit();
                 return Result.fail(err, .opening_dest_dir, @errorReturnTrace());
             };
@@ -548,7 +549,7 @@ pub const PackageInstall = struct {
                 (if (e.toSystemErrno()) |sys_err| bun.errnoToZigErr(sys_err) else error.Unexpected)
             else
                 error.NameTooLong;
-            state.cached_package_dir.close(this.io);
+            state.cached_package_dir.close(io);
             state.walker.deinit();
             return Result.fail(err, .opening_dest_dir, null);
         }
@@ -575,7 +576,7 @@ pub const PackageInstall = struct {
                 (if (e.toSystemErrno()) |sys_err| bun.errnoToZigErr(sys_err) else error.Unexpected)
             else
                 error.NameTooLong;
-            state.cached_package_dir.close(this.io);
+            state.cached_package_dir.close(io);
             state.walker.deinit();
             return Result.fail(err, .copying_files, null);
         }
@@ -593,7 +594,7 @@ pub const PackageInstall = struct {
     }
 
     fn installWithCopyfile(this: *@This(), destination_dir: std.Io.Dir) Result {
-        var state = InstallDirState{ .io = this.io };
+        var state = InstallDirState{ .io = this.manager.io };
         const res = this.initInstallDir(&state, destination_dir, .copyfile);
         if (res.isFail()) return res;
         defer state.deinit();
@@ -710,7 +711,7 @@ pub const PackageInstall = struct {
         };
 
         this.file_count = FileCopier.copy(
-            this.io,
+            this.manager.io,
             state.subdir,
             &state.walker,
             this.progress,
@@ -745,6 +746,7 @@ pub const PackageInstall = struct {
     }
 
     const HardLinkWindowsInstallTask = struct {
+        queue: *Queue,
         bytes: []u16,
         src: [:0]bun.OSPathChar,
         dest: [:0]bun.OSPathChar,
@@ -753,16 +755,8 @@ pub const PackageInstall = struct {
         err: ?anyerror = null,
 
         pub const Queue = NewTaskQueue(@This());
-        var queue: Queue = undefined;
 
-        pub fn initQueue() *Queue {
-            queue = Queue{
-                .thread_pool = &PackageManager.get().thread_pool,
-            };
-            return &queue;
-        }
-
-        pub fn init(src: []const bun.OSPathChar, dest: []const bun.OSPathChar, basename: []const bun.OSPathChar) *@This() {
+        pub fn init(queue: *Queue, src: []const bun.OSPathChar, dest: []const bun.OSPathChar, basename: []const bun.OSPathChar) *@This() {
             const allocation_size =
                 (src.len) + 1 + (dest.len) + 1;
 
@@ -779,6 +773,7 @@ pub const PackageInstall = struct {
             remaining = remaining[dest.len + 1 ..];
 
             return @This().new(.{
+                .queue = queue,
                 .bytes = combined,
                 .src = src_,
                 .dest = dest_,
@@ -788,12 +783,15 @@ pub const PackageInstall = struct {
 
         fn runFromThreadPool(task: *bun.jsc.WorkPoolTask) void {
             var self: *@This() = @fieldParentPtr("task", task);
+            const queue = self.queue;
             defer queue.completeOne();
             if (self.run()) |err| {
                 self.err = err;
                 // .monotonic is okay because this value isn't read until all the tasks complete.
                 // Use `cmpxchgStrong` to keep only the first error.
-                _ = queue.errored_task.cmpxchgStrong(null, self, .monotonic, .monotonic);
+                if (queue.errored_task.cmpxchgStrong(null, self, .monotonic, .monotonic) != null) {
+                    self.deinit();
+                }
                 return;
             }
             self.deinit();
@@ -870,7 +868,7 @@ pub const PackageInstall = struct {
     };
 
     fn installWithHardlink(this: *@This(), dest_dir: std.Io.Dir) !Result {
-        var state = InstallDirState{ .io = this.io };
+        var state = InstallDirState{ .io = this.manager.io };
         const res = this.initInstallDir(&state, dest_dir, .hardlink);
         if (res.isFail()) return res;
         defer state.deinit();
@@ -884,9 +882,14 @@ pub const PackageInstall = struct {
                 head1: if (Environment.isWindows) []u16 else void,
                 to_copy_into2: if (Environment.isWindows) []u16 else void,
                 head2: if (Environment.isWindows) []u16 else void,
+                thread_pool: if (Environment.isWindows) *ThreadPool else void,
             ) !u32 {
                 var real_file_count: u32 = 0;
-                var queue = if (Environment.isWindows) HardLinkWindowsInstallTask.initQueue();
+                var queue = if (Environment.isWindows) HardLinkWindowsInstallTask.Queue{ .thread_pool = thread_pool };
+                defer if (comptime Environment.isWindows) {
+                    queue.wait();
+                    if (queue.errored_task.load(.monotonic)) |task| task.deinit();
+                };
 
                 while (try walker.next().unwrap()) |entry| {
                     if (comptime Environment.isPosix) {
@@ -926,7 +929,7 @@ pub const PackageInstall = struct {
                         head2[entry.path.len + (head1.len - to_copy_into2.len)] = 0;
                         const src: [:0]u16 = head2[0 .. entry.path.len + head2.len - to_copy_into2.len :0];
 
-                        queue.push(HardLinkWindowsInstallTask.init(src, dest, entry.basename));
+                        queue.push(HardLinkWindowsInstallTask.init(&queue, src, dest, entry.basename));
                         real_file_count += 1;
                     }
                 }
@@ -936,9 +939,7 @@ pub const PackageInstall = struct {
 
                     // .monotonic is okay because no tasks are running (could be made non-atomic)
                     if (queue.errored_task.load(.monotonic)) |task| {
-                        if (task.err) |err| {
-                            return err;
-                        }
+                        return task.err.?;
                     }
                 }
 
@@ -947,13 +948,14 @@ pub const PackageInstall = struct {
         };
 
         this.file_count = FileCopier.copy(
-            this.io,
+            this.manager.io,
             state.subdir,
             &state.walker,
             state.to_copy_buf,
             if (Environment.isWindows) &state.buf else {},
             state.to_copy_buf2,
             if (Environment.isWindows) &state.buf2 else {},
+            if (Environment.isWindows) &this.manager.thread_pool else {},
         ) catch |err| {
             bun.handleErrorReturnTrace(err, @errorReturnTrace());
 
@@ -972,7 +974,7 @@ pub const PackageInstall = struct {
     }
 
     fn installWithSymlink(this: *@This(), dest_dir: std.Io.Dir) !Result {
-        var state = InstallDirState{ .io = this.io };
+        var state = InstallDirState{ .io = this.manager.io };
         const res = this.initInstallDir(&state, dest_dir, .symlink);
         if (res.isFail()) return res;
         defer state.deinit();
@@ -1091,7 +1093,7 @@ pub const PackageInstall = struct {
         };
 
         this.file_count = FileCopier.copy(
-            this.io,
+            this.manager.io,
             state.subdir,
             &state.walker,
             if (Environment.isWindows) state.to_copy_buf else {},
@@ -1146,6 +1148,7 @@ pub const PackageInstall = struct {
                 const UninstallTask = struct {
                     pub const new = bun.TrivialNew(@This());
 
+                    manager: *PackageManager,
                     absolute_path: []const u8,
                     task: jsc.WorkPoolTask = .{ .callback = &run },
 
@@ -1153,8 +1156,8 @@ pub const PackageInstall = struct {
                         var unintall_task: *@This() = @fieldParentPtr("task", task);
                         var debug_timer = bun.Output.DebugTimer.start();
                         defer {
-                            PackageManager.get().decrementPendingTasks();
-                            PackageManager.get().wake();
+                            unintall_task.manager.decrementPendingTasks();
+                            unintall_task.manager.wake();
                         }
 
                         defer unintall_task.deinit();
@@ -1172,7 +1175,7 @@ pub const PackageInstall = struct {
                         };
                         defer bun.FD.fromStdDir(dir).close();
 
-                        dir.deleteTree(PackageManager.get().io, basename) catch |err| {
+                        dir.deleteTree(unintall_task.manager.io, basename) catch |err| {
                             if (comptime Environment.isDebug or Environment.enable_asan) {
                                 Output.debugWarn("Failed to delete {s} in {s}: {s}", .{ basename, dirname, @errorName(err) });
                             }
@@ -1190,10 +1193,11 @@ pub const PackageInstall = struct {
                     }
                 };
                 var task = UninstallTask.new(.{
+                    .manager = this.manager,
                     .absolute_path = bun.handleOom(bun.default_allocator.dupeSentinel(u8, bun.path.joinAbsString(FileSystem.instance.top_level_dir, &.{ this.node_modules.path.items, temp_path }, .auto), 0)),
                 });
-                PackageManager.get().incrementPendingTasks(1);
-                PackageManager.get().thread_pool.schedule(bun.ThreadPool.Batch.from(&task.task));
+                this.manager.incrementPendingTasks(1);
+                this.manager.thread_pool.schedule(bun.ThreadPool.Batch.from(&task.task));
             },
         }
     }
@@ -1259,7 +1263,7 @@ pub const PackageInstall = struct {
         // cache_dir_subpath in here is actually the full path to the symlink pointing to the linked package
         const symlinked_path = this.cache_dir_subpath;
         var to_buf: bun.PathBuffer = undefined;
-        const to_path_len = this.cache_dir.realPathFile(this.io, symlinked_path, &to_buf) catch |err|
+        const to_path_len = this.cache_dir.realPathFile(this.manager.io, symlinked_path, &to_buf) catch |err|
             return Result.fail(err, .linking_dependency, @errorReturnTrace());
         const to_path = to_buf[0..to_path_len];
 
@@ -1327,16 +1331,16 @@ pub const PackageInstall = struct {
             }
         } else {
             const dest_dir = if (subdir) |dir| brk: {
-                break :brk bun.MakePath.makeOpenPath(this.io, destination_dir, dir, .{}) catch |err| return Result.fail(err, .linking_dependency, @errorReturnTrace());
+                break :brk bun.MakePath.makeOpenPath(this.manager.io, destination_dir, dir, .{}) catch |err| return Result.fail(err, .linking_dependency, @errorReturnTrace());
             } else destination_dir;
             defer {
-                if (subdir != null) dest_dir.close(this.io);
+                if (subdir != null) dest_dir.close(this.manager.io);
             }
 
             const dest_dir_path = bun.getFdPath(.fromStdDir(dest_dir), &dest_buf) catch |err| return Result.fail(err, .linking_dependency, @errorReturnTrace());
 
             const target = Path.relative(dest_dir_path, to_path);
-            dest_dir.symLink(this.io, target, dest, .{}) catch |err| return Result.fail(err, .linking_dependency, null);
+            dest_dir.symLink(this.manager.io, target, dest, .{}) catch |err| return Result.fail(err, .linking_dependency, null);
         }
 
         if (isDanglingSymlink(symlinked_path)) return Result.fail(error.DanglingSymlink, .linking_dependency, @errorReturnTrace());

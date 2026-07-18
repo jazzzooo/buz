@@ -1186,9 +1186,7 @@ pub const Printer = struct {
         };
 
         const entries_option = try fs.fs.readDirectory(fs.top_level_dir, null, 0, true);
-        if (entries_option.* == .err) {
-            return entries_option.err.canonical_error;
-        }
+        const root_dir = try entries_option.unwrap();
 
         var env_loader: *DotEnv.Loader = brk: {
             const map = try allocator.create(DotEnv.Map);
@@ -1201,7 +1199,7 @@ pub const Printer = struct {
         };
 
         try env_loader.loadProcess();
-        try env_loader.load(entries_option.entries, &[_][]u8{}, .production, false);
+        try env_loader.load(root_dir, &[_][]u8{}, .production, false);
         var log = logger.Log.init(allocator);
         try options.load(
             allocator,

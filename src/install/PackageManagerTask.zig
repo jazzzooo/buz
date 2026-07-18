@@ -177,7 +177,7 @@ pub fn callback(task: *ThreadPool.Task) void {
             var attempt: u8 = 1;
             const dir = brk: {
                 if (Repository.tryHTTPS(url)) |https| break :brk Repository.download(
-                    manager.allocator,
+                    manager,
                     this.request.git_clone.env,
                     &this.log,
                     manager.getCacheDirectory(),
@@ -204,7 +204,7 @@ pub fn callback(task: *ThreadPool.Task) void {
                 };
                 break :brk null;
             } orelse if (Repository.trySSH(url)) |ssh| Repository.download(
-                manager.allocator,
+                manager,
                 this.request.git_clone.env,
                 &this.log,
                 manager.getCacheDirectory(),
@@ -228,7 +228,7 @@ pub fn callback(task: *ThreadPool.Task) void {
         .git_checkout => {
             const git_checkout = &this.request.git_checkout;
             const data = Repository.checkout(
-                manager.allocator,
+                manager,
                 this.request.git_checkout.env,
                 &this.log,
                 manager.getCacheDirectory(),

@@ -419,6 +419,7 @@ pub const LoadResult = struct {
 // This is a global so even if multiple resolvers are created, the mutex will still work
 var resolver_Mutex: Mutex = undefined;
 var resolver_Mutex_loaded: bool = false;
+var package_manager_init_mutex: Mutex = .{};
 
 const BinFolderArray = bun.BoundedArray(string, 128);
 var bin_folders: BinFolderArray = undefined;
@@ -536,24 +537,28 @@ pub const Resolver = struct {
     /// When this is null, it is as if it is set to `&.{ path.dirname(referrer) }`.
     custom_dir_paths: ?[]const bun.String = null,
 
-    pub fn getPackageManager(this: *Resolver) *PackageManager {
-        return this.package_manager orelse brk: {
-            bun.HTTPThread.init(&.{});
-            const pm = PackageManager.initWithRuntime(
-                this.log,
-                this.opts.install,
+    pub fn ensurePackageManager(this: *Resolver) !*PackageManager {
+        package_manager_init_mutex.lock();
+        defer package_manager_init_mutex.unlock();
 
-                // This cannot be the threadlocal allocator. It goes to the HTTP thread.
-                bun.default_allocator,
+        if (this.package_manager) |pm| return pm;
 
-                this.io,
-                .{},
-                this.env_loader.?,
-            );
-            pm.onWake = this.onWakePackageManager;
-            this.package_manager = pm;
-            break :brk pm;
-        };
+        this.fs.fs.bustEntriesFailure(this.fs.top_level_dir);
+        const pm = try PackageManager.initWithRuntime(
+            this.log,
+            this.opts.install,
+
+            // This cannot be the threadlocal allocator. It goes to the HTTP thread.
+            bun.default_allocator,
+
+            this.io,
+            .{},
+            this.env_loader.?,
+        );
+        bun.HTTPThread.init(&.{});
+        pm.onWake = this.onWakePackageManager;
+        this.package_manager = pm;
+        return pm;
     }
 
     pub inline fn usePackageManager(self: *const ThisResolver) bool {
@@ -1975,7 +1980,18 @@ pub const Resolver = struct {
             load_module_from_cache: {
                 // If the source directory doesn't have a node_modules directory, we can
                 // check the global cache directory for a package.json file.
-                const manager = r.getPackageManager();
+                const manager = r.ensurePackageManager() catch |err| {
+                    bun.handleOom(r.log.addResolveError(
+                        null,
+                        logger.Range.None,
+                        r.allocator,
+                        "Cannot read directory \"{1s}\": {2s} while resolving \"{0s}\"",
+                        .{ import_path, r.fs.top_level_dir, @errorName(err) },
+                        kind,
+                        err,
+                    ));
+                    return .{ .failure = err };
+                };
                 var dependency_version = Dependency.Version{};
                 var dependency_behavior: Dependency.Behavior = .{ .prod = true };
                 var string_buf = esm.version;
@@ -2068,6 +2084,7 @@ pub const Resolver = struct {
 
                     // unsupported or not found dependency, we might need to install it to the cache
                     switch (r.enqueueDependencyToResolve(
+                        manager,
                         dir_info.package_json_for_dependencies orelse dir_info.package_json,
                         esm,
                         dependency_behavior,
@@ -2352,6 +2369,7 @@ pub const Resolver = struct {
 
     fn enqueueDependencyToResolve(
         r: *ThisResolver,
+        pm: *PackageManager,
         package_json_: ?*PackageJSON,
         esm: ESModule.Package,
         behavior: Dependency.Behavior,
@@ -2364,7 +2382,6 @@ pub const Resolver = struct {
         }
 
         const input_package_id = input_package_id_.*;
-        var pm = r.getPackageManager();
         if (comptime Environment.allow_assert) {
             // we should never be trying to resolve a dependency that is already resolved
             assert(pm.lockfile.resolvePackageFromNameAndVersion(esm.name, version) == null);

@@ -289,7 +289,7 @@ pub fn installHoistedPackages(
 
                     if (PackageManager.verbose_install and closure.manager.pendingTaskCount() > 0) {
                         const pending_task_count = closure.manager.pendingTaskCount();
-                        if (pending_task_count > 0 and PackageManager.hasEnoughTimePassedBetweenWaitingMessages()) {
+                        if (pending_task_count > 0 and closure.manager.hasEnoughTimePassedBetweenWaitingMessages()) {
                             Output.prettyErrorln("<d>[PackageManager]<r> waiting for {d} tasks\n", .{pending_task_count});
                         }
                     }

@@ -364,7 +364,7 @@ pub fn enqueueDependencyToRoot(
                                 };
 
                                 if (PackageManager.verbose_install and manager.pendingTaskCount() > 0) {
-                                    if (PackageManager.hasEnoughTimePassedBetweenWaitingMessages()) Output.prettyErrorln("<d>[PackageManager]<r> waiting for {d} tasks\n", .{closure.manager.pendingTaskCount()});
+                                    if (manager.hasEnoughTimePassedBetweenWaitingMessages()) Output.prettyErrorln("<d>[PackageManager]<r> waiting for {d} tasks\n", .{closure.manager.pendingTaskCount()});
                                 }
                             }
 
@@ -880,7 +880,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
 
             if (this.git_repositories.get(clone_id)) |repo_fd| {
                 const resolved = try Repository.findCommit(
-                    this.allocator,
+                    this,
                     this.env,
                     this.log,
                     repo_fd.stdDir(),

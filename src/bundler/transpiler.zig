@@ -89,10 +89,6 @@ pub const Transpiler = struct {
 
     pub const isCacheEnabled = false;
 
-    pub inline fn getPackageManager(this: *Transpiler) *PackageManager {
-        return this.resolver.getPackageManager();
-    }
-
     pub fn setLog(this: *Transpiler, log: *logger.Log) void {
         this.log = log;
         this.linker.log = log;
@@ -1433,7 +1429,6 @@ const runtime = @import("../js_parser/runtime.zig");
 const std = @import("std");
 const DataURL = @import("../resolver/data_url.zig").DataURL;
 const MacroRemap = @import("../resolver/package_json.zig").MacroMap;
-const PackageManager = @import("../install/install.zig").PackageManager;
 const SystemTimer = @import("../perf/system_timer.zig").Timer;
 const URL = @import("../url/url.zig").URL;
 const default_macro_js_value = @import("../bundler_jsc/PluginRunner.zig").default_macro_js_value;
