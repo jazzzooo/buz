@@ -1512,6 +1512,19 @@ pub fn addLink(
     run.addArgs(&.{"-o"});
     const exe = run.addOutputFileArg(exe_name);
 
+    // Debug: mold splits DWARF and the symbol table into a sibling .dbg,
+    // written in the background by a detached child and found through the
+    // embedded .gnu_debuglink. The step must not capture stdio: the writer
+    // inherits the pipes, and a captured step would wait for their EOF. As
+    // a side-effect step the link also reuses one output directory rather
+    // than accreting a gigabyte-sized one per --watch cycle.
+    const dbg_name = b.fmt("{s}.dbg", .{exe_name});
+    const debug_file: ?LazyPath = if (opts.mode == .debug) dbg: {
+        const dbg_file = run.addPrefixedOutputFileArg("--separate-debug-file=", dbg_name);
+        run.stdio = .inherit;
+        break :dbg dbg_file;
+    } else null;
+
     run.addArgs(&.{ "--dynamic-linker", "/lib64/ld-linux-x86-64.so.2" });
     run.addArgs(&.{ gcc.crt1, gcc.crti, gcc.crtbegin });
 
@@ -1565,6 +1578,10 @@ pub fn addLink(
     install.addFileArg(b.path("src/build/install-exe.ts"));
     install.addFileArg(exe);
     install.addFileArg(.{ .relative = .{ .base = .install_bin, .sub_path = exe_name } });
+    if (debug_file) |f| {
+        install.addFileArg(f);
+        install.addFileArg(.{ .relative = .{ .base = .install_bin, .sub_path = dbg_name } });
+    }
     install.has_side_effects = true;
     install.step.name = b.fmt("install {s}", .{exe_name});
     install.step.dependOn(cg.sync_step);
