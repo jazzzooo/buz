@@ -865,9 +865,12 @@ static struct sigaction previous_actions[NSIG];
     M(SIGIO);
 
 #if OS(LINUX)
+// SIGPWR is deliberately absent: it is JSC's thread-suspend signal on Linux.
+// A forwarder would swallow suspensions for the spawn's duration and forward
+// them as a process-directed SIGPWR that kills the child (default action:
+// terminate).
 #define FOR_EACH_LINUX_ONLY_SIGNAL(M) \
     M(SIGPOLL);                       \
-    M(SIGPWR);                        \
     M(SIGSTKFLT);
 
 #endif
