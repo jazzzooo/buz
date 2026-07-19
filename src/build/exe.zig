@@ -1,14 +1,15 @@
 //! The `zig build` graph for the bun executable: codegen (pinned bootstrap
 //! bun) → C/C++ (zig cc) → link (pinned mold) → smoke test. x86_64-linux.
 //!
-//! Downloaded inputs are pinned in build.zig.zon: the bootstrap bun, the
-//! WebKit prebuilts, Node.js headers, mold, and the vendored dep source
-//! archives. The host is assumed to be a native FHS glibc Linux: gcc supplies
-//! libstdc++ and the crt objects (the WebKit prebuilt's GNU ABI), headers
-//! come from /usr/include, the dynamic linker is /lib64/ld-linux-x86-64.so.2,
-//! and git applies dep patches. Per-dep compile recipes live in
-//! src/build/deps/; this file owns policy (per-mode base flags, include
-//! chains, the link line, output layout).
+//! Downloaded inputs are pinned in build.zig.zon: the bootstrap bun, Node.js
+//! headers, mold, and the ICU and dep source archives; WebKit is vendored
+//! in-tree. C++ compiles against zig's bundled libc++, and the C++ runtime
+//! in the link comes from zig's cache (discoverZigCxxRuntime). The host is
+//! assumed to be a native FHS glibc Linux: headers come from /usr/include,
+//! the dynamic linker is /lib64/ld-linux-x86-64.so.2, and git applies dep
+//! patches. Per-dep compile recipes live in src/build/deps/; this file owns
+//! policy (per-mode base flags, include chains, the link line, output
+//! layout).
 //!
 //! Outputs land in zig-out/bin. Codegen is consumed through stable
 //! directories under build/zig/<mode>/, mirrored copy-if-changed from the
@@ -142,6 +143,11 @@ pub const Options = struct {
     /// commits don't invalidate compiles.
     sha: ?[]const u8,
     target: Build.ResolvedTarget,
+    /// WTF/bmalloc/JSC compiled from vendor/webkit plus the vendored header
+    /// set.
+    webkit: *const @import("webkit.zig").Ctx,
+    /// ICU compiled from the pinned source tarball.
+    icu: *const @import("icu.zig").Ctx,
 };
 
 /// What downstream consumers need from codegen.
@@ -164,7 +170,7 @@ pub const DepPkgs = struct {
     bun: LazyPath, // bootstrap bun executable
     bun_dir_abs: []const u8, // its directory (prepended to PATH for scripts)
     mold: LazyPath, // pinned linker
-    webkit: *Build.Dependency,
+    icu: *Build.Dependency, // ICU sources (see src/build/icu.zig)
     /// Node.js headers with the bundled openssl/uv headers deleted (they
     /// would shadow BoringSSL's and bun's own uv shims).
     nodejs: LazyPath,
@@ -193,7 +199,8 @@ pub fn resolveDeps(b: *Build, mode: Mode) ?DepPkgs {
     const arena = b.graph.arena;
     var ok = true;
     const bootstrap = lazyDep(b, "bun_bootstrap", &ok);
-    const webkit = lazyDep(b, if (mode == .debug) "webkit_debug" else "webkit_release", &ok);
+    _ = mode;
+    const icu = lazyDep(b, "icu", &ok);
     const nodejs = lazyDep(b, "nodejs_headers", &ok);
     const mold = lazyDep(b, "mold", &ok);
     var pkgs: std.StringArrayHashMapUnmanaged(*Build.Dependency) = .empty;
@@ -228,7 +235,7 @@ pub fn resolveDeps(b: *Build, mode: Mode) ?DepPkgs {
         .bun = bun_exe,
         .bun_dir_abs = bun_dir_abs,
         .mold = mold.?.path("bin/mold"),
-        .webkit = webkit.?,
+        .icu = icu.?,
         .nodejs = nodejs_headers,
         .srcs = srcs,
         .srcs_abs = srcs_abs,
@@ -301,7 +308,6 @@ const version_sources = [_][2][]const u8{
     .{ "TINYCC", "tinycc" },
     .{ "BORINGSSL", "boringssl" },
     .{ "LSQUIC", "lsquic" },
-    .{ "WEBKIT", "webkit_release" },
 };
 
 /// The pinned URL of a build.zig.zon dependency. Textual scan rather than a
@@ -330,6 +336,19 @@ fn zonUrl(b: *Build, dep_name: []const u8) []const u8 {
 /// The ref a pinned source-archive URL points at: the path segment before
 /// ".tar.gz"/".zip" for /archive/<ref> URLs, the "autobuild-<hash>" tag for
 /// WebKit, "vX.Y.Z" for the Node headers.
+/// The oven-sh/WebKit commit recorded in vendor/webkit/VENDOR.
+fn webkitVendorCommit(b: *Build) []const u8 {
+    const arena = b.graph.arena;
+    const io = b.graph.io;
+    var dir = std.Io.Dir.openDirAbsolute(io, rootJoin(b, "vendor/webkit"), .{}) catch @panic("open vendor/webkit");
+    defer dir.close(io);
+    const text = dir.readFileAlloc(io, "VENDOR", arena, .limited(64 * 1024)) catch @panic("read vendor/webkit/VENDOR");
+    const marker = "commit: ";
+    const start = (std.mem.indexOf(u8, text, marker) orelse @panic("no commit in VENDOR")) + marker.len;
+    const end = std.mem.indexOfAnyPos(u8, text, start, " \n") orelse text.len;
+    return text[start..end];
+}
+
 fn zonRef(b: *Build, dep_name: []const u8) []const u8 {
     const url = zonUrl(b, dep_name);
     if (std.mem.indexOf(u8, url, "autobuild-")) |i| {
@@ -342,7 +361,7 @@ fn zonRef(b: *Build, dep_name: []const u8) []const u8 {
     }
     const last_slash = std.mem.lastIndexOfScalar(u8, url, '/').?;
     var ref = url[last_slash + 1 ..];
-    for ([_][]const u8{ ".tar.gz", ".tar.xz", ".zip" }) |suffix| {
+    for ([_][]const u8{ ".tar.gz", ".tar.xz", ".tgz", ".zip" }) |suffix| {
         if (std.mem.endsWith(u8, ref, suffix)) ref = ref[0 .. ref.len - suffix.len];
     }
     return ref;
@@ -702,8 +721,6 @@ pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options
         list.append(arena, "-Wno-date-time") catch @panic("OOM");
         break :blk list.items;
     };
-    const gcc = discoverGnuToolchain(b);
-
     const gen_dirs = makeGenDirs(b, deps);
     const versions_dir = makeDepVersionsHeader(b, opts);
 
@@ -721,14 +738,13 @@ pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options
         const lib_cxx = newCppLib(b, "bun-cxx", opts, true, &.{});
         const lib_c = newCppLib(b, "bun-c", opts, false, &.{});
         for ([2]*Step.Compile{ lib_cxx, lib_c }) |lib| {
-            for (recipes.bun_includes) |inc| addInclude(b, lib, inc, deps, cg, &gen_dirs, versions_dir);
+            for (recipes.bun_includes) |inc| addInclude(b, lib, inc, deps, cg, opts.webkit, &gen_dirs, versions_dir);
             lib.step.dependOn(cg.sync_step);
         }
 
         var cxx_flags: std.ArrayList([]const u8) = .empty;
         cxx_flags.appendSlice(arena, base_flags) catch @panic("OOM");
         cxx_flags.appendSlice(arena, bun_cxx_flags) catch @panic("OOM");
-        cxx_flags.appendSlice(arena, gcc.cxx_flags) catch @panic("OOM");
         // Extern-template s_info instantiations whose definitions live in
         // the JSC library (JSBuffer.cpp).
         cxx_flags.append(arena, "-Wno-undefined-var-template") catch @panic("OOM");
@@ -742,7 +758,7 @@ pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options
         if (opts.mode == .debug) {
             cxx_flags.append(arena, "-include") catch @panic("OOM");
             cxx_flags.append(arena, std.fs.path.join(arena, &.{ cg.pch_install_abs, "root-pch.h" }) catch @panic("OOM")) catch @panic("OOM");
-            const pch_step = addPch(b, deps, cg, cxx_flags.items, &gen_dirs, versions_dir);
+            const pch_step = addPch(b, deps, cg, opts.webkit, cxx_flags.items, &gen_dirs, versions_dir);
             lib_cxx.step.dependOn(pch_step);
         }
 
@@ -806,10 +822,7 @@ pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options
                     flags.append(arena, group_flags[i]) catch @panic("OOM");
                 }
             }
-            if (cxx_lang) {
-                flags.appendSlice(arena, gcc.cxx_flags) catch @panic("OOM");
-            }
-            for (group.includes) |inc| addInclude(b, lib, inc, deps, cg, &gen_dirs, versions_dir);
+            for (group.includes) |inc| addInclude(b, lib, inc, deps, cg, opts.webkit, &gen_dirs, versions_dir);
             for (group.files) |f| {
                 const file: LazyPath = if (root) |r| r.path(b, f) else b.path(f);
                 const language: Build.Module.CSourceLanguage = if (std.mem.endsWith(u8, f, ".S"))
@@ -835,6 +848,7 @@ fn addPch(
     b: *Build,
     deps: *const DepPkgs,
     cg: *const Codegen,
+    wk: *const @import("webkit.zig").Ctx,
     cxx_flags: []const []const u8,
     gen_dirs: *const std.StringArrayHashMapUnmanaged(LazyPath),
     versions_dir: LazyPath,
@@ -845,9 +859,10 @@ fn addPch(
 
     // clang validates PCH/TU identity on target triple, __PIC__ level, and
     // include environment. -target: the versioned triple the TU modules
-    // resolve to; -nolibc: the TU modules build with link_libc=false.
+    // resolve to; the default zig c++ include set matches the modules'
+    // link_libc + link_libcpp environment.
     const triple = cppTarget(b, &.{}).result.zigTriple(arena) catch @panic("OOM");
-    run.addArgs(&.{ "-nolibc", "-target", triple });
+    run.addArgs(&.{ "-target", triple, "-march=native" });
 
     // The TU flags, minus the -include of the header being precompiled.
     var i: usize = 0;
@@ -856,12 +871,17 @@ fn addPch(
             i += 1;
             continue;
         }
+        // The CLI treats these as a module-level pic=false, which zig
+        // rejects for glibc targets; the cc1 relocation model below produces
+        // the same __PIC__ == 0 the TU compiles get from them.
+        if (std.mem.eql(u8, cxx_flags[i], "-fno-pic") or std.mem.eql(u8, cxx_flags[i], "-fno-pie")) continue;
         run.addArg(cxx_flags[i]);
     }
+    // The relocation model rides in via the shared base flags; the pic-level
+    // override additionally clears the __PIC__ macro the way the TUs'
+    // -fno-pic (filtered above) does.
+    run.addArgs(&.{ "-Xclang", "-pic-level", "-Xclang", "0" });
     run.addArgs(&.{ "-fpch-instantiate-templates", "-Xclang", "-fno-pch-timestamp" });
-    // Tune is also validated; the TU compiles have none, while the driver
-    // would add -tune-cpu generic for -march. Last cc1 arg wins.
-    run.addArgs(&.{ "-Xclang", "-tune-cpu", "-Xclang", "" });
 
     for (recipes.bun_includes) |inc| {
         switch (inc) {
@@ -874,7 +894,10 @@ fn addPch(
                 run.addPrefixedDirectoryArg("-I", if (g[1].len == 0) dir else dir.path(b, g[1]));
             },
             .repo => |p| run.addPrefixedDirectoryArg("-I", b.path(p)),
-            .webkit => |p| run.addPrefixedDirectoryArg("-I", deps.webkit.path(p)),
+            .webkit => {
+                for (wk.includes) |dir| run.addPrefixedDirectoryArg("-I", dir);
+                run.step.dependOn(wk.sync);
+            },
             .nodejs => |p| run.addPrefixedDirectoryArg("-I", deps.nodejs.path(b, p)),
             // Stable dir, so the depfile keys on generated-header content
             // rather than on codegen step dirs whose paths churn.
@@ -920,15 +943,14 @@ fn newCppLib(b: *Build, name: []const u8, opts: Options, is_cxx: bool, extra_fea
     const mod = b.createModule(.{
         .target = cppTarget(b, extra_features),
         .optimize = if (opts.mode == .debug) .Debug else .ReleaseFast,
-        // C++ modules must not use zig's libc headers: zig's -isystem dirs
-        // precede user flags, which breaks libstdc++'s include_next. Their
-        // include chain comes from discoverGnuToolchain() instead.
-        .link_libc = !is_cxx,
+        // The whole C++ world (WebKit, ICU, deps, bun-cxx) compiles against
+        // zig's bundled libc++; the C++ ABI must stay uniform across it.
+        // link_libcpp does not imply the libc headers.
+        .link_libc = true,
+        .link_libcpp = is_cxx,
         // Sanitizers are opt-in; zig defaults debug C/C++ to `undefined`.
         .sanitize_c = .off,
     });
-    // The C++ ABI must match the WebKit prebuilt (GNU libstdc++); zig's
-    // bundled libc++ stays out entirely.
     const lib = b.addLibrary(.{
         .name = name,
         .root_module = mod,
@@ -941,18 +963,17 @@ fn newCppLib(b: *Build, name: []const u8, opts: Options, is_cxx: bool, extra_fea
     return lib;
 }
 
-/// Target for C/C++ translation units: the host OS/ABI (native glibc, the
-/// world the WebKit prebuilt links against) at the haswell baseline, plus
-/// per-group SIMD features.
+/// Target for C/C++ translation units: the native host, plus per-group SIMD
+/// features.
 ///
 /// Per-file -m flags alone do not work under zig's compile step: it emits the
 /// module CPU's complete feature list as cc1-level -target-feature flags,
 /// which override anything the clang driver derives from -m options. SIMD
 /// variant groups therefore get their features baked into the module target.
-fn cppTarget(b: *Build, extra_features: []const []const u8) Build.ResolvedTarget {
+pub fn cppTarget(b: *Build, extra_features: []const []const u8) Build.ResolvedTarget {
     var query = b.graph.host.query;
     query.cpu_arch = .x86_64;
-    query.cpu_model = .{ .explicit = &std.Target.x86.cpu.haswell };
+    query.cpu_model = .native;
     var add = std.Target.Cpu.Feature.Set.empty;
     for (extra_features) |name| {
         const feature = std.meta.stringToEnum(std.Target.x86.Feature, name) orelse
@@ -982,85 +1003,69 @@ fn groupFeatures(b: *Build, flags: []const []const u8) []const []const u8 {
     return out.items;
 }
 
-const GnuToolchain = struct {
-    cxx_flags: []const []const u8,
-    libstdcxx: []const u8,
-    libgcc: []const u8,
-    libgcc_eh: []const u8,
-    libatomic: []const u8,
+pub const ZigCxxRuntime = struct {
     crt1: []const u8,
-    crti: []const u8,
-    crtn: []const u8,
-    crtbegin: []const u8,
-    crtend: []const u8,
+    libcxxabi: []const u8,
+    libcxx: []const u8,
+    libunwind: []const u8,
+    compiler_rt: []const u8,
 };
 
-/// GNU toolchain pieces: libstdc++ headers + static libs (the C++ ABI of the
-/// WebKit prebuilt) and the crt objects for the link.
-fn discoverGnuToolchain(b: *Build) GnuToolchain {
+/// The static C++ runtime pieces zig links for -lc++, discovered by parsing
+/// a --verbose-link of a trivial program (they live at content-hashed global
+/// cache paths).
+pub fn discoverZigCxxRuntime(b: *Build) ZigCxxRuntime {
     const arena = b.graph.arena;
-    if (gnu_toolchain_cache) |c| return c;
-
-    const file = struct {
-        fn find(b_: *Build, name: []const u8) []const u8 {
-            const out = b_.run(&.{ "gcc", b_.fmt("-print-file-name={s}", .{name}) });
-            const p = std.mem.trim(u8, out, " \n\r");
-            if (!std.fs.path.isAbsolute(p)) std.debug.panic("gcc could not locate {s} (install gcc)", .{name});
-            return b_.graph.arena.dupe(u8, p) catch @panic("OOM");
+    if (zig_cxx_runtime_cache) |c| return c;
+    const io = b.graph.io;
+    const dir_abs = rootJoin(b, ".zig-cache");
+    var dir = std.Io.Dir.openDirAbsolute(io, dir_abs, .{}) catch @panic("open .zig-cache");
+    defer dir.close(io);
+    dir.writeFile(io, .{ .sub_path = "cxx-runtime-probe.cpp", .data = "int main(){return 0;}\n" }) catch @panic("write cxx probe");
+    // --verbose-link prints to stderr.
+    const out = b.run(&.{
+        "sh",
+        "-c",
+        b.fmt(
+            // native: crt1.o must match the host glibc the binary links
+            // against (the generic target's crt1 references the pre-2.34
+            // __libc_csu_* symbols).
+            "exec \"$0\" build-exe -target native -O ReleaseFast -lc++ --verbose-link -femit-bin={s}/cxx-runtime-probe {s}/cxx-runtime-probe.cpp 2>&1",
+            .{ dir_abs, dir_abs },
+        ),
+        b.graph.zig_exe,
+    });
+    var crt1: ?[]const u8 = null;
+    var libcxxabi: ?[]const u8 = null;
+    var libcxx: ?[]const u8 = null;
+    var libunwind: ?[]const u8 = null;
+    var compiler_rt: ?[]const u8 = null;
+    var it = std.mem.tokenizeAny(u8, out, " \n\r");
+    while (it.next()) |tok| {
+        inline for (.{
+            .{ "crt1.o", &crt1 },
+            .{ "libc++abi.a", &libcxxabi },
+            .{ "libc++.a", &libcxx },
+            .{ "libunwind.a", &libunwind },
+            .{ "libcompiler_rt.a", &compiler_rt },
+        }) |pair| {
+            if (std.mem.endsWith(u8, tok, "/" ++ pair[0])) {
+                pair[1].* = arena.dupe(u8, tok) catch @panic("OOM");
+            }
         }
-    }.find;
-
-    const ver_out = b.run(&.{ "gcc", "-dumpversion" });
-    const full_ver = std.mem.trim(u8, ver_out, " \n\r");
-    const major = arena.dupe(u8, full_ver[0 .. std.mem.indexOfScalar(u8, full_ver, '.') orelse full_ver.len]) catch @panic("OOM");
-    const triple_out = b.run(&.{ "gcc", "-dumpmachine" });
-    const triple = arena.dupe(u8, std.mem.trim(u8, triple_out, " \n\r")) catch @panic("OOM");
-
-    const resource_out = b.run(&.{ b.graph.zig_exe, "cc", "-print-resource-dir" });
-    const resource_dir = arena.dupe(u8, std.mem.trim(u8, resource_out, " \n\r")) catch @panic("OOM");
-
-    const inc = b.fmt("/usr/include/c++/{s}", .{major});
-    var flags: std.ArrayList([]const u8) = .empty;
-    flags.appendSlice(arena, &.{
-        "-nostdinc++",
-        "-isystem",
-        inc,
-        "-isystem",
-        b.fmt("{s}/{s}", .{ inc, triple }),
-        "-isystem",
-        b.fmt("{s}/backward", .{inc}),
-        // C++ modules build with link_libc=false (see newCppLib), so the rest
-        // of the chain is explicit, in the system compiler's order: clang
-        // builtin headers, then the system libc. libstdc++'s
-        // include_next<stdlib.h> needs the libc dir after the C++ dirs.
-        "-isystem",
-        b.fmt("{s}/include", .{resource_dir}),
-        // Sanitizer ABI headers, which zig does not ship (highway's abort.cc
-        // includes one unconditionally; the call it declares is only made
-        // under sanitizer builds).
-        "-isystem",
-        rootJoin(b, "src/build/assets/include"),
-        "-isystem",
-        "/usr/include",
-    }) catch @panic("OOM");
-
-    const paths: GnuToolchain = .{
-        .cxx_flags = flags.items,
-        .libstdcxx = file(b, "libstdc++.a"),
-        .libgcc = file(b, "libgcc.a"),
-        .libgcc_eh = file(b, "libgcc_eh.a"),
-        .libatomic = file(b, "libatomic.a"),
-        .crt1 = file(b, "crt1.o"),
-        .crti = file(b, "crti.o"),
-        .crtn = file(b, "crtn.o"),
-        .crtbegin = file(b, "crtbegin.o"),
-        .crtend = file(b, "crtend.o"),
+    }
+    const rt: ZigCxxRuntime = .{
+        .crt1 = crt1 orelse @panic("cxx runtime discovery: no crt1.o in link line"),
+        .libcxxabi = libcxxabi orelse @panic("cxx runtime discovery: no libc++abi.a in link line"),
+        .libcxx = libcxx orelse @panic("cxx runtime discovery: no libc++.a in link line"),
+        .libunwind = libunwind orelse @panic("cxx runtime discovery: no libunwind.a in link line"),
+        .compiler_rt = compiler_rt orelse @panic("cxx runtime discovery: no libcompiler_rt.a in link line"),
     };
-    gnu_toolchain_cache = paths;
-    return paths;
+    zig_cxx_runtime_cache = rt;
+    return rt;
 }
 
-var gnu_toolchain_cache: ?GnuToolchain = null;
+var zig_cxx_runtime_cache: ?ZigCxxRuntime = null;
 
 /// Generated per-dep config headers (the `gen` include kind): substituted
 /// .in templates, snapshotted configs, tinycc's tccdefs_.h.
@@ -1177,6 +1182,8 @@ fn makeDepVersionsHeader(b: *Build, opts: Options) LazyPath {
         entries.append(arena, .{ kv[0], zonRef(b, kv[1]) }) catch @panic("OOM");
     }
     entries.appendSlice(arena, &.{
+        .{ "WEBKIT", webkitVendorCommit(b) },
+        .{ "ICU", zonRef(b, "icu") },
         .{ "BUN_VERSION", opts.version },
         .{ "NODEJS_COMPAT_VERSION", nodejsVersionFromZon(b) },
         .{ "UWS", sha },
@@ -1220,6 +1227,7 @@ fn addInclude(
     inc: recipes.Include,
     deps: *const DepPkgs,
     cg: *const Codegen,
+    wk: *const @import("webkit.zig").Ctx,
     gen_dirs: *const std.StringArrayHashMapUnmanaged(LazyPath),
     versions_dir: LazyPath,
 ) void {
@@ -1233,7 +1241,10 @@ fn addInclude(
             lib.root_module.addIncludePath(if (g[1].len == 0) dir else dir.path(b, g[1]));
         },
         .repo => |p| lib.root_module.addIncludePath(b.path(p)),
-        .webkit => |p| lib.root_module.addIncludePath(deps.webkit.path(p)),
+        .webkit => {
+            for (wk.includes) |dir| lib.root_module.addIncludePath(dir);
+            lib.step.dependOn(wk.sync);
+        },
         .nodejs => |p| lib.root_module.addIncludePath(deps.nodejs.path(b, p)),
         // The stable synced dir, so compile caches key on generated-file
         // content rather than on cache-dir paths that churn per codegen run.
@@ -1460,6 +1471,34 @@ fn readAbsFile(b: *Build, abs: []const u8) []u8 {
         std.debug.panic("cannot read: {s}", .{abs});
 }
 
+fn addDynamicExports(b: *Build, run: *Step.Run) void {
+    const path = "src/symbols.dyn";
+    const text = readRootFile(b, path);
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var opened = false;
+    var closed = false;
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        if (std.mem.eql(u8, line, "{")) {
+            if (opened or closed) @panic("invalid dynamic export list");
+            opened = true;
+            continue;
+        }
+        if (std.mem.eql(u8, line, "};")) {
+            if (!opened or closed) @panic("invalid dynamic export list");
+            closed = true;
+            continue;
+        }
+        if (!opened or closed or !std.mem.endsWith(u8, line, ";")) @panic("invalid dynamic export list");
+        const symbol = line[0 .. line.len - 1];
+        // Mold otherwise ignores stale entries, so keep this file an exact ABI manifest.
+        run.addArg(b.fmt("--require-defined={s}", .{symbol}));
+    }
+    if (!opened or !closed) @panic("invalid dynamic export list");
+    run.addPrefixedFileArg("--export-dynamic-symbol-list=", b.path(path));
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Link + smoke test
 // ───────────────────────────────────────────────────────────────────────────
@@ -1472,11 +1511,10 @@ pub fn addLink(
     cg: *const Codegen,
     opts: Options,
 ) BunExe {
-    const gcc = discoverGnuToolchain(b);
+    const cxxrt = discoverZigCxxRuntime(b);
 
     // Direct mold invocation: every input is explicit, so no compiler driver
-    // is involved in the link at all. crt objects and the static GNU runtime
-    // libraries come from gcc's file resolution.
+    // is involved in the link at all.
     const run = b.addRunFile(deps.mold);
     const exe_name = if (opts.mode == .debug) "bun-debug" else "bun-profile";
     run.step.name = b.fmt("link {s}", .{exe_name});
@@ -1498,7 +1536,9 @@ pub fn addLink(
     } else null;
 
     run.addArgs(&.{ "--dynamic-linker", "/lib64/ld-linux-x86-64.so.2" });
-    run.addArgs(&.{ gcc.crt1, gcc.crti, gcc.crtbegin });
+    // Only crt1: init_array needs no crti/crtbegin bookends (zig's own links
+    // prove this out on modern glibc).
+    run.addFileArg(.{ .cwd_relative = cxxrt.crt1 });
 
     // Whole-archive: every object participates, exactly as if the .o files
     // were on the link line individually.
@@ -1507,15 +1547,19 @@ pub fn addLink(
     run.addArg("--no-whole-archive");
     run.addFileArg(zig_obj_bin);
     run.addFileArg(b.path("src/build/prebuilt/liblolhtml.a"));
-    for ([_][]const u8{ "libWTF.a", "libJavaScriptCore.a", "libicudata.a", "libicui18n.a", "libicuuc.a", "libbmalloc.a" }) |lib| {
-        run.addFileArg(deps.webkit.path(b.fmt("lib/{s}", .{lib})));
+    const wk = opts.webkit.libs;
+    run.addArtifactArg(wk.wtf);
+    run.addArtifactArg(wk.jsc);
+    run.addArtifactArg(wk.jsc_c);
+    run.addArtifactArg(wk.bmalloc_cxx);
+    run.addArtifactArg(wk.bmalloc_c);
+    run.addArtifactArg(opts.icu.data);
+    run.addArtifactArg(opts.icu.i18n);
+    run.addArtifactArg(opts.icu.uc);
+    for ([_][]const u8{ cxxrt.libcxxabi, cxxrt.libcxx, cxxrt.libunwind, cxxrt.compiler_rt }) |lib| {
+        run.addFileArg(.{ .cwd_relative = lib });
     }
-    run.addArgs(&.{ gcc.libstdcxx, gcc.libgcc, gcc.libgcc_eh, gcc.libatomic });
 
-    // Wrapped glibc symbols; bun provides the __wrap_* portability shims.
-    for ([_][]const u8{ "exp", "exp2", "expf", "fcntl64", "getrandom", "gettid", "log", "log2", "log2f", "logf", "pow", "powf", "quick_exit" }) |sym| {
-        run.addArg(b.fmt("--wrap={s}", .{sym}));
-    }
     run.addArgs(&.{
         "--eh-frame-hdr",
         "--as-needed",
@@ -1527,11 +1571,8 @@ pub fn addLink(
         "norelro",
         "--hash-style=both",
         "--build-id=sha1",
-        "-Bsymbolic-functions",
-        "--export-dynamic",
     });
-    run.addPrefixedFileArg("--dynamic-list=", b.path("src/symbols.dyn"));
-    run.addPrefixedFileArg("--version-script=", b.path("src/linker.lds"));
+    addDynamicExports(b, run);
     if (opts.mode == .release) {
         run.addArgs(&.{
             "--compress-debug-sections=zlib",
@@ -1541,7 +1582,6 @@ pub fn addLink(
         });
     }
     run.addArgs(&.{ "-L/usr/lib", "-L/lib", "-lc", "-lm", "-lpthread", "-ldl" });
-    run.addArgs(&.{ gcc.crtend, gcc.crtn });
 
     // Hardlink install: a copying install would rewrite (and, as a cached
     // step, content-hash) the gigabyte-scale binary every cycle. Always

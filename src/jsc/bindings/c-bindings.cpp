@@ -23,10 +23,13 @@
 #include <lshpack.h>
 
 #if CPU(X86_64) && !OS(WINDOWS)
+// CPUFeatures.cpp; does the full cpuid + OSXSAVE/XCR0 dance.
+extern "C" uint8_t bun_cpu_features();
+
 extern "C" void bun_warn_avx_missing(const char* url)
 {
-    __builtin_cpu_init();
-    if (__builtin_cpu_supports("avx")) {
+    // X86CPUFeature::avx
+    if (bun_cpu_features() & (1 << 3)) {
         return;
     }
 

@@ -1,6 +1,7 @@
 //! Bun's build. Downloaded inputs are pinned in build.zig.zon (the bootstrap
-//! bun that runs codegen, WebKit prebuilts, Node.js headers, mold, dependency
-//! sources); the host provides gcc and git.
+//! bun that runs codegen, Node.js headers, mold, ICU and dependency sources);
+//! WebKit is vendored in-tree (vendor/webkit). The host provides git plus
+//! ruby, python3, and perl for the WebKit codegen.
 //!
 //!   zig build                          debug binary → zig-out/bin/bun-debug
 //!   zig build --watch -fincremental    the dev loop: edit → smoke-tested
@@ -33,6 +34,8 @@ const Arch = std.Target.Cpu.Arch;
 
 const OperatingSystem = @import("src/bun_core/env.zig").OperatingSystem;
 const bun_exe = @import("src/build/exe.zig");
+const bun_webkit = @import("src/build/webkit.zig");
+const bun_icu = @import("src/build/icu.zig");
 
 const pathRel = fs.path.relative;
 
@@ -157,15 +160,6 @@ pub fn getOSVersionMin(os: OperatingSystem) ?Target.Query.OsVersion {
     };
 }
 
-pub fn getOSGlibCVersion(os: OperatingSystem) ?Version {
-    return switch (os) {
-        // Compiling with a newer glibc than this will break certain cloud environments. See symbols.test.ts.
-        .linux => .{ .major = 2, .minor = 17, .patch = 0 },
-
-        else => null,
-    };
-}
-
 pub fn getCpuModel(os: OperatingSystem, arch: Arch) ?Target.Query.CpuModel {
     // https://github.com/oven-sh/bun/issues/12076
     if (os == .linux and arch == .aarch64) {
@@ -177,13 +171,13 @@ pub fn getCpuModel(os: OperatingSystem, arch: Arch) ?Target.Query.CpuModel {
         return .{ .explicit = &Target.aarch64.cpu.apple_m1 };
     }
 
-    // x86_64 stays null here: the executable graph pins haswell itself.
+    // x86_64 stays null here: the executable graph picks its own CPU model.
     return null;
 }
 
 pub fn build(b: *Build) !void {
-    // Configure observes untracked host state (source-directory scans, gcc
-    // probes, env vars), and the Maker's config-cache manifest does not yet
+    // Configure observes untracked host state (source-directory scans,
+    // toolchain probes, env vars), and the Maker's config-cache manifest does not yet
     // hash directory dependencies, so a cached configuration would miss new
     // source files. Keep the cache off.
     b.graph.poisonCache();
@@ -212,16 +206,12 @@ pub fn build(b: *Build) !void {
         break :brk .{ os, arch, abi };
     };
 
-    // target must be refined to support older but very popular devices on
-    // aarch64, this means moving the minimum supported CPU to support certain
-    // raspberry PIs. there are also a number of cloud hosts that use virtual
-    // machines with surprisingly out of date versions of glibc.
+    // Refine the target's CPU model where a platform has an explicit floor.
     if (getCpuModel(os, arch)) |cpu_model| {
         target_query.cpu_model = cpu_model;
     }
 
     target_query.os_version_min = getOSVersionMin(os);
-    target_query.glibc_version = if (abi.isGnu()) getOSGlibCVersion(os) else null;
 
     const target = b.resolveTargetQuery(target_query);
 
@@ -237,6 +227,11 @@ pub fn build(b: *Build) !void {
     const pkgs = b.graph.arena.create(bun_exe.DepPkgs) catch @panic("OOM");
     pkgs.* = resolved;
     const cg = bun_exe.addCodegen(b, pkgs, mode);
+    const webkit_derived = bun_webkit.addStep(b, pkgs, mode);
+    const webkit_ctx = b.graph.arena.create(bun_webkit.Ctx) catch @panic("OOM");
+    webkit_ctx.* = bun_webkit.addLibs(b, pkgs, mode, webkit_derived);
+    const icu_ctx = b.graph.arena.create(bun_icu.Ctx) catch @panic("OOM");
+    icu_ctx.* = bun_icu.addLibs(b, pkgs);
 
     const codegen_embed = b.option(bool, "codegen_embed", "If codegen files should be embedded in the binary") orelse switch (b.graph.release_mode) {
         .off => false,
@@ -321,16 +316,8 @@ pub fn build(b: *Build) !void {
     // The bun executable: codegen, C/C++, link, smoke test. Default step.
     {
         var o = build_options;
-        // The distributed binary targets the haswell baseline; the C++ side
-        // is pinned to the same in src/build/exe.zig.
-        o.target = b.resolveTargetQuery(.{
-            .cpu_arch = .x86_64,
-            .os_tag = .linux,
-            .abi = .gnu,
-            .cpu_model = .{ .explicit = &Target.x86.cpu.haswell },
-            .os_version_min = getOSVersionMin(.linux),
-            .glibc_version = getOSGlibCVersion(.linux),
-        });
+        // The executable and its C++ dependencies share the host target.
+        o.target = b.graph.host;
         o.codegen_embed = mode == .release;
         o.cached_options_module = null;
         const obj = addBunObject(b, &o);
@@ -340,6 +327,8 @@ pub fn build(b: *Build) !void {
             .version = bun_version,
             .sha = if (std.mem.eql(u8, build_options.sha, zero_sha)) null else build_options.sha,
             .target = o.target,
+            .webkit = webkit_ctx,
+            .icu = icu_ctx,
         };
         const archives = bun_exe.addCpp(b, pkgs, cg, exe_opts);
         const built = bun_exe.addLink(b, pkgs, archives, obj.getEmittedBin(), cg, exe_opts);
@@ -348,7 +337,7 @@ pub fn build(b: *Build) !void {
         if ((target_query.abi != null and target_query.abi.? != .gnu) or
             target_query.cpu_model != .determined_by_arch_os)
         {
-            const fail = b.addFail("the bun executable is pinned to x86_64-linux-gnu (haswell); -Dtarget/-Dcpu apply only to the check steps");
+            const fail = b.addFail("the bun executable is pinned to x86_64-linux-gnu (native cpu); -Dtarget/-Dcpu apply only to the check steps");
             built.step.dependOn(&fail.step);
         }
         b.default_step.dependOn(built.step);
@@ -700,7 +689,6 @@ const TargetDescription = struct {
             .cpu_arch = desc.arch,
             .cpu_model = getCpuModel(desc.os, desc.arch) orelse .determined_by_arch_os,
             .os_version_min = getOSVersionMin(desc.os),
-            .glibc_version = if (desc.musl or desc.android) null else getOSGlibCVersion(desc.os),
             .abi = if (desc.android) .android else if (desc.musl) .musl else null,
         });
     }

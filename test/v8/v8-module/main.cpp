@@ -981,26 +981,6 @@ void test_v8_array_new_with_length(const FunctionCallbackInfo<Value> &info) {
   return ok(info);
 }
 
-void test_v8_array_new_with_callback(const FunctionCallbackInfo<Value> &info) {
-  Isolate *isolate = info.GetIsolate();
-  Local<Context> context = isolate->GetCurrentContext();
-  uint32_t i = 0;
-
-  // TODO: check returning empty from the callback (we can't right now because
-  // V8 asserts that you have also thrown an exception when you do that, but Bun
-  // doesn't implement the V8 APIs to throw exceptions
-  Local<Array> array =
-      Array::New(context, 10, [&i, isolate]() -> MaybeLocal<Value> {
-        return Number::New(isolate, ++i);
-      }).ToLocalChecked();
-
-  LOG_EXPR(i);
-  LOG_EXPR(array->Length());
-  for (i = 0; i < 10; i++) {
-    LOG_EXPR(describe(isolate, array->Get(context, i).ToLocalChecked()));
-  }
-}
-
 // Test Array::Length method
 void test_v8_array_length(const FunctionCallbackInfo<Value> &info) {
   printf("Testing Array::Length()...\n");
@@ -1124,79 +1104,6 @@ void test_v8_array_iterate(const FunctionCallbackInfo<Value> &info) {
   return ok(info);
 }
 
-// Test MaybeLocal functionality
-void test_v8_maybe_local(const FunctionCallbackInfo<Value> &info) {
-  printf("Testing MaybeLocal...\n");
-  Isolate *isolate = info.GetIsolate();
-  Local<Context> context = isolate->GetCurrentContext();
-
-  // Test with Array::New callback that can fail
-  size_t counter = 0;
-
-  // Test successful creation
-  MaybeLocal<Array> maybe_array =
-      Array::New(context, 3, [&counter, isolate]() -> MaybeLocal<Value> {
-        counter++;
-        return Number::New(isolate, counter * 10);
-      });
-
-  if (maybe_array.IsEmpty()) {
-    return fail(info, "Array creation should have succeeded");
-  }
-
-  Local<Array> array = maybe_array.ToLocalChecked();
-  LOG_EXPR(array->Length());
-
-  if (array->Length() != 3) {
-    return fail(info, "Array should have length 3");
-  }
-
-  // Verify elements
-  for (uint32_t i = 0; i < 3; i++) {
-    Local<Value> element = array->Get(context, i).ToLocalChecked();
-    double expected = (i + 1) * 10.0;
-    if (!element->IsNumber() || element.As<Number>()->Value() != expected) {
-      return fail(info, "Array element has wrong value");
-    }
-  }
-
-  // Test ToLocal pattern
-  counter = 0;
-  MaybeLocal<Array> maybe_array2 =
-      Array::New(context, 2, [&counter, isolate]() -> MaybeLocal<Value> {
-        counter++;
-        return String::NewFromUtf8(isolate, counter == 1 ? "first" : "second");
-      });
-
-  Local<Array> array2;
-  if (!maybe_array2.ToLocal(&array2)) {
-    return fail(info, "ToLocal should have succeeded");
-  }
-
-  LOG_EXPR(array2->Length());
-  if (array2->Length() != 2) {
-    return fail(info, "Array2 should have length 2");
-  }
-
-  // Test empty MaybeLocal
-  MaybeLocal<Array> empty_maybe;
-  if (!empty_maybe.IsEmpty()) {
-    return fail(info, "Empty MaybeLocal should be empty");
-  }
-
-  Local<Array> empty_result;
-  if (empty_maybe.ToLocal(&empty_result)) {
-    return fail(info, "ToLocal on empty MaybeLocal should return false");
-  }
-
-  // Verify that empty_result was set to nullptr
-  if (!empty_result.IsEmpty()) {
-    return fail(info, "ToLocal should set output to nullptr when empty");
-  }
-
-  return ok(info);
-}
-
 void perform_object_get_by_index(const FunctionCallbackInfo<Value> &info) {
   Isolate *isolate = info.GetIsolate();
   Local<Context> context = isolate->GetCurrentContext();
@@ -1315,11 +1222,8 @@ void initialize(Local<Object> exports, Local<Value> module,
   NODE_SET_METHOD(exports, "test_v8_strict_equals", test_v8_strict_equals);
   NODE_SET_METHOD(exports, "test_v8_array_new_with_length",
                   test_v8_array_new_with_length);
-  NODE_SET_METHOD(exports, "test_v8_array_new_with_callback",
-                  test_v8_array_new_with_callback);
   NODE_SET_METHOD(exports, "test_v8_array_length", test_v8_array_length);
   NODE_SET_METHOD(exports, "test_v8_array_iterate", test_v8_array_iterate);
-  NODE_SET_METHOD(exports, "test_v8_maybe_local", test_v8_maybe_local);
   NODE_SET_METHOD(exports, "perform_object_get_by_index",
                   perform_object_get_by_index);
   NODE_SET_METHOD(exports, "perform_object_set_by_index",

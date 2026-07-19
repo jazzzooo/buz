@@ -44,20 +44,35 @@ static uint8_t x86_cpu_features()
 
 #else
 
-#if __has_builtin(__builtin_cpu_supports)
-    __builtin_cpu_init();
-
-    if (__builtin_cpu_supports("sse4.2"))
+    // Raw cpuid rather than __builtin_cpu_supports: the latter needs
+    // libgcc/compiler-rt's __cpu_model runtime, which zig's compiler-rt does
+    // not provide.
+    uint32_t eax, ebx, ecx, edx;
+    __asm__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1), "c"(0));
+    if (ecx & (1u << 20))
         features |= 1 << static_cast<uint8_t>(X86CPUFeature::sse42);
-    if (__builtin_cpu_supports("popcnt"))
+    if (ecx & (1u << 23))
         features |= 1 << static_cast<uint8_t>(X86CPUFeature::popcnt);
-    if (__builtin_cpu_supports("avx"))
+
+    // AVX+ additionally requires the OS to save the wider registers
+    // (OSXSAVE, then the XCR0 state bits).
+    const bool osxsave = (ecx & (1u << 27)) != 0;
+    const bool avx_cpu = (ecx & (1u << 28)) != 0;
+    uint32_t xcr0 = 0;
+    if (osxsave) {
+        uint32_t xcr0_hi;
+        __asm__("xgetbv" : "=a"(xcr0), "=d"(xcr0_hi) : "c"(0));
+    }
+    const bool ymm_os = (xcr0 & 0x6) == 0x6;
+    const bool zmm_os = (xcr0 & 0xe6) == 0xe6;
+    if (avx_cpu && ymm_os) {
         features |= 1 << static_cast<uint8_t>(X86CPUFeature::avx);
-    if (__builtin_cpu_supports("avx2"))
-        features |= 1 << static_cast<uint8_t>(X86CPUFeature::avx2);
-    if (__builtin_cpu_supports("avx512f"))
-        features |= 1 << static_cast<uint8_t>(X86CPUFeature::avx512);
-#endif
+        __asm__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(7), "c"(0));
+        if (ebx & (1u << 5))
+            features |= 1 << static_cast<uint8_t>(X86CPUFeature::avx2);
+        if (zmm_os && (ebx & (1u << 16)))
+            features |= 1 << static_cast<uint8_t>(X86CPUFeature::avx512);
+    }
 
 #endif
 

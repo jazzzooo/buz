@@ -7,7 +7,6 @@
 #include "V8Value.h"
 #include "V8Context.h"
 #include "V8MaybeLocal.h"
-#include <functional>
 
 namespace v8 {
 
@@ -23,11 +22,6 @@ public:
     // Creates a JavaScript array out of a Local<Value> array in C++
     // with a known length.
     BUN_EXPORT static Local<Array> New(Isolate* isolate, Local<Value>* elements, size_t length);
-
-    // Creates a JavaScript array from a provided callback.
-    BUN_EXPORT static MaybeLocal<Array> New(
-        Local<Context> context, size_t length,
-        std::function<MaybeLocal<v8::Value>()> next_value_callback);
 
     // Cast a Value to Array (with optional type checking)
     inline static Array* Cast(Value* value)

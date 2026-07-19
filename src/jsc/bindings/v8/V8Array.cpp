@@ -64,39 +64,6 @@ Local<Array> Array::New(Isolate* isolate, int length)
     return isolate->currentHandleScope()->createLocal<Array>(vm, array);
 }
 
-// Array::New with callback
-MaybeLocal<Array> Array::New(Local<Context> context, size_t length,
-    std::function<MaybeLocal<v8::Value>()> next_value_callback)
-{
-    Isolate* isolate = context->GetIsolate();
-    Zig::GlobalObject* globalObject = context->globalObject();
-    auto& vm = isolate->vm();
-
-    EscapableHandleScope handleScope(isolate);
-
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    MarkedArgumentBuffer args;
-
-    // Fill array using callback
-    for (size_t i = 0; i < length; i++) {
-        MaybeLocal<v8::Value> maybeValue = next_value_callback();
-        Local<v8::Value> value;
-        if (!maybeValue.ToLocal(&value)) {
-            // Callback signaled error/exception
-            return MaybeLocal<Array>();
-        }
-
-        JSValue elementValue = value->localToJSValue();
-        args.append(elementValue);
-    }
-
-    // Construct array using the buffer
-    JSArray* array = JSC::constructArray(globalObject, static_cast<ArrayAllocationProfile*>(nullptr), args);
-    RETURN_IF_EXCEPTION(scope, MaybeLocal<Array>());
-
-    Local<Array> result = handleScope.createLocal<Array>(vm, array);
-    return handleScope.Escape(result);
-}
 
 // Get array length
 uint32_t Array::Length() const

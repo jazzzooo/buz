@@ -10,8 +10,9 @@ pub const Include = union(enum) {
     gen: struct { []const u8, []const u8 },
     /// Repo-root-relative path.
     repo: []const u8,
-    /// Path inside the WebKit prebuilt package.
-    webkit: []const u8,
+    /// The vendored WebKit header set (vendor/webkit sources, forwarding
+    /// farm, and the stable DerivedSources mirror).
+    webkit,
     /// Path inside the Node.js headers package.
     nodejs: []const u8,
     /// The merged codegen output directory.
@@ -65,7 +66,6 @@ pub const all = [_]Dep{
 };
 
 pub const base_flags_debug: []const []const u8 = &.{
-    "-march=haswell",
     "-O0",
     "-g3",
     "-gz=zstd",
@@ -86,10 +86,16 @@ pub const base_flags_debug: []const []const u8 = &.{
     "-fno-delete-null-pointer-checks",
     "-fdiagnostics-color=always",
     "-ferror-limit=100",
+    // zig forces module-level PIC when libc is linked on glibc targets and
+    // its flag wins over -fno-pic; the cc1-level relocation model overrides
+    // it back to the static code the non-PIE executable wants.
+    "-Xclang",
+    "-mrelocation-model",
+    "-Xclang",
+    "static",
 };
 
 pub const base_flags_release: []const []const u8 = &.{
-    "-march=haswell",
     "-DNDEBUG",
     "-O3",
     "-g1",
@@ -110,6 +116,13 @@ pub const base_flags_release: []const []const u8 = &.{
     "-fno-delete-null-pointer-checks",
     "-fdiagnostics-color=always",
     "-ferror-limit=100",
+    // zig forces module-level PIC when libc is linked on glibc targets and
+    // its flag wins over -fno-pic; the cc1-level relocation model overrides
+    // it back to the static code the non-PIE executable wants.
+    "-Xclang",
+    "-mrelocation-model",
+    "-Xclang",
+    "static",
 };
 
 pub const bun_cxx_flags_debug: []const []const u8 = &.{
@@ -276,4 +289,4 @@ pub const bun_c_flags_release: []const []const u8 = &.{
     "-DLAZY_LOAD_SQLITE=0",
 };
 
-pub const bun_includes: []const Include = &.{ .{ .repo = "packages" }, .{ .repo = "packages/bun-usockets" }, .{ .repo = "packages/bun-usockets/src" }, .{ .repo = "src/jsc/bindings" }, .{ .repo = "src/jsc/bindings/webcore" }, .{ .repo = "src/jsc/bindings/webcrypto" }, .{ .repo = "src/jsc/bindings/node/crypto" }, .{ .repo = "src/jsc/bindings/node/http" }, .{ .repo = "src/jsc/bindings/sqlite" }, .{ .repo = "src/jsc/bindings/v8" }, .{ .repo = "src/jsc/modules" }, .{ .repo = "src/js/builtins" }, .{ .repo = "src/napi" }, .{ .repo = "src/uws_sys" }, .codegen, .{ .repo = "vendor" }, .{ .dep = .{ "picohttpparser", "" } }, .{ .dep = .{ "zlib", "" } }, .{ .repo = "src/jsc/bindings/libuv" }, .builddir, .{ .dep = .{ "picohttpparser", "" } }, .{ .nodejs = "include" }, .{ .nodejs = "include/node" }, .{ .gen = .{ "zlib", "" } }, .{ .dep = .{ "zstd", "lib" } }, .{ .dep = .{ "brotli", "c/include" } }, .{ .dep = .{ "libdeflate", "" } }, .{ .dep = .{ "libarchive", "libarchive" } }, .{ .dep = .{ "libjpeg-turbo", "src" } }, .{ .gen = .{ "libjpeg-turbo", "" } }, .{ .dep = .{ "libspng", "spng" } }, .{ .dep = .{ "libwebp", "src" } }, .{ .dep = .{ "cares", "include" } }, .{ .gen = .{ "cares", "" } }, .{ .dep = .{ "hdrhistogram", "include" } }, .{ .dep = .{ "highway", "" } }, .{ .dep = .{ "highway", "hwy" } }, .{ .dep = .{ "lshpack", "" } }, .{ .dep = .{ "lsqpack", "" } }, .{ .dep = .{ "mimalloc", "include" } }, .{ .repo = "src/jsc/bindings/sqlite" }, .{ .dep = .{ "boringssl", "include" } }, .{ .dep = .{ "lsquic", "include" } }, .{ .webkit = "include" }, .{ .webkit = "include/wtf/unicode" } };
+pub const bun_includes: []const Include = &.{ .{ .repo = "packages" }, .{ .repo = "packages/bun-usockets" }, .{ .repo = "packages/bun-usockets/src" }, .{ .repo = "src/jsc/bindings" }, .{ .repo = "src/jsc/bindings/webcore" }, .{ .repo = "src/jsc/bindings/webcrypto" }, .{ .repo = "src/jsc/bindings/node/crypto" }, .{ .repo = "src/jsc/bindings/node/http" }, .{ .repo = "src/jsc/bindings/sqlite" }, .{ .repo = "src/jsc/bindings/v8" }, .{ .repo = "src/jsc/modules" }, .{ .repo = "src/js/builtins" }, .{ .repo = "src/napi" }, .{ .repo = "src/uws_sys" }, .codegen, .{ .repo = "vendor" }, .{ .dep = .{ "picohttpparser", "" } }, .{ .dep = .{ "zlib", "" } }, .{ .repo = "src/jsc/bindings/libuv" }, .builddir, .{ .dep = .{ "picohttpparser", "" } }, .{ .nodejs = "include" }, .{ .nodejs = "include/node" }, .{ .gen = .{ "zlib", "" } }, .{ .dep = .{ "zstd", "lib" } }, .{ .dep = .{ "brotli", "c/include" } }, .{ .dep = .{ "libdeflate", "" } }, .{ .dep = .{ "libarchive", "libarchive" } }, .{ .dep = .{ "libjpeg-turbo", "src" } }, .{ .gen = .{ "libjpeg-turbo", "" } }, .{ .dep = .{ "libspng", "spng" } }, .{ .dep = .{ "libwebp", "src" } }, .{ .dep = .{ "cares", "include" } }, .{ .gen = .{ "cares", "" } }, .{ .dep = .{ "hdrhistogram", "include" } }, .{ .dep = .{ "highway", "" } }, .{ .dep = .{ "highway", "hwy" } }, .{ .dep = .{ "lshpack", "" } }, .{ .dep = .{ "lsqpack", "" } }, .{ .dep = .{ "mimalloc", "include" } }, .{ .repo = "src/jsc/bindings/sqlite" }, .{ .dep = .{ "boringssl", "include" } }, .{ .dep = .{ "lsquic", "include" } }, .webkit };

@@ -1,15 +1,4 @@
 pub const linux = struct {
-
-    // On linux, bun overrides the libc symbols for various functions.
-    // This is to compensate for older glibc versions.
-
-    fn simulateLibcErrno(rc: usize) c_int {
-        const signed: isize = @bitCast(rc);
-        const int: c_int = @intCast(if (signed > -4096 and signed < 0) -signed else 0);
-        std.c._errno().* = int;
-        return if (signed > -4096 and signed < 0) -1 else int;
-    }
-
     fn assertNativeStatLayout() void {
         const Stat = bun.c.struct_stat;
         const expected = switch (bun.Environment.arch) {
@@ -81,54 +70,7 @@ pub const linux = struct {
         return std.os.linux.syscall2(.fstat, @as(u32, @bitCast(fd)), @intFromPtr(buf));
     }
 
-    pub export fn stat(path: [*:0]const u8, buf: *bun.c.struct_stat) c_int {
-        // https://git.musl-libc.org/cgit/musl/tree/src/stat/stat.c
-        const rc = directFstatat(std.os.linux.AT.FDCWD, path, buf, 0);
-        return simulateLibcErrno(rc);
-    }
-
-    pub const stat64 = stat;
-    pub const lstat64 = lstat;
-    pub const fstat64 = fstat;
-    pub const fstatat64 = fstatat;
-
-    pub export fn lstat(path: [*:0]const u8, buf: *bun.c.struct_stat) c_int {
-        // https://git.musl-libc.org/cgit/musl/tree/src/stat/lstat.c
-        const rc = directFstatat(std.os.linux.AT.FDCWD, path, buf, std.os.linux.AT.SYMLINK_NOFOLLOW);
-        return simulateLibcErrno(rc);
-    }
-
-    pub export fn fstat(fd: c_int, buf: *bun.c.struct_stat) c_int {
-        const rc = directFstat(fd, buf);
-        return simulateLibcErrno(rc);
-    }
-
-    pub export fn fstatat(dirfd: i32, path: [*:0]const u8, buf: *bun.c.struct_stat, flags: u32) c_int {
-        const rc = directFstatat(dirfd, path, buf, flags);
-        return simulateLibcErrno(rc);
-    }
-
-    pub export fn statx(dirfd: i32, path: [*:0]const u8, flags: u32, mask: u32, buf: *std.os.linux.Statx) c_int {
-        const rc = std.os.linux.statx(dirfd, path, flags, @bitCast(mask), buf);
-        return simulateLibcErrno(rc);
-    }
-
     pub const memmem = bun.c.memmem;
-
-    comptime {
-        _ = stat;
-        _ = stat64;
-        _ = lstat;
-        _ = lstat64;
-        _ = fstat;
-        _ = fstat64;
-        _ = fstatat;
-        _ = statx;
-        @export(&stat, .{ .name = "stat64" });
-        @export(&lstat, .{ .name = "lstat64" });
-        @export(&fstat, .{ .name = "fstat64" });
-        @export(&fstatat, .{ .name = "fstatat64" });
-    }
 };
 pub const darwin = struct {
     pub const memmem = bun.c.memmem;

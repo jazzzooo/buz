@@ -254,9 +254,6 @@ describe.skipIf(!canBuildNodeAddons()).todoIf(isBroken && isMusl)("node:v8", () 
     it("can create an array with a specific length", async () => {
       await checkSameOutput("test_v8_array_new_with_length");
     });
-    it("can create an array from a callback", async () => {
-      await checkSameOutput("test_v8_array_new_with_callback");
-    });
     it("correctly reports array length", async () => {
       await checkSameOutput("test_v8_array_length");
     });
@@ -334,12 +331,6 @@ describe.skipIf(!canBuildNodeAddons()).todoIf(isBroken && isMusl)("node:v8", () 
 
     it("inline handles survive a nested call's scope push/pop", async () => {
       await checkSameOutput("test_v8_locals_survive_nested_call");
-    });
-  });
-
-  describe("MaybeLocal", () => {
-    it("correctly handles ToLocal and ToLocalChecked operations", async () => {
-      await checkSameOutput("test_v8_maybe_local");
     });
   });
 

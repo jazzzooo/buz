@@ -8,7 +8,10 @@ pub const dep: m.Dep = .{
         .{
             .cxx = true,
             .flags = &.{ "-fno-c++-static-destructors", "-fPIC", "-DHWY_STATIC_DEFINE", "-fno-exceptions", "-fmath-errno" },
-            .includes = &.{.{ .dep = .{ "highway", "" } }},
+            // assets/include: sanitizer ABI headers zig does not ship
+            // (abort.cc includes one unconditionally; the declared call is
+            // only made under sanitizer builds).
+            .includes = &.{ .{ .dep = .{ "highway", "" } }, .{ .repo = "src/build/assets/include" } },
             .files = &.{
                 "hwy/abort.cc",
                 "hwy/aligned_allocator.cc",

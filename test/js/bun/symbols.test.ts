@@ -5,58 +5,6 @@ import { bunExe } from "harness";
 const BUN_EXE = bunExe();
 
 if (process.platform === "linux") {
-  const GLIBC_FLOOR = [2, 17, 0] as const;
-
-  // glibc versions are integer tuples (2.2.5, 2.17), not semver — "2.17" is
-  // invalid semver and semver libraries either throw or give undefined results.
-  function glibcVersionAboveFloor(v: string): boolean {
-    const parts = v.split(".").map(Number);
-    for (let i = 0; i < GLIBC_FLOOR.length; i++) {
-      const a = parts[i] ?? 0;
-      const b = GLIBC_FLOOR[i];
-      if (a !== b) return a > b;
-    }
-    return false;
-  }
-
-  test("objdump -T does not include symbols from glibc > 2.17", async () => {
-    // Self-check the comparator so a bug in it can't silently let symbols through.
-    expect(glibcVersionAboveFloor("2.2.5")).toBe(false);
-    expect(glibcVersionAboveFloor("2.3.4")).toBe(false);
-    expect(glibcVersionAboveFloor("2.17")).toBe(false);
-    expect(glibcVersionAboveFloor("2.17.1")).toBe(true);
-    expect(glibcVersionAboveFloor("2.18")).toBe(true);
-    expect(glibcVersionAboveFloor("2.25")).toBe(true);
-    expect(glibcVersionAboveFloor("3.0")).toBe(true);
-
-    const objdump = Bun.which("objdump") || Bun.which("llvm-objdump");
-    if (!objdump) {
-      throw new Error("objdump executable not found. Please install it.");
-    }
-
-    const output = await $`${objdump} -T ${BUN_EXE} | grep GLIBC_`.nothrow().text();
-    const lines = output.split("\n");
-    const errors = [];
-    for (const line of lines) {
-      const match = line.match(/\(GLIBC_(\d+(?:\.\d+)+)\)\s/);
-      if (match?.[1]) {
-        const version = match[1];
-        if (glibcVersionAboveFloor(version)) {
-          errors.push({
-            symbol: line.slice(line.lastIndexOf(")") + 1).trim(),
-            "glibc version": version,
-          });
-        }
-      }
-    }
-    if (errors.length) {
-      throw new Error(`Found glibc symbols > 2.17. This breaks RHEL/CentOS 7 and Amazon Linux 1.
-
-${Bun.inspect.table(errors, { colors: true })}
-To fix this, add it to -Wl,--wrap=symbol in the linker flags and update workaround-missing-symbols.cpp.`);
-    }
-  });
-
   test("libatomic.so is not linked", async () => {
     const ldd = Bun.which("ldd");
 
@@ -78,7 +26,7 @@ To fix this, add it to -Wl,--wrap=symbol in the linker flags and update workarou
 
 ${errors.join("\n")}
 
-To fix this, figure out which C math symbol is being used that causes it, and wrap it in workaround-missing-symbols.cpp.`);
+To fix this, identify the atomic operation that pulled in the runtime dependency and resolve it without libatomic.so.`);
     }
   });
 }

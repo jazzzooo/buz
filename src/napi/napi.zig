@@ -1997,17 +1997,6 @@ const V8API = if (!bun.Environment.isWindows) struct {
     pub extern fn @"?FromJustIsNothing@api_internal@v8@@YAXXZ"() *anyopaque;
 };
 
-/// V8 API functions whose mangled name differs by C++ stdlib namespace:
-/// libstdc++ = std::, Apple libc++ = std::__1::, NDK libc++ = std::__ndk1::.
-const posix_platform_specific_v8_apis = if (bun.Environment.os == .windows) struct {} else if (bun.Environment.isAndroid) struct {
-    pub extern fn _ZN2v85Array3NewENS_5LocalINS_7ContextEEEmNSt6__ndk18functionIFNS_10MaybeLocalINS_5ValueEEEvEEE() *anyopaque;
-} else if (bun.Environment.isMac or bun.Environment.isFreeBSD) struct {
-    // FreeBSD's base libc++ uses the same `std::__1::` inline namespace as Apple's.
-    pub extern fn _ZN2v85Array3NewENS_5LocalINS_7ContextEEEmNSt3__18functionIFNS_10MaybeLocalINS_5ValueEEEvEEE() *anyopaque;
-} else struct {
-    pub extern fn _ZN2v85Array3NewENS_5LocalINS_7ContextEEEmSt8functionIFNS_10MaybeLocalINS_5ValueEEEvEE() *anyopaque;
-};
-
 // To update this list, use find + multi-cursor in your editor.
 // - pub extern fn napi_
 // - pub export fn napi_
@@ -2484,10 +2473,6 @@ pub fn fixDeadCodeElimination() void {
 
     inline for (comptime std.meta.declarations(V8API)) |decl_name| {
         std.mem.doNotOptimizeAway(&@field(V8API, decl_name));
-    }
-
-    inline for (comptime std.meta.declarations(posix_platform_specific_v8_apis)) |decl_name| {
-        std.mem.doNotOptimizeAway(&@field(posix_platform_specific_v8_apis, decl_name));
     }
 
     std.mem.doNotOptimizeAway(&@import("../runtime/node/buffer.zig").BufferVectorized.fill);

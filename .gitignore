@@ -62,7 +62,6 @@
 bun-test-scratch
 cold-jsc-start
 cold-jsc-start.d
-compile_commands.json
 cover
 coverage
 coverv
