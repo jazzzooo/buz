@@ -744,10 +744,8 @@ pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options
 
         const lib_cxx = newCppLib(b, "bun-cxx", opts, true, &.{});
         const lib_c = newCppLib(b, "bun-c", opts, false, &.{});
-        for ([2]*Step.Compile{ lib_cxx, lib_c }) |lib| {
-            for (recipes.bun_includes) |inc| addInclude(b, lib, inc, deps, cg, opts.webkit, &gen_dirs, versions_dir);
-            lib.step.dependOn(cg.sync_step);
-        }
+        for (recipes.bun_includes) |inc| addInclude(b, lib_cxx, inc, deps, cg, opts.webkit, &gen_dirs, versions_dir);
+        for (recipes.bun_c_includes) |inc| addInclude(b, lib_c, inc, deps, cg, opts.webkit, &gen_dirs, versions_dir);
 
         var cxx_flags: std.ArrayList([]const u8) = .empty;
         cxx_flags.appendSlice(arena, base_flags) catch @panic("OOM");
@@ -812,7 +810,6 @@ pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options
             const cxx_lang = group.cxx or hasLangOverride(group_flags);
             const name = if (dep.groups.len == 1) dep.name else b.fmt("{s}-{d}", .{ dep.name, gi });
             const lib = newCppLib(b, name, opts, cxx_lang, groupFeatures(b, group_flags));
-            lib.step.dependOn(cg.sync_step);
 
             var flags: std.ArrayList([]const u8) = .empty;
             if (!group.no_base) flags.appendSlice(arena, base_flags) catch @panic("OOM");
@@ -1256,7 +1253,10 @@ fn addInclude(
         .nodejs => |p| lib.root_module.addIncludePath(deps.nodejs.path(b, p)),
         // The stable synced dir, so compile caches key on generated-file
         // content rather than on cache-dir paths that churn per codegen run.
-        .codegen => lib.root_module.addIncludePath(.{ .cwd_relative = cg.codegen_install_abs }),
+        .codegen => {
+            lib.root_module.addIncludePath(.{ .cwd_relative = cg.codegen_install_abs });
+            lib.step.dependOn(cg.sync_step);
+        },
         .builddir => lib.root_module.addIncludePath(versions_dir),
     }
 }
