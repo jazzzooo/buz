@@ -16,7 +16,7 @@ pub const DecodedJSValue = extern struct {
 
     /// Equivalent to `JSC::JSValue::encode`.
     pub fn encode(self: Self) jsc.JSValue {
-        return @enumFromInt(self.u.asInt64);
+        return @fromBackingInt(@intCast(self.u.asInt64));
     }
 
     fn asU64(self: Self) u64 {

@@ -231,7 +231,7 @@ pub const State = opaque {
 
     /// Set output type. MUST BE CALLED before any compilation
     pub fn setOutputType(s: *State, outputType: OutputFormat) Error!void {
-        if (tcc_set_output_type(s, @intFromEnum(outputType)) == -1) {
+        if (tcc_set_output_type(s, @backingInt(outputType)) == -1) {
             @branchHint(.unlikely);
             return error.InvalidOutputType;
         }

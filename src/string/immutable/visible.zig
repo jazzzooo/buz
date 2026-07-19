@@ -1406,9 +1406,9 @@ export fn Bun__codepointWidth(cp: u32, ambiguous_as_wide: bool) u8 {
 /// Returns true if there should be a grapheme break between cp1 and cp2.
 /// `state` is an opaque u8 that must be initialized to 0 and passed between calls.
 export fn Bun__graphemeBreak(cp1: u32, cp2: u32, state_ptr: *u8) bool {
-    var state: grapheme.BreakState = @enumFromInt(state_ptr.*);
+    var state: grapheme.BreakState = @fromBackingInt(@intCast(state_ptr.*));
     const result = grapheme.graphemeBreak(@truncate(cp1), @truncate(cp2), &state);
-    state_ptr.* = @intFromEnum(state);
+    state_ptr.* = @backingInt(state);
     return result;
 }
 

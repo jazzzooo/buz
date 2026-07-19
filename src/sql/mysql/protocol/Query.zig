@@ -13,7 +13,7 @@ pub const Execute = struct {
 
     pub fn writeInternal(this: *const Execute, comptime Context: type, writer: NewWriter(Context)) !void {
         var packet = try writer.start(0);
-        try writer.int1(@intFromEnum(CommandType.COM_QUERY));
+        try writer.int1(@backingInt(CommandType.COM_QUERY));
         try writer.write(this.query);
 
         if (this.params.len > 0) {
@@ -26,7 +26,7 @@ pub const Execute = struct {
             // Write parameter types
             for (this.param_types, 1..) |param_type, i| {
                 debug("New params bind flag {s} unsigned? {}", .{ @tagName(param_type.type), param_type.flags.UNSIGNED });
-                try writer.int1(@intFromEnum(param_type.type));
+                try writer.int1(@backingInt(param_type.type));
                 try writer.int1(if (param_type.flags.UNSIGNED) 0x80 else 0);
                 const param_name = std.fmt.bufPrint(&param_name_buf, ":p{d}", .{i}) catch return error.TooManyParameters;
                 try writer.writeLengthEncodedString(param_name);
@@ -53,7 +53,7 @@ pub const Execute = struct {
 
 pub fn execute(query: []const u8, writer: anytype) !void {
     var packet = try writer.start(0);
-    try writer.int1(@intFromEnum(CommandType.COM_QUERY));
+    try writer.int1(@backingInt(CommandType.COM_QUERY));
     try writer.write(query);
     try packet.end();
 }

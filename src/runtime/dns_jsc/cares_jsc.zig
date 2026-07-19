@@ -477,7 +477,7 @@ pub const ErrorDeferred = struct {
 
     pub fn reject(this: *ErrorDeferred, globalThis: *jsc.JSGlobalObject) bun.JSError!void {
         const system_error = jsc.SystemError{
-            .errno = @intFromEnum(this.errno),
+            .errno = @backingInt(this.errno),
             .code = bun.String.static(this.errno.code()),
             .message = if (this.hostname) |hostname|
                 bun.handleOom(bun.String.createFormat("{s} {s} {f}", .{ this.syscall, this.errno.code()[4..], hostname }))
@@ -532,7 +532,7 @@ pub fn errorToDeferred(this: c_ares.Error, syscall: []const u8, hostname: ?[]con
 
 pub fn errorToJSWithSyscall(this: c_ares.Error, globalThis: *jsc.JSGlobalObject, comptime syscall: [:0]const u8) bun.JSError!jsc.JSValue {
     const instance = (jsc.SystemError{
-        .errno = @intFromEnum(this),
+        .errno = @backingInt(this),
         .code = bun.String.static(this.code()[4..]),
         .syscall = bun.String.static(syscall),
         .message = bun.handleOom(bun.String.createFormat("{s} {s}", .{ syscall, this.code()[4..] })),
@@ -543,7 +543,7 @@ pub fn errorToJSWithSyscall(this: c_ares.Error, globalThis: *jsc.JSGlobalObject,
 
 pub fn errorToJSWithSyscallAndHostname(this: c_ares.Error, globalThis: *jsc.JSGlobalObject, comptime syscall: [:0]const u8, hostname: []const u8) bun.JSError!jsc.JSValue {
     const instance = (jsc.SystemError{
-        .errno = @intFromEnum(this),
+        .errno = @backingInt(this),
         .code = bun.String.static(this.code()[4..]),
         .message = bun.handleOom(bun.String.createFormat("{s} {s} {s}", .{ syscall, this.code()[4..], hostname })),
         .syscall = bun.String.static(syscall),

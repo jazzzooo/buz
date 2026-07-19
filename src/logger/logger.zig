@@ -632,7 +632,7 @@ pub const Log = struct {
         err, // 4
 
         pub fn atLeast(this: Level, other: Level) bool {
-            return @intFromEnum(this) <= @intFromEnum(other);
+            return @backingInt(this) <= @backingInt(other);
         }
 
         pub const label: std.EnumArray(Level, string) = brk: {

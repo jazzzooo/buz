@@ -214,7 +214,7 @@ pub fn queue(this: *ClientSession, bytes: []const u8) void {
 
 pub fn writeFrame(this: *ClientSession, frame_type: wire.FrameType, flags: u8, stream_id: u32, payload: []const u8) void {
     var header: wire.FrameHeader = .{
-        .type = @intFromEnum(frame_type),
+        .type = @backingInt(frame_type),
         .flags = flags,
         .streamIdentifier = stream_id,
         .length = @intCast(payload.len),
@@ -543,7 +543,7 @@ fn failAll(this: *ClientSession, err: anyerror) void {
     if (!sock.isClosedOrHasError()) {
         var goaway: [8]u8 = undefined;
         std.mem.writeInt(u32, goaway[0..4], 0, .big);
-        std.mem.writeInt(u32, goaway[4..8], @intFromEnum(dispatch.errorCodeFor(err)), .big);
+        std.mem.writeInt(u32, goaway[4..8], @backingInt(dispatch.errorCodeFor(err)), .big);
         this.writeFrame(.HTTP_FRAME_GOAWAY, 0, 0, &goaway);
         _ = this.flush() catch {};
     }

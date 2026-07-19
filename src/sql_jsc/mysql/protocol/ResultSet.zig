@@ -14,7 +14,7 @@ pub const Row = struct {
             array,
             this.values.ptr,
             @truncate(this.values.len),
-            @intFromEnum(result_mode),
+            @backingInt(result_mode),
             layout,
         );
     }

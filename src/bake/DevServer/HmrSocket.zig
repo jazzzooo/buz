@@ -46,7 +46,7 @@ pub fn onMessage(s: *HmrSocket, ws: AnyWebSocket, msg: []const u8, opcode: uws.O
     if (msg.len == 0)
         return ws.close();
 
-    switch (@as(IncomingMessageId, @enumFromInt(msg[0]))) {
+    switch (@as(IncomingMessageId, @fromBackingInt(@intCast(msg[0])))) {
         .init => {
             if (msg.len != 9) return ws.close();
             var generation: u32 = undefined;
@@ -73,7 +73,7 @@ pub fn onMessage(s: *HmrSocket, ws: AnyWebSocket, msg: []const u8, opcode: uws.O
             }
             inline for (comptime std.enums.values(HmrTopic)) |field| {
                 if (@field(new_bits, @tagName(field)) and !@field(s.subscriptions, @tagName(field))) {
-                    _ = ws.subscribe(&.{@intFromEnum(field)});
+                    _ = ws.subscribe(&.{@backingInt(field)});
 
                     // on-subscribe hooks
                     if (bun.FeatureFlags.bake_debugging_features) switch (field) {
@@ -95,7 +95,7 @@ pub fn onMessage(s: *HmrSocket, ws: AnyWebSocket, msg: []const u8, opcode: uws.O
                         else => {},
                     };
                 } else if (@field(new_bits, @tagName(field)) and !@field(s.subscriptions, @tagName(field))) {
-                    _ = ws.unsubscribe(&.{@intFromEnum(field)});
+                    _ = ws.unsubscribe(&.{@backingInt(field)});
                 }
             }
             onUnsubscribe(s, bun.bits.@"and"(

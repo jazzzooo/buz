@@ -16,13 +16,13 @@ pub const Header = extern struct {
             .name_len = @intCast(name_.len),
             .value = value_.ptr,
             .value_len = @intCast(value_.len),
-            .qpack_index = if (idx) |i| @intFromEnum(i) else -1,
+            .qpack_index = if (idx) |i| @backingInt(i) else -1,
         };
     }
 };
 
 /// `enum lsqpack_tnv`. Only the entries a request encoder actually emits are
-/// named; the rest are still reachable via `@enumFromInt`.
+/// named; the rest are still reachable via `@fromBackingInt`.
 pub const Qpack = enum(u8) {
     authority = 0,
     path = 1,

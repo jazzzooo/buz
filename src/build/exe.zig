@@ -957,7 +957,7 @@ fn cppTarget(b: *Build, extra_features: []const []const u8) Build.ResolvedTarget
     for (extra_features) |name| {
         const feature = std.meta.stringToEnum(std.Target.x86.Feature, name) orelse
             std.debug.panic("unknown x86 feature: {s}", .{name});
-        add.addFeature(@intFromEnum(feature));
+        add.addFeature(@backingInt(feature));
     }
     query.cpu_features_add = add;
     return b.resolveTargetQuery(query);

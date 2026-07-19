@@ -7,8 +7,8 @@ pub const UseDirective = enum(u2) {
     server,
 
     pub const Boundering = enum(u2) {
-        client = @intFromEnum(UseDirective.client),
-        server = @intFromEnum(UseDirective.server),
+        client = @backingInt(UseDirective.client),
+        server = @backingInt(UseDirective.server),
     };
 
     pub const Flags = struct {
@@ -25,7 +25,7 @@ pub const UseDirective = enum(u2) {
     pub fn boundering(this: UseDirective, other: UseDirective) ?Boundering {
         if (this == other or other == .none)
             return null;
-        return @enumFromInt(@intFromEnum(other));
+        return @fromBackingInt(@intCast(@backingInt(other)));
     }
 
     pub fn parse(contents: []const u8) ?UseDirective {

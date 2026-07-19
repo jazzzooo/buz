@@ -64,7 +64,7 @@ pub const Execute = struct {
     }
 
     pub fn writeInternal(this: *const Execute, comptime Context: type, writer: NewWriter(Context)) AnyMySQLError.Error!void {
-        try writer.int1(@intFromEnum(CommandType.COM_STMT_EXECUTE));
+        try writer.int1(@backingInt(CommandType.COM_STMT_EXECUTE));
         try writer.int4(this.statement_id);
         try writer.int1(this.flags);
         try writer.int4(this.iteration_count);
@@ -79,7 +79,7 @@ pub const Execute = struct {
                 // Write parameter types
                 for (this.param_types) |param_type| {
                     debug("New params bind flag {s} unsigned? {}", .{ @tagName(param_type.type), param_type.flags.UNSIGNED });
-                    try writer.int1(@intFromEnum(param_type.type));
+                    try writer.int1(@backingInt(param_type.type));
                     try writer.int1(if (param_type.flags.UNSIGNED) 0x80 else 0);
                 }
             }

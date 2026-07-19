@@ -94,11 +94,11 @@ pub const Stringifier = struct {
         try writer.writeAll("{\n");
         try incIndent(writer, indent);
         {
-            try writer.print("\"lockfileVersion\": {d},\n", .{@intFromEnum(Version.current)});
+            try writer.print("\"lockfileVersion\": {d},\n", .{@backingInt(Version.current)});
             try writeIndent(writer, indent);
 
             const config_version: bun.ConfigVersion = options.config_version orelse .current;
-            try writer.print("\"configVersion\": {d},\n", .{@intFromEnum(config_version)});
+            try writer.print("\"configVersion\": {d},\n", .{@backingInt(config_version)});
             try writeIndent(writer, indent);
 
             try writer.writeAll("\"workspaces\": {\n");

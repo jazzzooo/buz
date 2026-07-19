@@ -831,7 +831,7 @@ pub const ZigString = extern struct {
 
     extern fn ZigString__toDOMExceptionInstance(this: *const ZigString, global: *JSGlobalObject, code: u8) JSValue;
     pub fn toDOMExceptionInstance(this: *const ZigString, global: *JSGlobalObject, code: jsc.WebCore.DOMExceptionCode) JSValue {
-        return ZigString__toDOMExceptionInstance(this, global, @intFromEnum(code));
+        return ZigString__toDOMExceptionInstance(this, global, @backingInt(code));
     }
 
     extern fn ZigString__toSyntaxErrorInstance(this: *const ZigString, global: *JSGlobalObject) JSValue;

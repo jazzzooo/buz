@@ -332,14 +332,14 @@ pub const CopyFile = struct {
                     }
 
                     this.system_error = (bun.sys.Error{
-                        .errno = @as(bun.sys.Error.Int, @intCast(@intFromEnum(linux.E.INVAL))),
+                        .errno = @as(bun.sys.Error.Int, @intCast(@backingInt(linux.E.INVAL))),
                         .syscall = TryWith.tag.get(use).?,
                     }).toSystemError();
                     return bun.errnoToZigErr(linux.E.INVAL);
                 },
                 else => |errno| {
                     this.system_error = (bun.sys.Error{
-                        .errno = @as(bun.sys.Error.Int, @intCast(@intFromEnum(errno))),
+                        .errno = @as(bun.sys.Error.Int, @intCast(@backingInt(errno))),
                         .syscall = TryWith.tag.get(use).?,
                     }).toSystemError();
                     return bun.errnoToZigErr(errno);
@@ -883,7 +883,7 @@ pub const CopyFileWindows = struct {
                     result.close();
                     return .{
                         .err = .{
-                            .errno = @as(c_int, @intCast(@intFromEnum(bun.sys.SystemErrno.EMFILE))),
+                            .errno = @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.EMFILE))),
                             .syscall = .open,
                             .path = pathlike.path.slice(),
                         },
@@ -1042,8 +1042,8 @@ pub const CopyFileWindows = struct {
         if (rc.errno()) |errno| {
             this.throw(.{
                 // #6336
-                .errno = if (errno == @intFromEnum(bun.sys.SystemErrno.EPERM))
-                    @as(c_int, @intCast(@intFromEnum(bun.sys.SystemErrno.ENOENT)))
+                .errno = if (errno == @backingInt(bun.sys.SystemErrno.EPERM))
+                    @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.ENOENT)))
                 else
                     errno,
                 .syscall = .copyfile,
@@ -1132,7 +1132,7 @@ pub const CopyFileWindows = struct {
 
                 if (rc.errno()) |errno| {
                     // chmod failed to start - reject the promise to report the error
-                    var err = bun.sys.Error.fromCode(@enumFromInt(errno), .chmod);
+                    var err = bun.sys.Error.fromCode(@fromBackingInt(@intCast(errno)), .chmod);
                     const destination = &this.destination_file_store.data.file;
                     if (destination.pathlike == .path) {
                         err = err.withPath(destination.pathlike.path.slice());
@@ -1211,7 +1211,7 @@ pub const CopyFileWindows = struct {
         var destination = &this.destination_file_store.data.file;
         if (destination.pathlike != .path) {
             this.throw(.{
-                .errno = @as(c_int, @intCast(@intFromEnum(bun.sys.SystemErrno.EINVAL))),
+                .errno = @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.EINVAL))),
                 .syscall = .mkdir,
             });
             return;
@@ -1255,12 +1255,12 @@ pub const IOWhich = enum {
 };
 
 const unsupported_directory_error = SystemError{
-    .errno = @as(c_int, @intCast(@intFromEnum(bun.sys.SystemErrno.EISDIR))),
+    .errno = @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.EISDIR))),
     .message = bun.String.static("That doesn't work on folders"),
     .syscall = bun.String.static("fstat"),
 };
 const unsupported_non_regular_file_error = SystemError{
-    .errno = @as(c_int, @intCast(@intFromEnum(bun.sys.SystemErrno.ENOTSUP))),
+    .errno = @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.ENOTSUP))),
     .message = bun.String.static("Non-regular files aren't supported yet"),
     .syscall = bun.String.static("fstat"),
 };

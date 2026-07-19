@@ -285,7 +285,7 @@ pub fn getPriority(global: *jsc.JSGlobalObject, pid: i32) bun.JSError!i32 {
             .message = bun.String.static("no such process"),
             .code = bun.String.static("ESRCH"),
             .errno = comptime switch (bun.Environment.os) {
-                else => -@as(c_int, @intFromEnum(std.posix.E.SRCH)),
+                else => -@as(c_int, @backingInt(std.posix.E.SRCH)),
                 .windows => libuv.UV_ESRCH,
             },
             .syscall = bun.String.static("uv_os_getpriority"),
@@ -336,11 +336,11 @@ pub fn homedir(global: *jsc.JSGlobalObject) !bun.String {
                 &result,
             );
 
-            if (ret == @intFromEnum(bun.sys.E.INTR))
+            if (ret == @backingInt(bun.sys.E.INTR))
                 continue;
 
             // If the system call wants more memory, double it.
-            if (ret == @intFromEnum(bun.sys.E.RANGE)) {
+            if (ret == @backingInt(bun.sys.E.RANGE)) {
                 const len = string_bytes.len;
                 bun.default_allocator.free(string_bytes);
                 string_bytes = "";
@@ -353,7 +353,7 @@ pub fn homedir(global: *jsc.JSGlobalObject) !bun.String {
 
         if (ret != 0) {
             return global.throwValue(try bun.sys.Error.fromCode(
-                @enumFromInt(ret),
+                @fromBackingInt(@intCast(ret)),
                 .uv_os_homedir,
             ).toJS(global));
         }
@@ -457,7 +457,7 @@ fn networkInterfacesPosix(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSVal
         const err = jsc.SystemError{
             .message = bun.String.static("A system error occurred: getifaddrs returned an error"),
             .code = bun.String.static("ERR_SYSTEM_ERROR"),
-            .errno = @intFromEnum(errno),
+            .errno = @backingInt(errno),
             .syscall = bun.String.static("getifaddrs"),
         };
 
@@ -793,7 +793,7 @@ pub fn setProcessPriorityImpl(pid: i32, priority: i32) std.c.E {
     if (code == 0) return .SUCCESS;
 
     const errcode = bun.sys.getErrno(code);
-    return @enumFromInt(@intFromEnum(errcode));
+    return @fromBackingInt(@intCast(@backingInt(errcode)));
 }
 
 pub fn setPriority1(global: *jsc.JSGlobalObject, pid: i32, priority: i32) !void {
@@ -804,7 +804,7 @@ pub fn setPriority1(global: *jsc.JSGlobalObject, pid: i32, priority: i32) !void 
                 .message = bun.String.static("no such process"),
                 .code = bun.String.static("ESRCH"),
                 .errno = comptime switch (bun.Environment.os) {
-                    else => -@as(c_int, @intFromEnum(std.posix.E.SRCH)),
+                    else => -@as(c_int, @backingInt(std.posix.E.SRCH)),
                     .windows => libuv.UV_ESRCH,
                 },
                 .syscall = bun.String.static("uv_os_getpriority"),
@@ -816,7 +816,7 @@ pub fn setPriority1(global: *jsc.JSGlobalObject, pid: i32, priority: i32) !void 
                 .message = bun.String.static("permission denied"),
                 .code = bun.String.static("EACCES"),
                 .errno = comptime switch (bun.Environment.os) {
-                    else => -@as(c_int, @intFromEnum(std.posix.E.ACCES)),
+                    else => -@as(c_int, @backingInt(std.posix.E.ACCES)),
                     .windows => libuv.UV_EACCES,
                 },
                 .syscall = bun.String.static("uv_os_getpriority"),
@@ -828,7 +828,7 @@ pub fn setPriority1(global: *jsc.JSGlobalObject, pid: i32, priority: i32) !void 
                 .message = bun.String.static("operation not permitted"),
                 .code = bun.String.static("EPERM"),
                 .errno = comptime switch (bun.Environment.os) {
-                    else => -@as(c_int, @intFromEnum(std.posix.E.SRCH)),
+                    else => -@as(c_int, @backingInt(std.posix.E.SRCH)),
                     .windows => libuv.UV_ESRCH,
                 },
                 .syscall = bun.String.static("uv_os_getpriority"),

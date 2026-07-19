@@ -227,7 +227,7 @@ pub const JSPromise = opaque {
     }
 
     pub fn status(this: *const JSPromise) Status {
-        return @enumFromInt(bun.cpp.JSC__JSPromise__status(this));
+        return @fromBackingInt(@intCast(bun.cpp.JSC__JSPromise__status(this)));
     }
 
     pub fn result(this: *JSPromise, vm: *VM) JSValue {

@@ -875,7 +875,7 @@ pub const EntryPointMap = struct {
 
         const ArrayHashContext = struct {
             pub fn hash(_: @This(), key: InputFile) u32 {
-                return bun.hash32(key.absPath()) +% @intFromEnum(key.side);
+                return bun.hash32(key.absPath()) +% @backingInt(key.side);
             }
 
             pub fn eql(_: @This(), a: InputFile, b: InputFile, _: usize) bool {

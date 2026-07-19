@@ -504,8 +504,8 @@ pub fn Negatable(comptime T: type) type {
         // https://github.com/pnpm/pnpm/blob/1f228b0aeec2ef9a2c8577df1d17186ac83790f9/config/package-is-installable/src/checkPlatform.ts#L56-L86
         // https://github.com/npm/cli/blob/fefd509992a05c2dfddbe7bc46931c42f1da69d7/node_modules/npm-install-checks/lib/index.js#L2-L96
         pub fn combine(this: Negatable(T)) T {
-            const added = if (this.had_wildcard) T.all_value else @intFromEnum(this.added);
-            const removed = @intFromEnum(this.removed);
+            const added = if (this.had_wildcard) T.all_value else @backingInt(this.added);
+            const removed = @backingInt(this.removed);
 
             // If none were added or removed, all are allowed
             if (added == 0 and removed == 0) {
@@ -520,16 +520,16 @@ pub fn Negatable(comptime T: type) type {
             // If none were added, but some were removed, return the inverse of the removed
             if (added == 0 and removed != 0) {
                 // ["!linux", "!darwin"]
-                return @enumFromInt(T.all_value & ~removed);
+                return @fromBackingInt(@intCast(T.all_value & ~removed));
             }
 
             if (removed == 0) {
                 // ["linux", "darwin"]
-                return @enumFromInt(added);
+                return @fromBackingInt(@intCast(added));
             }
 
             // - ["linux", "!darwin"]
-            return @enumFromInt(added & ~removed);
+            return @fromBackingInt(@intCast(added & ~removed));
         }
 
         pub fn apply(this: *Negatable(T), str: []const u8) void {
@@ -557,9 +557,9 @@ pub fn Negatable(comptime T: type) type {
             };
 
             if (is_not) {
-                this.* = .{ .added = this.added, .removed = @enumFromInt(@intFromEnum(this.removed) | field) };
+                this.* = .{ .added = this.added, .removed = @fromBackingInt(@intCast(@backingInt(this.removed) | field)) };
             } else {
-                this.* = .{ .added = @enumFromInt(@intFromEnum(this.added) | field), .removed = this.removed };
+                this.* = .{ .added = @fromBackingInt(@intCast(@backingInt(this.added) | field)), .removed = this.removed };
             }
         }
 
@@ -652,19 +652,19 @@ pub const OperatingSystem = enum(u16) {
     pub const all_value: u16 = aix | darwin | freebsd | linux | openbsd | sunos | win32 | android;
 
     pub const current: OperatingSystem = switch (Environment.os) {
-        .linux => @enumFromInt(if (Environment.isAndroid) android else linux),
-        .mac => @enumFromInt(darwin),
-        .windows => @enumFromInt(win32),
-        .freebsd => @enumFromInt(freebsd),
+        .linux => @fromBackingInt(@intCast(if (Environment.isAndroid) android else linux)),
+        .mac => @fromBackingInt(@intCast(darwin)),
+        .windows => @fromBackingInt(@intCast(win32)),
+        .freebsd => @fromBackingInt(@intCast(freebsd)),
         .wasm => @compileError("Unsupported operating system: " ++ @tagName(Environment.os)),
     };
 
     pub fn isMatch(this: OperatingSystem, target: OperatingSystem) bool {
-        return (@intFromEnum(this) & @intFromEnum(target)) != 0;
+        return (@backingInt(this) & @backingInt(target)) != 0;
     }
 
     pub inline fn has(this: OperatingSystem, other: u16) bool {
-        return (@intFromEnum(this) & other) != 0;
+        return (@backingInt(this) & other) != 0;
     }
 
     pub const NameMap = bun.ComptimeStringMap(u16, .{
@@ -709,11 +709,11 @@ pub const Libc = enum(u8) {
     });
 
     pub inline fn has(this: Libc, other: u8) bool {
-        return (@intFromEnum(this) & other) != 0;
+        return (@backingInt(this) & other) != 0;
     }
 
     pub fn isMatch(this: Libc, target: Libc) bool {
-        return (@intFromEnum(this) & @intFromEnum(target)) != 0;
+        return (@backingInt(this) & @backingInt(target)) != 0;
     }
 
     pub fn negatable(this: Libc) Negatable(Libc) {
@@ -721,7 +721,7 @@ pub const Libc = enum(u8) {
     }
 
     // TODO:
-    pub const current: Libc = @intFromEnum(glibc);
+    pub const current: Libc = @backingInt(glibc);
 
     pub const jsFunctionLibcIsMatch = @import("../install_jsc/npm_jsc.zig").libcIsMatch;
 };
@@ -748,8 +748,8 @@ pub const Architecture = enum(u16) {
     pub const all_value: u16 = arm | arm64 | ia32 | mips | mipsel | ppc | ppc64 | s390 | s390x | x32 | x64;
 
     pub const current: Architecture = switch (Environment.arch) {
-        .arm64 => @enumFromInt(arm64),
-        .x64 => @enumFromInt(x64),
+        .arm64 => @fromBackingInt(@intCast(arm64)),
+        .x64 => @fromBackingInt(@intCast(x64)),
         .wasm => @compileError("Specify architecture: " ++ Environment.arch),
     };
 
@@ -774,11 +774,11 @@ pub const Architecture = enum(u16) {
     });
 
     pub inline fn has(this: Architecture, other: u16) bool {
-        return (@intFromEnum(this) & other) != 0;
+        return (@backingInt(this) & other) != 0;
     }
 
     pub fn isMatch(this: Architecture, target: Architecture) bool {
-        return @intFromEnum(this) & @intFromEnum(target) != 0;
+        return @backingInt(this) & @backingInt(target) != 0;
     }
 
     pub fn negatable(this: Architecture) Negatable(Architecture) {

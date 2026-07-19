@@ -530,7 +530,7 @@ pub fn constructJSON(
     }
     const json_value = args.nextEat() orelse jsc.JSValue.zero;
 
-    if (@intFromEnum(json_value) != 0) {
+    if (@backingInt(json_value) != 0) {
         // Validate top-level values that are not JSON serializable (Node.js compatibility)
         if (json_value.isUndefined() or json_value.isSymbol() or json_value.jsType() == .JSFunction) {
             const err = globalThis.createTypeErrorInstance("Value is not JSON serializable", .{});
@@ -630,7 +630,7 @@ pub fn constructRedirectImpl(
         const url_string_value = args.nextEat() orelse jsc.JSValue.zero;
         var url_string = ZigString.init("");
 
-        if (@intFromEnum(url_string_value) != 0) {
+        if (@backingInt(url_string_value) != 0) {
             url_string = try url_string_value.getZigString(globalThis);
         }
         url_string_slice = url_string.toSlice(bun.default_allocator);

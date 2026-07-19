@@ -635,7 +635,7 @@ const BorderProperty = packed struct(u32) {
         @setEvalBranchQuota(10000);
         const enum_info = bun.meta.EnumInfo(css.PropertyIdTag);
         inline for (enum_info.field_names, enum_info.field_values) |field_name, field_value| {
-            if (field_value == @intFromEnum(property_id)) {
+            if (field_value == @backingInt(property_id)) {
                 if (comptime std.mem.startsWith(u8, field_name, "border") and @hasDecl(@This(), field_name)) {
                     return @field(@This(), field_name);
                 }

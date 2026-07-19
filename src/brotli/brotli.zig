@@ -146,7 +146,7 @@ pub const BrotliReaderArrayList = struct {
                     this.state = .Error;
                     if (comptime bun.Environment.allow_assert) {
                         const code = this.brotli.getErrorCode();
-                        bun.Output.debugWarn("Brotli error: {s} ({d})", .{ @tagName(code), @intFromEnum(code) });
+                        bun.Output.debugWarn("Brotli error: {s} ({d})", .{ @tagName(code), @backingInt(code) });
                     }
 
                     return error.BrotliDecompressionError;

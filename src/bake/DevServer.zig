@@ -2329,7 +2329,7 @@ pub fn finalizeBundle(
     }
 
     const resolved_index_cache = try bv2.allocator().alloc(u32, input_file_sources.len * 2);
-    @memset(resolved_index_cache, @intFromEnum(IncrementalGraph(.server).FileIndex.Optional.none));
+    @memset(resolved_index_cache, @backingInt(IncrementalGraph(.server).FileIndex.Optional.none));
 
     var ctx: bun.bake.DevServer.HotUpdateContext = .{
         .import_records = import_records,
@@ -3973,7 +3973,7 @@ pub const MessageId = enum(u8) {
     testing_watch_synchronization = 'r',
 
     pub inline fn char(id: MessageId) u8 {
-        return @intFromEnum(id);
+        return @backingInt(id);
     }
 };
 
@@ -4178,11 +4178,11 @@ pub fn onWatchError(_: *DevServer, err: bun.sys.Error) void {
 }
 
 pub fn publish(dev: *DevServer, topic: HmrTopic, message: []const u8, opcode: uws.Opcode) void {
-    if (dev.server) |s| _ = s.publish(&.{@intFromEnum(topic)}, message, opcode, false);
+    if (dev.server) |s| _ = s.publish(&.{@backingInt(topic)}, message, opcode, false);
 }
 
 pub fn numSubscribers(dev: *DevServer, topic: HmrTopic) u32 {
-    return if (dev.server) |s| s.numSubscribers(&.{@intFromEnum(topic)}) else 0;
+    return if (dev.server) |s| s.numSubscribers(&.{@backingInt(topic)}) else 0;
 }
 
 const SafeFileId = packed struct(u32) {

@@ -70,7 +70,7 @@ pub fn encode(rgba: []const u8, width: u32, height: u32, opts: codecs.EncodeOpti
     // express" bailouts (palette/compressionLevel/lossless) are dead — kept
     // only as a guard if a future caller passes png/webp directly.
     bun.debugAssert(opts.format == .heic or opts.format == .avif);
-    const fmt: i32 = @intFromEnum(opts.format);
+    const fmt: i32 = @backingInt(opts.format);
     var len: usize = 0;
     // Phase 1: encode into a thread-local CFData inside the shim, return size.
     switch (bun_coregraphics_encode(rgba.ptr, width, height, fmt, opts.quality, null, &len)) {

@@ -68,7 +68,7 @@ fn countFilesInArchive(data: []const u8) u32 {
     var count: u32 = 0;
     var entry: *libarchive.lib.Archive.Entry = undefined;
     while (archive.readNextHeader(&entry) == .ok) {
-        if (entry.filetype() == @intFromEnum(libarchive.lib.FileType.regular)) {
+        if (entry.filetype() == @backingInt(libarchive.lib.FileType.regular)) {
             count += 1;
         }
     }
@@ -231,7 +231,7 @@ fn buildTarballFromObject(globalThis: *jsc.JSGlobalObject, obj: jsc.JSValue) bun
         _ = entry.clear();
         entry.setPathnameUtf8(key_str);
         entry.setSize(@intCast(data.len));
-        entry.setFiletype(@intFromEnum(lib.FileType.regular));
+        entry.setFiletype(@backingInt(lib.FileType.regular));
         entry.setPerm(0o644);
         entry.setMtime(now_secs, 0);
 
@@ -813,7 +813,7 @@ const FilesContext = struct {
 
         var entry: *lib.Archive.Entry = undefined;
         while (archive.readNextHeader(&entry) == .ok) {
-            if (entry.filetype() != @intFromEnum(lib.FileType.regular)) continue;
+            if (entry.filetype() != @backingInt(lib.FileType.regular)) continue;
 
             const pathname = entry.pathnameUtf8();
             // Apply glob pattern filtering (supports both positive and negative patterns)

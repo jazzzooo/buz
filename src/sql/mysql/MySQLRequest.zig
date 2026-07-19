@@ -6,7 +6,7 @@ pub fn executeQuery(
     debug("executeQuery len: {d} {s}", .{ query.len, query });
     // resets the sequence id to zero every time we send a query
     var packet = try writer.start(0);
-    try writer.int1(@intFromEnum(CommandType.COM_QUERY));
+    try writer.int1(@backingInt(CommandType.COM_QUERY));
     try writer.write(query);
 
     try packet.end();
@@ -18,7 +18,7 @@ pub fn prepareRequest(
 ) !void {
     debug("prepareRequest {s}", .{query});
     var packet = try writer.start(0);
-    try writer.int1(@intFromEnum(CommandType.COM_STMT_PREPARE));
+    try writer.int1(@backingInt(CommandType.COM_STMT_PREPARE));
     try writer.write(query);
 
     try packet.end();

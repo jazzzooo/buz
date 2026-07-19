@@ -41,7 +41,7 @@ pub inline fn implementDeepClone(comptime T: type, this: *const T, allocator: Al
         .@"union" => {
             const enum_info = bun.meta.EnumInfo(T);
             inline for (enum_info.field_names, enum_info.field_values, tyinfo.@"union".field_types) |field_name, field_value, FieldType| {
-                if (@intFromEnum(this.*) == field_value) {
+                if (@backingInt(this.*) == field_value) {
                     if (comptime canTransitivelyImplementDeepClone(FieldType) and @hasDecl(FieldType, "__generateDeepClone")) {
                         return @unionInit(T, field_name, implementDeepClone(FieldType, &@field(this, field_name), allocator));
                     }
@@ -117,10 +117,10 @@ pub fn implementEql(comptime T: type, this: *const T, other: *const T) bool {
         },
         .@"union" => {
             if (tyinfo.@"union".tag_type == null) @compileError("Unions must have a tag type");
-            if (@intFromEnum(this.*) != @intFromEnum(other.*)) return false;
+            if (@backingInt(this.*) != @backingInt(other.*)) return false;
             const enum_info = bun.meta.EnumInfo(T);
             inline for (enum_info.field_names, enum_info.field_values, tyinfo.@"union".field_types) |field_name, field_value, FieldType| {
-                if (field_value == @intFromEnum(this.*)) {
+                if (field_value == @backingInt(this.*)) {
                     if (FieldType != void) {
                         if (comptime canTransitivelyImplementEql(FieldType) and @hasDecl(FieldType, "__generateEql")) {
                             return implementEql(FieldType, &@field(this, field_name), &@field(other, field_name));
@@ -195,14 +195,14 @@ pub fn implementHash(comptime T: type, this: *const T, hasher: *std.hash.Wyhash)
             return;
         },
         .@"enum" => {
-            bun.writeAnyToHasher(hasher, @intFromEnum(this.*));
+            bun.writeAnyToHasher(hasher, @backingInt(this.*));
         },
         .@"union" => {
             if (tyinfo.@"union".tag_type == null) @compileError("Unions must have a tag type");
-            bun.writeAnyToHasher(hasher, @intFromEnum(this.*));
+            bun.writeAnyToHasher(hasher, @backingInt(this.*));
             const enum_info = bun.meta.EnumInfo(T);
             inline for (enum_info.field_names, enum_info.field_values, tyinfo.@"union".field_types) |field_name, field_value, FieldType| {
-                if (field_value == @intFromEnum(this.*)) {
+                if (field_value == @backingInt(this.*)) {
                     if (comptime hasHash(FieldType)) {
                         hash(FieldType, &@field(this, field_name), hasher);
                     } else if (@hasDecl(FieldType, "__generateHash") and @typeInfo(FieldType) == .@"struct") {

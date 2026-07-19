@@ -279,7 +279,7 @@ fn NewLexer_(
         }
 
         pub inline fn isIdentifierOrKeyword(noalias lexer: *const LexerType) bool {
-            return @intFromEnum(lexer.token) >= @intFromEnum(T.t_identifier);
+            return @backingInt(lexer.token) >= @backingInt(T.t_identifier);
         }
 
         pub fn deinit(noalias this: *LexerType) void {

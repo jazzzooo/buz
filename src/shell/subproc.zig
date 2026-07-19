@@ -917,7 +917,7 @@ pub const ShellSubprocess = struct {
         if (subprocess.stdin == .buffer) {
             if (subprocess.stdin.buffer.start().asErr()) |err| {
                 const sys_err = err.toShellSystemError();
-                _ = subprocess.tryKill(@intFromEnum(bun.SignalCode.SIGTERM));
+                _ = subprocess.tryKill(@backingInt(bun.SignalCode.SIGTERM));
                 subprocess.abortAfterFailedStart();
                 return .{ .err = .{ .sys = sys_err } };
             }
@@ -926,7 +926,7 @@ pub const ShellSubprocess = struct {
         if (subprocess.stdout == .pipe) {
             if (subprocess.stdout.pipe.start(subprocess, event_loop).asErr()) |err| {
                 const sys_err = err.toShellSystemError();
-                _ = subprocess.tryKill(@intFromEnum(bun.SignalCode.SIGTERM));
+                _ = subprocess.tryKill(@backingInt(bun.SignalCode.SIGTERM));
                 subprocess.abortAfterFailedStart();
                 return .{ .err = .{ .sys = sys_err } };
             }
@@ -938,7 +938,7 @@ pub const ShellSubprocess = struct {
         if (subprocess.stderr == .pipe) {
             if (subprocess.stderr.pipe.start(subprocess, event_loop).asErr()) |err| {
                 const sys_err = err.toShellSystemError();
-                _ = subprocess.tryKill(@intFromEnum(bun.SignalCode.SIGTERM));
+                _ = subprocess.tryKill(@backingInt(bun.SignalCode.SIGTERM));
                 subprocess.abortAfterFailedStart();
                 return .{ .err = .{ .sys = sys_err } };
             }

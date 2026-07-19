@@ -392,7 +392,7 @@ pub const ShellCpTask = struct {
         if (bun.Environment.isWindows) {
             const attributes = bun.sys.getFileAttributes(path[0..path.len]) orelse {
                 const err: Syscall.Error = .{
-                    .errno = @intFromEnum(bun.sys.SystemErrno.ENOENT),
+                    .errno = @backingInt(bun.sys.SystemErrno.ENOENT),
                     .syscall = .copyfile,
                     .path = path,
                 };
@@ -543,7 +543,7 @@ pub const ShellCpTask = struct {
             .src = jsc.Node.PathLike{ .string = bun.PathString.init(this.src_absolute.?) },
             .dest = jsc.Node.PathLike{ .string = bun.PathString.init(this.tgt_absolute.?) },
             .flags = .{
-                .mode = @enumFromInt(0),
+                .mode = @fromBackingInt(@intCast(0)),
                 .recursive = this.opts.recursive,
                 .force = true,
                 .errorOnExist = false,

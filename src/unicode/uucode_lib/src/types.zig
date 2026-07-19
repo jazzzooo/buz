@@ -744,7 +744,7 @@ pub fn Slice(
                         @memset(embedded[s.len..], 0);
                     },
                     .@"enum" => {
-                        @memset(embedded[s.len..], @enumFromInt(0));
+                        @memset(embedded[s.len..], @fromBackingInt(@intCast(0)));
                     },
                     else => {
                         @memset(embedded[s.len..], 0);
@@ -1091,7 +1091,7 @@ pub fn PackedOptional(comptime c: config.Field) type {
             if (opt) |value| {
                 const d: Int = switch (@typeInfo(T)) {
                     .int => value,
-                    .@"enum" => @intFromEnum(value),
+                    .@"enum" => @backingInt(value),
                     .bool => @intFromBool(value),
                     else => unreachable,
                 };
@@ -1108,7 +1108,7 @@ pub fn PackedOptional(comptime c: config.Field) type {
             } else {
                 return switch (@typeInfo(T)) {
                     .int => @intCast(self.data),
-                    .@"enum" => @enumFromInt(self.data),
+                    .@"enum" => @fromBackingInt(@intCast(self.data)),
                     .bool => self.data == 1,
                     else => unreachable,
                 };
@@ -1134,7 +1134,7 @@ pub fn OptionalTracking(comptime Optional: type) type {
             if (opt) |value| {
                 const d: isize = switch (@typeInfo(T)) {
                     .int => value,
-                    .@"enum" => @intFromEnum(value),
+                    .@"enum" => @backingInt(value),
                     .bool => @intFromBool(value),
                     else => unreachable,
                 };
@@ -1350,7 +1350,7 @@ pub fn Union(comptime c: config.Field, comptime packing: config.Table.Packing) t
 
         fn _init(value: c.type) Self {
             return .{
-                .tag = @intFromEnum(@as(Tag, value)),
+                .tag = @backingInt(@as(Tag, value)),
                 .@"union" = switch (value) {
                     inline else => |v, tag| @unionInit(InnerUnion, @tagName(tag), v),
                 },
@@ -1359,7 +1359,7 @@ pub fn Union(comptime c: config.Field, comptime packing: config.Table.Packing) t
 
         fn _initShift(cp: u21, value: c.type) Self {
             return .{
-                .tag = @intFromEnum(@as(Tag, value)),
+                .tag = @backingInt(@as(Tag, value)),
                 .@"union" = switch (value) {
                     inline else => |v, tag| if (@FieldType(InnerUnion, @tagName(tag)) == ShiftMember)
                         @unionInit(InnerUnion, @tagName(tag), .init(cp, v))
@@ -1370,7 +1370,7 @@ pub fn Union(comptime c: config.Field, comptime packing: config.Table.Packing) t
         }
 
         fn _unpack(self: Self) c.type {
-            const tag: Tag = @enumFromInt(self.tag);
+            const tag: Tag = @fromBackingInt(@intCast(self.tag));
             return switch (tag) {
                 inline else => |comptime_tag| @unionInit(
                     c.type,
@@ -1381,7 +1381,7 @@ pub fn Union(comptime c: config.Field, comptime packing: config.Table.Packing) t
         }
 
         fn _unshift(self: Self, cp: u21) c.type {
-            const tag: Tag = @enumFromInt(self.tag);
+            const tag: Tag = @fromBackingInt(@intCast(self.tag));
             return switch (tag) {
                 inline else => |comptime_tag| if (@FieldType(InnerUnion, @tagName(comptime_tag)) == ShiftMember)
                     @unionInit(
@@ -1404,7 +1404,7 @@ pub fn Union(comptime c: config.Field, comptime packing: config.Table.Packing) t
         pub const unshift = if (c.cp_packing == .shift) _unshift else void{};
 
         pub fn autoHash(self: Self, hasher: anytype) void {
-            const tag: Tag = @enumFromInt(self.tag);
+            const tag: Tag = @fromBackingInt(@intCast(self.tag));
             std.hash.autoHash(hasher, tag);
             switch (tag) {
                 inline else => |comptime_tag| {
@@ -1420,7 +1420,7 @@ pub fn Union(comptime c: config.Field, comptime packing: config.Table.Packing) t
             if (a.tag != b.tag) {
                 return false;
             }
-            const tag: Tag = @enumFromInt(a.tag);
+            const tag: Tag = @fromBackingInt(@intCast(a.tag));
             switch (tag) {
                 inline else => |comptime_tag| {
                     const a_v = @field(a.@"union", @tagName(comptime_tag));

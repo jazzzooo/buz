@@ -147,7 +147,7 @@ const Writer = *std.Io.Writer;
 
 fn writeLogMsg(msg: *const bun.logger.Msg, w: Writer) bun.OOM!void {
     w.writeByte(switch (msg.kind) {
-        inline else => |k| @intFromEnum(@field(ErrorKind, "bundler_log_" ++ @tagName(k))),
+        inline else => |k| @backingInt(@field(ErrorKind, "bundler_log_" ++ @tagName(k))),
     }) catch return error.OutOfMemory;
     try writeLogData(msg.data, w);
     const notes = msg.notes;

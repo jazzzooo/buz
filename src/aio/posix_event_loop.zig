@@ -442,7 +442,7 @@ pub const FilePoll = struct {
                 ptr.as(ParentDeathWatchdog).onParentExit();
             },
             else => {
-                const possible_name = Owner.typeNameFromTag(@intFromEnum(ptr.tag()));
+                const possible_name = Owner.typeNameFromTag(@backingInt(ptr.tag()));
                 log("onUpdate " ++ kqueue_or_epoll ++ " (fd: {f}) disconnected? (maybe: {s})", .{ poll.fd, possible_name orelse "<unknown>" });
             },
         }
@@ -996,7 +996,7 @@ pub const FilePoll = struct {
                     .udata = @intFromPtr(Pollable.init(this).ptr()),
                     .flags = std.c.EV.ADD | one_shot_flag,
                 },
-                .machport => return .initErr(.{ .errno = @intFromEnum(bun.sys.E.OPNOTSUPP), .syscall = .kevent }),
+                .machport => return .initErr(.{ .errno = @backingInt(bun.sys.E.OPNOTSUPP), .syscall = .kevent }),
                 else => unreachable,
             };
 
@@ -1179,7 +1179,7 @@ pub const FilePoll = struct {
                 // Global failure (e.g. EBADF on the kqueue fd): the eventlist
                 // was not written, so per-entry checks below would read our
                 // own input. Report errno and stop.
-                std.math.minInt(@TypeOf(rc))...-1 => return bun.sys.Maybe(void).errnoSys(@intFromEnum(errno), .kevent).?,
+                std.math.minInt(@TypeOf(rc))...-1 => return bun.sys.Maybe(void).errnoSys(@backingInt(errno), .kevent).?,
                 else => {},
             }
 
@@ -1223,7 +1223,7 @@ pub const FilePoll = struct {
                     .udata = @intFromPtr(Pollable.init(this).ptr()),
                     .flags = std.c.EV.DELETE,
                 },
-                .machport => return .initErr(.{ .errno = @intFromEnum(bun.sys.E.OPNOTSUPP), .syscall = .kevent }),
+                .machport => return .initErr(.{ .errno = @backingInt(bun.sys.E.OPNOTSUPP), .syscall = .kevent }),
                 else => unreachable,
             };
 

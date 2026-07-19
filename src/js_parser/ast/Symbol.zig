@@ -280,7 +280,7 @@ pub const Kind = enum {
     }
 
     pub inline fn isPrivate(kind: Symbol.Kind) bool {
-        return @intFromEnum(kind) >= @intFromEnum(Symbol.Kind.private_field) and @intFromEnum(kind) <= @intFromEnum(Symbol.Kind.private_static_get_set_pair);
+        return @backingInt(kind) >= @backingInt(Symbol.Kind.private_field) and @backingInt(kind) <= @backingInt(Symbol.Kind.private_static_get_set_pair);
     }
 
     pub inline fn isHoisted(kind: Symbol.Kind) bool {

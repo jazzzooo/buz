@@ -255,7 +255,7 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
             },
             .fd => |fd| {
                 const err: bun.jsc.SystemError = .{
-                    .errno = @intFromEnum(bun.sys.SystemErrno.EINVAL),
+                    .errno = @backingInt(bun.sys.SystemErrno.EINVAL),
                     .code = .static("EINVAL"),
                     .message = .static("Bun does not support listening on a file descriptor."),
                     .syscall = .static("listen"),
@@ -863,7 +863,7 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
             SocketType.js.dataSetCached(socket.getThisValue(globalObject), globalObject, default_data);
             socket.flags.allow_half_open = socket_config.allowHalfOpen;
             socket.doConnect(connection) catch {
-                socket.handleConnectError(@intFromEnum(if (port == null) bun.sys.SystemErrno.ENOENT else bun.sys.SystemErrno.ECONNREFUSED)) catch {};
+                socket.handleConnectError(@backingInt(if (port == null) bun.sys.SystemErrno.ENOENT else bun.sys.SystemErrno.ECONNREFUSED)) catch {};
                 // Balance the unconditional `socket.ref()` above. `handleConnectError`
                 // only derefs when the socket was attached (`needs_deref`), which is
                 // never true on this synchronous-failure path — the socket is still

@@ -647,7 +647,7 @@ pub inline fn parentCmdMut(this: *Builtin) *Cmd {
 
 pub fn done(this: *Builtin, exit_code: anytype) Yield {
     const code: ExitCode = switch (@TypeOf(exit_code)) {
-        bun.sys.E => @intFromEnum(exit_code),
+        bun.sys.E => @backingInt(exit_code),
         u1, u8, u16 => exit_code,
         comptime_int => exit_code,
         else => @compileError("Invalid type: " ++ @typeName(@TypeOf(exit_code))),

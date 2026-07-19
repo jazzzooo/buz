@@ -120,7 +120,7 @@ pub const StreamPriority = packed struct(u40) {
 
 pub const FrameHeader = packed struct(u72) {
     length: u24 = 0,
-    type: u8 = @intFromEnum(FrameType.HTTP_FRAME_SETTINGS),
+    type: u8 = @backingInt(FrameType.HTTP_FRAME_SETTINGS),
     flags: u8 = 0,
     streamIdentifier: u32 = 0,
 
@@ -145,7 +145,7 @@ pub const SettingsPayloadUnit = packed struct(u48) {
         }
     }
     pub inline fn encode(dst: *[byteSize]u8, setting: SettingsType, value: u32) void {
-        std.mem.writeInt(u16, dst[0..2], @intFromEnum(setting), .big);
+        std.mem.writeInt(u16, dst[0..2], @backingInt(setting), .big);
         std.mem.writeInt(u32, dst[2..6], value, .big);
     }
 };

@@ -82,7 +82,7 @@ pub fn start(this: *Worker) !void {
             // anything it spawned. PDEATHSIG is the SIGKILL safety net on
             // Linux for the worker itself.
             .new_process_group = true,
-            .linux_pdeathsig = if (Environment.isLinux) @intCast(@intFromEnum(std.posix.SIG.KILL)) else null,
+            .linux_pdeathsig = if (Environment.isLinux) @intCast(@backingInt(std.posix.SIG.KILL)) else null,
         };
         var spawned = try (try bun.spawn.spawnProcess(&options, coord.argv.ptr, coord.envps[this.idx].ptr)).unwrap();
         defer spawned.extra_pipes.deinit();

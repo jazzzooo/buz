@@ -1499,7 +1499,7 @@ pub const JSBundler = struct {
                     return;
                 }
             } else {
-                const loader: api.Loader = @enumFromInt(loader_as_int.to(u8));
+                const loader: api.Loader = @fromBackingInt(@intCast(loader_as_int.to(u8)));
                 const global = this.bv2.plugins.?.globalObject();
                 const source_code = jsc.Node.StringOrBuffer.fromJSToOwnedSlice(global, source_code_value, bun.default_allocator) catch |err| {
                     switch (err) {
@@ -1660,7 +1660,7 @@ pub const JSBundler = struct {
             const path_string = bun.String.cloneUTF8(path);
             defer namespace_string.deref();
             defer path_string.deref();
-            JSBundlerPlugin__matchOnLoad(this, &namespace_string, &path_string, context, @intFromEnum(default_loader), is_server_side);
+            JSBundlerPlugin__matchOnLoad(this, &namespace_string, &path_string, context, @backingInt(default_loader), is_server_side);
         }
 
         pub fn matchOnResolve(
@@ -1683,7 +1683,7 @@ pub const JSBundler = struct {
             defer namespace_string.deref();
             defer path_string.deref();
             defer importer_string.deref();
-            JSBundlerPlugin__matchOnResolve(this, &namespace_string, &path_string, &importer_string, context, @intFromEnum(import_record_kind));
+            JSBundlerPlugin__matchOnResolve(this, &namespace_string, &path_string, &importer_string, context, @backingInt(import_record_kind));
         }
 
         pub fn addPlugin(

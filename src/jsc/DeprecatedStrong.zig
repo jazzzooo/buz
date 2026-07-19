@@ -8,14 +8,14 @@ pub fn initNonCell(non_cell: jsc.JSValue) Strong {
 }
 pub fn init(safety_gpa: std.mem.Allocator, value: jsc.JSValue) Strong {
     value.protect();
-    const safety: Safety = if (enable_safety) .{ .ptr = bun.create(safety_gpa, Strong, .{ .raw = @enumFromInt(0xAEBCFA), .safety = null }), .gpa = safety_gpa, .ref_count = 1 };
+    const safety: Safety = if (enable_safety) .{ .ptr = bun.create(safety_gpa, Strong, .{ .raw = @fromBackingInt(@intCast(0xAEBCFA)), .safety = null }), .gpa = safety_gpa, .ref_count = 1 };
     return .{ .raw = value, .safety = safety };
 }
 pub fn deinit(this: *Strong) void {
     this.raw.unprotect();
     if (enable_safety) if (this.safety) |safety| {
-        bun.assert(@intFromEnum(safety.ptr.*.raw) == 0xAEBCFA);
-        safety.ptr.*.raw = @enumFromInt(0xFFFFFF);
+        bun.assert(@backingInt(safety.ptr.*.raw) == 0xAEBCFA);
+        safety.ptr.*.raw = @fromBackingInt(@intCast(0xFFFFFF));
         bun.assert(safety.ref_count == 1);
         safety.gpa.destroy(safety.ptr);
     };
@@ -42,8 +42,8 @@ pub fn unref(this: *Strong) void {
     this.raw.unprotect();
     if (enable_safety) if (this.safety) |safety| {
         if (safety.ref_count == 1) {
-            bun.assert(@intFromEnum(safety.ptr.*.raw) == 0xAEBCFA);
-            safety.ptr.*.raw = @enumFromInt(0xFFFFFF);
+            bun.assert(@backingInt(safety.ptr.*.raw) == 0xAEBCFA);
+            safety.ptr.*.raw = @fromBackingInt(@intCast(0xFFFFFF));
             safety.gpa.destroy(safety.ptr);
             return;
         }

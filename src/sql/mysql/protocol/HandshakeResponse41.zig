@@ -38,7 +38,7 @@ pub fn writeInternal(this: *HandshakeResponse41, comptime Context: type, writer:
     try writer.int4(this.max_packet_size);
 
     // Write character set (1 byte)
-    try writer.int1(@intFromEnum(this.character_set));
+    try writer.int1(@backingInt(this.character_set));
 
     // Write 23 bytes of padding
     try writer.write(&@as([23]u8, @splat(0)));

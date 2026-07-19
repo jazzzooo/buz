@@ -70,7 +70,7 @@ pub fn getRandomValuesWithoutTypeChecks(
 ) jsc.JSValue {
     const slice = array.slice();
     randomData(globalThis, slice.ptr, slice.len);
-    return @as(jsc.JSValue, @enumFromInt(@as(i64, @bitCast(@intFromPtr(array)))));
+    return @as(jsc.JSValue, @fromBackingInt(@intCast(@as(i64, @bitCast(@intFromPtr(array))))));
 }
 
 fn randomData(

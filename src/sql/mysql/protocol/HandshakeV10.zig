@@ -40,7 +40,7 @@ pub fn decodeInternal(this: *HandshakeV10, comptime Context: type, reader: NewRe
     const capabilities_lower = try reader.int(u16);
 
     // Character set
-    this.character_set = @enumFromInt(try reader.int(u8));
+    this.character_set = @fromBackingInt(@intCast(try reader.int(u8)));
 
     // Status flags
     this.status_flags = StatusFlags.fromInt(try reader.int(u16));

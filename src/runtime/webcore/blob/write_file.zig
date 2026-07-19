@@ -418,7 +418,7 @@ pub const WriteFileWindows = struct {
             &this.io_request,
             &(std.posix.toPosixPath(path) catch {
                 return this.throw(bun.sys.Error{
-                    .errno = @intFromEnum(bun.sys.E.NAMETOOLONG),
+                    .errno = @backingInt(bun.sys.E.NAMETOOLONG),
                     .syscall = .open,
                 });
             }),
@@ -432,7 +432,7 @@ pub const WriteFileWindows = struct {
             bun.assert(err != .NOENT);
 
             return this.throw(.{
-                .errno = @intFromEnum(err),
+                .errno = @backingInt(err),
                 .path = path,
                 .syscall = .open,
             });
@@ -459,7 +459,7 @@ pub const WriteFileWindows = struct {
             }
 
             switch (this.throw(.{
-                .errno = @intFromEnum(err),
+                .errno = @backingInt(err),
                 .path = this.file_blob.store.?.data.file.pathlike.path.slice(),
                 .syscall = .open,
             })) {

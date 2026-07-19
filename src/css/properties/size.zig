@@ -400,7 +400,7 @@ pub const SizeProperty = packed struct(u16) {
     pub fn tryFromPropertyIdTag(property_id: PropertyIdTag) ?SizeProperty {
         inline for (comptime std.meta.fieldNames(@This())) |field_name| {
             if (comptime std.mem.eql(u8, field_name, "__unused")) continue;
-            if (@intFromEnum(@field(PropertyIdTag, field_name)) == @intFromEnum(@as(PropertyIdTag, property_id))) {
+            if (@backingInt(@field(PropertyIdTag, field_name)) == @backingInt(@as(PropertyIdTag, property_id))) {
                 var ret: SizeProperty = .{};
                 @field(ret, field_name) = true;
                 return ret;

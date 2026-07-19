@@ -107,7 +107,7 @@ fn parseTiff(tiff: []const u8) ?Orientation {
         const cnt = rd32(tiff, e + 4, big) orelse return null;
         if (ty != 3 or cnt != 1) return null;
         const v = rd16(tiff, e + 8, big) orelse return null;
-        return if (v >= 1 and v <= 8) @enumFromInt(v) else null;
+        return if (v >= 1 and v <= 8) @fromBackingInt(@intCast(v)) else null;
     }
     return null;
 }

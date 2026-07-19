@@ -10,13 +10,13 @@ pub fn ParsePrefix(
 
         fn t_super(noalias p: *P, level: Level) anyerror!Expr {
             const loc = p.lexer.loc();
-            const l = @intFromEnum(level);
+            const l = @backingInt(level);
             const superRange = p.lexer.range();
             try p.lexer.next();
 
             switch (p.lexer.token) {
                 .t_open_paren => {
-                    if (l < @intFromEnum(Level.call) and p.fn_or_arrow_data_parse.allow_super_call) {
+                    if (l < @backingInt(Level.call) and p.fn_or_arrow_data_parse.allow_super_call) {
                         return p.newExpr(E.Super{}, loc);
                     }
                 },

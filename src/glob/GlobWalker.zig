@@ -820,7 +820,7 @@ pub fn GlobWalker_(
                                     this.iter_state = .get_next;
                                     const maybe_dir_fd: ?Accessor.Handle = switch (try Accessor.openat(this.cwd_fd, symlink_full_path_z)) {
                                         .err => |err| brk: {
-                                            if (@as(usize, @intCast(err.errno)) == @as(usize, @intFromEnum(bun.sys.E.NOTDIR))) {
+                                            if (@as(usize, @intCast(err.errno)) == @as(usize, @backingInt(bun.sys.E.NOTDIR))) {
                                                 break :brk null;
                                             }
                                             if (this.walker.error_on_broken_symlinks) return .{ .err = this.walker.handleSysErrWithPath(err, symlink_full_path_z) };

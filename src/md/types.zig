@@ -361,7 +361,7 @@ pub const RefDef = struct {
 
 /// Extract table cell alignment from block data.
 pub fn alignmentFromData(data: u32) Align {
-    return @enumFromInt(@as(u2, @truncate(data)));
+    return @fromBackingInt(@intCast(@as(u2, @truncate(data))));
 }
 
 /// Get string name for alignment, or null for default.

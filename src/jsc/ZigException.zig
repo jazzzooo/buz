@@ -98,7 +98,7 @@ pub const ZigException = extern struct {
         pub fn zigException(this: *Holder) *ZigException {
             if (!this.loaded) {
                 this.zig_exception = ZigException{
-                    .type = @as(JSErrorCode, @enumFromInt(255)),
+                    .type = @as(JSErrorCode, @fromBackingInt(@intCast(255))),
                     .runtime_type = JSRuntimeType.Nothing,
                     .name = String.empty,
                     .message = String.empty,
@@ -139,8 +139,8 @@ pub const ZigException = extern struct {
 
         var is_empty = true;
         var api_exception = api.JsException{
-            .runtime_type = @intFromEnum(this.runtime_type),
-            .code = @intFromEnum(this.type),
+            .runtime_type = @backingInt(this.runtime_type),
+            .code = @backingInt(this.type),
         };
 
         if (_name.len > 0) {

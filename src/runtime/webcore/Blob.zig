@@ -425,7 +425,7 @@ fn _onStructuredCloneSerialize(
     else
         .empty;
 
-    try writer.writeInt(u8, @intFromEnum(store_tag), .little);
+    try writer.writeInt(u8, @backingInt(store_tag), .little);
 
     this.resolveSize();
     if (this.store) |store| {
@@ -1029,7 +1029,7 @@ fn writeFileWithEmptySourceToDestination(ctx: *jsc.JSGlobalObject, destination_b
                     // #6336
                     .PERM => {
                         was_eperm = true;
-                        result.err.errno = @intCast(@intFromEnum(bun.sys.E.NOENT));
+                        result.err.errno = @intCast(@backingInt(bun.sys.E.NOENT));
                         continue :err .NOENT;
                     },
                     .NOENT => {
@@ -1043,7 +1043,7 @@ fn writeFileWithEmptySourceToDestination(ctx: *jsc.JSGlobalObject, destination_b
                                 // exists, so we shouldn't try to mkdir it
                                 // also means PERM is _actually_ a
                                 // permissions issue
-                                if (was_eperm) result.err.errno = @intCast(@intFromEnum(bun.sys.E.PERM));
+                                if (was_eperm) result.err.errno = @intCast(@backingInt(bun.sys.E.PERM));
                                 break :err;
                             },
                         };
@@ -4962,7 +4962,7 @@ pub fn FileOpener(comptime This: type) type {
                     .result => |fd| fd,
                     .err => |err| {
                         if (comptime @hasField(This, "mkdirp_if_not_exists")) {
-                            if (err.errno == @intFromEnum(bun.sys.E.NOENT)) {
+                            if (err.errno == @backingInt(bun.sys.E.NOENT)) {
                                 switch (mkdirIfNotExists(this, err, path, path_string.slice())) {
                                     .@"continue" => continue,
                                     .fail => {

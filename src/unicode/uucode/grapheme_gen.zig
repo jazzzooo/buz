@@ -32,7 +32,7 @@ const Context = struct {
         if (cp > uucode.config.max_code_point) return .other;
 
         const uu_gb = uucode.get(.grapheme_break_no_control, cp);
-        return @enumFromInt(@intFromEnum(uu_gb));
+        return @fromBackingInt(@intCast(@backingInt(uu_gb)));
     }
 
     pub fn eql(_: @This(), a: GraphemeBreakNoControl, b: GraphemeBreakNoControl) bool {

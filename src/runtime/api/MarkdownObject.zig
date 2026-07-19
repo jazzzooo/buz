@@ -1237,7 +1237,7 @@ extern fn BunMarkdownMeta__createCell(*jsc.JSGlobalObject, JSValue) JSValue;
 extern fn BunMarkdownMeta__createLink(*jsc.JSGlobalObject, JSValue, JSValue) JSValue;
 
 fn getCachedTagString(globalObject: *jsc.JSGlobalObject, tag: TagIndex) JSValue {
-    return BunMarkdownTagStrings__getTagString(globalObject, @intFromEnum(tag));
+    return BunMarkdownTagStrings__getTagString(globalObject, @backingInt(tag));
 }
 
 fn getBlockTypeTag(block_type: md.BlockType, data: u32) TagIndex {

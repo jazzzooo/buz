@@ -100,7 +100,7 @@ pub const PatchFile = struct {
                         if (nodefs.mkdirRecursive(.{
                             .path = .{ .string = bun.PathString.init(filedir) },
                             .recursive = true,
-                            .mode = @intCast(@intFromEnum(mode)),
+                            .mode = @intCast(@backingInt(mode)),
                         }).asErr()) |e| return e.withoutPath();
                     }
 
@@ -472,7 +472,7 @@ pub const FileMode = enum(u32) {
     executable = 0o755,
 
     pub fn toBunMode(this: FileMode) bun.Mode {
-        return @intCast(@intFromEnum(this));
+        return @intCast(@backingInt(this));
     }
 
     pub fn fromU32(mode: u32) ?FileMode {
@@ -874,14 +874,14 @@ const PatchLinesParser = struct {
                             if (this.current_hunk == null) {
                                 return ParseErr.hunk_lines_encountered_before_hunk_header;
                             }
-                            if (this.current_hunk_mutation_part != null and @intFromEnum(this.current_hunk_mutation_part.?.type) != @intFromEnum(hunk_line_type)) {
+                            if (this.current_hunk_mutation_part != null and @backingInt(this.current_hunk_mutation_part.?.type) != @backingInt(hunk_line_type)) {
                                 this.current_hunk.?.parts.append(bun.default_allocator, this.current_hunk_mutation_part.?) catch unreachable;
                                 this.current_hunk_mutation_part = null;
                             }
 
                             if (this.current_hunk_mutation_part == null) {
                                 this.current_hunk_mutation_part = .{
-                                    .type = @enumFromInt(@intFromEnum(hunk_line_type)),
+                                    .type = @fromBackingInt(@intCast(@backingInt(hunk_line_type))),
                                 };
                             }
 

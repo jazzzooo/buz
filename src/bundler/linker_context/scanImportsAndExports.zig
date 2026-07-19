@@ -1201,7 +1201,7 @@ fn validateComposesFromProperties(
             // Warn about cross-file composition with the same CSS properties
             var iter = property_usage.bitset.iterator(.{});
             while (iter.next()) |property_tag| {
-                const property_id_tag: bun.css.PropertyIdTag = @enumFromInt(@as(u16, @intCast(property_tag)));
+                const property_id_tag: bun.css.PropertyIdTag = @fromBackingInt(@intCast(@as(u16, @intCast(property_tag))));
                 bun.assert(property_id_tag != .custom);
                 bun.assert(property_id_tag != .unparsed);
                 v.addPropertyOrWarn(ref, @tagName(property_id_tag), idx, property_usage.range);

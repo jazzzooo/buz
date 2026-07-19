@@ -214,7 +214,7 @@ pub const FD = packed struct(backing_int) {
                     maybe_windows_fd.close();
                 }
                 return .{ .err = .{
-                    .errno = @intFromEnum(bun.sys.E.MFILE),
+                    .errno = @backingInt(bun.sys.E.MFILE),
                     .syscall = syscall_tag,
                 } };
             },
@@ -265,14 +265,14 @@ pub const FD = packed struct(backing_int) {
             .linux, .freebsd => result: {
                 bun.assert(fd.native() >= 0);
                 break :result switch (bun.sys.getErrno(bun.sys.syscall.close(fd.native()))) {
-                    .BADF => .{ .errno = @intFromEnum(E.BADF), .syscall = .close, .fd = fd },
+                    .BADF => .{ .errno = @backingInt(E.BADF), .syscall = .close, .fd = fd },
                     else => null,
                 };
             },
             .mac => result: {
                 bun.assert(fd.native() >= 0);
                 break :result switch (bun.sys.getErrno(bun.sys.syscall.@"close$NOCANCEL"(fd.native()))) {
-                    .BADF => .{ .errno = @intFromEnum(E.BADF), .syscall = .close, .fd = fd },
+                    .BADF => .{ .errno = @backingInt(E.BADF), .syscall = .close, .fd = fd },
                     else => null,
                 };
             },
@@ -290,7 +290,7 @@ pub const FD = packed struct(backing_int) {
                     break :result switch (bun.c.NtClose(handle)) {
                         .SUCCESS => null,
                         else => |rc| bun.sys.Error{
-                            .errno = if (bun.windows.Win32Error.fromNTStatus(rc).toSystemErrno()) |errno| @intFromEnum(errno) else 1,
+                            .errno = if (bun.windows.Win32Error.fromNTStatus(rc).toSystemErrno()) |errno| @backingInt(errno) else 1,
                             .syscall = .CloseHandle,
                             .fd = fd,
                         },
@@ -301,7 +301,7 @@ pub const FD = packed struct(backing_int) {
         };
         if (Environment.isDebug) {
             if (result) |err| {
-                if (err.errno == @intFromEnum(E.BADF)) {
+                if (err.errno == @backingInt(E.BADF)) {
                     bun.Output.debugWarn("close({s}) = EBADF. This is an indication of a file descriptor UAF", .{fd_fmt});
                     bun.crash_handler.dumpCurrentStackTrace(return_address orelse @returnAddress(), .{ .frame_count = 4, .stop_at_jsc_llint = true });
                 } else {
@@ -332,10 +332,10 @@ pub const FD = packed struct(backing_int) {
         }
         pub fn fromInt(value: i32) ?Stdio {
             if (value < 0 or value > 2) return null;
-            return @enumFromInt(value);
+            return @fromBackingInt(@intCast(value));
         }
         pub fn toInt(tag: Stdio) i32 {
-            return @intFromEnum(tag);
+            return @backingInt(tag);
         }
     };
     pub fn stdioTag(fd: FD) ?Stdio {
@@ -476,7 +476,7 @@ pub const FD = packed struct(backing_int) {
                 fd.close();
         }
         pub fn unwrap(optional: Optional) ?FD {
-            return if (optional == .none) null else @bitCast(@intFromEnum(optional));
+            return if (optional == .none) null else @bitCast(@backingInt(optional));
         }
         pub fn take(optional: *Optional) ?FD {
             defer optional.* = .none;
@@ -485,7 +485,7 @@ pub const FD = packed struct(backing_int) {
     };
     /// Properly converts FD.invalid into FD.Optional.none
     pub fn toOptional(fd: FD) Optional {
-        return @enumFromInt(@as(backing_int, @bitCast(fd)));
+        return @fromBackingInt(@intCast(@as(backing_int, @bitCast(fd))));
     }
 
     pub fn makePath(dir: FD, io: std.Io, comptime T: type, subpath: []const T) !void {

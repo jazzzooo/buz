@@ -15,7 +15,7 @@ const SSRKind = enum(u8) {
 
 pub fn toJSForSSR(this: *Response, globalObject: *JSGlobalObject, kind: SSRKind) JSValue {
     this.calculateEstimatedByteSize();
-    return BakeResponse__createForSSR(globalObject, this, @intFromEnum(kind));
+    return BakeResponse__createForSSR(globalObject, this, @backingInt(kind));
 }
 
 pub export fn BakeResponseClass__constructForSSR(globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame, bake_ssr_has_jsx: *c_int, js_this: jsc.JSValue) callconv(jsc.conv) ?*anyopaque {

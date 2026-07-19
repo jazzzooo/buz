@@ -1063,7 +1063,7 @@ pub const struct_any_reply = struct {
                         reply.a_reply = result;
                         any_success = true;
                     },
-                    .err => |err| last_error = @intFromEnum(err),
+                    .err => |err| last_error = @backingInt(err),
                 }
 
                 switch (hostent_with_ttls.parse("aaaa", buffer, buffer_length)) {
@@ -1071,7 +1071,7 @@ pub const struct_any_reply = struct {
                         reply.aaaa_reply = result;
                         any_success = true;
                     },
-                    .err => |err| last_error = @intFromEnum(err),
+                    .err => |err| last_error = @backingInt(err),
                 }
 
                 var result = ares_parse_mx_reply(buffer, buffer_length, &reply.mx_reply);
@@ -1293,7 +1293,7 @@ pub const Error = enum(i32) {
             };
         }
 
-        const eai: std.posix.system.EAI = @enumFromInt(rc);
+        const eai: std.posix.system.EAI = @fromBackingInt(@intCast(rc));
 
         // https://github.com/nodejs/node/blob/2eff28fb7a93d3f672f80b582f664a7c701569fb/lib/internal/errors.js#L807-L815
         if (eai == .NODATA or eai == .NONAME) {
@@ -1317,7 +1317,7 @@ pub const Error = enum(i32) {
         }
 
         return switch (eai) {
-            @as(std.posix.system.EAI, @enumFromInt(0)) => return null,
+            @as(std.posix.system.EAI, @fromBackingInt(@intCast(0))) => return null,
             .ADDRFAMILY => Error.EBADFAMILY,
             .BADFLAGS => Error.EBADFLAGS, // Invalid hints
             .FAIL => Error.EBADRESP,
@@ -1395,8 +1395,8 @@ pub const Error = enum(i32) {
 
         return switch (rc) {
             0 => null,
-            1...ARES_ENOSERVER => @as(Error, @enumFromInt(rc)),
-            -ARES_ENOSERVER...-1 => @as(Error, @enumFromInt(-rc)),
+            1...ARES_ENOSERVER => @as(Error, @fromBackingInt(@intCast(rc))),
+            -ARES_ENOSERVER...-1 => @as(Error, @fromBackingInt(@intCast(-rc))),
             else => unreachable,
         };
     }

@@ -13,6 +13,6 @@ pub const Status = enum(u8) {
     fail,
 
     pub fn isRunning(this: Status) bool {
-        return @intFromEnum(this) > @intFromEnum(Status.pending) and @intFromEnum(this) < @intFromEnum(Status.success);
+        return @backingInt(this) > @backingInt(Status.pending) and @backingInt(this) < @backingInt(Status.success);
     }
 };

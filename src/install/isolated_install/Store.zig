@@ -26,20 +26,20 @@ pub const Store = struct {
 
             pub fn from(id: u32) @This() {
                 bun.debugAssert(id != max);
-                return @enumFromInt(id);
+                return @fromBackingInt(@intCast(id));
             }
 
             pub fn get(id: @This()) u32 {
                 bun.debugAssert(id != .invalid);
-                return @intFromEnum(id);
+                return @backingInt(id);
             }
 
             pub fn tryGet(id: @This()) ?u32 {
-                return if (id == .invalid) null else @intFromEnum(id);
+                return if (id == .invalid) null else @backingInt(id);
             }
 
             pub fn getOr(id: @This(), default: u32) u32 {
-                return if (id == .invalid) default else @intFromEnum(id);
+                return if (id == .invalid) default else @backingInt(id);
             }
         };
     }
@@ -124,11 +124,11 @@ pub const Store = struct {
             _,
 
             pub fn from(int: u64) @This() {
-                return @enumFromInt(int);
+                return @fromBackingInt(@intCast(int));
             }
 
             pub fn cast(this: @This()) u64 {
-                return @intFromEnum(this);
+                return @backingInt(this);
             }
         };
 

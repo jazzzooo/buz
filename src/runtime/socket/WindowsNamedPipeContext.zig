@@ -228,10 +228,10 @@ pub fn open(globalThis: *jsc.JSGlobalObject, fd: bun.FD, ssl_config: ?jsc.API.Se
     errdefer {
         switch (socket) {
             .tls => |tls| {
-                tls.handleConnectError(@intFromEnum(bun.sys.SystemErrno.ENOENT)) catch {};
+                tls.handleConnectError(@backingInt(bun.sys.SystemErrno.ENOENT)) catch {};
             },
             .tcp => |tcp| {
-                tcp.handleConnectError(@intFromEnum(bun.sys.SystemErrno.ENOENT)) catch {};
+                tcp.handleConnectError(@backingInt(bun.sys.SystemErrno.ENOENT)) catch {};
             },
             .none => {},
         }
@@ -249,10 +249,10 @@ pub fn connect(globalThis: *jsc.JSGlobalObject, path: []const u8, ssl_config: ?j
     errdefer {
         switch (socket) {
             .tls => |tls| {
-                tls.handleConnectError(@intFromEnum(bun.sys.SystemErrno.ENOENT)) catch {};
+                tls.handleConnectError(@backingInt(bun.sys.SystemErrno.ENOENT)) catch {};
             },
             .tcp => |tcp| {
-                tcp.handleConnectError(@intFromEnum(bun.sys.SystemErrno.ENOENT)) catch {};
+                tcp.handleConnectError(@backingInt(bun.sys.SystemErrno.ENOENT)) catch {};
             },
             .none => {},
         }

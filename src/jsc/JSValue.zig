@@ -30,7 +30,7 @@ pub const JSValue = enum(i64) {
     }
 
     pub inline fn cast(ptr: anytype) JSValue {
-        return @as(JSValue, @enumFromInt(@as(i64, @bitCast(@intFromPtr(ptr)))));
+        return @as(JSValue, @fromBackingInt(@intCast(@as(i64, @bitCast(@intFromPtr(ptr))))));
     }
 
     pub fn isBigIntInUInt64Range(this: JSValue, min: u64, max: u64) bool {
@@ -187,7 +187,7 @@ pub const JSValue = enum(i64) {
     pub fn to(this: JSValue, comptime T: type) T {
         if (@typeInfo(T) == .@"enum") {
             const Int = @typeInfo(T).@"enum".tag_type;
-            return @enumFromInt(this.to(Int));
+            return @fromBackingInt(@intCast(this.to(Int)));
         }
         return switch (comptime T) {
             u32 => toU32(this),
@@ -611,7 +611,7 @@ pub const JSValue = enum(i64) {
 
     pub fn jsNumberWithType(comptime Number: type, number: Number) JSValue {
         if (@typeInfo(Number) == .@"enum") {
-            return jsNumberWithType(@typeInfo(Number).@"enum".tag_type, @intFromEnum(number));
+            return jsNumberWithType(@typeInfo(Number).@"enum".tag_type, @backingInt(number));
         }
         return switch (comptime Number) {
             JSValue => number,
@@ -939,19 +939,19 @@ pub const JSValue = enum(i64) {
     }
 
     pub inline fn isUndefined(this: JSValue) bool {
-        return @intFromEnum(this) == 0xa;
+        return @backingInt(this) == 0xa;
     }
     pub inline fn isNull(this: JSValue) bool {
         return this == .null;
     }
     pub inline fn isEmptyOrUndefinedOrNull(this: JSValue) bool {
-        return switch (@intFromEnum(this)) {
+        return switch (@backingInt(this)) {
             0, 0xa, 0x2 => true,
             else => false,
         };
     }
     pub fn isUndefinedOrNull(this: JSValue) bool {
-        return switch (@intFromEnum(this)) {
+        return switch (@backingInt(this)) {
             0xa, 0x2 => true,
             else => false,
         };
@@ -1146,7 +1146,7 @@ pub const JSValue = enum(i64) {
     pub inline fn isCell(this: JSValue) bool {
         return switch (this) {
             .zero, .js_undefined, .null, .true, .false => false,
-            else => (@as(u64, @bitCast(@intFromEnum(this))) & FFI.NotCellMask) == 0,
+            else => (@as(u64, @bitCast(@backingInt(this))) & FFI.NotCellMask) == 0,
         };
     }
 
@@ -1421,7 +1421,7 @@ pub const JSValue = enum(i64) {
             global,
             @src(),
             JSC__JSValue__fastGet,
-            .{ this, global, @intFromEnum(builtin_name) },
+            .{ this, global, @backingInt(builtin_name) },
         )) {
             .zero => unreachable, // handled by fromJSHostCall
             .js_undefined, .property_does_not_exist_on_object => null,
@@ -1430,7 +1430,7 @@ pub const JSValue = enum(i64) {
     }
 
     pub fn fastGetDirect(this: JSValue, global: *JSGlobalObject, builtin_name: BuiltinName) ?JSValue {
-        const result = fastGetDirect_(this, global, @intFromEnum(builtin_name));
+        const result = fastGetDirect_(this, global, @backingInt(builtin_name));
         if (result == .zero) {
             return null;
         }
@@ -1594,7 +1594,7 @@ pub const JSValue = enum(i64) {
 
     pub fn getOwnByValue(this: JSValue, global: *JSGlobalObject, property_value: JSValue) ?JSValue {
         const value = JSC__JSValue__getOwnByValue(this, global, property_value);
-        return if (@intFromEnum(value) != 0) value else return null;
+        return if (@backingInt(value) != 0) value else return null;
     }
 
     pub fn getOwnTruthy(this: JSValue, global: *JSGlobalObject, property_name: anytype) bun.JSError!?JSValue {
@@ -1948,7 +1948,7 @@ pub const JSValue = enum(i64) {
     ///
     /// This can throw because it resolves rope strings
     pub fn isSameValue(this: JSValue, other: JSValue, global: *JSGlobalObject) JSError!bool {
-        if (@intFromEnum(this) == @intFromEnum(other)) return true;
+        if (@backingInt(this) == @backingInt(other)) return true;
         return bun.jsc.fromJSHostCallGeneric(global, @src(), JSC__JSValue__isSameValue, .{ this, other, global });
     }
 
@@ -2230,22 +2230,22 @@ pub const JSValue = enum(i64) {
 
     // TODO: remove this (no replacement)
     pub inline fn asRef(this: JSValue) C_API.JSValueRef {
-        return @as(C_API.JSValueRef, @ptrFromInt(@as(usize, @bitCast(@intFromEnum(this)))));
+        return @as(C_API.JSValueRef, @ptrFromInt(@as(usize, @bitCast(@backingInt(this)))));
     }
 
     // TODO: remove this (no replacement)
     pub inline fn c(this: C_API.JSValueRef) JSValue {
-        return @as(JSValue, @enumFromInt(@as(backing_int, @bitCast(@intFromPtr(this)))));
+        return @as(JSValue, @fromBackingInt(@intCast(@as(backing_int, @bitCast(@intFromPtr(this))))));
     }
 
     // TODO: remove this (no replacement)
     pub inline fn fromRef(this: C_API.JSValueRef) JSValue {
-        return @as(JSValue, @enumFromInt(@as(backing_int, @bitCast(@intFromPtr(this)))));
+        return @as(JSValue, @fromBackingInt(@intCast(@as(backing_int, @bitCast(@intFromPtr(this))))));
     }
 
     // TODO: remove this (no replacement)
     pub inline fn asObjectRef(this: JSValue) C_API.JSObjectRef {
-        return @ptrFromInt(@as(usize, @bitCast(@intFromEnum(this))));
+        return @ptrFromInt(@as(usize, @bitCast(@backingInt(this))));
     }
 
     /// When the GC sees a JSValue referenced in the stack, it knows not to free it
@@ -2431,7 +2431,7 @@ pub const JSValue = enum(i64) {
                 if (@typeInfo(Type) == .@"enum") {
                     // FIXME: creates non-normalized integers (e.g. u2), which
                     // aren't handled by `jsNumberWithType` rn
-                    return jsc.JSValue.jsNumberWithType(u32, @as(u32, @intFromEnum(value)));
+                    return jsc.JSValue.jsNumberWithType(u32, @as(u32, @backingInt(value)));
                 }
 
                 @compileError("dont know how to convert " ++ @typeName(T) ++ " to JS");
@@ -2478,7 +2478,7 @@ pub const JSValue = enum(i64) {
     /// Equivalent to `JSC::JSValue::decode`.
     pub fn decode(self: JSValue) jsc.DecodedJSValue {
         var decoded: jsc.DecodedJSValue = undefined;
-        decoded.u.asInt64 = @intFromEnum(self);
+        decoded.u.asInt64 = @backingInt(self);
         return decoded;
     }
 };

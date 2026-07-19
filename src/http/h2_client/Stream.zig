@@ -73,7 +73,7 @@ pub fn rst(this: *@This(), code: wire.ErrorCode) void {
     if (this.rst_done or this.state == .closed) return;
     this.rst_done = true;
     this.state = .closed;
-    var value: u32 = @byteSwap(@intFromEnum(code));
+    var value: u32 = @byteSwap(@backingInt(code));
     this.session.writeFrame(.HTTP_FRAME_RST_STREAM, 0, this.id, std.mem.asBytes(&value));
 }
 

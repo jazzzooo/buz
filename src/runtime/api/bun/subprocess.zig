@@ -413,7 +413,7 @@ pub fn tryKill(this: *Subprocess, sig: SignalCode) bun.sys.Maybe(void) {
     if (this.hasExited()) {
         return .success;
     }
-    return this.process.kill(@intFromEnum(sig));
+    return this.process.kill(@backingInt(sig));
 }
 
 fn hasCalledGetter(this: *Subprocess, comptime getter: @EnumLiteral()) bool {
@@ -698,7 +698,7 @@ pub fn onProcessExit(this: *Subprocess, process: *Process, status: bun.spawn.Sta
                     .err => |err| {
                         promise.asAnyPromise().?.rejectWithAsyncStack(globalThis, err.toJS(globalThis) catch return) catch {}; // TODO: properly propagate exception upwards
                     },
-                    .signaled => promise.asAnyPromise().?.resolve(globalThis, JSValue.jsNumber(128 +% @intFromEnum(status.signaled))) catch {}, // TODO: properly propagate exception upwards
+                    .signaled => promise.asAnyPromise().?.resolve(globalThis, JSValue.jsNumber(128 +% @backingInt(status.signaled))) catch {}, // TODO: properly propagate exception upwards
                     else => {
                         // crash in debug mode
                         if (comptime Environment.allow_assert)
@@ -883,7 +883,7 @@ pub fn getSignalCode(
         if (signal.name()) |name|
             return jsc.ZigString.init(name).toJS(global)
         else
-            return jsc.JSValue.jsNumber(@intFromEnum(signal));
+            return jsc.JSValue.jsNumber(@backingInt(signal));
     }
 
     return jsc.JSValue.jsNull();

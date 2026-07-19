@@ -55,7 +55,7 @@ pub fn Parse(
             // to the expression "a().b()".
 
             if (had_pure_comment_before and level.lt(.call)) {
-                try p.parseSuffix(expr, @as(Level, @enumFromInt(@intFromEnum(Level.call) - 1)), errors, flags);
+                try p.parseSuffix(expr, @as(Level, @fromBackingInt(@intCast(@backingInt(Level.call) - 1))), errors, flags);
                 switch (expr.data) {
                     .e_call => |ex| {
                         ex.can_be_unwrapped_if_unused = .if_unused;

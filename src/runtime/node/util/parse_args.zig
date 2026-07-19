@@ -599,7 +599,7 @@ const ParseArgsState = struct {
             };
 
             // reuse JSValue for the kind names: "positional", "option", "option-terminator"
-            const kind_idx = @intFromEnum(token_generic);
+            const kind_idx = @backingInt(token_generic);
             const kind_jsvalue = this.kinds_jsvalues[kind_idx] orelse kindval: {
                 const val = try String.static(@tagName(token_generic)).toJS(globalThis);
                 this.kinds_jsvalues[kind_idx] = val;

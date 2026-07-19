@@ -24,22 +24,22 @@ pub const PackedNextPtr = enum(usize) {
 
     pub inline fn init(ptr: ?*ConcurrentTask, auto_del: bool) PackedNextPtr {
         const ptr_bits = if (ptr) |p| @intFromPtr(p) else 0;
-        return @enumFromInt(ptr_bits | @intFromBool(auto_del));
+        return @fromBackingInt(@intCast(ptr_bits | @intFromBool(auto_del)));
     }
 
     pub inline fn getPtr(self: PackedNextPtr) ?*ConcurrentTask {
-        const addr = @intFromEnum(self) & ~@as(usize, 1);
+        const addr = @backingInt(self) & ~@as(usize, 1);
         return if (addr == 0) null else @ptrFromInt(addr);
     }
 
     pub inline fn setPtr(self: *PackedNextPtr, ptr: ?*ConcurrentTask) void {
-        const auto_del = @intFromEnum(self.*) & 1;
+        const auto_del = @backingInt(self.*) & 1;
         const ptr_bits = if (ptr) |p| @intFromPtr(p) else 0;
-        self.* = @enumFromInt(ptr_bits | auto_del);
+        self.* = @fromBackingInt(@intCast(ptr_bits | auto_del));
     }
 
     pub inline fn isAutoDelete(self: PackedNextPtr) bool {
-        return (@intFromEnum(self) & 1) != 0;
+        return (@backingInt(self) & 1) != 0;
     }
 
     pub inline fn atomicLoadPtr(self: *const PackedNextPtr, ordering: std.builtin.AtomicOrder) ?*ConcurrentTask {

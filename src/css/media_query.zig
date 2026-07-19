@@ -1052,11 +1052,11 @@ pub fn QueryFeature(comptime FeatureId: type) type {
                 const start_operator = operator.?;
                 const end_operator = end_operator_.?;
                 // Start and end operators must be matching.
-                const GT: u8 = comptime @intFromEnum(MediaFeatureComparison.@"greater-than");
-                const GTE: u8 = comptime @intFromEnum(MediaFeatureComparison.@"greater-than-equal");
-                const LT: u8 = comptime @intFromEnum(MediaFeatureComparison.@"less-than");
-                const LTE: u8 = comptime @intFromEnum(MediaFeatureComparison.@"less-than-equal");
-                const check_val: u8 = @intFromEnum(start_operator) | @intFromEnum(end_operator);
+                const GT: u8 = comptime @backingInt(MediaFeatureComparison.@"greater-than");
+                const GTE: u8 = comptime @backingInt(MediaFeatureComparison.@"greater-than-equal");
+                const LT: u8 = comptime @backingInt(MediaFeatureComparison.@"less-than");
+                const LTE: u8 = comptime @backingInt(MediaFeatureComparison.@"less-than-equal");
+                const check_val: u8 = @backingInt(start_operator) | @backingInt(end_operator);
                 switch (check_val) {
                     GT | GT,
                     GT | GTE,
@@ -1409,7 +1409,7 @@ pub fn MediaFeatureName(comptime FeatureId: type) type {
         const This = @This();
 
         pub fn eql(lhs: *const This, rhs: *const This) bool {
-            if (@intFromEnum(lhs.*) != @intFromEnum(rhs.*)) return false;
+            if (@backingInt(lhs.*) != @backingInt(rhs.*)) return false;
             return switch (lhs.*) {
                 .standard => |fid| fid == rhs.standard,
                 .custom => |ident| bun.strings.eql(ident.v, rhs.custom.v),

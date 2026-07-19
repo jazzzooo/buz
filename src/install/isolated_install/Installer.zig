@@ -661,7 +661,7 @@ pub const Installer = struct {
                                             else
                                                 .ENAMETOOLONG;
                                             return .failure(
-                                                .{ .link_package = .{ .errno = @intFromEnum(err), .syscall = .copyfile } },
+                                                .{ .link_package = .{ .errno = @backingInt(err), .syscall = .copyfile } },
                                             );
                                         }
 

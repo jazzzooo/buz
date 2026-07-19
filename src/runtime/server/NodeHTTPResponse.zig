@@ -554,7 +554,7 @@ fn handleAbortOrTimeout(this: *NodeHTTPResponse, comptime event: AbortEvent, js_
         const event_loop = vm.eventLoop();
 
         event_loop.runCallback(on_aborted, globalThis, js_this, &.{
-            jsc.JSValue.jsNumber(@intFromEnum(event)),
+            jsc.JSValue.jsNumber(@backingInt(event)),
         });
     }
 
@@ -794,7 +794,7 @@ fn onDataOrAborted(this: *NodeHTTPResponse, chunk: []const u8, last: bool, event
         event_loop.runCallback(callback, globalThis, .js_undefined, &.{
             bytes,
             jsc.JSValue.jsBoolean(last),
-            jsc.JSValue.jsNumber(@intFromEnum(event)),
+            jsc.JSValue.jsNumber(@backingInt(event)),
         });
     }
 }

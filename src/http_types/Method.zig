@@ -200,7 +200,7 @@ pub const Method = enum(u8) {
 
 export fn Bun__HTTPMethod__from(str: [*]const u8, len: usize) i16 {
     const method: Method = Method.find(str[0..len]) orelse return -1;
-    return @intFromEnum(method);
+    return @backingInt(method);
 }
 
 comptime {

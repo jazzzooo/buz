@@ -930,7 +930,7 @@ pub const PipelineTask = struct {
                 },
             };
             if (!bun.S.ISREG(@intCast(st.mode))) {
-                this.result = .{ .io_err = .{ .errno = @intFromEnum(bun.sys.E.NODEV), .syscall = .read, .path = p } };
+                this.result = .{ .io_err = .{ .errno = @backingInt(bun.sys.E.NODEV), .syscall = .read, .path = p } };
                 return;
             }
             if (@as(u64, @intCast(@max(st.size, 0))) > max_input_file_bytes) {

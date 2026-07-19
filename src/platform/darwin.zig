@@ -79,7 +79,7 @@ pub const OSLog = opaque {
         log: *OSLog,
 
         pub fn emit(this: *const Signpost, category: Category) void {
-            Bun__signpost_emit(this.log, this.id, .Event, this.name, @intFromEnum(category));
+            Bun__signpost_emit(this.log, this.id, .Event, this.name, @backingInt(category));
         }
 
         pub const Interval = struct {
@@ -87,12 +87,12 @@ pub const OSLog = opaque {
             category: Category,
 
             pub fn end(this: *const Interval) void {
-                Bun__signpost_emit(this.signpost.log, this.signpost.id, .IntervalEnd, this.signpost.name, @intFromEnum(this.category));
+                Bun__signpost_emit(this.signpost.log, this.signpost.id, .IntervalEnd, this.signpost.name, @backingInt(this.category));
             }
         };
 
         pub fn interval(this: Signpost, category: Category) Interval {
-            Bun__signpost_emit(this.log, this.id, .IntervalBegin, this.name, @intFromEnum(category));
+            Bun__signpost_emit(this.log, this.id, .IntervalBegin, this.name, @backingInt(category));
             return Interval{
                 .signpost = this,
                 .category = category,

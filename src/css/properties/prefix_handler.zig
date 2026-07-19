@@ -28,7 +28,7 @@ pub const FallbackHandler = struct {
         context: *css.PropertyHandlerContext,
     ) bool {
         inline for (field_names) |field_name| {
-            if (@intFromEnum(@field(PropertyIdTag, field_name)) == @intFromEnum(@as(PropertyIdTag, property.*))) {
+            if (@backingInt(@field(PropertyIdTag, field_name)) == @backingInt(@as(PropertyIdTag, property.*))) {
                 const has_vendor_prefix = comptime PropertyIdTag.hasVendorPrefix(@field(PropertyIdTag, field_name));
                 var val = if (comptime has_vendor_prefix)
                     @field(property, field_name)[0].deepClone(context.allocator)
@@ -96,7 +96,7 @@ pub const FallbackHandler = struct {
             const val: *const UnparsedProperty = &property.unparsed;
             var unparsed, const index = unparsed_and_index: {
                 inline for (field_names) |field_name| {
-                    if (@intFromEnum(@field(PropertyIdTag, field_name)) == @intFromEnum(val.property_id)) {
+                    if (@backingInt(@field(PropertyIdTag, field_name)) == @backingInt(val.property_id)) {
                         const has_vendor_prefix = comptime PropertyIdTag.hasVendorPrefix(@field(PropertyIdTag, field_name));
                         const newval = newval: {
                             if (comptime has_vendor_prefix) {

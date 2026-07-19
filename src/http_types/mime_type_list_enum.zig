@@ -2330,19 +2330,19 @@ pub const MimeTypeList = enum(u14) {
     @"x-shader/x-vertex" = 6294,
 
     pub fn slice(this: MimeTypeList) []const u8 {
-        const p: Packed = @bitCast(@as(PackedInt, @intFromEnum(this)));
+        const p: Packed = @bitCast(@as(PackedInt, @backingInt(this)));
         const length: usize = _lengths[p.length_group];
         const offset = @as(usize, _group_start_offsets[p.length_group]) + @as(usize, p.position) * @as(usize, length);
         return _bytes[offset..][0..length];
     }
 
     pub fn len(this: MimeTypeList) usize {
-        const p: Packed = @bitCast(@as(PackedInt, @intFromEnum(this)));
+        const p: Packed = @bitCast(@as(PackedInt, @backingInt(this)));
         return _lengths[p.length_group];
     }
 
     pub fn ptr(this: MimeTypeList) [*]const u8 {
-        const p: Packed = @bitCast(@as(PackedInt, @intFromEnum(this)));
+        const p: Packed = @bitCast(@as(PackedInt, @backingInt(this)));
         const length: usize = _lengths[p.length_group];
         const offset = @as(usize, _group_start_offsets[p.length_group]) + @as(usize, p.position) * @as(usize, length);
         return _bytes[offset..].ptr;

@@ -7,7 +7,7 @@ pub const Identifier = enum(u32) {
 
     /// Returns null if the context referred to by `self` no longer exists
     pub fn globalObject(self: Identifier) ?*bun.jsc.JSGlobalObject {
-        return ScriptExecutionContextIdentifier__getGlobalObject(@intFromEnum(self));
+        return ScriptExecutionContextIdentifier__getGlobalObject(@backingInt(self));
     }
 
     /// Returns null if the context referred to by `self` no longer exists

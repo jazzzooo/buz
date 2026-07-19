@@ -30,7 +30,7 @@ pub fn onIOWriterChunk(this: *Export, _: usize, e: ?jsc.SystemError) Yield {
 
     const exit_code: ExitCode = if (e != null) brk: {
         defer e.?.deref();
-        break :brk @intFromEnum(e.?.getErrno());
+        break :brk @backingInt(e.?.getErrno());
     } else 0;
 
     return this.bltn().done(exit_code);

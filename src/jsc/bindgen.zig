@@ -104,12 +104,12 @@ pub fn BindgenUnion(comptime children: []const type) type {
         pub const ExternType = extern_type;
 
         pub fn convertFromExtern(extern_value: ExternType) ZigType {
-            const tag: std.meta.Tag(ZigType) = @enumFromInt(extern_value.tag);
+            const tag: std.meta.Tag(ZigType) = @fromBackingInt(@intCast(extern_value.tag));
             return switch (tag) {
                 inline else => |t| @unionInit(
                     ZigType,
                     @tagName(t),
-                    children[@intFromEnum(t)].convertFromExtern(
+                    children[@backingInt(t)].convertFromExtern(
                         @field(extern_value.data, @tagName(t)),
                     ),
                 ),

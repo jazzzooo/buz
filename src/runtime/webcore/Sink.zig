@@ -224,7 +224,7 @@ pub fn JSSink(comptime SinkType: type, comptime abi_name: []const u8) type {
             pub fn init(cpp: JSValue) streams.Signal {
                 // this one can be null
                 @setRuntimeSafety(false);
-                return streams.Signal.initWithType(SinkSignal, @as(*SinkSignal, @ptrFromInt(@as(usize, @bitCast(@intFromEnum(cpp))))));
+                return streams.Signal.initWithType(SinkSignal, @as(*SinkSignal, @ptrFromInt(@as(usize, @bitCast(@backingInt(cpp))))));
             }
 
             pub fn close(this: *@This(), _: ?Syscall.Error) void {
@@ -325,7 +325,7 @@ pub fn JSSink(comptime SinkType: type, comptime abi_name: []const u8) type {
             if (this.sink.signal.isDead())
                 return;
             this.sink.signal.clear();
-            const value = @as(JSValue, @enumFromInt(@as(jsc.JSValue.backing_int, @bitCast(@intFromPtr(ptr)))));
+            const value = @as(JSValue, @fromBackingInt(@intCast(@as(jsc.JSValue.backing_int, @bitCast(@intFromPtr(ptr))))));
             value.unprotect();
             detachPtr(globalThis, value) catch {}; // TODO: properly propagate exception upwards
         }
@@ -347,7 +347,7 @@ pub fn JSSink(comptime SinkType: type, comptime abi_name: []const u8) type {
         pub fn fromJS(value: JSValue) ?*ThisSink {
             switch (fromJSExtern(value)) {
                 .detached, .cast_failed => return null,
-                else => |ptr| return @ptrFromInt(@intFromEnum(ptr)),
+                else => |ptr| return @ptrFromInt(@backingInt(ptr)),
             }
         }
 
@@ -355,7 +355,7 @@ pub fn JSSink(comptime SinkType: type, comptime abi_name: []const u8) type {
             return switch (fromJSExtern(callframe.this())) {
                 .detached => global.throw("This " ++ abi_name ++ " has already been closed. A \"direct\" ReadableStream terminates its underlying socket once `async pull()` returns.", .{}),
                 .cast_failed => global.ERR(.INVALID_THIS, "Expected " ++ abi_name, .{}).throw(),
-                else => |ptr| @ptrFromInt(@intFromEnum(ptr)),
+                else => |ptr| @ptrFromInt(@backingInt(ptr)),
             };
         }
 

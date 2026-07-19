@@ -150,7 +150,7 @@ pub fn raiseIgnoringPanicHandler(sig: bun.SignalCode) noreturn {
 
     // clear signal handler
     if (bun.Environment.os != .windows) {
-        const posix_signal: std.posix.SIG = @enumFromInt(@intFromEnum(sig));
+        const posix_signal: std.posix.SIG = @fromBackingInt(@intCast(@backingInt(sig)));
         var sa: bun.sys.Sigaction = .{
             .handler = .{ .handler = std.posix.SIG.DFL },
             .mask = bun.sys.sigemptyset(),
@@ -160,7 +160,7 @@ pub fn raiseIgnoringPanicHandler(sig: bun.SignalCode) noreturn {
     }
 
     // kill self
-    _ = std.c.raise(@enumFromInt(@intFromEnum(sig)));
+    _ = std.c.raise(@fromBackingInt(@intCast(@backingInt(sig))));
     std.c.abort();
 }
 

@@ -20,7 +20,7 @@ pub const Opcode = enum(u4) {
     ResF = 0xF,
 
     pub fn isControl(opcode: Opcode) bool {
-        return @intFromEnum(opcode) & 0x8 != 0;
+        return @backingInt(opcode) & 0x8 != 0;
     }
 };
 

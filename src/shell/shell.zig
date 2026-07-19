@@ -588,7 +588,7 @@ pub const AST = struct {
                 var len: usize = 0;
                 for (info.field_names, info.field_values) |name, value| {
                     if (name[0] == '-' and name.len == 2) {
-                        ret[len] = @enumFromInt(value);
+                        ret[len] = @fromBackingInt(@intCast(value));
                         len += 1;
                     }
                 }
@@ -611,7 +611,7 @@ pub const AST = struct {
                 var len: usize = 0;
                 for (info.field_names, info.field_values) |name, value| {
                     if (!(name[0] == '-' and name.len == 2)) {
-                        ret[len] = @enumFromInt(value);
+                        ret[len] = @fromBackingInt(@intCast(value));
                         len += 1;
                     }
                 }

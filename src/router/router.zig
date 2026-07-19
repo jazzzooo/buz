@@ -333,7 +333,7 @@ const RouteLoader = struct {
 
         var dynamic_start: ?usize = null;
         for (this.all_routes.items) |route| {
-            if (@intFromEnum(route.kind) > @intFromEnum(Pattern.Tag.static) and dynamic_start == null) {
+            if (@backingInt(route.kind) > @backingInt(Pattern.Tag.static) and dynamic_start == null) {
                 dynamic_start = route_list.len;
             }
 
@@ -567,7 +567,7 @@ pub const Route = struct {
             // - static routes go first because we match those first
             // - dynamic, catch-all, and optional catch all routes are sorted lexicographically, except "[", "]" appear last so that deepest routes are tested first
             // - catch-all & optional catch-all appear at the end because we want to test those at the end.
-            return switch (std.math.order(@intFromEnum(a.kind), @intFromEnum(b.kind))) {
+            return switch (std.math.order(@backingInt(a.kind), @backingInt(b.kind))) {
                 .eq => switch (a.kind) {
                     // static + dynamic are sorted alphabetically
                     .static, .dynamic => @call(
@@ -1138,7 +1138,7 @@ const Pattern = struct {
         var count: u16 = 0;
         var offset: RoutePathInt = 0;
         bun.assert(input.len > 0);
-        var kind: u4 = @intFromEnum(Tag.static);
+        var kind: u4 = @backingInt(Tag.static);
         const end = @as(u32, @truncate(input.len - 1));
         while (offset < end) {
             const pattern: Pattern = Pattern.init(input, offset) catch |err| {
@@ -1202,11 +1202,11 @@ const Pattern = struct {
                 return null;
             };
             offset = pattern.len;
-            kind = @max(@intFromEnum(@as(Pattern.Tag, pattern.value)), kind);
-            count += @as(u16, @intCast(@intFromBool(@intFromEnum(@as(Pattern.Tag, pattern.value)) > @intFromEnum(Pattern.Tag.static))));
+            kind = @max(@backingInt(@as(Pattern.Tag, pattern.value)), kind);
+            count += @as(u16, @intCast(@intFromBool(@backingInt(@as(Pattern.Tag, pattern.value)) > @backingInt(Pattern.Tag.static))));
         }
 
-        return ValidationResult{ .param_count = count, .kind = @as(Tag, @enumFromInt(kind)) };
+        return ValidationResult{ .param_count = count, .kind = @as(Tag, @fromBackingInt(@intCast(kind))) };
     }
 
     pub fn eql(a: Pattern, b: Pattern) bool {
@@ -1310,7 +1310,7 @@ const Pattern = struct {
                         i += 1;
                     }
 
-                    if (@intFromEnum(tag) > @intFromEnum(Tag.dynamic) and i <= end) return error.CatchAllMustBeAtTheEnd;
+                    if (@backingInt(tag) > @backingInt(Tag.dynamic) and i <= end) return error.CatchAllMustBeAtTheEnd;
 
                     return Pattern{
                         .len = @min(i + 1, end),

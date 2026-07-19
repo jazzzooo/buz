@@ -309,7 +309,7 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
                 },
                 .Binary, .Ping, .Pong => {
                     jsc.markBinding(@src());
-                    out.didReceiveBytes(data_.ptr, data_.len, @as(u8, @intFromEnum(kind)));
+                    out.didReceiveBytes(data_.ptr, data_.len, @as(u8, @backingInt(kind)));
                 },
                 else => {
                     this.terminate(ErrorCode.unexpected_opcode);
@@ -1067,7 +1067,7 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
                 return;
             }
 
-            const opcode: Opcode = @enumFromInt(op);
+            const opcode: Opcode = @fromBackingInt(@intCast(op));
             const slice = ptr[0..len];
             const bytes = Copy{ .bytes = slice };
             // fast path: small frame, no backpressure, attempt to send without allocating
@@ -1101,7 +1101,7 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
                 return;
             }
 
-            const opcode: Opcode = @enumFromInt(op);
+            const opcode: Opcode = @fromBackingInt(@intCast(op));
 
             // Cast the JSValue to a Blob
             if (blob_value.as(jsc.WebCore.Blob)) |blob| {
@@ -1151,7 +1151,7 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
 
             // Note: 0 is valid
 
-            const opcode = @as(Opcode, @enumFromInt(@as(u4, @truncate(op))));
+            const opcode = @as(Opcode, @fromBackingInt(@intCast(@as(u4, @truncate(op)))));
             {
                 var inline_buf: [stack_frame_size]u8 = undefined;
 

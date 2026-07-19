@@ -532,7 +532,7 @@ pub fn tickQueueWithCount(this: *EventLoop, virtual_machine: *VirtualMachine, co
             // instead of explicit `.@"<typeName>"` arms avoids hard-coding
             // path-derived `@typeName(T)` strings that change when files move.
             else => {
-                bun.Output.panic("Unexpected Task tag: {d}", .{@intFromEnum(task.tag())});
+                bun.Output.panic("Unexpected Task tag: {d}", .{@backingInt(task.tag())});
             },
         }
 

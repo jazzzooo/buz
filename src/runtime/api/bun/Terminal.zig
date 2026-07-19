@@ -550,21 +550,21 @@ fn createPtyPosix(cols: u16, rows: u16) CreatePtyError!PtyResult {
         };
 
         // Control characters - standard defaults
-        t.cc[@intFromEnum(std.posix.V.EOF)] = 4; // Ctrl-D
-        t.cc[@intFromEnum(std.posix.V.EOL)] = 0; // Disabled
-        t.cc[@intFromEnum(std.posix.V.ERASE)] = 0x7f; // DEL (backspace)
-        t.cc[@intFromEnum(std.posix.V.WERASE)] = 23; // Ctrl-W
-        t.cc[@intFromEnum(std.posix.V.KILL)] = 21; // Ctrl-U
-        t.cc[@intFromEnum(std.posix.V.REPRINT)] = 18; // Ctrl-R
-        t.cc[@intFromEnum(std.posix.V.INTR)] = 3; // Ctrl-C
-        t.cc[@intFromEnum(std.posix.V.QUIT)] = 0x1c; // Ctrl-backslash
-        t.cc[@intFromEnum(std.posix.V.SUSP)] = 26; // Ctrl-Z
-        t.cc[@intFromEnum(std.posix.V.START)] = 17; // Ctrl-Q (XON)
-        t.cc[@intFromEnum(std.posix.V.STOP)] = 19; // Ctrl-S (XOFF)
-        t.cc[@intFromEnum(std.posix.V.LNEXT)] = 22; // Ctrl-V
-        t.cc[@intFromEnum(std.posix.V.DISCARD)] = 15; // Ctrl-O
-        t.cc[@intFromEnum(std.posix.V.MIN)] = 1; // Min chars for non-canonical read
-        t.cc[@intFromEnum(std.posix.V.TIME)] = 0; // Timeout for non-canonical read
+        t.cc[@backingInt(std.posix.V.EOF)] = 4; // Ctrl-D
+        t.cc[@backingInt(std.posix.V.EOL)] = 0; // Disabled
+        t.cc[@backingInt(std.posix.V.ERASE)] = 0x7f; // DEL (backspace)
+        t.cc[@backingInt(std.posix.V.WERASE)] = 23; // Ctrl-W
+        t.cc[@backingInt(std.posix.V.KILL)] = 21; // Ctrl-U
+        t.cc[@backingInt(std.posix.V.REPRINT)] = 18; // Ctrl-R
+        t.cc[@backingInt(std.posix.V.INTR)] = 3; // Ctrl-C
+        t.cc[@backingInt(std.posix.V.QUIT)] = 0x1c; // Ctrl-backslash
+        t.cc[@backingInt(std.posix.V.SUSP)] = 26; // Ctrl-Z
+        t.cc[@backingInt(std.posix.V.START)] = 17; // Ctrl-Q (XON)
+        t.cc[@backingInt(std.posix.V.STOP)] = 19; // Ctrl-S (XOFF)
+        t.cc[@backingInt(std.posix.V.LNEXT)] = 22; // Ctrl-V
+        t.cc[@backingInt(std.posix.V.DISCARD)] = 15; // Ctrl-O
+        t.cc[@backingInt(std.posix.V.MIN)] = 1; // Min chars for non-canonical read
+        t.cc[@backingInt(std.posix.V.TIME)] = 0; // Timeout for non-canonical read
 
         // Set baud rate to 38400 (standard for PTYs)
         t.ispeed = .B38400;

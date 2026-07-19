@@ -88,11 +88,11 @@ comptime {
 /// side links against the Zig source of truth instead of mirroring literals
 /// that silently rot if this enum is reordered.
 const exported_ordinals = struct {
-    export const BUN_SOCKET_KIND_DYNAMIC: u8 = @intFromEnum(SocketKind.dynamic);
-    export const BUN_SOCKET_KIND_UWS_HTTP: u8 = @intFromEnum(SocketKind.uws_http);
-    export const BUN_SOCKET_KIND_UWS_HTTP_TLS: u8 = @intFromEnum(SocketKind.uws_http_tls);
-    export const BUN_SOCKET_KIND_UWS_WS: u8 = @intFromEnum(SocketKind.uws_ws);
-    export const BUN_SOCKET_KIND_UWS_WS_TLS: u8 = @intFromEnum(SocketKind.uws_ws_tls);
+    export const BUN_SOCKET_KIND_DYNAMIC: u8 = @backingInt(SocketKind.dynamic);
+    export const BUN_SOCKET_KIND_UWS_HTTP: u8 = @backingInt(SocketKind.uws_http);
+    export const BUN_SOCKET_KIND_UWS_HTTP_TLS: u8 = @backingInt(SocketKind.uws_http_tls);
+    export const BUN_SOCKET_KIND_UWS_WS: u8 = @backingInt(SocketKind.uws_ws);
+    export const BUN_SOCKET_KIND_UWS_WS_TLS: u8 = @backingInt(SocketKind.uws_ws_tls);
 };
 comptime {
     _ = exported_ordinals;

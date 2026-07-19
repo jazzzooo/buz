@@ -4,15 +4,15 @@ pub const ErrorCode = enum(ErrorCodeInt) {
     _,
 
     pub inline fn from(code: anyerror) ErrorCode {
-        return @as(ErrorCode, @enumFromInt(@intFromError(code)));
+        return @as(ErrorCode, @fromBackingInt(@intCast(@intFromError(code))));
     }
 
     pub inline fn toError(self: ErrorCode) anyerror {
-        return @errorFromInt(@intFromEnum(self));
+        return @errorFromInt(@backingInt(self));
     }
 
-    pub const ParserError = @intFromEnum(ErrorCode.from(error.ParserError));
-    pub const JSErrorObject = @intFromEnum(ErrorCode.from(error.JSErrorObject));
+    pub const ParserError = @backingInt(ErrorCode.from(error.ParserError));
+    pub const JSErrorObject = @backingInt(ErrorCode.from(error.JSErrorObject));
 
     pub const Type = ErrorCodeInt;
 };

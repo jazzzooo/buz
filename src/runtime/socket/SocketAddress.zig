@@ -438,7 +438,7 @@ pub fn getAddrFamily(this: *SocketAddress, _: *jsc.JSGlobalObject) JSValue {
 /// system uses. Do not compare to `std.posix.AF`.
 pub fn family(this: *const SocketAddress) AF {
     // NOTE: sockaddr_in and sockaddr_in6 have the same layout for family.
-    return @enumFromInt(this._addr.sin.family);
+    return @fromBackingInt(@intCast(this._addr.sin.family));
 }
 
 pub fn getPort(this: *SocketAddress, _: *jsc.JSGlobalObject) JSValue {
@@ -530,7 +530,7 @@ pub const AF = enum(inet.sa_family_t) {
     INET6 = @intCast(inet.AF_INET6),
 
     pub inline fn int(this: AF) inet.sa_family_t {
-        return @intFromEnum(this);
+        return @backingInt(this);
     }
 
     pub fn fromJS(global: *jsc.JSGlobalObject, value: JSValue) !AF {

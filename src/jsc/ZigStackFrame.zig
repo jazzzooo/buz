@@ -35,7 +35,7 @@ pub const ZigStackFrame = extern struct {
         }
 
         frame.position = this.position;
-        frame.scope = @as(api.StackFrameScope, @enumFromInt(@intFromEnum(this.code_type)));
+        frame.scope = @as(api.StackFrameScope, @fromBackingInt(@intCast(@backingInt(this.code_type))));
 
         return frame;
     }

@@ -35,7 +35,7 @@ pub fn parseFrames(session: *ClientSession, buf: []const u8) usize {
 pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload: []const u8) void {
     log("frame type={d} len={d} flags={d} stream={d}", .{ header.type, header.length, header.flags, header.streamIdentifier });
 
-    if (session.expecting_continuation != 0 and header.type != @intFromEnum(wire.FrameType.HTTP_FRAME_CONTINUATION)) {
+    if (session.expecting_continuation != 0 and header.type != @backingInt(wire.FrameType.HTTP_FRAME_CONTINUATION)) {
         session.fatal_error = error.HTTP2ProtocolError;
         return;
     }
@@ -43,12 +43,12 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
     // MUST be the first frame. Without this, GOAWAY-before-SETTINGS leaves
     // coalesced waiters in `pending_attach` forever (drainPending is gated
     // on settings_received and maybeRelease won't run while it's non-empty).
-    if (!session.settings_received and header.type != @intFromEnum(wire.FrameType.HTTP_FRAME_SETTINGS)) {
+    if (!session.settings_received and header.type != @backingInt(wire.FrameType.HTTP_FRAME_SETTINGS)) {
         session.fatal_error = error.HTTP2ProtocolError;
         return;
     }
 
-    switch (@as(wire.FrameType, @enumFromInt(header.type))) {
+    switch (@as(wire.FrameType, @fromBackingInt(@intCast(header.type)))) {
         .HTTP_FRAME_SETTINGS => {
             // RFC 9113 §6.5: stream id != 0 is PROTOCOL_ERROR; ACK with a
             // payload, or a non-ACK whose length isn't a multiple of 6, is
@@ -57,7 +57,7 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
                 session.fatal_error = error.HTTP2ProtocolError;
                 return;
             }
-            if (header.flags & @intFromEnum(wire.SettingsFlags.ACK) != 0) {
+            if (header.flags & @backingInt(wire.SettingsFlags.ACK) != 0) {
                 if (header.length != 0) session.fatal_error = error.HTTP2FrameSizeError;
                 return;
             }
@@ -69,7 +69,7 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
             while (i + wire.SettingsPayloadUnit.byteSize <= payload.len) : (i += wire.SettingsPayloadUnit.byteSize) {
                 var unit: wire.SettingsPayloadUnit = undefined;
                 wire.SettingsPayloadUnit.from(&unit, payload[i .. i + wire.SettingsPayloadUnit.byteSize], 0, true);
-                switch (@as(wire.SettingsType, @enumFromInt(unit.type))) {
+                switch (@as(wire.SettingsType, @fromBackingInt(@intCast(unit.type)))) {
                     .SETTINGS_MAX_FRAME_SIZE => {
                         // RFC 9113 §6.5.2: values outside [16384, 2^24-1]
                         // are a connection PROTOCOL_ERROR. Without the
@@ -117,7 +117,7 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
                 session.fatal_error = error.HTTP2EnhanceYourCalm;
                 return;
             }
-            session.writeFrame(.HTTP_FRAME_SETTINGS, @intFromEnum(wire.SettingsFlags.ACK), 0, &.{});
+            session.writeFrame(.HTTP_FRAME_SETTINGS, @backingInt(wire.SettingsFlags.ACK), 0, &.{});
             session.settings_received = true;
         },
         .HTTP_FRAME_WINDOW_UPDATE => {
@@ -179,12 +179,12 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
                 session.fatal_error = error.HTTP2ProtocolError;
                 return;
             }
-            if (header.flags & @intFromEnum(wire.PingFrameFlags.ACK) == 0) {
+            if (header.flags & @backingInt(wire.PingFrameFlags.ACK) == 0) {
                 if (session.write_buffer.size() >= write_buffer_control_limit) {
                     session.fatal_error = error.HTTP2EnhanceYourCalm;
                     return;
                 }
-                session.writeFrame(.HTTP_FRAME_PING, @intFromEnum(wire.PingFrameFlags.ACK), 0, payload[0..8]);
+                session.writeFrame(.HTTP_FRAME_PING, @backingInt(wire.PingFrameFlags.ACK), 0, payload[0..8]);
             }
         },
         .HTTP_FRAME_PRIORITY => {
@@ -218,13 +218,13 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
                 // sync with the server's encoder, and CONTINUATION must
                 // be tracked so a follow-up frame doesn't fatal the whole
                 // connection.
-                if (header.flags & @intFromEnum(wire.HeadersFrameFlags.PADDED) != 0) {
+                if (header.flags & @backingInt(wire.HeadersFrameFlags.PADDED) != 0) {
                     fragment = stripPadding(fragment) orelse {
                         session.fatal_error = error.HTTP2ProtocolError;
                         return;
                     };
                 }
-                if (header.flags & @intFromEnum(wire.HeadersFrameFlags.PRIORITY) != 0) {
+                if (header.flags & @backingInt(wire.HeadersFrameFlags.PRIORITY) != 0) {
                     if (fragment.len < wire.StreamPriority.byteSize) {
                         session.fatal_error = error.HTTP2ProtocolError;
                         return;
@@ -237,7 +237,7 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
                 }
                 session.orphan_header_block.clearRetainingCapacity();
                 bun.handleOom(session.orphan_header_block.appendSlice(bun.default_allocator, fragment));
-                if (header.flags & @intFromEnum(wire.HeadersFrameFlags.END_HEADERS) != 0) {
+                if (header.flags & @backingInt(wire.HeadersFrameFlags.END_HEADERS) != 0) {
                     decodeDiscardOrphan(session);
                 } else {
                     session.expecting_continuation = stream_id;
@@ -246,13 +246,13 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
             }
             const stream = maybe_stream.?;
             session.stream_progressed = true;
-            if (header.flags & @intFromEnum(wire.HeadersFrameFlags.PADDED) != 0) {
+            if (header.flags & @backingInt(wire.HeadersFrameFlags.PADDED) != 0) {
                 fragment = stripPadding(fragment) orelse {
                     session.fatal_error = error.HTTP2ProtocolError;
                     return;
                 };
             }
-            if (header.flags & @intFromEnum(wire.HeadersFrameFlags.PRIORITY) != 0) {
+            if (header.flags & @backingInt(wire.HeadersFrameFlags.PRIORITY) != 0) {
                 if (fragment.len < wire.StreamPriority.byteSize) {
                     session.fatal_error = error.HTTP2ProtocolError;
                     return;
@@ -265,8 +265,8 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
             }
             stream.header_block.clearRetainingCapacity();
             bun.handleOom(stream.header_block.appendSlice(bun.default_allocator, fragment));
-            stream.headers_end_stream = header.flags & @intFromEnum(wire.HeadersFrameFlags.END_STREAM) != 0;
-            if (header.flags & @intFromEnum(wire.HeadersFrameFlags.END_HEADERS) != 0) {
+            stream.headers_end_stream = header.flags & @backingInt(wire.HeadersFrameFlags.END_STREAM) != 0;
+            if (header.flags & @backingInt(wire.HeadersFrameFlags.END_HEADERS) != 0) {
                 if (stream.headers_end_stream) stream.recvEndStream();
                 decodeHeaderBlock(session, stream);
             } else {
@@ -284,7 +284,7 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
                     return;
                 }
                 bun.handleOom(stream.header_block.appendSlice(bun.default_allocator, payload));
-                if (header.flags & @intFromEnum(wire.HeadersFrameFlags.END_HEADERS) != 0) {
+                if (header.flags & @backingInt(wire.HeadersFrameFlags.END_HEADERS) != 0) {
                     session.expecting_continuation = 0;
                     if (stream.headers_end_stream) stream.recvEndStream();
                     decodeHeaderBlock(session, stream);
@@ -295,7 +295,7 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
                     return;
                 }
                 bun.handleOom(session.orphan_header_block.appendSlice(bun.default_allocator, payload));
-                if (header.flags & @intFromEnum(wire.HeadersFrameFlags.END_HEADERS) != 0) {
+                if (header.flags & @backingInt(wire.HeadersFrameFlags.END_HEADERS) != 0) {
                     session.expecting_continuation = 0;
                     decodeDiscardOrphan(session);
                 }
@@ -331,13 +331,13 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
             }
             stream.unacked_bytes +|= header.length;
             var fragment = payload;
-            if (header.flags & @intFromEnum(wire.DataFrameFlags.PADDED) != 0) {
+            if (header.flags & @backingInt(wire.DataFrameFlags.PADDED) != 0) {
                 fragment = stripPadding(fragment) orelse {
                     session.fatal_error = error.HTTP2ProtocolError;
                     return;
                 };
             }
-            if (header.flags & @intFromEnum(wire.DataFrameFlags.END_STREAM) != 0) {
+            if (header.flags & @backingInt(wire.DataFrameFlags.END_STREAM) != 0) {
                 stream.recvEndStream();
             }
             stream.data_bytes_received += fragment.len;
@@ -368,8 +368,8 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
             // valid only if END_STREAM had already arrived. Otherwise the
             // body is truncated and must surface as an error.
             stream.fatal_error = switch (code) {
-                @intFromEnum(wire.ErrorCode.NO_ERROR) => if (had_response) null else error.HTTP2StreamReset,
-                @intFromEnum(wire.ErrorCode.REFUSED_STREAM) => error.HTTP2RefusedStream,
+                @backingInt(wire.ErrorCode.NO_ERROR) => if (had_response) null else error.HTTP2StreamReset,
+                @backingInt(wire.ErrorCode.REFUSED_STREAM) => error.HTTP2RefusedStream,
                 else => error.HTTP2StreamReset,
             };
         },
@@ -385,7 +385,7 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
             session.goaway_received = true;
             session.goaway_last_stream_id = wire.UInt31WithReserved.fromBytes(payload[0..4]).uint31;
             const code: u32 = wire.u32FromBytes(payload[4..8]);
-            const graceful = code == @intFromEnum(wire.ErrorCode.NO_ERROR);
+            const graceful = code == @backingInt(wire.ErrorCode.NO_ERROR);
             var it = session.streams.iterator();
             while (it.next()) |e| {
                 const s = e.value_ptr.*;
@@ -523,7 +523,7 @@ pub fn decodeHeaderBlock(session: *ClientSession, stream: *Stream) void {
         // response can finish normally; Content-Length was already stripped
         // on this path so 0 bytes is not a §8.1.1 mismatch.
         stream.awaiting_continue = false;
-        session.writeFrame(.HTTP_FRAME_DATA, @intFromEnum(wire.DataFrameFlags.END_STREAM), stream.id, &.{});
+        session.writeFrame(.HTTP_FRAME_DATA, @backingInt(wire.DataFrameFlags.END_STREAM), stream.id, &.{});
         stream.sentEndStream();
     }
     const bytes = stream.decoded_bytes.items;

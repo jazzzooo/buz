@@ -1600,7 +1600,7 @@ pub const struct_uv_tty_s = extern struct {
     };
 
     pub fn setMode(this: *uv_tty_t, mode: Mode) ReturnCode {
-        return uv_tty_set_mode(this, @intFromEnum(mode));
+        return uv_tty_set_mode(this, @backingInt(mode));
     }
 
     const handle_impl = HandleMixin(@This());
@@ -2892,7 +2892,7 @@ pub fn translateUVErrorToE(code_in: anytype) bun.sys.E {
         UV_EOF => bun.sys.E.EOF,
         UV_UNKNOWN => bun.sys.E.UNKNOWN,
         // libuv can return codes not explicitly mapped above (e.g. Windows-specific
-        // codes in the -4000s). `bun.sys.E` is exhaustive, so a strict @enumFromInt
+        // codes in the -4000s). `bun.sys.E` is exhaustive, so a strict @fromBackingInt
         // on an unmapped value panics in safe builds. Fall back to UNKNOWN instead.
         // Wrapping negation so minInt(c_int) maps to UNKNOWN instead of overflowing.
         else => std.enums.fromInt(bun.sys.E, -%code) orelse bun.sys.E.UNKNOWN,
@@ -2907,12 +2907,12 @@ pub const ReturnCode = enum(c_int) {
         if (this.errEnum()) |err| {
             try writer.writeAll(@tagName(err));
         } else {
-            try writer.print("{d}", .{@intFromEnum(this)});
+            try writer.print("{d}", .{@backingInt(this)});
         }
     }
 
     pub inline fn int(this: ReturnCode) c_int {
-        return @intFromEnum(this);
+        return @backingInt(this);
     }
 
     pub fn toError(this: ReturnCode, syscall: bun.sys.Tag) ?bun.sys.Error {
@@ -2929,91 +2929,91 @@ pub const ReturnCode = enum(c_int) {
     pub inline fn errno(this: ReturnCode) ?u16 {
         return if (this.int() < 0)
             switch (this.int()) {
-                UV_EPERM => @intFromEnum(bun.sys.E.PERM),
-                UV_ENOENT => @intFromEnum(bun.sys.E.NOENT),
-                UV_ESRCH => @intFromEnum(bun.sys.E.SRCH),
-                UV_EINTR => @intFromEnum(bun.sys.E.INTR),
-                UV_EIO => @intFromEnum(bun.sys.E.IO),
-                UV_ENXIO => @intFromEnum(bun.sys.E.NXIO),
-                UV_E2BIG => @intFromEnum(bun.sys.E.@"2BIG"),
-                UV_ENOEXEC => @intFromEnum(bun.sys.E.NOEXEC),
-                UV_EBADF => @intFromEnum(bun.sys.E.BADF),
-                UV_EAGAIN => @intFromEnum(bun.sys.E.AGAIN),
-                UV_ENOMEM => @intFromEnum(bun.sys.E.NOMEM),
-                UV_EACCES => @intFromEnum(bun.sys.E.ACCES),
-                UV_EFAULT => @intFromEnum(bun.sys.E.FAULT),
-                UV_EBUSY => @intFromEnum(bun.sys.E.BUSY),
-                UV_EEXIST => @intFromEnum(bun.sys.E.EXIST),
-                UV_EXDEV => @intFromEnum(bun.sys.E.XDEV),
-                UV_ENODEV => @intFromEnum(bun.sys.E.NODEV),
-                UV_ENOTDIR => @intFromEnum(bun.sys.E.NOTDIR),
-                UV_EISDIR => @intFromEnum(bun.sys.E.ISDIR),
-                UV_EINVAL => @intFromEnum(bun.sys.E.INVAL),
-                UV_ENFILE => @intFromEnum(bun.sys.E.NFILE),
-                UV_EMFILE => @intFromEnum(bun.sys.E.MFILE),
-                UV_ENOTTY => @intFromEnum(bun.sys.E.NOTTY),
-                UV_EFTYPE => @intFromEnum(bun.sys.E.FTYPE),
-                UV_ETXTBSY => @intFromEnum(bun.sys.E.TXTBSY),
-                UV_EFBIG => @intFromEnum(bun.sys.E.FBIG),
-                UV_ENOSPC => @intFromEnum(bun.sys.E.NOSPC),
-                UV_ESPIPE => @intFromEnum(bun.sys.E.SPIPE),
-                UV_EROFS => @intFromEnum(bun.sys.E.ROFS),
-                UV_EMLINK => @intFromEnum(bun.sys.E.MLINK),
-                UV_EPIPE => @intFromEnum(bun.sys.E.PIPE),
-                UV_ERANGE => @intFromEnum(bun.sys.E.RANGE),
-                UV_ENAMETOOLONG => @intFromEnum(bun.sys.E.NAMETOOLONG),
-                UV_ENOSYS => @intFromEnum(bun.sys.E.NOSYS),
-                UV_ENOTEMPTY => @intFromEnum(bun.sys.E.NOTEMPTY),
-                UV_ELOOP => @intFromEnum(bun.sys.E.LOOP),
-                UV_EUNATCH => @intFromEnum(bun.sys.E.UNATCH),
-                UV_ENODATA => @intFromEnum(bun.sys.E.NODATA),
-                UV_ENONET => @intFromEnum(bun.sys.E.NONET),
-                UV_EPROTO => @intFromEnum(bun.sys.E.PROTO),
-                UV_EOVERFLOW => @intFromEnum(bun.sys.E.OVERFLOW),
-                UV_EILSEQ => @intFromEnum(bun.sys.E.ILSEQ),
-                UV_ENOTSOCK => @intFromEnum(bun.sys.E.NOTSOCK),
-                UV_EDESTADDRREQ => @intFromEnum(bun.sys.E.DESTADDRREQ),
-                UV_EMSGSIZE => @intFromEnum(bun.sys.E.MSGSIZE),
-                UV_EPROTOTYPE => @intFromEnum(bun.sys.E.PROTOTYPE),
-                UV_ENOPROTOOPT => @intFromEnum(bun.sys.E.NOPROTOOPT),
-                UV_EPROTONOSUPPORT => @intFromEnum(bun.sys.E.PROTONOSUPPORT),
-                UV_ESOCKTNOSUPPORT => @intFromEnum(bun.sys.E.SOCKTNOSUPPORT),
-                UV_ENOTSUP => @intFromEnum(bun.sys.E.NOTSUP),
-                UV_EAFNOSUPPORT => @intFromEnum(bun.sys.E.AFNOSUPPORT),
-                UV_EADDRINUSE => @intFromEnum(bun.sys.E.ADDRINUSE),
-                UV_EADDRNOTAVAIL => @intFromEnum(bun.sys.E.ADDRNOTAVAIL),
-                UV_ENETDOWN => @intFromEnum(bun.sys.E.NETDOWN),
-                UV_ENETUNREACH => @intFromEnum(bun.sys.E.NETUNREACH),
-                UV_ECONNABORTED => @intFromEnum(bun.sys.E.CONNABORTED),
-                UV_ECONNRESET => @intFromEnum(bun.sys.E.CONNRESET),
-                UV_ENOBUFS => @intFromEnum(bun.sys.E.NOBUFS),
-                UV_EISCONN => @intFromEnum(bun.sys.E.ISCONN),
-                UV_ENOTCONN => @intFromEnum(bun.sys.E.NOTCONN),
-                UV_ESHUTDOWN => @intFromEnum(bun.sys.E.SHUTDOWN),
-                UV_ETIMEDOUT => @intFromEnum(bun.sys.E.TIMEDOUT),
-                UV_ECONNREFUSED => @intFromEnum(bun.sys.E.CONNREFUSED),
-                UV_EHOSTDOWN => @intFromEnum(bun.sys.E.HOSTDOWN),
-                UV_EHOSTUNREACH => @intFromEnum(bun.sys.E.HOSTUNREACH),
-                UV_EALREADY => @intFromEnum(bun.sys.E.ALREADY),
-                UV_EREMOTEIO => @intFromEnum(bun.sys.E.REMOTEIO),
-                UV_ECANCELED => @intFromEnum(bun.sys.E.CANCELED),
-                UV_ECHARSET => @intFromEnum(bun.sys.E.CHARSET),
-                UV_EOF => @intFromEnum(bun.sys.E.EOF),
-                UV_UNKNOWN => @intFromEnum(bun.sys.E.UNKNOWN),
-                UV_EAI_ADDRFAMILY => @intFromEnum(bun.sys.E.UV_EAI_ADDRFAMILY),
-                UV_EAI_AGAIN => @intFromEnum(bun.sys.E.UV_EAI_AGAIN),
-                UV_EAI_BADFLAGS => @intFromEnum(bun.sys.E.UV_EAI_BADFLAGS),
-                UV_EAI_BADHINTS => @intFromEnum(bun.sys.E.UV_EAI_BADHINTS),
-                UV_EAI_CANCELED => @intFromEnum(bun.sys.E.UV_EAI_CANCELED),
-                UV_EAI_FAIL => @intFromEnum(bun.sys.E.UV_EAI_FAIL),
-                UV_EAI_FAMILY => @intFromEnum(bun.sys.E.UV_EAI_FAMILY),
-                UV_EAI_MEMORY => @intFromEnum(bun.sys.E.UV_EAI_MEMORY),
-                UV_EAI_NODATA => @intFromEnum(bun.sys.E.UV_EAI_NODATA),
-                UV_EAI_NONAME => @intFromEnum(bun.sys.E.UV_EAI_NONAME),
-                UV_EAI_OVERFLOW => @intFromEnum(bun.sys.E.UV_EAI_OVERFLOW),
-                UV_EAI_PROTOCOL => @intFromEnum(bun.sys.E.UV_EAI_PROTOCOL),
-                UV_EAI_SERVICE => @intFromEnum(bun.sys.E.UV_EAI_SERVICE),
-                UV_EAI_SOCKTYPE => @intFromEnum(bun.sys.E.UV_EAI_SOCKTYPE),
+                UV_EPERM => @backingInt(bun.sys.E.PERM),
+                UV_ENOENT => @backingInt(bun.sys.E.NOENT),
+                UV_ESRCH => @backingInt(bun.sys.E.SRCH),
+                UV_EINTR => @backingInt(bun.sys.E.INTR),
+                UV_EIO => @backingInt(bun.sys.E.IO),
+                UV_ENXIO => @backingInt(bun.sys.E.NXIO),
+                UV_E2BIG => @backingInt(bun.sys.E.@"2BIG"),
+                UV_ENOEXEC => @backingInt(bun.sys.E.NOEXEC),
+                UV_EBADF => @backingInt(bun.sys.E.BADF),
+                UV_EAGAIN => @backingInt(bun.sys.E.AGAIN),
+                UV_ENOMEM => @backingInt(bun.sys.E.NOMEM),
+                UV_EACCES => @backingInt(bun.sys.E.ACCES),
+                UV_EFAULT => @backingInt(bun.sys.E.FAULT),
+                UV_EBUSY => @backingInt(bun.sys.E.BUSY),
+                UV_EEXIST => @backingInt(bun.sys.E.EXIST),
+                UV_EXDEV => @backingInt(bun.sys.E.XDEV),
+                UV_ENODEV => @backingInt(bun.sys.E.NODEV),
+                UV_ENOTDIR => @backingInt(bun.sys.E.NOTDIR),
+                UV_EISDIR => @backingInt(bun.sys.E.ISDIR),
+                UV_EINVAL => @backingInt(bun.sys.E.INVAL),
+                UV_ENFILE => @backingInt(bun.sys.E.NFILE),
+                UV_EMFILE => @backingInt(bun.sys.E.MFILE),
+                UV_ENOTTY => @backingInt(bun.sys.E.NOTTY),
+                UV_EFTYPE => @backingInt(bun.sys.E.FTYPE),
+                UV_ETXTBSY => @backingInt(bun.sys.E.TXTBSY),
+                UV_EFBIG => @backingInt(bun.sys.E.FBIG),
+                UV_ENOSPC => @backingInt(bun.sys.E.NOSPC),
+                UV_ESPIPE => @backingInt(bun.sys.E.SPIPE),
+                UV_EROFS => @backingInt(bun.sys.E.ROFS),
+                UV_EMLINK => @backingInt(bun.sys.E.MLINK),
+                UV_EPIPE => @backingInt(bun.sys.E.PIPE),
+                UV_ERANGE => @backingInt(bun.sys.E.RANGE),
+                UV_ENAMETOOLONG => @backingInt(bun.sys.E.NAMETOOLONG),
+                UV_ENOSYS => @backingInt(bun.sys.E.NOSYS),
+                UV_ENOTEMPTY => @backingInt(bun.sys.E.NOTEMPTY),
+                UV_ELOOP => @backingInt(bun.sys.E.LOOP),
+                UV_EUNATCH => @backingInt(bun.sys.E.UNATCH),
+                UV_ENODATA => @backingInt(bun.sys.E.NODATA),
+                UV_ENONET => @backingInt(bun.sys.E.NONET),
+                UV_EPROTO => @backingInt(bun.sys.E.PROTO),
+                UV_EOVERFLOW => @backingInt(bun.sys.E.OVERFLOW),
+                UV_EILSEQ => @backingInt(bun.sys.E.ILSEQ),
+                UV_ENOTSOCK => @backingInt(bun.sys.E.NOTSOCK),
+                UV_EDESTADDRREQ => @backingInt(bun.sys.E.DESTADDRREQ),
+                UV_EMSGSIZE => @backingInt(bun.sys.E.MSGSIZE),
+                UV_EPROTOTYPE => @backingInt(bun.sys.E.PROTOTYPE),
+                UV_ENOPROTOOPT => @backingInt(bun.sys.E.NOPROTOOPT),
+                UV_EPROTONOSUPPORT => @backingInt(bun.sys.E.PROTONOSUPPORT),
+                UV_ESOCKTNOSUPPORT => @backingInt(bun.sys.E.SOCKTNOSUPPORT),
+                UV_ENOTSUP => @backingInt(bun.sys.E.NOTSUP),
+                UV_EAFNOSUPPORT => @backingInt(bun.sys.E.AFNOSUPPORT),
+                UV_EADDRINUSE => @backingInt(bun.sys.E.ADDRINUSE),
+                UV_EADDRNOTAVAIL => @backingInt(bun.sys.E.ADDRNOTAVAIL),
+                UV_ENETDOWN => @backingInt(bun.sys.E.NETDOWN),
+                UV_ENETUNREACH => @backingInt(bun.sys.E.NETUNREACH),
+                UV_ECONNABORTED => @backingInt(bun.sys.E.CONNABORTED),
+                UV_ECONNRESET => @backingInt(bun.sys.E.CONNRESET),
+                UV_ENOBUFS => @backingInt(bun.sys.E.NOBUFS),
+                UV_EISCONN => @backingInt(bun.sys.E.ISCONN),
+                UV_ENOTCONN => @backingInt(bun.sys.E.NOTCONN),
+                UV_ESHUTDOWN => @backingInt(bun.sys.E.SHUTDOWN),
+                UV_ETIMEDOUT => @backingInt(bun.sys.E.TIMEDOUT),
+                UV_ECONNREFUSED => @backingInt(bun.sys.E.CONNREFUSED),
+                UV_EHOSTDOWN => @backingInt(bun.sys.E.HOSTDOWN),
+                UV_EHOSTUNREACH => @backingInt(bun.sys.E.HOSTUNREACH),
+                UV_EALREADY => @backingInt(bun.sys.E.ALREADY),
+                UV_EREMOTEIO => @backingInt(bun.sys.E.REMOTEIO),
+                UV_ECANCELED => @backingInt(bun.sys.E.CANCELED),
+                UV_ECHARSET => @backingInt(bun.sys.E.CHARSET),
+                UV_EOF => @backingInt(bun.sys.E.EOF),
+                UV_UNKNOWN => @backingInt(bun.sys.E.UNKNOWN),
+                UV_EAI_ADDRFAMILY => @backingInt(bun.sys.E.UV_EAI_ADDRFAMILY),
+                UV_EAI_AGAIN => @backingInt(bun.sys.E.UV_EAI_AGAIN),
+                UV_EAI_BADFLAGS => @backingInt(bun.sys.E.UV_EAI_BADFLAGS),
+                UV_EAI_BADHINTS => @backingInt(bun.sys.E.UV_EAI_BADHINTS),
+                UV_EAI_CANCELED => @backingInt(bun.sys.E.UV_EAI_CANCELED),
+                UV_EAI_FAIL => @backingInt(bun.sys.E.UV_EAI_FAIL),
+                UV_EAI_FAMILY => @backingInt(bun.sys.E.UV_EAI_FAMILY),
+                UV_EAI_MEMORY => @backingInt(bun.sys.E.UV_EAI_MEMORY),
+                UV_EAI_NODATA => @backingInt(bun.sys.E.UV_EAI_NODATA),
+                UV_EAI_NONAME => @backingInt(bun.sys.E.UV_EAI_NONAME),
+                UV_EAI_OVERFLOW => @backingInt(bun.sys.E.UV_EAI_OVERFLOW),
+                UV_EAI_PROTOCOL => @backingInt(bun.sys.E.UV_EAI_PROTOCOL),
+                UV_EAI_SERVICE => @backingInt(bun.sys.E.UV_EAI_SERVICE),
+                UV_EAI_SOCKTYPE => @backingInt(bun.sys.E.UV_EAI_SOCKTYPE),
                 else => null,
             }
         else
@@ -3033,14 +3033,14 @@ pub const ReturnCodeI64 = enum(i64) {
     _,
 
     pub fn init(i: i64) ReturnCodeI64 {
-        return @enumFromInt(i);
+        return @fromBackingInt(@intCast(i));
     }
 
     pub fn format(this: ReturnCodeI64, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         if (this.errEnum()) |err| {
             try writer.writeAll(@tagName(err));
         } else {
-            try writer.print("{d}", .{@intFromEnum(this)});
+            try writer.print("{d}", .{@backingInt(this)});
         }
     }
 
@@ -3056,21 +3056,21 @@ pub const ReturnCodeI64 = enum(i64) {
     }
 
     pub inline fn errno(this: ReturnCodeI64) ?u16 {
-        return if (@intFromEnum(this) < 0)
-            @as(u16, @intCast(-@intFromEnum(this)))
+        return if (@backingInt(this) < 0)
+            @as(u16, @intCast(-@backingInt(this)))
         else
             null;
     }
 
     pub inline fn errEnum(this: ReturnCodeI64) ?bun.sys.E {
-        return if (@intFromEnum(this) < 0)
-            (translateUVErrorToE(@intFromEnum(this)))
+        return if (@backingInt(this) < 0)
+            (translateUVErrorToE(@backingInt(this)))
         else
             null;
     }
 
     pub inline fn int(this: ReturnCodeI64) i64 {
-        return @intFromEnum(this);
+        return @backingInt(this);
     }
 
     pub fn toFD(this: ReturnCodeI64) bun.FD {

@@ -148,20 +148,20 @@ pub const us_socket_t = opaque {
     pub const rawGroup = group;
 
     pub fn kind(this: *us_socket_t) SocketKind {
-        return @enumFromInt(c.us_socket_kind(this));
+        return @fromBackingInt(@intCast(c.us_socket_kind(this)));
     }
 
     /// Re-stamp the dispatch kind in place. Used after `Listener.onCreate`
     /// stashes the `NewSocket*` in ext so subsequent events skip the listener
     /// arm and route straight to `BunSocket`.
     pub fn setKind(this: *us_socket_t, k: SocketKind) void {
-        c.us_socket_set_kind(this, @intFromEnum(k));
+        c.us_socket_set_kind(this, @backingInt(k));
     }
 
     /// Move this socket to a new group/kind, optionally resizing its ext.
     /// Returns the (possibly relocated) socket; `this` is invalid after.
     pub fn adopt(this: *us_socket_t, g: *SocketGroup, k: SocketKind, old_ext: i32, new_ext: i32) ?*us_socket_t {
-        return c.us_socket_adopt(this, g, @intFromEnum(k), old_ext, new_ext);
+        return c.us_socket_adopt(this, g, @backingInt(k), old_ext, new_ext);
     }
 
     /// `adopt` + attach a fresh `SSL*` from `ssl_ctx` (refcounted by the C
@@ -178,7 +178,7 @@ pub const us_socket_t = opaque {
         old_ext: i32,
         new_ext: i32,
     ) ?*us_socket_t {
-        return c.us_socket_adopt_tls(this, g, @intFromEnum(k), ssl_ctx, sni, old_ext, new_ext);
+        return c.us_socket_adopt_tls(this, g, @backingInt(k), ssl_ctx, sni, old_ext, new_ext);
     }
 
     /// Send ClientHello. Separate from `adoptTLS` so the ext slot can be

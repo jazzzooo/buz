@@ -126,8 +126,8 @@ pub fn writeHeaderBlock(session: *ClientSession, stream_id: u31, block: []const 
         remaining = remaining[chunk.len..];
         const last = remaining.len == 0;
         var flags: u8 = 0;
-        if (last) flags |= @intFromEnum(wire.HeadersFrameFlags.END_HEADERS);
-        if (first and end_stream) flags |= @intFromEnum(wire.HeadersFrameFlags.END_STREAM);
+        if (last) flags |= @backingInt(wire.HeadersFrameFlags.END_HEADERS);
+        if (first and end_stream) flags |= @backingInt(wire.HeadersFrameFlags.END_STREAM);
         session.writeFrame(if (first) .HTTP_FRAME_HEADERS else .HTTP_FRAME_CONTINUATION, flags, stream_id, chunk);
         first = false;
         if (last) break;
@@ -149,7 +149,7 @@ pub fn writeDataWindowed(session: *ClientSession, stream: *Stream, data: []const
         if (consumed >= cap and remaining.len > 0) break;
         const chunk_len = @min(remaining.len, @as(usize, session.remote_max_frame_size), window);
         const last = chunk_len == remaining.len;
-        const flags: u8 = if (last and end_stream) @intFromEnum(wire.DataFrameFlags.END_STREAM) else 0;
+        const flags: u8 = if (last and end_stream) @backingInt(wire.DataFrameFlags.END_STREAM) else 0;
         session.writeFrame(.HTTP_FRAME_DATA, flags, stream.id, remaining[0..chunk_len]);
         stream.send_window -= @intCast(chunk_len);
         session.conn_send_window -= @intCast(chunk_len);

@@ -158,7 +158,7 @@ pub fn read(this: *INotifyWatcher) bun.sys.Maybe([]const *align(1) Event) {
                                 },
                                 .AGAIN, .INTR => continue :inner,
                                 else => return .{ .err = .{
-                                    .errno = @truncate(@intFromEnum(e)),
+                                    .errno = @truncate(@backingInt(e)),
                                     .syscall = .read,
                                 } },
                             }
@@ -174,12 +174,12 @@ pub fn read(this: *INotifyWatcher) bun.sys.Maybe([]const *align(1) Event) {
                     bun.Output.err("EINVAL", "inotify read({f}, {d})", .{ this.fd, this.eventlist_bytes.len });
                 }
                 return .{ .err = .{
-                    .errno = @truncate(@intFromEnum(errno)),
+                    .errno = @truncate(@backingInt(errno)),
                     .syscall = .read,
                 } };
             },
             else => return .{ .err = .{
-                .errno = @truncate(@intFromEnum(errno)),
+                .errno = @truncate(@backingInt(errno)),
                 .syscall = .read,
             } },
         }

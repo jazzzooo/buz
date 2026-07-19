@@ -43,8 +43,7 @@ pub fn BoundedArrayAligned(
         len: Length = 0,
         writer_state: if (T == u8) std.Io.Writer else void = if (T == u8)
             .{ .vtable = &.{ .drain = writerDrain }, .buffer = &.{} }
-        else
-            {},
+        else {},
 
         const Length = std.math.ByteAlignedInt(std.math.IntFittingRange(0, buffer_capacity));
 

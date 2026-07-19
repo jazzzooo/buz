@@ -43,7 +43,7 @@ pub const FieldMessage = union(FieldType) {
         while (true) {
             const field_int = try reader.int(u8);
             if (field_int == 0) break;
-            const field: FieldType = @enumFromInt(field_int);
+            const field: FieldType = @fromBackingInt(@intCast(field_int));
 
             var message = try reader.readZ();
             defer message.deinit();

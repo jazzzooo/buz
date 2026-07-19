@@ -241,12 +241,12 @@ pub const Angle = union(Tag) {
         comptime op_fn: *const fn (@TypeOf(ctx), a: f32, b: f32) f32,
     ) Angle {
         // PERF: not sure if this is faster
-        const self_tag: u16 = @intFromEnum(this.*);
-        const other_tag: u16 = @intFromEnum(other.*);
-        const DEG: u16 = @intFromEnum(Tag.deg);
-        const GRAD: u16 = @intFromEnum(Tag.grad);
-        const RAD: u16 = @intFromEnum(Tag.rad);
-        const TURN: u16 = @intFromEnum(Tag.turn);
+        const self_tag: u16 = @backingInt(this.*);
+        const other_tag: u16 = @backingInt(other.*);
+        const DEG: u16 = @backingInt(Tag.deg);
+        const GRAD: u16 = @backingInt(Tag.grad);
+        const RAD: u16 = @backingInt(Tag.rad);
+        const TURN: u16 = @backingInt(Tag.turn);
 
         const switch_val: u16 = self_tag | (other_tag << 8);
         return switch (switch_val) {
@@ -266,12 +266,12 @@ pub const Angle = union(Tag) {
         comptime op_fn: *const fn (@TypeOf(ctx), a: f32, b: f32) T,
     ) T {
         // PERF: not sure if this is faster
-        const self_tag: u8 = @intFromEnum(this.*);
-        const other_tag: u8 = @intFromEnum(this.*);
-        const DEG: u8 = @intFromEnum(Tag.deg);
-        const GRAD: u8 = @intFromEnum(Tag.grad);
-        const RAD: u8 = @intFromEnum(Tag.rad);
-        const TURN: u8 = @intFromEnum(Tag.turn);
+        const self_tag: u8 = @backingInt(this.*);
+        const other_tag: u8 = @backingInt(this.*);
+        const DEG: u8 = @backingInt(Tag.deg);
+        const GRAD: u8 = @backingInt(Tag.grad);
+        const RAD: u8 = @backingInt(Tag.rad);
+        const TURN: u8 = @backingInt(Tag.turn);
 
         const switch_val: u8 = self_tag | other_tag;
         return switch (switch_val) {

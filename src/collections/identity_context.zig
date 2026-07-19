@@ -2,7 +2,7 @@ pub fn IdentityContext(comptime Key: type) type {
     return struct {
         pub fn hash(_: @This(), key: Key) u64 {
             return switch (comptime @typeInfo(Key)) {
-                .@"enum" => @intFromEnum(key),
+                .@"enum" => @backingInt(key),
                 .int => key,
                 else => @compileError("unexpected identity context type"),
             };

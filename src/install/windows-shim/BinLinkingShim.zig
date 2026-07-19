@@ -55,7 +55,7 @@ pub const Flags = packed struct(u16) {
             .is_node_or_bun = false,
             .is_node = false,
             .has_shebang = false,
-            .version_tag = @enumFromInt(std.math.maxInt(u13)),
+            .version_tag = @fromBackingInt(@intCast(std.math.maxInt(u13))),
         });
 
         const compare_to: u16 = @bitCast(Flags{

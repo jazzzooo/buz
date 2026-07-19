@@ -82,7 +82,7 @@ pub const Expect = struct {
             pub fn fromJS(globalObject: *JSGlobalObject, value: JSValue) bun.JSError!AsymmetricMatcherConstructorType {
                 const result = AsymmetricMatcherConstructorType__fromJS(globalObject, value);
                 if (result == -1) return error.JSError;
-                return @enumFromInt(result);
+                return @fromBackingInt(@intCast(result));
             }
         };
 
@@ -249,7 +249,7 @@ pub const Expect = struct {
             if (ExpectCustomAsymmetricMatcher.fromJS(instanceValue)) |instance| {
                 break :flags instance.flags;
             } else if (ExpectAny.fromJS(instanceValue)) |instance| {
-                any_constructor_type.* = @intFromEnum(instance.flags.asymmetric_matcher_constructor_type);
+                any_constructor_type.* = @backingInt(instance.flags.asymmetric_matcher_constructor_type);
                 break :flags instance.flags;
             } else if (ExpectAnything.fromJS(instanceValue)) |instance| {
                 break :flags instance.flags;

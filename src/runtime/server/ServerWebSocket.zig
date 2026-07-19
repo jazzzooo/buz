@@ -123,7 +123,7 @@ pub fn onMessage(
     opcode: uws.Opcode,
 ) void {
     log("onMessage({d}): {s}", .{
-        @intFromEnum(opcode),
+        @backingInt(opcode),
         message,
     });
     const onMessageHandler = this.handler.onMessage;

@@ -5,7 +5,7 @@ pub const Mode = enum(c_int) {
 };
 
 pub fn setMode(fd: c_int, mode: Mode) c_int {
-    return Bun__ttySetMode(fd, @intFromEnum(mode));
+    return Bun__ttySetMode(fd, @backingInt(mode));
 }
 
 extern fn Bun__ttySetMode(fd: c_int, mode: c_int) c_int;

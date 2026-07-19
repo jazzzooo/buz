@@ -2,14 +2,14 @@ const ConstantType = enum { ERRNO, ERRNO_WIN, SIG, DLOPEN, OTHER };
 
 fn getErrnoConstant(comptime name: []const u8) ?comptime_int {
     return if (@hasField(std.posix.E, name))
-        return @intFromEnum(@field(std.posix.E, name))
+        return @backingInt(@field(std.posix.E, name))
     else
         return null;
 }
 
 fn getWindowsErrnoConstant(comptime name: []const u8) ?comptime_int {
     return if (@hasField(std.posix.E, name))
-        return @intFromEnum(@field(std.os.windows.ws2_32.WinsockError, name))
+        return @backingInt(@field(std.os.windows.ws2_32.WinsockError, name))
     else
         return null;
 }

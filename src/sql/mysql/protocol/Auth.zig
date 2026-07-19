@@ -87,7 +87,7 @@ pub const caching_sha2_password = struct {
         pub fn decodeInternal(this: *Response, comptime Context: type, reader: NewReader(Context)) !void {
             const status = try reader.int(u8);
             debug("FastAuthStatus: {d}", .{status});
-            this.status = @enumFromInt(status);
+            this.status = @fromBackingInt(@intCast(status));
 
             // Read remaining data if any
             const remaining = reader.peek();

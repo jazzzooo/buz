@@ -1639,7 +1639,7 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
         }
 
         pub fn tagInt(this: @This()) Ptr.TagInt {
-            return @intFromEnum(this.ptr.tag());
+            return @backingInt(this.ptr.tag());
         }
 
         pub fn tagName(this: @This()) []const u8 {

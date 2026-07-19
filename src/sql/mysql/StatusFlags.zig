@@ -49,7 +49,7 @@ pub const StatusFlags = struct {
     }
 
     pub fn has(this: @This(), flag: StatusFlag) bool {
-        return this._value & @as(u16, @intFromEnum(flag)) != 0;
+        return this._value & @as(u16, @backingInt(flag)) != 0;
     }
 
     pub fn toInt(this: @This()) u16 {

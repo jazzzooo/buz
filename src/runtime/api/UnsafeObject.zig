@@ -19,7 +19,7 @@ pub fn gcAggressionLevel(
     globalThis: *jsc.JSGlobalObject,
     callframe: *jsc.CallFrame,
 ) bun.JSError!jsc.JSValue {
-    const ret = JSValue.jsNumber(@as(i32, @intFromEnum(globalThis.bunVM().aggressive_garbage_collection)));
+    const ret = JSValue.jsNumber(@as(i32, @backingInt(globalThis.bunVM().aggressive_garbage_collection)));
     const value = callframe.arguments_old(1).ptr[0];
 
     if (!value.isEmptyOrUndefinedOrNull()) {

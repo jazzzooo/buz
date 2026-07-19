@@ -990,7 +990,7 @@ pub const WindowsBufferedReader = struct {
     pub fn setRawMode(this: *WindowsBufferedReader, value: bool) bun.sys.Maybe(void) {
         const source = this.source orelse return .{
             .err = .{
-                .errno = @intFromEnum(bun.sys.E.BADF),
+                .errno = @backingInt(bun.sys.E.BADF),
                 .syscall = .uv_tty_set_mode,
             },
         };

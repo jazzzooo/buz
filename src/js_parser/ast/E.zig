@@ -790,15 +790,15 @@ pub const Object = struct {
             });
 
             pub fn isLessThan(ctx: void, lhs: G.Property, rhs: G.Property) bool {
-                var lhs_key_size: u8 = @intFromEnum(Fields.__fake);
-                var rhs_key_size: u8 = @intFromEnum(Fields.__fake);
+                var lhs_key_size: u8 = @backingInt(Fields.__fake);
+                var rhs_key_size: u8 = @backingInt(Fields.__fake);
 
                 if (lhs.key != null and lhs.key.?.data == .e_string) {
-                    lhs_key_size = @intFromEnum(Map.get(lhs.key.?.data.e_string.data) orelse Fields.__fake);
+                    lhs_key_size = @backingInt(Map.get(lhs.key.?.data.e_string.data) orelse Fields.__fake);
                 }
 
                 if (rhs.key != null and rhs.key.?.data == .e_string) {
-                    rhs_key_size = @intFromEnum(Map.get(rhs.key.?.data.e_string.data) orelse Fields.__fake);
+                    rhs_key_size = @backingInt(Map.get(rhs.key.?.data.e_string.data) orelse Fields.__fake);
                 }
 
                 return switch (std.math.order(lhs_key_size, rhs_key_size)) {

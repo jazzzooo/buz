@@ -126,7 +126,7 @@ pub const Start = union(Tag) {
                     if (!path.isString()) {
                         return .{
                             .err = Syscall.Error{
-                                .errno = @intFromEnum(bun.sys.SystemErrno.EINVAL),
+                                .errno = @backingInt(bun.sys.SystemErrno.EINVAL),
                                 .syscall = .write,
                             },
                         };
@@ -144,7 +144,7 @@ pub const Start = union(Tag) {
                     if (!fd_value.isAnyInt()) {
                         return .{
                             .err = Syscall.Error{
-                                .errno = @intFromEnum(bun.sys.SystemErrno.EBADF),
+                                .errno = @backingInt(bun.sys.SystemErrno.EBADF),
                                 .syscall = .write,
                             },
                         };
@@ -159,7 +159,7 @@ pub const Start = union(Tag) {
                         };
                     } else {
                         return .{ .err = Syscall.Error{
-                            .errno = @intFromEnum(bun.sys.SystemErrno.EBADF),
+                            .errno = @backingInt(bun.sys.SystemErrno.EBADF),
                             .syscall = .write,
                         } };
                     }

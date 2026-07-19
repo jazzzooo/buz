@@ -104,7 +104,7 @@ pub const InternalJSEventCallback = struct {
     pub fn trigger(this: *InternalJSEventCallback, eventType: EventType, globalThis: *jsc.JSGlobalObject) bool {
         if (this.function.get()) |callback| {
             _ = callback.call(globalThis, .js_undefined, &.{jsc.JSValue.jsNumber(
-                @intFromEnum(eventType),
+                @backingInt(eventType),
             )}) catch |err| globalThis.reportActiveExceptionAsUnhandled(err);
             return true;
         }
@@ -751,7 +751,7 @@ pub fn constructInto(globalThis: *jsc.JSGlobalObject, arguments: []const jsc.JSV
                     fields.insert(.url);
 
                 // first value
-            } else if (@intFromEnum(value) == @intFromEnum(values_to_try[values_to_try.len - 1]) and !is_first_argument_a_url and
+            } else if (@backingInt(value) == @backingInt(values_to_try[values_to_try.len - 1]) and !is_first_argument_a_url and
                 try value.implementsToString(globalThis))
             {
                 const str = try bun.String.fromJS(value, globalThis);

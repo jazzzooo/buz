@@ -1364,7 +1364,7 @@ fn stackTraceFromErrorReturnTrace(trace: *const std.builtin.StackTrace) std.debu
     const len = @min(trace.index, trace.instruction_addresses.len);
     return .{
         .return_addresses = trace.instruction_addresses[0..len],
-        .skipped = @enumFromInt(trace.index - len),
+        .skipped = @fromBackingInt(@intCast(trace.index - len)),
     };
 }
 
@@ -1391,7 +1391,7 @@ fn encodeTraceString(opts: TraceString, writer: anytype) !void {
         "/" ++
             bun.Environment.version_string ++
             "/" ++
-            .{@intFromEnum(Platform.current)},
+            .{@backingInt(Platform.current)},
     );
     try writer.writeByte(if (bun.cli.Cli.cmd) |cmd| cmd.char() else '_');
 
@@ -1416,7 +1416,7 @@ fn encodeTraceString(opts: TraceString, writer: anytype) !void {
 
             var compressed_bytes: [2048]u8 = undefined;
             var len: bun.zlib.uLong = compressed_bytes.len;
-            const ret: bun.zlib.ReturnCode = @enumFromInt(bun.zlib.compress2(&compressed_bytes, &len, message.ptr, @intCast(message.len), 9));
+            const ret: bun.zlib.ReturnCode = @fromBackingInt(@intCast(bun.zlib.compress2(&compressed_bytes, &len, message.ptr, @intCast(message.len), 9)));
             const compressed = switch (ret) {
                 .Ok => compressed_bytes[0..@intCast(len)],
                 // Insufficient memory.
@@ -1939,7 +1939,7 @@ pub const StoredTrace = struct {
             return .{
                 .data = data,
                 .len = len,
-                .skipped = @enumFromInt(stack.index - len),
+                .skipped = @fromBackingInt(@intCast(stack.index - len)),
             };
         } else {
             return empty;

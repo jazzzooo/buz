@@ -49,7 +49,7 @@ pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
         .ref_count = .init(),
         .globalThis = globalThis,
     });
-    ptr.stream.mode = @enumFromInt(mode_int);
+    ptr.stream.mode = @fromBackingInt(@intCast(mode_int));
     return ptr;
 }
 
@@ -194,7 +194,7 @@ const Context = struct {
         if (this.state.err_msg) |msg| message = msg;
         return .{
             .msg = message,
-            .err = @intFromEnum(this.err),
+            .err = @backingInt(this.err),
             .code = switch (this.err) {
                 .Ok => "Z_OK",
                 .StreamEnd => "Z_STREAM_END",
@@ -234,7 +234,7 @@ const Context = struct {
     }
 
     pub fn setFlush(this: *Context, flush: c_int) void {
-        this.flush = @enumFromInt(flush);
+        this.flush = @fromBackingInt(@intCast(flush));
     }
 
     pub fn doWork(this: *Context) void {

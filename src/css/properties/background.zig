@@ -113,7 +113,7 @@ pub const Background = struct {
 
         if (clip == null) {
             if (origin) |o| {
-                clip = @as(BackgroundClip, @enumFromInt(@intFromEnum(o)));
+                clip = @as(BackgroundClip, @fromBackingInt(@intCast(@backingInt(o))));
             }
         }
 

@@ -331,10 +331,10 @@ pub fn NewSocket(comptime ssl: bool) type {
             }
 
             bun.assert(errno >= 0);
-            var errno_: c_int = if (errno == @intFromEnum(bun.sys.SystemErrno.ENOENT)) @intFromEnum(bun.sys.SystemErrno.ENOENT) else @intFromEnum(bun.sys.SystemErrno.ECONNREFUSED);
-            const code_ = if (errno == @intFromEnum(bun.sys.SystemErrno.ENOENT)) bun.String.static("ENOENT") else bun.String.static("ECONNREFUSED");
-            if (Environment.isWindows and errno_ == @intFromEnum(bun.sys.SystemErrno.ENOENT)) errno_ = @intFromEnum(bun.sys.SystemErrno.UV_ENOENT);
-            if (Environment.isWindows and errno_ == @intFromEnum(bun.sys.SystemErrno.ECONNREFUSED)) errno_ = @intFromEnum(bun.sys.SystemErrno.UV_ECONNREFUSED);
+            var errno_: c_int = if (errno == @backingInt(bun.sys.SystemErrno.ENOENT)) @backingInt(bun.sys.SystemErrno.ENOENT) else @backingInt(bun.sys.SystemErrno.ECONNREFUSED);
+            const code_ = if (errno == @backingInt(bun.sys.SystemErrno.ENOENT)) bun.String.static("ENOENT") else bun.String.static("ECONNREFUSED");
+            if (Environment.isWindows and errno_ == @backingInt(bun.sys.SystemErrno.ENOENT)) errno_ = @backingInt(bun.sys.SystemErrno.UV_ENOENT);
+            if (Environment.isWindows and errno_ == @backingInt(bun.sys.SystemErrno.ECONNREFUSED)) errno_ = @backingInt(bun.sys.SystemErrno.UV_ECONNREFUSED);
 
             const callback = handlers.onConnectError;
             const globalObject = handlers.globalObject;
@@ -1906,7 +1906,7 @@ pub const DuplexUpgradeContext = struct {
                 // duplex events — skip the TLSSocket instead of calling
                 // `getHandlers()` on the freed allocation.
                 this.tls = null;
-                tls.handleConnectError(@intFromEnum(bun.sys.SystemErrno.ECONNREFUSED)) catch {};
+                tls.handleConnectError(@backingInt(bun.sys.SystemErrno.ECONNREFUSED)) catch {};
             }
         }
     }
@@ -1968,7 +1968,7 @@ pub const DuplexUpgradeContext = struct {
                 started catch |err| switch (err) {
                     error.OutOfMemory => bun.outOfMemory(),
                     else => {
-                        const errno = @intFromEnum(bun.sys.SystemErrno.ECONNREFUSED);
+                        const errno = @backingInt(bun.sys.SystemErrno.ECONNREFUSED);
                         if (this.tls) |tls| {
                             // `handleConnectError` consumes our +1 (its
                             // `needs_deref` path) and detaches. Null

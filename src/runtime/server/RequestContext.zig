@@ -896,7 +896,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime ThisServer: type, 
                 if (bun.S.ISDIR(@intCast(stat.mode))) {
                     if (auto_close) fd.close();
                     var sys = (bun.sys.Error{
-                        .errno = @intFromEnum(bun.sys.E.ISDIR),
+                        .errno = @backingInt(bun.sys.E.ISDIR),
                         .syscall = .read,
                     }).withPathLike(file.pathlike).toSystemError();
                     sys.message = bun.String.static("Cannot stream a directory as a response body");

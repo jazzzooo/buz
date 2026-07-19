@@ -34,7 +34,7 @@ pub const BrotliDecoder = opaque {
     const brotli_decoder_metadata_chunk_func = ?*const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void;
 
     pub fn setParameter(state: *BrotliDecoder, param: BrotliDecoderParameter, value: u32) callconv(.c) bool {
-        return BrotliDecoderSetParameter(state, @intFromEnum(param), value) > 0;
+        return BrotliDecoderSetParameter(state, @backingInt(param), value) > 0;
     }
 
     pub fn attachDictionary(state: *BrotliDecoder, @"type": BrotliSharedDictionaryType, data: []const u8) callconv(.c) c_int {
@@ -76,7 +76,7 @@ pub const BrotliDecoder = opaque {
     }
 
     pub fn getErrorCode(state: *const BrotliDecoder) callconv(.c) BrotliDecoderErrorCode {
-        return @enumFromInt(@intFromEnum(BrotliDecoderGetErrorCode(state)));
+        return @fromBackingInt(@intCast(@backingInt(BrotliDecoderGetErrorCode(state))));
     }
 
     pub fn errorString(c: BrotliDecoderErrorCode) callconv(.c) [:0]const u8 {
@@ -313,7 +313,7 @@ pub const BrotliEncoder = opaque {
     }
 
     pub fn setParameter(state: *BrotliEncoder, param: BrotliEncoderParameter, value: u32) bool {
-        return BrotliEncoderSetParameter(state, @intFromEnum(param), value) > 0;
+        return BrotliEncoderSetParameter(state, @backingInt(param), value) > 0;
     }
 };
 

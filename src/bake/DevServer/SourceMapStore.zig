@@ -458,7 +458,7 @@ pub fn removeOrUpgradeWeakRef(store: *Self, key: Key, mode: enum(u1) {
             break;
         }
     } else {
-        entry.ref_count += @intFromEnum(mode);
+        entry.ref_count += @backingInt(mode);
     }
     mapLog("maybeUpgradeWeakRef {x}, ref_count: {d}", .{
         key.get(),

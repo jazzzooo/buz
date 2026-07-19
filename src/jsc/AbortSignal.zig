@@ -99,7 +99,7 @@ pub const AbortSignal = opaque {
         const js_reason = WebCore__AbortSignal__reasonIfAborted(this, global, &reason);
         if (reason > 0) {
             bun.debugAssert(js_reason.isUndefined());
-            return .{ .common = @enumFromInt(reason) };
+            return .{ .common = @fromBackingInt(@intCast(reason)) };
         }
         if (js_reason == .zero) {
             return null; // not aborted

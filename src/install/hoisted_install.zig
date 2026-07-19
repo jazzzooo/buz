@@ -62,7 +62,7 @@ pub fn installHoistedPackages(
 
         // Attempt to create a new node_modules folder
         if (bun.sys.mkdir("node_modules", 0o755).asErr()) |err| {
-            if (err.errno != @intFromEnum(bun.sys.E.EXIST)) {
+            if (err.errno != @backingInt(bun.sys.E.EXIST)) {
                 Output.err(err, "could not create the <b>\"node_modules\"<r> directory", .{});
                 Global.crash();
             }

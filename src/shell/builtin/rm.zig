@@ -315,7 +315,7 @@ pub fn onIOWriterChunk(this: *Rm, _: usize, e: ?jsc.SystemError) Yield {
     }
 
     if (e != null) {
-        this.state = .{ .err = @intFromEnum(e.?.getErrno()) };
+        this.state = .{ .err = @backingInt(e.?.getErrno()) };
         return this.bltn().done(e.?.getErrno());
     }
 

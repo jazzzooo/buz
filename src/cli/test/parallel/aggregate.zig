@@ -157,18 +157,18 @@ pub fn mergeCoverageFragments(io: std.Io, paths: []const []const u8, opts: *Test
         var path_buf: bun.PathBuffer = undefined;
         const out_path = bun.path.joinAbsStringBufZ(bun.fs.FileSystem.instance.top_level_dir, &path_buf, &.{ opts.reports_directory, "lcov.info" }, .auto);
         if (std.Io.Dir.cwd().createFile(io, out_path, .{})) |f| {
-                defer f.close(io);
-                const buf = bun.handleOom(arena.alloc(u8, 64 * 1024));
-                var bw = f.writer(io, buf);
-                const w = &bw.interface;
-                for (by_file.values()) |*fc| {
-                    const sorted = bun.handleOom(arena.dupe(u32, fc.da.keys()));
-                    std.sort.pdq(u32, sorted, {}, std.sort.asc(u32));
-                    w.print("TN:\nSF:{s}\nFNF:{d}\nFNH:{d}\n", .{ fc.path, fc.fnf, fc.fnh }) catch {};
-                    for (sorted) |ln| w.print("DA:{d},{d}\n", .{ ln, fc.da.get(ln).? }) catch {};
-                    w.print("LF:{d}\nLH:{d}\nend_of_record\n", .{ fc.da.count(), fc.lh() }) catch {};
-                }
-                w.flush() catch {};
+            defer f.close(io);
+            const buf = bun.handleOom(arena.alloc(u8, 64 * 1024));
+            var bw = f.writer(io, buf);
+            const w = &bw.interface;
+            for (by_file.values()) |*fc| {
+                const sorted = bun.handleOom(arena.dupe(u32, fc.da.keys()));
+                std.sort.pdq(u32, sorted, {}, std.sort.asc(u32));
+                w.print("TN:\nSF:{s}\nFNF:{d}\nFNH:{d}\n", .{ fc.path, fc.fnf, fc.fnh }) catch {};
+                for (sorted) |ln| w.print("DA:{d},{d}\n", .{ ln, fc.da.get(ln).? }) catch {};
+                w.print("LF:{d}\nLH:{d}\nend_of_record\n", .{ fc.da.count(), fc.lh() }) catch {};
+            }
+            w.flush() catch {};
         } else |e| Output.err(.lcovCoverageError, "Failed to write merged lcov.info: {s}", .{@errorName(e)});
     }
 

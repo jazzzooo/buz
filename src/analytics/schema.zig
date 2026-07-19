@@ -194,7 +194,7 @@ pub fn Writer(comptime WritableStream: type) type {
         }
 
         pub inline fn writeEnum(this: *Self, val: anytype) !void {
-            try this.writeInt(@intFromEnum(val));
+            try this.writeInt(@backingInt(val));
         }
 
         pub fn writeValue(this: *Self, comptime SliceType: type, slice: SliceType) !void {

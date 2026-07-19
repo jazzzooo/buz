@@ -779,7 +779,7 @@ pub fn bufferedOutputCloseStdout(this: *Cmd, err: ?jsc.SystemError) void {
     log("cmd ({x}) close buffered stdout", .{@intFromPtr(this)});
     if (err) |e| {
         defer e.deref();
-        this.exit_code = @as(ExitCode, @intCast(@intFromEnum(e.getErrno())));
+        this.exit_code = @as(ExitCode, @intCast(@backingInt(e.getErrno())));
     }
     if (this.io.stdout == .fd and this.io.stdout.fd.captured != null and !this.node.redirect.redirectsElsewhere(.stdout)) {
         var buf = this.io.stdout.fd.captured.?;
@@ -797,7 +797,7 @@ pub fn bufferedOutputCloseStderr(this: *Cmd, err: ?jsc.SystemError) void {
     log("cmd ({x}) close buffered stderr", .{@intFromPtr(this)});
     if (err) |e| {
         defer e.deref();
-        this.exit_code = @as(ExitCode, @intCast(@intFromEnum(e.getErrno())));
+        this.exit_code = @as(ExitCode, @intCast(@backingInt(e.getErrno())));
     }
     if (this.io.stderr == .fd and this.io.stderr.fd.captured != null and !this.node.redirect.redirectsElsewhere(.stderr)) {
         var buf = this.io.stderr.fd.captured.?;

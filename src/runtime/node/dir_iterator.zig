@@ -308,7 +308,7 @@ pub fn NewIterator(comptime use_windows_ospath: bool) type {
                             bun.sys.syslog("NtQueryDirectoryFile({f}) = {s}", .{ self.dir, @tagName(rc) });
                             return .{
                                 .err = .{
-                                    .errno = @intFromEnum(bun.sys.SystemErrno.ENOTDIR),
+                                    .errno = @backingInt(bun.sys.SystemErrno.ENOTDIR),
                                     .syscall = .NtQueryDirectoryFile,
                                 },
                             };
@@ -327,7 +327,7 @@ pub fn NewIterator(comptime use_windows_ospath: bool) type {
                             if ((bun.windows.Win32Error.fromNTStatus(rc).toSystemErrno())) |errno| {
                                 return .{
                                     .err = .{
-                                        .errno = @intFromEnum(errno),
+                                        .errno = @backingInt(errno),
                                         .syscall = .NtQueryDirectoryFile,
                                     },
                                 };
@@ -335,7 +335,7 @@ pub fn NewIterator(comptime use_windows_ospath: bool) type {
 
                             return .{
                                 .err = .{
-                                    .errno = @intFromEnum(bun.sys.SystemErrno.EUNKNOWN),
+                                    .errno = @backingInt(bun.sys.SystemErrno.EUNKNOWN),
                                     .syscall = .NtQueryDirectoryFile,
                                 },
                             };

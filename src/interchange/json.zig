@@ -594,7 +594,7 @@ pub fn toAST(
             }
         },
         .@"enum" => {
-            _ = std.enums.fromInt(Type, @intFromEnum(value)) orelse {
+            _ = std.enums.fromInt(Type, @backingInt(value)) orelse {
                 return Expr{ .data = .{ .e_null = .{} }, .loc = logger.Loc{} };
             };
 

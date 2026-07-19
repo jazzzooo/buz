@@ -272,7 +272,7 @@ pub const AuditLevel = enum {
 
     pub fn shouldIncludeSeverity(self: AuditLevel, severity: []const u8) bool {
         const severity_level = AuditLevel.fromString(severity) orelse .moderate;
-        return @intFromEnum(severity_level) >= @intFromEnum(self);
+        return @backingInt(severity_level) >= @backingInt(self);
     }
 };
 

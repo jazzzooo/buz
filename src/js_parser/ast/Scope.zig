@@ -202,7 +202,7 @@ pub fn recursiveSetStrictMode(s: *Scope, kind: StrictModeKind) void {
 }
 
 pub inline fn kindStopsHoisting(s: *const Scope) bool {
-    return @intFromEnum(s.kind) >= @intFromEnum(Kind.entry);
+    return @backingInt(s.kind) >= @backingInt(Kind.entry);
 }
 
 const std = @import("std");

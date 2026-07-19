@@ -801,8 +801,8 @@ pub const GetAddrInfoRequest = struct {
                         err,
                         debug_timer,
                     });
-                    if (@intFromEnum(err) != 0 or addrinfo == null) {
-                        this.* = .{ .err = @intFromEnum(err) };
+                    if (@backingInt(err) != 0 or addrinfo == null) {
+                        this.* = .{ .err = @backingInt(err) };
                         return;
                     }
 
@@ -1242,7 +1242,7 @@ pub const internal = struct {
             extern fn getaddrinfo_send_reply(bun.mach_port, *const dns.LibInfo.GetaddrinfoAsyncHandleReply) bool;
             pub fn onMachportChange(this: *Request) void {
                 if (!getaddrinfo_send_reply(this.libinfo.machport, LibInfo.getaddrinfo_async_handle_reply().?)) {
-                    libinfoCallback(@intFromEnum(std.c.E.NOSYS), null, this);
+                    libinfoCallback(@backingInt(std.c.E.NOSYS), null, this);
                 }
             }
         };
@@ -1623,7 +1623,7 @@ pub const internal = struct {
                     &addrinfo,
                 );
             }
-            afterResult(req, addrinfo, @intFromEnum(err));
+            afterResult(req, addrinfo, @backingInt(err));
         }
     }
 
@@ -1675,7 +1675,7 @@ pub const internal = struct {
     ) callconv(.c) void {
         const req: *Request = bun.cast(*Request, arg);
         const status_int: c_int = @intCast(status);
-        if (status == @intFromEnum(std.c.EAI.NONAME) and req.can_retry_for_addrconfig) retry: {
+        if (status == @backingInt(std.c.EAI.NONAME) and req.can_retry_for_addrconfig) retry: {
             req.can_retry_for_addrconfig = false;
             var service_buf: [bun.fmt.fastDigitCount(std.math.maxInt(u16)) + 2]u8 = undefined;
             const service: ?[*:0]const u8 = if (req.key.port > 0)

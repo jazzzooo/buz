@@ -22,11 +22,11 @@ pub const Copyfile = enum(i32) {
     pub const force = 4;
 
     pub inline fn isForceClone(this: Copyfile) bool {
-        return (@intFromEnum(this) & COPYFILE_FICLONE_FORCE) != 0;
+        return (@backingInt(this) & COPYFILE_FICLONE_FORCE) != 0;
     }
 
     pub inline fn shouldntOverwrite(this: Copyfile) bool {
-        return (@intFromEnum(this) & COPYFILE_EXCL) != 0;
+        return (@backingInt(this) & COPYFILE_EXCL) != 0;
     }
 
     pub inline fn canUseClone(this: Copyfile) bool {

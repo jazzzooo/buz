@@ -349,7 +349,7 @@ pub fn generateChunksInParallel(
                 const s = mi.strings_buf.items[offset..][0..len];
                 if (unique_key_to_path.get(s)) |resolved_path| {
                     replacements.append(c.allocator(), .{
-                        .old_id = @enumFromInt(@as(u32, @intCast(string_index))),
+                        .old_id = @fromBackingInt(@intCast(@as(u32, @intCast(string_index)))),
                         .resolved_path = resolved_path,
                     }) catch |err| bun.handleOom(err);
                 }

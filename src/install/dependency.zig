@@ -335,7 +335,7 @@ pub const Version = struct {
         ctx: Dependency.Context,
     ) Dependency.Version {
         const slice = String{ .bytes = bytes[1..9].* };
-        const tag = @as(Dependency.Version.Tag, @enumFromInt(bytes[0]));
+        const tag = @as(Dependency.Version.Tag, @fromBackingInt(@intCast(bytes[0])));
         const sliced = &slice.sliced(ctx.buffer);
         return Dependency.parseWithTag(
             ctx.allocator,
@@ -351,7 +351,7 @@ pub const Version = struct {
 
     pub inline fn toExternal(this: Version) Version.External {
         var bytes: Version.External = undefined;
-        bytes[0] = @intFromEnum(this.tag);
+        bytes[0] = @backingInt(this.tag);
         bytes[1..9].* = this.literal.bytes;
         return bytes;
     }
@@ -427,11 +427,11 @@ pub const Version = struct {
 
         pub fn cmp(this: Tag, other: Tag) std.math.Order {
             // TODO: align with yarn
-            return std.math.order(@intFromEnum(this), @intFromEnum(other));
+            return std.math.order(@backingInt(this), @backingInt(other));
         }
 
         pub inline fn isNPM(this: Tag) bool {
-            return @intFromEnum(this) < 3;
+            return @backingInt(this) < 3;
         }
 
         pub fn infer(dependency: string) Tag {

@@ -78,7 +78,7 @@ pub fn generate(globalObject: *jsc.JSGlobalObject, query: []const u8, array_valu
         switch (tag) {
             .bool, .int4, .int8, .float8, .int2, .numeric, .float4, .bytea => {
                 // We decide the type
-                try fields.append(@intFromEnum(tag));
+                try fields.append(@backingInt(tag));
             },
             else => {
                 // Allow postgres to decide the type

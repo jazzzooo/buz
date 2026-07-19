@@ -792,7 +792,7 @@ pub fn DirectiveHandler(comptime Container: type, comptime UserDataType: type, c
             auto_disable();
             return @as(
                 Directive,
-                @enumFromInt(@as(
+                @fromBackingInt(@intCast(@as(
                     c_uint,
                     @intFromBool(
                         Callback(
@@ -805,7 +805,7 @@ pub fn DirectiveHandler(comptime Container: type, comptime UserDataType: type, c
                             this,
                         ),
                     ),
-                )),
+                ))),
             );
         }
     }.callback;

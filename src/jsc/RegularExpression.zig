@@ -20,7 +20,7 @@ pub const RegularExpression = opaque {
     extern fn Yarr__RegularExpression__matches(this: *RegularExpression, string: bun.String) i32;
 
     pub inline fn init(pattern: bun.String, flags: Flags) error{InvalidRegExp}!*RegularExpression {
-        var regex = Yarr__RegularExpression__init(pattern, @intFromEnum(flags));
+        var regex = Yarr__RegularExpression__init(pattern, @backingInt(flags));
         if (!regex.isValid()) {
             regex.deinit();
             return error.InvalidRegExp;

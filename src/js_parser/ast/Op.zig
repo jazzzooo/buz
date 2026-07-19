@@ -109,9 +109,9 @@ pub const Code = enum {
     }
 
     pub fn unaryAssignTarget(code: Op.Code) AssignTarget {
-        if (@intFromEnum(code) >=
-            @intFromEnum(Op.Code.un_pre_dec) and @intFromEnum(code) <=
-            @intFromEnum(Op.Code.un_post_inc))
+        if (@backingInt(code) >=
+            @backingInt(Op.Code.un_pre_dec) and @backingInt(code) <=
+            @backingInt(Op.Code.un_post_inc))
         {
             return AssignTarget.update;
         }
@@ -119,19 +119,19 @@ pub const Code = enum {
         return AssignTarget.none;
     }
     pub fn isLeftAssociative(code: Op.Code) bool {
-        return @intFromEnum(code) >=
-            @intFromEnum(Op.Code.bin_add) and
-            @intFromEnum(code) < @intFromEnum(Op.Code.bin_comma) and code != .bin_pow;
+        return @backingInt(code) >=
+            @backingInt(Op.Code.bin_add) and
+            @backingInt(code) < @backingInt(Op.Code.bin_comma) and code != .bin_pow;
     }
     pub fn isRightAssociative(code: Op.Code) bool {
-        return @intFromEnum(code) >= @intFromEnum(Op.Code.bin_assign) or code == .bin_pow;
+        return @backingInt(code) >= @backingInt(Op.Code.bin_assign) or code == .bin_pow;
     }
     pub fn binaryAssignTarget(code: Op.Code) AssignTarget {
         if (code == .bin_assign) {
             return AssignTarget.replace;
         }
 
-        if (@intFromEnum(code) > @intFromEnum(Op.Code.bin_assign)) {
+        if (@backingInt(code) > @backingInt(Op.Code.bin_assign)) {
             return AssignTarget.update;
         }
 
@@ -139,7 +139,7 @@ pub const Code = enum {
     }
 
     pub fn isPrefix(code: Op.Code) bool {
-        return @intFromEnum(code) < @intFromEnum(Op.Code.un_post_dec);
+        return @backingInt(code) < @backingInt(Op.Code.un_post_dec);
     }
 };
 
@@ -169,27 +169,27 @@ pub const Level = enum(u6) {
     member,
 
     pub inline fn lt(self: Level, b: Level) bool {
-        return @intFromEnum(self) < @intFromEnum(b);
+        return @backingInt(self) < @backingInt(b);
     }
     pub inline fn gt(self: Level, b: Level) bool {
-        return @intFromEnum(self) > @intFromEnum(b);
+        return @backingInt(self) > @backingInt(b);
     }
     pub inline fn gte(self: Level, b: Level) bool {
-        return @intFromEnum(self) >= @intFromEnum(b);
+        return @backingInt(self) >= @backingInt(b);
     }
     pub inline fn lte(self: Level, b: Level) bool {
-        return @intFromEnum(self) <= @intFromEnum(b);
+        return @backingInt(self) <= @backingInt(b);
     }
     pub inline fn eql(self: Level, b: Level) bool {
-        return @intFromEnum(self) == @intFromEnum(b);
+        return @backingInt(self) == @backingInt(b);
     }
 
     pub inline fn sub(self: Level, i: anytype) Level {
-        return @as(Level, @enumFromInt(@intFromEnum(self) - i));
+        return @as(Level, @fromBackingInt(@intCast(@backingInt(self) - i)));
     }
 
     pub inline fn addF(self: Level, i: anytype) Level {
-        return @as(Level, @enumFromInt(@intFromEnum(self) + i));
+        return @as(Level, @fromBackingInt(@intCast(@backingInt(self) + i)));
     }
 };
 

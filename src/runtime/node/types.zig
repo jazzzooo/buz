@@ -1065,9 +1065,9 @@ pub const FileSystemFlags = enum(c_int) {
             // internal bun.O representation. Convert them here so downstream
             // code that operates on bun.O flags works correctly.
             if (comptime bun.Environment.isWindows) {
-                return @as(FileSystemFlags, @enumFromInt(bun.windows.libuv.O.toBunO(flags)));
+                return @as(FileSystemFlags, @fromBackingInt(@intCast(bun.windows.libuv.O.toBunO(flags))));
             }
-            return @as(FileSystemFlags, @enumFromInt(flags));
+            return @as(FileSystemFlags, @fromBackingInt(@intCast(flags)));
         }
 
         const jsType = val.jsType();
@@ -1105,7 +1105,7 @@ pub const FileSystemFlags = enum(c_int) {
                 return ctx.throwInvalidArguments("Invalid flag '{f}'. Learn more at https://nodejs.org/api/fs.html#fs_file_system_flags", .{str});
             };
 
-            return @enumFromInt(flags);
+            return @fromBackingInt(@intCast(flags));
         }
 
         return null;
@@ -1116,10 +1116,10 @@ pub const FileSystemFlags = enum(c_int) {
         // Allow only int32 or null/undefined values.
         if (!value.isNumber()) {
             if (value.isUndefinedOrNull()) {
-                return @enumFromInt(switch (kind) {
+                return @fromBackingInt(@intCast(switch (kind) {
                     .access => 0, // F_OK
                     .copy_file => 0, // constexpr int kDefaultCopyMode = 0;
-                });
+                }));
             }
             return global.ERR(.INVALID_ARG_TYPE, "mode must be int32 or null/undefined", .{}).throw();
         }
@@ -1129,18 +1129,18 @@ pub const FileSystemFlags = enum(c_int) {
             if (int < min or int > max) {
                 return global.ERR(.OUT_OF_RANGE, comptime std.fmt.comptimePrint("mode is out of range: >= {d} and <= {d}", .{ min, max }), .{}).throw();
             }
-            return @enumFromInt(int);
+            return @fromBackingInt(@intCast(int));
         } else {
             const float = value.asNumber();
             if (std.math.isNan(float) or std.math.isInf(float) or float < min or float > max) {
                 return global.ERR(.OUT_OF_RANGE, comptime std.fmt.comptimePrint("mode is out of range: >= {d} and <= {d}", .{ min, max }), .{}).throw();
             }
-            return @enumFromInt(@as(i32, @intFromFloat(float)));
+            return @fromBackingInt(@intCast(@as(i32, @intFromFloat(float))));
         }
     }
 
     pub fn asInt(flags: FileSystemFlags) tag_type {
-        return @intFromEnum(flags);
+        return @backingInt(flags);
     }
 };
 

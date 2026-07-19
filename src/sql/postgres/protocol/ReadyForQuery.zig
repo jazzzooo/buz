@@ -6,7 +6,7 @@ pub fn decode(this: *@This(), reader: PayloadReader) !void {
 
     const status = try reader.int(u8);
     this.* = .{
-        .status = @enumFromInt(status),
+        .status = @fromBackingInt(@intCast(status)),
     };
 }
 

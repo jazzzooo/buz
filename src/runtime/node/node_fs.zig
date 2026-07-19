@@ -162,7 +162,7 @@ pub const Async = struct {
                         const args: Arguments.Open = task.args;
                         const path = if (bun.strings.eqlComptime(args.path.slice(), "/dev/null")) "\\\\.\\NUL" else args.path.sliceZ(&this.node_fs.sync_error_buf);
 
-                        var flags: c_int = @intFromEnum(args.flags);
+                        var flags: c_int = @backingInt(args.flags);
                         flags = uv.O.fromBunO(flags);
 
                         var mode: c_int = @intCast(args.mode);
@@ -263,7 +263,7 @@ pub const Async = struct {
                 defer uv.uv_fs_req_cleanup(req);
                 const this: *Task = @ptrCast(@alignCast(req.data.?));
                 var node_fs = NodeFS{};
-                this.result = @field(NodeFS, "uv_" ++ @tagName(FunctionEnum))(&node_fs, this.args, @intFromEnum(req.result));
+                this.result = @field(NodeFS, "uv_" ++ @tagName(FunctionEnum))(&node_fs, this.args, @backingInt(req.result));
 
                 if (this.result == .err) {
                     this.result.err = this.result.err.clone(bun.default_allocator);
@@ -277,7 +277,7 @@ pub const Async = struct {
                 defer uv.uv_fs_req_cleanup(req);
                 const this: *Task = @ptrCast(@alignCast(req.data.?));
                 var node_fs = NodeFS{};
-                this.result = @field(NodeFS, "uv_" ++ @tagName(FunctionEnum))(&node_fs, this.args, req, @intFromEnum(req.result));
+                this.result = @field(NodeFS, "uv_" ++ @tagName(FunctionEnum))(&node_fs, this.args, req, @backingInt(req.result));
 
                 if (this.result == .err) {
                     this.result.err = this.result.err.clone(bun.default_allocator);
@@ -508,7 +508,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
                 const result = node_fs._copySingleFileSync(
                     this.src,
                     this.dest,
-                    @enumFromInt((if (args.flags.errorOnExist or !args.flags.force) constants.COPYFILE_EXCL else @as(u8, 0))),
+                    @fromBackingInt(@intCast((if (args.flags.errorOnExist or !args.flags.force) constants.COPYFILE_EXCL else @as(u8, 0)))),
                     null,
                     parent.args,
                 );
@@ -516,7 +516,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
                 brk: {
                     switch (result) {
                         .err => |err| {
-                            if (err.errno == @intFromEnum(E.EXIST) and !args.flags.errorOnExist) {
+                            if (err.errno == @backingInt(E.EXIST) and !args.flags.errorOnExist) {
                                 break :brk;
                             }
                             parent.finishConcurrently(result);
@@ -742,7 +742,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
                 const attributes = c.GetFileAttributesW(src);
                 if (attributes == c.INVALID_FILE_ATTRIBUTES) {
                     this.finishConcurrently(.{ .err = .{
-                        .errno = @intFromEnum(SystemErrno.ENOENT),
+                        .errno = @backingInt(SystemErrno.ENOENT),
                         .syscall = .copyfile,
                         .path = nodefs.osPathIntoSyncErrorBuf(src),
                     } });
@@ -755,13 +755,13 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
                         dest,
                         if (comptime is_shell)
                             // Shell always forces copy
-                            @enumFromInt(constants.Copyfile.force)
+                            @fromBackingInt(@intCast(constants.Copyfile.force))
                         else
-                            @enumFromInt((if (args.flags.errorOnExist or !args.flags.force) constants.COPYFILE_EXCL else @as(u8, 0))),
+                            @fromBackingInt(@intCast((if (args.flags.errorOnExist or !args.flags.force) constants.COPYFILE_EXCL else @as(u8, 0)))),
                         attributes,
                         this.args,
                     );
-                    if (r == .err and r.err.errno == @intFromEnum(E.EXIST) and !args.flags.errorOnExist) {
+                    if (r == .err and r.err.errno == @backingInt(E.EXIST) and !args.flags.errorOnExist) {
                         this.finishConcurrently(.success);
                         return;
                     }
@@ -784,11 +784,11 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
                     const r = nodefs._copySingleFileSync(
                         src,
                         dest,
-                        @enumFromInt((if (args.flags.errorOnExist or !args.flags.force) constants.COPYFILE_EXCL else @as(u8, 0))),
+                        @fromBackingInt(@intCast((if (args.flags.errorOnExist or !args.flags.force) constants.COPYFILE_EXCL else @as(u8, 0)))),
                         stat_,
                         this.args,
                     );
-                    if (r == .err and r.err.errno == @intFromEnum(E.EXIST) and !args.flags.errorOnExist) {
+                    if (r == .err and r.err.errno == @backingInt(E.EXIST) and !args.flags.errorOnExist) {
                         this.onCopy(src, dest);
                         this.finishConcurrently(.success);
                         return;
@@ -800,7 +800,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             }
             if (!args.flags.recursive) {
                 this.finishConcurrently(.{ .err = .{
-                    .errno = @intFromEnum(E.ISDIR),
+                    .errno = @backingInt(E.ISDIR),
                     .syscall = .copyfile,
                     .path = nodefs.osPathIntoSyncErrorBuf(src),
                 } });
@@ -898,7 +898,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
                     dest_dir_len + 1 + cname.len >= dest_buf.len)
                 {
                     this.finishConcurrently(.{ .err = .{
-                        .errno = @intFromEnum(E.NAMETOOLONG),
+                        .errno = @backingInt(E.NAMETOOLONG),
                         .syscall = .copyfile,
                         .path = nodefs.osPathIntoSyncErrorBuf(src_buf[0..src_dir_len]),
                     } });
@@ -3058,10 +3058,10 @@ pub const Arguments = struct {
             };
             errdefer dest.deinit();
 
-            var mode: constants.Copyfile = @enumFromInt(0);
+            var mode: constants.Copyfile = @fromBackingInt(@intCast(0));
             if (arguments.next()) |arg| {
                 arguments.eat();
-                mode = @enumFromInt(@intFromEnum(try FileSystemFlags.fromJSNumberOnly(ctx, arg, .copy_file)));
+                mode = @fromBackingInt(@intCast(@backingInt(try FileSystemFlags.fromJSNumberOnly(ctx, arg, .copy_file))));
             }
 
             return CopyFile{
@@ -3134,7 +3134,7 @@ pub const Arguments = struct {
                 .src = src,
                 .dest = dest,
                 .flags = .{
-                    .mode = @enumFromInt(mode),
+                    .mode = @fromBackingInt(@intCast(mode)),
                     .recursive = recursive,
                     .errorOnExist = errorOnExist,
                     .force = force,
@@ -3408,7 +3408,7 @@ pub const NodeFS = struct {
             .path => |path_| {
                 const path = path_.sliceZ(&this.sync_error_buf);
 
-                const fd = switch (Syscall.open(path, @intFromEnum(FileSystemFlags.a), args.mode)) {
+                const fd = switch (Syscall.open(path, @backingInt(FileSystemFlags.a), args.mode)) {
                     .result => |result| result,
                     .err => |err| return .{ .err = err },
                 };
@@ -3580,7 +3580,7 @@ pub const NodeFS = struct {
 
                 if (!posix.S.ISREG(@intCast(stat_.mode))) {
                     return Maybe(Return.CopyFile){ .err = .{
-                        .errno = @intFromEnum(SystemErrno.ENOTSUP),
+                        .errno = @backingInt(SystemErrno.ENOTSUP),
                         .syscall = .copyfile,
                     } };
                 }
@@ -3644,7 +3644,7 @@ pub const NodeFS = struct {
             const dest = args.dest.sliceZ(&dest_buf);
 
             if (args.mode.isForceClone()) {
-                return Maybe(Return.CopyFile){ .err = .{ .errno = @intFromEnum(SystemErrno.EOPNOTSUPP), .syscall = .copyfile } };
+                return Maybe(Return.CopyFile){ .err = .{ .errno = @backingInt(SystemErrno.EOPNOTSUPP), .syscall = .copyfile } };
             }
 
             const src_fd = switch (Syscall.open(src, bun.O.RDONLY, 0)) {
@@ -3658,7 +3658,7 @@ pub const NodeFS = struct {
                 .err => |err| return Maybe(Return.CopyFile){ .err = err },
             };
             if (!posix.S.ISREG(@intCast(stat_.mode))) {
-                return Maybe(Return.CopyFile){ .err = .{ .errno = @intFromEnum(SystemErrno.EOPNOTSUPP), .syscall = .copyfile } };
+                return Maybe(Return.CopyFile){ .err = .{ .errno = @backingInt(SystemErrno.EOPNOTSUPP), .syscall = .copyfile } };
             }
 
             var flags: i32 = bun.O.CREAT | bun.O.WRONLY;
@@ -3676,7 +3676,7 @@ pub const NodeFS = struct {
             // Node by checking inodes after both are open and refusing.
             if (Syscall.fstat(dest_fd).asValue()) |dst_stat| {
                 if (stat_.ino == dst_stat.ino and stat_.dev == dst_stat.dev) {
-                    return Maybe(Return.CopyFile){ .err = .{ .errno = @intFromEnum(SystemErrno.EINVAL), .syscall = .copyfile, .path = args.src.slice() } };
+                    return Maybe(Return.CopyFile){ .err = .{ .errno = @backingInt(SystemErrno.EINVAL), .syscall = .copyfile, .path = args.src.slice() } };
                 }
             }
             _ = Syscall.ftruncate(dest_fd, 0);
@@ -3695,7 +3695,7 @@ pub const NodeFS = struct {
                     .XDEV, .INVAL, .OPNOTSUPP, .BADF => break :cfr,
                     else => |e| {
                         _ = bun.sys.unlink(dest);
-                        return Maybe(Return.CopyFile){ .err = .{ .errno = @intFromEnum(e), .syscall = .copyfile } };
+                        return Maybe(Return.CopyFile){ .err = .{ .errno = @backingInt(e), .syscall = .copyfile } };
                     },
                 }
             }
@@ -3729,7 +3729,7 @@ pub const NodeFS = struct {
             };
 
             if (!posix.S.ISREG(@intCast(stat_.mode))) {
-                return Maybe(Return.CopyFile){ .err = .{ .errno = @intFromEnum(SystemErrno.ENOTSUP), .syscall = .copyfile } };
+                return Maybe(Return.CopyFile){ .err = .{ .errno = @backingInt(SystemErrno.ENOTSUP), .syscall = .copyfile } };
             }
 
             var flags: i32 = bun.O.CREAT | bun.O.WRONLY;
@@ -3976,7 +3976,7 @@ pub const NodeFS = struct {
         if (comptime Environment.isAndroid) {
             // bionic has no lchmod(); symlink modes are meaningless on Linux
             // anyway. Match glibc's stub behaviour.
-            return .{ .err = .{ .errno = @intFromEnum(bun.sys.E.OPNOTSUPP), .syscall = .lchmod, .path = args.path.slice() } };
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.OPNOTSUPP), .syscall = .lchmod, .path = args.path.slice() } };
         }
 
         const path = args.path.sliceZ(&this.sync_error_buf);
@@ -4037,7 +4037,7 @@ pub const NodeFS = struct {
 
     pub fn mkdir(this: *NodeFS, args: Arguments.Mkdir, _: Flavor) Maybe(Return.Mkdir) {
         if (args.path.slice().len == 0) return .{ .err = .{
-            .errno = @intFromEnum(bun.sys.E.NOENT),
+            .errno = @backingInt(bun.sys.E.NOENT),
             .syscall = .mkdir,
             .path = "",
         } };
@@ -4163,7 +4163,7 @@ pub const NodeFS = struct {
                                         .result => |res| {
                                             // is a directory. break.
                                             if (!res) return .{ .err = .{
-                                                .errno = @intFromEnum(bun.sys.E.NOTDIR),
+                                                .errno = @backingInt(bun.sys.E.NOTDIR),
                                                 .syscall = .mkdir,
                                                 .path = this.osPathIntoSyncErrorBuf(strings.withoutNTPrefix(bun.OSPathChar, path[0..len])),
                                             } };
@@ -4285,10 +4285,10 @@ pub const NodeFS = struct {
         }
 
         // c.getErrno(rc) returns SUCCESS if rc is -1 so we call std.c._errno() directly
-        const errno = @as(std.c.E, @enumFromInt(std.c._errno().*));
+        const errno = @as(std.c.E, @fromBackingInt(@intCast(std.c._errno().*)));
         return .{
             .err = Syscall.Error{
-                .errno = @as(Syscall.Error.Int, @truncate(@intFromEnum(errno))),
+                .errno = @as(Syscall.Error.Int, @truncate(@backingInt(errno))),
                 .syscall = .mkdtemp,
                 .path = prefix_buf[0 .. len + 6],
             },
@@ -5173,7 +5173,7 @@ pub const NodeFS = struct {
 
             return .{
                 .err = .{
-                    .errno = @intFromEnum(posix.E.MFILE),
+                    .errno = @backingInt(posix.E.MFILE),
                     .syscall = .open,
                 },
             };
@@ -5528,7 +5528,7 @@ pub const NodeFS = struct {
         // https://github.com/oven-sh/bun/issues/2931
         // https://github.com/oven-sh/bun/issues/10222
         // Only truncate if we're not appending and writing to a path
-        if ((@intFromEnum(args.flag) & bun.O.APPEND) == 0 and args.file != .fd) {
+        if ((@backingInt(args.flag) & bun.O.APPEND) == 0 and args.file != .fd) {
             // If this errors, we silently ignore it.
             // Not all files are seekable (and thus, not all files can be truncated).
             if (Environment.isWindows) {
@@ -5625,7 +5625,7 @@ pub const NodeFS = struct {
 
             const result_ptr: ?[*:0]u8 = req.ptrAs(?[*:0]u8);
             var buf = bun.span(result_ptr orelse return .{ .err = Syscall.Error{
-                .errno = @intFromEnum(bun.sys.E.NOENT),
+                .errno = @backingInt(bun.sys.E.NOENT),
                 .syscall = .realpath,
                 .path = args.path.slice(),
             } });
@@ -6149,7 +6149,7 @@ pub const NodeFS = struct {
             const attributes = c.GetFileAttributesW(src);
             if (attributes == c.INVALID_FILE_ATTRIBUTES) {
                 return .{ .err = .{
-                    .errno = @intFromEnum(SystemErrno.ENOENT),
+                    .errno = @backingInt(SystemErrno.ENOENT),
                     .syscall = .copyfile,
                     .path = this.osPathIntoSyncErrorBuf(src),
                 } };
@@ -6159,11 +6159,11 @@ pub const NodeFS = struct {
                 const r = this._copySingleFileSync(
                     src,
                     dest,
-                    @enumFromInt(if (cp_flags.errorOnExist or !cp_flags.force) constants.COPYFILE_EXCL else @as(u8, 0)),
+                    @fromBackingInt(@intCast(if (cp_flags.errorOnExist or !cp_flags.force) constants.COPYFILE_EXCL else @as(u8, 0))),
                     attributes,
                     args,
                 );
-                if (r == .err and r.err.errno == @intFromEnum(E.EXIST) and !cp_flags.errorOnExist) {
+                if (r == .err and r.err.errno == @backingInt(E.EXIST) and !cp_flags.errorOnExist) {
                     return .success;
                 }
                 return r;
@@ -6181,11 +6181,11 @@ pub const NodeFS = struct {
                 const r = this._copySingleFileSync(
                     src,
                     dest,
-                    @enumFromInt((if (cp_flags.errorOnExist or !cp_flags.force) constants.COPYFILE_EXCL else @as(u8, 0))),
+                    @fromBackingInt(@intCast((if (cp_flags.errorOnExist or !cp_flags.force) constants.COPYFILE_EXCL else @as(u8, 0)))),
                     stat_,
                     args,
                 );
-                if (r == .err and r.err.errno == @intFromEnum(E.EXIST) and !cp_flags.errorOnExist) {
+                if (r == .err and r.err.errno == @backingInt(E.EXIST) and !cp_flags.errorOnExist) {
                     return .success;
                 }
                 return r;
@@ -6194,7 +6194,7 @@ pub const NodeFS = struct {
 
         if (!cp_flags.recursive) {
             return .{ .err = .{
-                .errno = @intFromEnum(E.ISDIR),
+                .errno = @backingInt(E.ISDIR),
                 .syscall = .copyfile,
                 .path = this.osPathIntoSyncErrorBuf(src),
             } };
@@ -6258,7 +6258,7 @@ pub const NodeFS = struct {
                 dest_dir_len + 1 + name_slice.len >= dest_buf.len)
             {
                 return .{ .err = .{
-                    .errno = @intFromEnum(E.NAMETOOLONG),
+                    .errno = @backingInt(E.NAMETOOLONG),
                     .syscall = .copyfile,
                     .path = this.osPathIntoSyncErrorBuf(src_buf[0..src_dir_len]),
                 } };
@@ -6290,13 +6290,13 @@ pub const NodeFS = struct {
                     const r = this._copySingleFileSync(
                         src_buf[0 .. src_dir_len + 1 + name_slice.len :0],
                         dest_buf[0 .. dest_dir_len + 1 + name_slice.len :0],
-                        @enumFromInt((if (cp_flags.errorOnExist or !cp_flags.force) constants.COPYFILE_EXCL else @as(u8, 0))),
+                        @fromBackingInt(@intCast((if (cp_flags.errorOnExist or !cp_flags.force) constants.COPYFILE_EXCL else @as(u8, 0)))),
                         null,
                         args,
                     );
                     switch (r) {
                         .err => {
-                            if (r.err.errno == @intFromEnum(E.EXIST) and !cp_flags.errorOnExist) {
+                            if (r.err.errno == @backingInt(E.EXIST) and !cp_flags.errorOnExist) {
                                 continue;
                             }
                             return r;
@@ -6387,7 +6387,7 @@ pub const NodeFS = struct {
         ) orelse {
             @memcpy(this.sync_error_buf[0..src.len], src);
             return .{ .err = .{
-                .errno = @intFromEnum(E.NAMETOOLONG),
+                .errno = @backingInt(E.NAMETOOLONG),
                 .syscall = .symlink,
                 .path = this.sync_error_buf[0..src.len],
             } };
@@ -6433,7 +6433,7 @@ pub const NodeFS = struct {
                     }
                     @memcpy(this.sync_error_buf[0..src.len], src);
                     return Maybe(Return.CopyFile){ .err = .{
-                        .errno = @intFromEnum(SystemErrno.ENOTSUP),
+                        .errno = @backingInt(SystemErrno.ENOTSUP),
                         .path = this.sync_error_buf[0..src.len],
                         .syscall = .copyfile,
                     } };
@@ -6517,7 +6517,7 @@ pub const NodeFS = struct {
             }
 
             const first_try = ret.errnoSysP(c.copyfile(src, dest, null, mode_), .copyfile, src) orelse return ret.success;
-            if (first_try == .err and first_try.err.errno == @intFromEnum(Syscall.E.NOENT)) {
+            if (first_try == .err and first_try.err.errno == @backingInt(Syscall.E.NOENT)) {
                 const mkdir_result = this.mkdirRecursive(.{
                     .path = PathLike{ .string = PathString.init(bun.path.dirname(dest, .auto)) },
                     .recursive = true,
@@ -6557,7 +6557,7 @@ pub const NodeFS = struct {
 
             if (!posix.S.ISREG(@intCast(stat_.mode))) {
                 return Maybe(Return.CopyFile){ .err = .{
-                    .errno = @intFromEnum(SystemErrno.ENOTSUP),
+                    .errno = @backingInt(SystemErrno.ENOTSUP),
                     .syscall = .copyfile,
                 } };
             }
@@ -6681,7 +6681,7 @@ pub const NodeFS = struct {
 
         if (Environment.isFreeBSD) {
             if (mode.isForceClone()) {
-                return Maybe(Return.CopyFile){ .err = .{ .errno = @intFromEnum(SystemErrno.EOPNOTSUPP), .syscall = .copyfile } };
+                return Maybe(Return.CopyFile){ .err = .{ .errno = @backingInt(SystemErrno.EOPNOTSUPP), .syscall = .copyfile } };
             }
 
             const src_fd = switch (Syscall.open(src, bun.O.RDONLY | bun.O.NOFOLLOW, 0o644)) {
@@ -6703,7 +6703,7 @@ pub const NodeFS = struct {
                 .err => |err| return Maybe(Return.CopyFile){ .err = err.withFd(src_fd) },
             };
             if (!posix.S.ISREG(@intCast(stat_.mode))) {
-                return Maybe(Return.CopyFile){ .err = .{ .errno = @intFromEnum(SystemErrno.EOPNOTSUPP), .syscall = .copyfile } };
+                return Maybe(Return.CopyFile){ .err = .{ .errno = @backingInt(SystemErrno.EOPNOTSUPP), .syscall = .copyfile } };
             }
 
             var flags: i32 = bun.O.CREAT | bun.O.WRONLY;
@@ -6745,7 +6745,7 @@ pub const NodeFS = struct {
                 if (stat_.ino == dst_stat.ino and stat_.dev == dst_stat.dev) {
                     dest_fd.close();
                     @memcpy(this.sync_error_buf[0..src.len], src);
-                    return Maybe(Return.CopyFile){ .err = .{ .errno = @intFromEnum(SystemErrno.EINVAL), .syscall = .copyfile, .path = this.sync_error_buf[0..src.len] } };
+                    return Maybe(Return.CopyFile){ .err = .{ .errno = @backingInt(SystemErrno.EINVAL), .syscall = .copyfile, .path = this.sync_error_buf[0..src.len] } };
                 }
             }
 
@@ -6774,7 +6774,7 @@ pub const NodeFS = struct {
                     .XDEV, .INVAL, .OPNOTSUPP, .NOSYS, .BADF => break :cfr,
                     else => |e| {
                         @memcpy(this.sync_error_buf[0..dest.len], dest);
-                        return Maybe(Return.CopyFile){ .err = .{ .errno = @intFromEnum(e), .syscall = .copyfile, .path = this.sync_error_buf[0..dest.len] } };
+                        return Maybe(Return.CopyFile){ .err = .{ .errno = @backingInt(e), .syscall = .copyfile, .path = this.sync_error_buf[0..dest.len] } };
                     },
                 }
             }

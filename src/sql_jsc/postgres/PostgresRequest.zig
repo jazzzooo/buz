@@ -33,7 +33,7 @@ pub fn writeBind(
     for (0..len) |i| {
         const parameter_field = parameter_fields[i];
         const is_custom_type = std.math.maxInt(short) < parameter_field;
-        const tag: types.Tag = if (is_custom_type) .text else @enumFromInt(@as(short, @intCast(parameter_field)));
+        const tag: types.Tag = if (is_custom_type) .text else @fromBackingInt(@intCast(@as(short, @intCast(parameter_field))));
 
         const force_text = is_custom_type or (tag.isBinaryFormatSupported() and brk: {
             iter.to(@truncate(i));
@@ -82,7 +82,7 @@ pub fn writeBind(
             }
             const parameter_field = parameter_fields[i];
             const is_custom_type = std.math.maxInt(short) < parameter_field;
-            break :brk if (is_custom_type) .text else @enumFromInt(@as(short, @intCast(parameter_field)));
+            break :brk if (is_custom_type) .text else @fromBackingInt(@intCast(@as(short, @intCast(parameter_field))));
         };
         if (value.isEmptyOrUndefinedOrNull()) {
             debug("  -> NULL", .{});

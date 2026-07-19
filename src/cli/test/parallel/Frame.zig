@@ -33,7 +33,7 @@ pub fn begin(self: *Frame, kind: Kind) void {
     self.buf.clearRetainingCapacity();
     // reserve header; payload_len patched in send()
     bun.handleOom(self.buf.appendNTimes(bun.default_allocator, 0, 4));
-    bun.handleOom(self.buf.append(bun.default_allocator, @intFromEnum(kind)));
+    bun.handleOom(self.buf.append(bun.default_allocator, @backingInt(kind)));
 }
 pub fn u32_(self: *Frame, v: u32) void {
     var le: [4]u8 = undefined;

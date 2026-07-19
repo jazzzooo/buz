@@ -13,7 +13,7 @@ pub const ConnectingSocket = opaque {
     pub const rawGroup = group;
 
     pub fn kind(this: *ConnectingSocket) SocketKind {
-        return @enumFromInt(c.us_connecting_socket_kind(this));
+        return @fromBackingInt(@intCast(c.us_connecting_socket_kind(this)));
     }
 
     pub fn loop(this: *ConnectingSocket) *uws.Loop {

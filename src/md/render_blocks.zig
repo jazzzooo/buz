@@ -92,7 +92,7 @@ pub fn processTableRow(self: *Parser, vline: VerbatimLine, is_header: bool, col_
         while (cell_end > cell_beg and helpers.isBlank(row_text[cell_end - 1])) cell_end -= 1;
 
         const cell_type: BlockType = if (is_header) .th else .td;
-        const align_data: u32 = if (cell_index < types.TABLE_MAXCOLCOUNT) @intFromEnum(self.table_alignments[cell_index]) else 0;
+        const align_data: u32 = if (cell_index < types.TABLE_MAXCOLCOUNT) @backingInt(self.table_alignments[cell_index]) else 0;
         try self.enterBlock(cell_type, align_data, 0);
         if (cell_beg < cell_end) {
             const cell_content = row_text[cell_beg..cell_end];
@@ -133,7 +133,7 @@ pub fn processTableRow(self: *Parser, vline: VerbatimLine, is_header: bool, col_
     // Pad short rows with empty cells
     const cell_type: BlockType = if (is_header) .th else .td;
     while (cell_index < col_count) {
-        const align_data: u32 = if (cell_index < types.TABLE_MAXCOLCOUNT) @intFromEnum(self.table_alignments[cell_index]) else 0;
+        const align_data: u32 = if (cell_index < types.TABLE_MAXCOLCOUNT) @backingInt(self.table_alignments[cell_index]) else 0;
         try self.enterBlock(cell_type, align_data, 0);
         try self.leaveBlock(cell_type, 0);
         cell_index += 1;

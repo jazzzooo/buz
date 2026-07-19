@@ -20,7 +20,7 @@ pub const ConfigVersion = enum {
             return null;
         }
 
-        if (version > @intFromEnum(current)) {
+        if (version > @backingInt(current)) {
             return current;
         }
 
@@ -32,7 +32,7 @@ pub const ConfigVersion = enum {
             0 => .v0,
             1 => .v1,
             else => {
-                if (int > @intFromEnum(current)) {
+                if (int > @backingInt(current)) {
                     return current;
                 }
 

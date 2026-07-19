@@ -219,7 +219,7 @@ pub const FetchHeaders = opaque {
         this: *FetchHeaders,
         name_: HTTPHeaderName,
     ) bool {
-        return fastHas_(this, @intFromEnum(name_));
+        return fastHas_(this, @backingInt(name_));
     }
 
     pub fn fastGet(
@@ -227,7 +227,7 @@ pub const FetchHeaders = opaque {
         name_: HTTPHeaderName,
     ) ?ZigString {
         var str = ZigString.init("");
-        fastGet_(this, @intFromEnum(name_), &str);
+        fastGet_(this, @backingInt(name_), &str);
         if (str.len == 0) {
             return null;
         }
@@ -358,7 +358,7 @@ pub const FetchHeaders = opaque {
         this: *FetchHeaders,
         header: HTTPHeaderName,
     ) void {
-        return fastRemove_(this, @intFromEnum(header));
+        return fastRemove_(this, @backingInt(header));
     }
 
     pub fn fastRemove_(

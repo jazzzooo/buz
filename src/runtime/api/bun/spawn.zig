@@ -334,7 +334,7 @@ pub const PosixSpawn = struct {
 
             return Maybe(pid_t){
                 .err = .{
-                    .errno = @as(bun.sys.Error.Int, @truncate(@intFromEnum(@as(std.c.E, @enumFromInt(rc))))),
+                    .errno = @as(bun.sys.Error.Int, @truncate(@backingInt(@as(std.c.E, @fromBackingInt(@intCast(rc)))))),
                     .syscall = .posix_spawn,
                     .path = bun.span(argv[0] orelse ""),
                 },
@@ -387,7 +387,7 @@ pub const PosixSpawn = struct {
         if (comptime Environment.isMac) {
             var posix_actions = PosixSpawnActions.init() catch return Maybe(pid_t){
                 .err = .{
-                    .errno = @intFromEnum(std.c.E.NOMEM),
+                    .errno = @backingInt(std.c.E.NOMEM),
                     .syscall = .posix_spawn,
                 },
             };
@@ -395,7 +395,7 @@ pub const PosixSpawn = struct {
 
             var posix_attr = PosixSpawnAttr.init() catch return Maybe(pid_t){
                 .err = .{
-                    .errno = @intFromEnum(std.c.E.NOMEM),
+                    .errno = @backingInt(std.c.E.NOMEM),
                     .syscall = .posix_spawn,
                 },
             };
@@ -471,7 +471,7 @@ pub const PosixSpawn = struct {
 
             return Maybe(pid_t){
                 .err = .{
-                    .errno = @as(bun.sys.Error.Int, @truncate(@intFromEnum(@as(std.c.E, @enumFromInt(rc))))),
+                    .errno = @as(bun.sys.Error.Int, @truncate(@backingInt(@as(std.c.E, @fromBackingInt(@intCast(rc)))))),
                     .syscall = .posix_spawn,
                     .path = bun.asByteSlice(path),
                 },
@@ -503,7 +503,7 @@ pub const PosixSpawn = struct {
 
         return Maybe(pid_t){
             .err = .{
-                .errno = @as(bun.sys.Error.Int, @truncate(@intFromEnum(@as(std.c.E, @enumFromInt(rc))))),
+                .errno = @as(bun.sys.Error.Int, @truncate(@backingInt(@as(std.c.E, @fromBackingInt(@intCast(rc)))))),
                 .syscall = .posix_spawn,
                 .path = bun.asByteSlice(path),
             },

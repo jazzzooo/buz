@@ -121,7 +121,7 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
         }
 
         pub inline fn tag(this: This) TagType {
-            return @as(TagType, @enumFromInt(this.repr.data));
+            return @as(TagType, @fromBackingInt(@intCast(this.repr.data)));
         }
 
         pub fn case(comptime Type: type) Tag {
@@ -144,7 +144,7 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
 
         pub inline fn is(this: This, comptime Type: type) bool {
             comptime assert_type(Type);
-            return this.repr.data == comptime @intFromEnum(@field(Tag, @typeName(Type)));
+            return this.repr.data == comptime @backingInt(@field(Tag, @typeName(Type)));
         }
 
         pub fn set(this: *@This(), _ptr: anytype) void {
@@ -157,9 +157,9 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
 
         pub inline fn isValid(this: This) bool {
             return switch (this.repr.data) {
-                @intFromEnum(
+                @backingInt(
                     @field(Tag, @typeName(Types[Types.len - 1])),
-                )...@intFromEnum(
+                )...@backingInt(
                     @field(Tag, @typeName(Types[0])),
                 ) => true,
                 else => false,
@@ -193,7 +193,7 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
             const name = comptime @typeName(Type);
 
             // there will be a compiler error if the passed in type doesn't exist in the enum
-            return This{ .repr = TaggedPointer.init(_ptr, @intFromEnum(@field(Tag, name))) };
+            return This{ .repr = TaggedPointer.init(_ptr, @backingInt(@field(Tag, name))) };
         }
 
         pub inline fn isNull(this: This) bool {

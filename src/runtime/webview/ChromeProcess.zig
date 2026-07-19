@@ -69,7 +69,7 @@ pub export fn Bun__Chrome__ensure(
 
 pub fn onProcessExit(this: *ChromeProcess, _: *bun.spawn.Process, status: bun.spawn.Status, _: *const bun.spawn.Rusage) void {
     log("chrome exited: {f}", .{status});
-    const signo: i32 = if (status.signalCode()) |sig| @intFromEnum(sig) else 0;
+    const signo: i32 = if (status.signalCode()) |sig| @backingInt(sig) else 0;
     Bun__Chrome__died(signo);
     this.process.deref();
     bun.destroy(this);

@@ -20,7 +20,7 @@ pub fn fromJS(arg: jsc.JSValue, globalThis: *jsc.JSGlobalObject) !SignalCode {
             return globalThis.throwInvalidArguments("Invalid signal: must be < 32", .{});
         }
 
-        const code: SignalCode = @enumFromInt(@as(u8, @intFromFloat(sig64)));
+        const code: SignalCode = @fromBackingInt(@intCast(@as(u8, @intFromFloat(sig64))));
         return code;
     } else if (arg.isString()) {
         if (arg.asString().length() == 0) {

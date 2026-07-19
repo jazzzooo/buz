@@ -267,7 +267,7 @@ pub fn writeFailingError(this: *CondExpr, comptime fmt: []const u8, args: anytyp
 pub fn onIOWriterChunk(this: *CondExpr, _: usize, err: ?jsc.SystemError) Yield {
     if (err != null) {
         defer err.?.deref();
-        const exit_code: ExitCode = @intFromEnum(err.?.getErrno());
+        const exit_code: ExitCode = @backingInt(err.?.getErrno());
         return this.parent.childDone(this, exit_code);
     }
 

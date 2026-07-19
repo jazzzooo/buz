@@ -164,7 +164,7 @@ pub const PathWatcher = struct {
         var outbuf: bun.PathBuffer = undefined;
         const event_path = switch (bun.sys.readlink(path, &outbuf)) {
             .err => |err| brk: {
-                if (err.errno == @intFromEnum(bun.sys.E.NOENT)) {
+                if (err.errno == @backingInt(bun.sys.E.NOENT)) {
                     return .{ .err = .{
                         .errno = err.errno,
                         .syscall = .open,

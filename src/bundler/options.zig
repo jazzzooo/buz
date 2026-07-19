@@ -593,7 +593,7 @@ pub const Loader = enum(u8) {
         none = 254,
         _,
         pub fn unwrap(opt: Optional) ?Loader {
-            return if (opt == .none) null else @enumFromInt(@intFromEnum(opt));
+            return if (opt == .none) null else @fromBackingInt(@intCast(@backingInt(opt)));
         }
 
         pub fn fromAPI(loader: bun.schema.api.Loader) Optional {
@@ -601,7 +601,7 @@ pub const Loader = enum(u8) {
                 return .none;
             }
             const l: Loader = .fromAPI(loader);
-            return @enumFromInt(@intFromEnum(l));
+            return @fromBackingInt(@intCast(@backingInt(l)));
         }
     };
 

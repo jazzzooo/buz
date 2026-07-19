@@ -150,7 +150,7 @@ pub const Features = struct {
         out |= @as(u8, @intFromBool(this.dev_dependencies)) << 3;
         out |= @as(u8, @intFromBool(this.peer_dependencies)) << 4;
         out |= @as(u8, @intFromBool(this.workspaces)) << 5;
-        return @as(Behavior, @enumFromInt(out));
+        return @as(Behavior, @fromBackingInt(@intCast(out)));
     }
 
     pub const main = Features{

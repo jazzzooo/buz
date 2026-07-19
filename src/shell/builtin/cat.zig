@@ -127,7 +127,7 @@ pub fn onIOWriterChunk(this: *Cat, _: usize, err: ?jsc.SystemError) Yield {
     // Writing to stdout errored, cancel everything and write error
     if (err) |e| {
         defer e.deref();
-        const errno: ExitCode = @intCast(@intFromEnum(e.getErrno()));
+        const errno: ExitCode = @intCast(@backingInt(e.getErrno()));
         switch (this.state) {
             .exec_stdin => {
                 this.state.exec_stdin.errno = errno;
@@ -206,7 +206,7 @@ pub fn onIOReaderChunk(this: *Cat, chunk: []const u8, remove: *bool) Yield {
 pub fn onIOReaderDone(this: *Cat, err: ?jsc.SystemError) Yield {
     const errno: ExitCode = if (err) |e| brk: {
         defer e.deref();
-        break :brk @as(ExitCode, @intCast(@intFromEnum(e.getErrno())));
+        break :brk @as(ExitCode, @intCast(@backingInt(e.getErrno())));
     } else 0;
     debug("onIOReaderDone(0x{x}, {s}, errno={d})", .{ @intFromPtr(this), @tagName(this.state), errno });
 

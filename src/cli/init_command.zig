@@ -59,7 +59,7 @@ pub const InitCommand = struct {
                     if (value != expected_value) {
                         @compileError("Choices must be an enum type with consecutive values starting from 0");
                     }
-                    const e: Choices = @enumFromInt(value);
+                    const e: Choices = @fromBackingInt(@intCast(value));
                     choices[i] = Output.prettyFmt(e.fmt(), colors_comptime);
                     expected_value += 1;
                 }
@@ -88,7 +88,7 @@ pub const InitCommand = struct {
 
             if (reprint_menu) {
                 // Print final selection
-                Output.prettyln("<r><green>✓<r> {s}<d>:<r> {s}<r>", .{ label, choices[@intFromEnum(selected)] });
+                Output.prettyln("<r><green>✓<r> {s}<d>:<r> {s}<r>", .{ label, choices[@backingInt(selected)] });
             }
         }
 
@@ -101,7 +101,7 @@ pub const InitCommand = struct {
 
             // Print options vertically
             inline for (choices, 0..) |option, i| {
-                if (i == @intFromEnum(selected)) {
+                if (i == @backingInt(selected)) {
                     if (colors) {
                         Output.pretty("<r><cyan>❯<r>   ", .{});
                     } else {
@@ -134,21 +134,21 @@ pub const InitCommand = struct {
                 '1'...'9' => {
                     const choice = byte - '1';
                     if (choice < choices.len) {
-                        return @enumFromInt(choice);
+                        return @fromBackingInt(@intCast(choice));
                     }
                 },
                 'j' => {
-                    if (@intFromEnum(selected) == choices.len - 1) {
-                        selected = @enumFromInt(0);
+                    if (@backingInt(selected) == choices.len - 1) {
+                        selected = @fromBackingInt(@intCast(0));
                     } else {
-                        selected = @enumFromInt(@intFromEnum(selected) + 1);
+                        selected = @fromBackingInt(@intCast(@backingInt(selected) + 1));
                     }
                 },
                 'k' => {
-                    if (@intFromEnum(selected) == 0) {
-                        selected = @enumFromInt(choices.len - 1);
+                    if (@backingInt(selected) == 0) {
+                        selected = @fromBackingInt(@intCast(choices.len - 1));
                     } else {
-                        selected = @enumFromInt(@intFromEnum(selected) - 1);
+                        selected = @fromBackingInt(@intCast(@backingInt(selected) - 1));
                     }
                 },
                 27 => { // ESC sequence
@@ -160,17 +160,17 @@ pub const InitCommand = struct {
                     const arrow = stdin_i.takeByte() catch return error.EndOfStream;
                     switch (arrow) {
                         'A' => { // Up arrow
-                            if (@intFromEnum(selected) == 0) {
-                                selected = @enumFromInt(choices.len - 1);
+                            if (@backingInt(selected) == 0) {
+                                selected = @fromBackingInt(@intCast(choices.len - 1));
                             } else {
-                                selected = @enumFromInt(@intFromEnum(selected) - 1);
+                                selected = @fromBackingInt(@intCast(@backingInt(selected) - 1));
                             }
                         },
                         'B' => { // Down arrow
-                            if (@intFromEnum(selected) == choices.len - 1) {
-                                selected = @enumFromInt(0);
+                            if (@backingInt(selected) == choices.len - 1) {
+                                selected = @fromBackingInt(@intCast(0));
                             } else {
-                                selected = @enumFromInt(@intFromEnum(selected) + 1);
+                                selected = @fromBackingInt(@intCast(@backingInt(selected) + 1));
                             }
                         },
                         else => {},

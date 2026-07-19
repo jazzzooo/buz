@@ -37,7 +37,7 @@ pub const SignalCode = enum(u8) {
     pub const default = SignalCode.SIGTERM;
     pub const Map = ComptimeEnumMap(SignalCode);
     pub fn name(value: SignalCode) ?[]const u8 {
-        if (@intFromEnum(value) <= @intFromEnum(SignalCode.SIGSYS)) {
+        if (@backingInt(value) <= @backingInt(SignalCode.SIGSYS)) {
             return asByteSlice(@tagName(value));
         }
 
@@ -45,14 +45,14 @@ pub const SignalCode = enum(u8) {
     }
 
     pub fn valid(value: SignalCode) bool {
-        return @intFromEnum(value) <= @intFromEnum(SignalCode.SIGSYS) and @intFromEnum(value) >= @intFromEnum(SignalCode.SIGHUP);
+        return @backingInt(value) <= @backingInt(SignalCode.SIGSYS) and @backingInt(value) >= @backingInt(SignalCode.SIGHUP);
     }
 
     /// Shell scripts use exit codes 128 + signal number
     /// https://tldp.org/LDP/abs/html/exitcodes.html
     pub fn toExitCode(value: SignalCode) ?u8 {
-        return switch (@intFromEnum(value)) {
-            1...31 => 128 +% @intFromEnum(value),
+        return switch (@backingInt(value)) {
+            1...31 => 128 +% @backingInt(value),
             else => null,
         };
     }
@@ -96,7 +96,7 @@ pub const SignalCode = enum(u8) {
     }
 
     pub fn from(value: anytype) SignalCode {
-        return @enumFromInt(std.mem.asBytes(&value)[0]);
+        return @fromBackingInt(@intCast(std.mem.asBytes(&value)[0]));
     }
 
     // This wrapper struct is lame, what if bun's color formatter was more versatile
@@ -111,7 +111,7 @@ pub const SignalCode = enum(u8) {
                         try writer.print(Output.prettyFmt("{s} <d>({s})<r>", enable_ansi_colors), .{ str, desc });
                         return;
                     };
-                    try writer.print("code {d}", .{@intFromEnum(signal)});
+                    try writer.print("code {d}", .{@backingInt(signal)});
                 },
             }
         }

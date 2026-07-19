@@ -501,7 +501,7 @@ pub fn handleAuth(this: *MySQLConnection, comptime Context: type, reader: NewRea
     debug("Auth packet: 0x{x:0>2}", .{first_byte});
 
     switch (first_byte) {
-        @intFromEnum(PacketType.OK) => {
+        @backingInt(PacketType.OK) => {
             var ok = OKPacket{
                 .packet_size = header_length,
             };
@@ -517,7 +517,7 @@ pub fn handleAuth(this: *MySQLConnection, comptime Context: type, reader: NewRea
             this.queue.advance(connection);
         },
 
-        @intFromEnum(PacketType.ERROR) => {
+        @backingInt(PacketType.ERROR) => {
             var err = ErrorPacket{};
             try err.decode(reader);
             defer err.deinit();
@@ -527,7 +527,7 @@ pub fn handleAuth(this: *MySQLConnection, comptime Context: type, reader: NewRea
             return error.AuthenticationFailed;
         },
 
-        @intFromEnum(PacketType.MORE_DATA) => {
+        @backingInt(PacketType.MORE_DATA) => {
             // Handle various MORE_DATA cases
             if (this.auth_plugin) |plugin| {
                 switch (plugin) {
@@ -583,7 +583,7 @@ pub fn handleAuth(this: *MySQLConnection, comptime Context: type, reader: NewRea
                         return error.UnexpectedPacket;
                     },
                 }
-            } else if (first_byte == @intFromEnum(PacketType.LOCAL_INFILE)) {
+            } else if (first_byte == @backingInt(PacketType.LOCAL_INFILE)) {
                 // Handle LOCAL INFILE request
                 var infile = LocalInfileRequest{
                     .packet_size = header_length,
@@ -880,7 +880,7 @@ pub fn handlePreparedStatement(this: *MySQLConnection, comptime Context: type, r
         // Disambiguation from a 0xFE length-prefixed row: any 0xFE packet below
         // the 16 MB max-packet marker (0xFFFFFF) is an EOF. See handleResultSet
         // for the full rationale.
-        if (!this.capabilities.CLIENT_DEPRECATE_EOF and header_length < 0xFFFFFF and @as(PacketType, @enumFromInt(first_byte)) == .EOF) {
+        if (!this.capabilities.CLIENT_DEPRECATE_EOF and header_length < 0xFFFFFF and @as(PacketType, @fromBackingInt(@intCast(first_byte))) == .EOF) {
             var eof = EOFPacket{};
             try eof.decode(reader);
             this.checkIfPreparedStatementIsDone(statement);
@@ -908,7 +908,7 @@ pub fn handlePreparedStatement(this: *MySQLConnection, comptime Context: type, r
         return;
     }
 
-    switch (@as(PacketType, @enumFromInt(first_byte))) {
+    switch (@as(PacketType, @fromBackingInt(@intCast(first_byte)))) {
         .OK => {
             var ok = StmtPrepareOKPacket{
                 .packet_length = header_length,
@@ -1008,7 +1008,7 @@ fn handleResultSet(this: *MySQLConnection, comptime Context: type, reader: NewRe
     var ok = OKPacket{
         .packet_size = header_length,
     };
-    switch (@as(PacketType, @enumFromInt(first_byte))) {
+    switch (@as(PacketType, @fromBackingInt(@intCast(first_byte)))) {
         .ERROR => {
             const connection = this.getJSConnection();
             var err = ErrorPacket{};

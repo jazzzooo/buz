@@ -47,7 +47,7 @@ extern fn Bun__NativePromiseContext__take(value: jsc.JSValue) ?*anyopaque;
 /// that ref until `take()` transfers it back or GC runs the destructor.
 pub fn create(global: *jsc.JSGlobalObject, ctx: anytype) jsc.JSValue {
     const T = @typeInfo(@TypeOf(ctx)).pointer.child;
-    return Bun__NativePromiseContext__create(global, ctx, @intFromEnum(Tag.fromType(T)));
+    return Bun__NativePromiseContext__create(global, ctx, @backingInt(Tag.fromType(T)));
 }
 
 /// Transfers the ref back to the caller and nulls the cell so the destructor
@@ -67,7 +67,7 @@ pub fn take(comptime T: type, cell: jsc.JSValue) ?*T {
 /// the server — all of which may unprotect JS values or allocate. We must
 /// defer that work to the event loop.
 pub export fn Bun__NativePromiseContext__destroy(ctx: *anyopaque, tag: u8) callconv(.c) void {
-    DeferredDerefTask.schedule(ctx, @enumFromInt(tag));
+    DeferredDerefTask.schedule(ctx, @fromBackingInt(@intCast(tag)));
 }
 
 comptime {
@@ -123,12 +123,12 @@ pub const DeferredDerefTask = struct {
 
         var marker: DeferredDerefTask = undefined;
         var task = jsc.Task.init(&marker);
-        task.setUintptr(@truncate(addr | @intFromEnum(tag)));
+        task.setUintptr(@truncate(addr | @backingInt(tag)));
         vm.eventLoop().enqueueTask(task);
     }
 
     pub fn runFromJSThread(packed_ptr: usize) void {
-        const tag: Tag = @enumFromInt(packed_ptr & tag_mask);
+        const tag: Tag = @fromBackingInt(@intCast(packed_ptr & tag_mask));
         const ctx: *anyopaque = @ptrFromInt(packed_ptr & ~tag_mask);
         switch (tag) {
             .HTTPServerRequestContext => @as(*server.HTTPServer.RequestContext, @ptrCast(@alignCast(ctx))).deref(),

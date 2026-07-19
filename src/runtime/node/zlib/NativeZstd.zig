@@ -49,7 +49,7 @@ pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
         .ref_count = .init(),
         .globalThis = globalThis,
     });
-    ptr.stream.mode = @enumFromInt(mode_int);
+    ptr.stream.mode = @fromBackingInt(@intCast(mode_int));
     return ptr;
 }
 

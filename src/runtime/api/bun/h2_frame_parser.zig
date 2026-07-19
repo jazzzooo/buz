@@ -166,7 +166,7 @@ const StreamPriority = packed struct(u40) {
 
 const FrameHeader = packed struct(u72) {
     length: u24 = 0,
-    type: u8 = @intFromEnum(FrameType.HTTP_FRAME_SETTINGS),
+    type: u8 = @backingInt(FrameType.HTTP_FRAME_SETTINGS),
     flags: u8 = 0,
     streamIdentifier: u32 = 0,
 
@@ -199,19 +199,19 @@ const SettingsPayloadUnit = packed struct(u48) {
 };
 
 const FullSettingsPayload = packed struct(u336) {
-    _headerTableSizeType: u16 = @intFromEnum(SettingsType.SETTINGS_HEADER_TABLE_SIZE),
+    _headerTableSizeType: u16 = @backingInt(SettingsType.SETTINGS_HEADER_TABLE_SIZE),
     headerTableSize: u32 = 4096,
-    _enablePushType: u16 = @intFromEnum(SettingsType.SETTINGS_ENABLE_PUSH),
+    _enablePushType: u16 = @backingInt(SettingsType.SETTINGS_ENABLE_PUSH),
     enablePush: u32 = 1,
-    _maxConcurrentStreamsType: u16 = @intFromEnum(SettingsType.SETTINGS_MAX_CONCURRENT_STREAMS),
+    _maxConcurrentStreamsType: u16 = @backingInt(SettingsType.SETTINGS_MAX_CONCURRENT_STREAMS),
     maxConcurrentStreams: u32 = 4294967295,
-    _initialWindowSizeType: u16 = @intFromEnum(SettingsType.SETTINGS_INITIAL_WINDOW_SIZE),
+    _initialWindowSizeType: u16 = @backingInt(SettingsType.SETTINGS_INITIAL_WINDOW_SIZE),
     initialWindowSize: u32 = 65535,
-    _maxFrameSizeType: u16 = @intFromEnum(SettingsType.SETTINGS_MAX_FRAME_SIZE),
+    _maxFrameSizeType: u16 = @backingInt(SettingsType.SETTINGS_MAX_FRAME_SIZE),
     maxFrameSize: u32 = 16384,
-    _maxHeaderListSizeType: u16 = @intFromEnum(SettingsType.SETTINGS_MAX_HEADER_LIST_SIZE),
+    _maxHeaderListSizeType: u16 = @backingInt(SettingsType.SETTINGS_MAX_HEADER_LIST_SIZE),
     maxHeaderListSize: u32 = 65535,
-    _enableConnectProtocolType: u16 = @intFromEnum(SettingsType.SETTINGS_ENABLE_CONNECT_PROTOCOL),
+    _enableConnectProtocolType: u16 = @backingInt(SettingsType.SETTINGS_ENABLE_CONNECT_PROTOCOL),
     enableConnectProtocol: u32 = 0,
     pub const byteSize: usize = 42;
     pub fn toJS(this: *FullSettingsPayload, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
@@ -228,7 +228,7 @@ const FullSettingsPayload = packed struct(u336) {
     }
 
     pub fn updateWith(this: *FullSettingsPayload, option: SettingsPayloadUnit) void {
-        switch (@as(SettingsType, @enumFromInt(option.type))) {
+        switch (@as(SettingsType, @fromBackingInt(@intCast(option.type)))) {
             .SETTINGS_HEADER_TABLE_SIZE => this.headerTableSize = option.value,
             .SETTINGS_ENABLE_PUSH => this.enablePush = option.value,
             .SETTINGS_MAX_CONCURRENT_STREAMS => this.maxConcurrentStreams = option.value,
@@ -951,7 +951,7 @@ pub const H2FrameParser = struct {
                                             } else {
                                                 this.state = .HALF_CLOSED_LOCAL;
                                             }
-                                            client.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@intFromEnum(this.state)));
+                                            client.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@backingInt(this.state)));
                                         }
                                     }
                                 }
@@ -965,8 +965,8 @@ pub const H2FrameParser = struct {
 
                             // flush a zero payload frame
                             var dataHeader: FrameHeader = .{
-                                .type = @intFromEnum(FrameType.HTTP_FRAME_DATA),
-                                .flags = if (frame.end_stream and !this.waitForTrailers) @intFromEnum(DataFrameFlags.END_STREAM) else 0,
+                                .type = @backingInt(FrameType.HTTP_FRAME_DATA),
+                                .flags = if (frame.end_stream and !this.waitForTrailers) @backingInt(DataFrameFlags.END_STREAM) else 0,
                                 .streamIdentifier = @intCast(this.id),
                                 .length = 0,
                             };
@@ -996,10 +996,10 @@ pub const H2FrameParser = struct {
 
                                 var flags: u8 = 0; // we ignore end_stream for now because we know we have more data to send
                                 if (padding != 0) {
-                                    flags |= @intFromEnum(DataFrameFlags.PADDED);
+                                    flags |= @backingInt(DataFrameFlags.PADDED);
                                 }
                                 var dataHeader: FrameHeader = .{
-                                    .type = @intFromEnum(FrameType.HTTP_FRAME_DATA),
+                                    .type = @backingInt(FrameType.HTTP_FRAME_DATA),
                                     .flags = flags,
                                     .streamIdentifier = @intCast(this.id),
                                     .length = @intCast(payload_size),
@@ -1024,12 +1024,12 @@ pub const H2FrameParser = struct {
                                 log("padding: {d} size: {d} max_size: {d} payload_size: {d}", .{ padding, frame_slice.len, max_size, payload_size });
                                 this.remoteUsedWindowSize += payload_size;
                                 client.remoteUsedWindowSize += payload_size;
-                                var flags: u8 = if (frame.end_stream and !this.waitForTrailers) @intFromEnum(DataFrameFlags.END_STREAM) else 0;
+                                var flags: u8 = if (frame.end_stream and !this.waitForTrailers) @backingInt(DataFrameFlags.END_STREAM) else 0;
                                 if (padding != 0) {
-                                    flags |= @intFromEnum(DataFrameFlags.PADDED);
+                                    flags |= @backingInt(DataFrameFlags.PADDED);
                                 }
                                 var dataHeader: FrameHeader = .{
-                                    .type = @intFromEnum(FrameType.HTTP_FRAME_DATA),
+                                    .type = @backingInt(FrameType.HTTP_FRAME_DATA),
                                     .flags = flags,
                                     .streamIdentifier = @intCast(this.id),
                                     .length = @intCast(payload_size),
@@ -1288,7 +1288,7 @@ pub const H2FrameParser = struct {
         var writer_state = std.Io.Writer.fixed(&buffer);
         const writer = &writer_state;
         var settingsHeader: FrameHeader = .{
-            .type = @intFromEnum(FrameType.HTTP_FRAME_SETTINGS),
+            .type = @backingInt(FrameType.HTTP_FRAME_SETTINGS),
             .flags = 0,
             .streamIdentifier = 0,
             .length = FullSettingsPayload.byteSize,
@@ -1313,13 +1313,13 @@ pub const H2FrameParser = struct {
         const writer = &writer_state;
 
         var frame: FrameHeader = .{
-            .type = @intFromEnum(FrameType.HTTP_FRAME_RST_STREAM),
+            .type = @backingInt(FrameType.HTTP_FRAME_RST_STREAM),
             .flags = 0,
             .streamIdentifier = stream.id,
             .length = 4,
         };
         _ = frame.write(@TypeOf(writer), writer);
-        var value: u32 = @intFromEnum(ErrorCode.CANCEL);
+        var value: u32 = @backingInt(ErrorCode.CANCEL);
         stream.rstCode = value;
         value = @byteSwap(value);
         _ = writer.write(std.mem.asBytes(&value)) catch 0;
@@ -1328,12 +1328,12 @@ pub const H2FrameParser = struct {
         const identifier = stream.getIdentifier();
         identifier.ensureStillAlive();
         stream.freeResources(this, false);
-        this.dispatchWith2Extra(.onAborted, identifier, abortReason, jsc.JSValue.jsNumber(@intFromEnum(old_state)));
+        this.dispatchWith2Extra(.onAborted, identifier, abortReason, jsc.JSValue.jsNumber(@backingInt(old_state)));
         _ = this.write(&buffer);
     }
 
     pub fn endStream(this: *H2FrameParser, stream: *Stream, rstCode: ErrorCode) void {
-        log("HTTP_FRAME_RST_STREAM id: {} code: {}", .{ stream.id, @intFromEnum(rstCode) });
+        log("HTTP_FRAME_RST_STREAM id: {} code: {}", .{ stream.id, @backingInt(rstCode) });
         if (stream.state == .CLOSED) {
             return;
         }
@@ -1343,13 +1343,13 @@ pub const H2FrameParser = struct {
         const writer = &writer_state;
 
         var frame: FrameHeader = .{
-            .type = @intFromEnum(FrameType.HTTP_FRAME_RST_STREAM),
+            .type = @backingInt(FrameType.HTTP_FRAME_RST_STREAM),
             .flags = 0,
             .streamIdentifier = stream.id,
             .length = 4,
         };
         _ = frame.write(@TypeOf(writer), writer);
-        var value: u32 = @intFromEnum(rstCode);
+        var value: u32 = @backingInt(rstCode);
         stream.rstCode = value;
         value = @byteSwap(value);
         _ = writer.write(std.mem.asBytes(&value)) catch 0;
@@ -1359,9 +1359,9 @@ pub const H2FrameParser = struct {
         identifier.ensureStillAlive();
         stream.freeResources(this, false);
         if (rstCode == .NO_ERROR) {
-            this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@intFromEnum(stream.state)));
+            this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@backingInt(stream.state)));
         } else {
-            this.dispatchWithExtra(.onStreamError, identifier, jsc.JSValue.jsNumber(@intFromEnum(rstCode)));
+            this.dispatchWithExtra(.onStreamError, identifier, jsc.JSValue.jsNumber(@backingInt(rstCode)));
         }
 
         _ = this.write(&buffer);
@@ -1375,7 +1375,7 @@ pub const H2FrameParser = struct {
         const writer = &writer_state;
 
         var frame: FrameHeader = .{
-            .type = @intFromEnum(FrameType.HTTP_FRAME_GOAWAY),
+            .type = @backingInt(FrameType.HTTP_FRAME_GOAWAY),
             .flags = 0,
             .streamIdentifier = streamIdentifier,
             .length = @intCast(8 + debug_data.len),
@@ -1383,7 +1383,7 @@ pub const H2FrameParser = struct {
         _ = frame.write(@TypeOf(writer), writer);
         var last_id = UInt31WithReserved.init(@truncate(lastStreamID), false);
         _ = last_id.write(@TypeOf(writer), writer);
-        var value: u32 = @intFromEnum(rstCode);
+        var value: u32 = @backingInt(rstCode);
         value = @byteSwap(value);
         _ = writer.write(std.mem.asBytes(&value)) catch 0;
 
@@ -1398,7 +1398,7 @@ pub const H2FrameParser = struct {
 
         if (emitError) {
             if (rstCode != .NO_ERROR) {
-                this.dispatchWith2Extra(.onError, jsc.JSValue.jsNumber(@intFromEnum(rstCode)), jsc.JSValue.jsNumber(this.lastStreamID), chunk);
+                this.dispatchWith2Extra(.onError, jsc.JSValue.jsNumber(@backingInt(rstCode)), jsc.JSValue.jsNumber(this.lastStreamID), chunk);
             }
             this.dispatchWithExtra(.onEnd, jsc.JSValue.jsNumber(this.lastStreamID), chunk);
         }
@@ -1413,7 +1413,7 @@ pub const H2FrameParser = struct {
         const writer = &writer_state;
 
         var frame: FrameHeader = .{
-            .type = @intFromEnum(FrameType.HTTP_FRAME_ALTSVC),
+            .type = @backingInt(FrameType.HTTP_FRAME_ALTSVC),
             .flags = 0,
             .streamIdentifier = streamIdentifier,
             .length = @intCast(origin_str.len + alt.len + 2),
@@ -1440,8 +1440,8 @@ pub const H2FrameParser = struct {
             this.outStandingPings += 1;
         }
         var frame = FrameHeader{
-            .type = @intFromEnum(FrameType.HTTP_FRAME_PING),
-            .flags = if (ack) @intFromEnum(PingFrameFlags.ACK) else 0,
+            .type = @backingInt(FrameType.HTTP_FRAME_PING),
+            .flags = if (ack) @backingInt(PingFrameFlags.ACK) else 0,
             .streamIdentifier = 0,
             .length = 8,
         };
@@ -1459,7 +1459,7 @@ pub const H2FrameParser = struct {
         const writer = &writer_state;
         _ = writer.write("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n") catch 0;
         var settingsHeader: FrameHeader = .{
-            .type = @intFromEnum(FrameType.HTTP_FRAME_SETTINGS),
+            .type = @backingInt(FrameType.HTTP_FRAME_SETTINGS),
             .flags = 0,
             .streamIdentifier = 0,
             .length = FullSettingsPayload.byteSize,
@@ -1477,8 +1477,8 @@ pub const H2FrameParser = struct {
         var writer_state = std.Io.Writer.fixed(&buffer);
         const writer = &writer_state;
         var settingsHeader: FrameHeader = .{
-            .type = @intFromEnum(FrameType.HTTP_FRAME_SETTINGS),
-            .flags = @intFromEnum(SettingsFlags.ACK),
+            .type = @backingInt(FrameType.HTTP_FRAME_SETTINGS),
+            .flags = @backingInt(SettingsFlags.ACK),
             .streamIdentifier = 0,
             .length = 0,
         };
@@ -1493,7 +1493,7 @@ pub const H2FrameParser = struct {
         var writer_state = std.Io.Writer.fixed(&buffer);
         const writer = &writer_state;
         var settingsHeader: FrameHeader = .{
-            .type = @intFromEnum(FrameType.HTTP_FRAME_WINDOW_UPDATE),
+            .type = @backingInt(FrameType.HTTP_FRAME_WINDOW_UPDATE),
             .flags = 0,
             .streamIdentifier = streamIdentifier,
             .length = 4,
@@ -2014,7 +2014,7 @@ pub const H2FrameParser = struct {
 
         this.remainingLength -= @intCast(end);
         var padding: u8 = 0;
-        const padded = frame.flags & @intFromEnum(DataFrameFlags.PADDED) != 0;
+        const padded = frame.flags & @backingInt(DataFrameFlags.PADDED) != 0;
         if (padded) {
             if (frame.length < 1) {
                 // PADDED flag set but no room for the Pad Length octet
@@ -2087,7 +2087,7 @@ pub const H2FrameParser = struct {
             if (emitted) {
                 stream = this.streams.get(frame.streamIdentifier) orelse return end;
             }
-            if (frame.flags & @intFromEnum(DataFrameFlags.END_STREAM) != 0) {
+            if (frame.flags & @backingInt(DataFrameFlags.END_STREAM) != 0) {
                 const identifier = stream.getIdentifier();
                 identifier.ensureStillAlive();
 
@@ -2097,7 +2097,7 @@ pub const H2FrameParser = struct {
                 } else {
                     stream.state = .HALF_CLOSED_REMOTE;
                 }
-                this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@intFromEnum(stream.state)));
+                this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@backingInt(stream.state)));
             }
         }
 
@@ -2250,8 +2250,8 @@ pub const H2FrameParser = struct {
             const identifier = stream.getIdentifier();
             identifier.ensureStillAlive();
             stream.freeResources(this, false);
-            if (rst_code == @intFromEnum(ErrorCode.NO_ERROR)) {
-                this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@intFromEnum(stream.state)));
+            if (rst_code == @backingInt(ErrorCode.NO_ERROR)) {
+                this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@backingInt(stream.state)));
             } else {
                 this.dispatchWithExtra(.onStreamError, identifier, jsc.JSValue.jsNumber(rst_code));
             }
@@ -2273,7 +2273,7 @@ pub const H2FrameParser = struct {
 
         if (handleIncommingPayload(this, data, frame.streamIdentifier)) |content| {
             const payload = content.data;
-            const isNotACK = frame.flags & @intFromEnum(PingFrameFlags.ACK) == 0;
+            const isNotACK = frame.flags & @backingInt(PingFrameFlags.ACK) == 0;
             this.readBuffer.reset();
 
             // if is not ACK send response
@@ -2340,13 +2340,13 @@ pub const H2FrameParser = struct {
         if (handleIncommingPayload(this, data, frame.streamIdentifier)) |content| {
             const payload = content.data;
             this.readBuffer.reset();
-            stream.endAfterHeaders = frame.flags & @intFromEnum(HeadersFrameFlags.END_STREAM) != 0;
+            stream.endAfterHeaders = frame.flags & @backingInt(HeadersFrameFlags.END_STREAM) != 0;
             stream = (try this.decodeHeaderBlock(payload[0..payload.len], stream, frame.flags)) orelse {
                 return content.end;
             };
             if (stream.endAfterHeaders) {
                 stream.isWaitingMoreHeaders = false;
-                if (frame.flags & @intFromEnum(HeadersFrameFlags.END_STREAM) != 0) {
+                if (frame.flags & @backingInt(HeadersFrameFlags.END_STREAM) != 0) {
                     const identifier = stream.getIdentifier();
                     identifier.ensureStillAlive();
                     if (stream.state == .HALF_CLOSED_REMOTE) {
@@ -2356,7 +2356,7 @@ pub const H2FrameParser = struct {
                     } else {
                         stream.state = .HALF_CLOSED_LOCAL;
                     }
-                    this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@intFromEnum(stream.state)));
+                    this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@backingInt(stream.state)));
                 }
             }
 
@@ -2391,7 +2391,7 @@ pub const H2FrameParser = struct {
             var padding: usize = 0;
             this.readBuffer.reset();
 
-            if (frame.flags & @intFromEnum(HeadersFrameFlags.PADDED) != 0) {
+            if (frame.flags & @backingInt(HeadersFrameFlags.PADDED) != 0) {
                 if (payload.len < 1) {
                     // PADDED flag set but no room for the Pad Length octet
                     this.sendGoAway(frame.streamIdentifier, ErrorCode.FRAME_SIZE_ERROR, "invalid Headers frame size", this.lastStreamID, true);
@@ -2401,7 +2401,7 @@ pub const H2FrameParser = struct {
                 padding = payload[0];
                 offset += 1;
             }
-            if (frame.flags & @intFromEnum(HeadersFrameFlags.PRIORITY) != 0) {
+            if (frame.flags & @backingInt(HeadersFrameFlags.PRIORITY) != 0) {
                 // skip priority (client dont need to care about it)
                 offset += 5;
             }
@@ -2421,11 +2421,11 @@ pub const H2FrameParser = struct {
                 return content.end;
             }
             const end = payload.len - padding;
-            stream.endAfterHeaders = frame.flags & @intFromEnum(HeadersFrameFlags.END_STREAM) != 0;
+            stream.endAfterHeaders = frame.flags & @backingInt(HeadersFrameFlags.END_STREAM) != 0;
             stream = (try this.decodeHeaderBlock(payload[offset..end], stream, frame.flags)) orelse {
                 return content.end;
             };
-            stream.isWaitingMoreHeaders = frame.flags & @intFromEnum(HeadersFrameFlags.END_HEADERS) == 0;
+            stream.isWaitingMoreHeaders = frame.flags & @backingInt(HeadersFrameFlags.END_HEADERS) == 0;
             if (stream.endAfterHeaders) {
                 const identifier = stream.getIdentifier();
                 identifier.ensureStillAlive();
@@ -2441,7 +2441,7 @@ pub const H2FrameParser = struct {
                         stream.state = .HALF_CLOSED_REMOTE;
                     }
                 }
-                this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@intFromEnum(stream.state)));
+                this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@backingInt(stream.state)));
             }
             return content.end;
         }
@@ -2451,7 +2451,7 @@ pub const H2FrameParser = struct {
     }
 
     pub fn handleSettingsFrame(this: *H2FrameParser, frame: FrameHeader, data: []const u8) usize {
-        const isACK = frame.flags & @intFromEnum(SettingsFlags.ACK) != 0;
+        const isACK = frame.flags & @backingInt(SettingsFlags.ACK) != 0;
 
         log("handleSettingsFrame {s} isACK {}", .{ if (this.isServer) "server" else "client", isACK });
         if (frame.streamIdentifier != 0) {
@@ -2536,7 +2536,7 @@ pub const H2FrameParser = struct {
                 var unit: SettingsPayloadUnit = undefined;
                 SettingsPayloadUnit.from(&unit, payload[i .. i + settingByteSize], 0, true);
                 remoteSettings.updateWith(unit);
-                log("remoteSettings: {} {} isServer: {}", .{ @as(SettingsType, @enumFromInt(unit.type)), unit.value, this.isServer });
+                log("remoteSettings: {} {} isServer: {}", .{ @as(SettingsType, @fromBackingInt(@intCast(unit.type))), unit.value, this.isServer });
             }
             this.readBuffer.reset();
             this.remoteSettings = remoteSettings;
@@ -2620,17 +2620,17 @@ pub const H2FrameParser = struct {
 
             const stream = this.handleReceivedStreamID(header.streamIdentifier);
             return switch (header.type) {
-                @intFromEnum(FrameType.HTTP_FRAME_SETTINGS) => this.handleSettingsFrame(header, bytes),
-                @intFromEnum(FrameType.HTTP_FRAME_WINDOW_UPDATE) => this.handleWindowUpdateFrame(header, bytes, stream),
-                @intFromEnum(FrameType.HTTP_FRAME_HEADERS) => this.handleHeadersFrame(header, bytes, stream),
-                @intFromEnum(FrameType.HTTP_FRAME_DATA) => this.handleDataFrame(header, bytes, stream),
-                @intFromEnum(FrameType.HTTP_FRAME_CONTINUATION) => this.handleContinuationFrame(header, bytes, stream),
-                @intFromEnum(FrameType.HTTP_FRAME_PRIORITY) => this.handlePriorityFrame(header, bytes, stream),
-                @intFromEnum(FrameType.HTTP_FRAME_PING) => this.handlePingFrame(header, bytes, stream),
-                @intFromEnum(FrameType.HTTP_FRAME_GOAWAY) => this.handleGoAwayFrame(header, bytes, stream),
-                @intFromEnum(FrameType.HTTP_FRAME_RST_STREAM) => this.handleRSTStreamFrame(header, bytes, stream),
-                @intFromEnum(FrameType.HTTP_FRAME_ALTSVC) => this.handleAltsvcFrame(header, bytes, stream),
-                @intFromEnum(FrameType.HTTP_FRAME_ORIGIN) => this.handleOriginFrame(header, bytes, stream),
+                @backingInt(FrameType.HTTP_FRAME_SETTINGS) => this.handleSettingsFrame(header, bytes),
+                @backingInt(FrameType.HTTP_FRAME_WINDOW_UPDATE) => this.handleWindowUpdateFrame(header, bytes, stream),
+                @backingInt(FrameType.HTTP_FRAME_HEADERS) => this.handleHeadersFrame(header, bytes, stream),
+                @backingInt(FrameType.HTTP_FRAME_DATA) => this.handleDataFrame(header, bytes, stream),
+                @backingInt(FrameType.HTTP_FRAME_CONTINUATION) => this.handleContinuationFrame(header, bytes, stream),
+                @backingInt(FrameType.HTTP_FRAME_PRIORITY) => this.handlePriorityFrame(header, bytes, stream),
+                @backingInt(FrameType.HTTP_FRAME_PING) => this.handlePingFrame(header, bytes, stream),
+                @backingInt(FrameType.HTTP_FRAME_GOAWAY) => this.handleGoAwayFrame(header, bytes, stream),
+                @backingInt(FrameType.HTTP_FRAME_RST_STREAM) => this.handleRSTStreamFrame(header, bytes, stream),
+                @backingInt(FrameType.HTTP_FRAME_ALTSVC) => this.handleAltsvcFrame(header, bytes, stream),
+                @backingInt(FrameType.HTTP_FRAME_ORIGIN) => this.handleOriginFrame(header, bytes, stream),
                 else => {
                     this.sendGoAway(header.streamIdentifier, ErrorCode.PROTOCOL_ERROR, "Unknown frame type", this.lastStreamID, true);
                     return bytes.len;
@@ -2669,17 +2669,17 @@ pub const H2FrameParser = struct {
             const stream = this.handleReceivedStreamID(header.streamIdentifier);
 
             return switch (header.type) {
-                @intFromEnum(FrameType.HTTP_FRAME_SETTINGS) => this.handleSettingsFrame(header, bytes[needed..]) + needed,
-                @intFromEnum(FrameType.HTTP_FRAME_WINDOW_UPDATE) => this.handleWindowUpdateFrame(header, bytes[needed..], stream) + needed,
-                @intFromEnum(FrameType.HTTP_FRAME_HEADERS) => (try this.handleHeadersFrame(header, bytes[needed..], stream)) + needed,
-                @intFromEnum(FrameType.HTTP_FRAME_DATA) => this.handleDataFrame(header, bytes[needed..], stream) + needed,
-                @intFromEnum(FrameType.HTTP_FRAME_CONTINUATION) => (try this.handleContinuationFrame(header, bytes[needed..], stream)) + needed,
-                @intFromEnum(FrameType.HTTP_FRAME_PRIORITY) => this.handlePriorityFrame(header, bytes[needed..], stream) + needed,
-                @intFromEnum(FrameType.HTTP_FRAME_PING) => this.handlePingFrame(header, bytes[needed..], stream) + needed,
-                @intFromEnum(FrameType.HTTP_FRAME_GOAWAY) => this.handleGoAwayFrame(header, bytes[needed..], stream) + needed,
-                @intFromEnum(FrameType.HTTP_FRAME_RST_STREAM) => this.handleRSTStreamFrame(header, bytes[needed..], stream) + needed,
-                @intFromEnum(FrameType.HTTP_FRAME_ALTSVC) => (try this.handleAltsvcFrame(header, bytes[needed..], stream)) + needed,
-                @intFromEnum(FrameType.HTTP_FRAME_ORIGIN) => (try this.handleOriginFrame(header, bytes[needed..], stream)) + needed,
+                @backingInt(FrameType.HTTP_FRAME_SETTINGS) => this.handleSettingsFrame(header, bytes[needed..]) + needed,
+                @backingInt(FrameType.HTTP_FRAME_WINDOW_UPDATE) => this.handleWindowUpdateFrame(header, bytes[needed..], stream) + needed,
+                @backingInt(FrameType.HTTP_FRAME_HEADERS) => (try this.handleHeadersFrame(header, bytes[needed..], stream)) + needed,
+                @backingInt(FrameType.HTTP_FRAME_DATA) => this.handleDataFrame(header, bytes[needed..], stream) + needed,
+                @backingInt(FrameType.HTTP_FRAME_CONTINUATION) => (try this.handleContinuationFrame(header, bytes[needed..], stream)) + needed,
+                @backingInt(FrameType.HTTP_FRAME_PRIORITY) => this.handlePriorityFrame(header, bytes[needed..], stream) + needed,
+                @backingInt(FrameType.HTTP_FRAME_PING) => this.handlePingFrame(header, bytes[needed..], stream) + needed,
+                @backingInt(FrameType.HTTP_FRAME_GOAWAY) => this.handleGoAwayFrame(header, bytes[needed..], stream) + needed,
+                @backingInt(FrameType.HTTP_FRAME_RST_STREAM) => this.handleRSTStreamFrame(header, bytes[needed..], stream) + needed,
+                @backingInt(FrameType.HTTP_FRAME_ALTSVC) => (try this.handleAltsvcFrame(header, bytes[needed..], stream)) + needed,
+                @backingInt(FrameType.HTTP_FRAME_ORIGIN) => (try this.handleOriginFrame(header, bytes[needed..], stream)) + needed,
                 else => {
                     this.sendGoAway(header.streamIdentifier, ErrorCode.PROTOCOL_ERROR, "Unknown frame type", this.lastStreamID, true);
                     return bytes.len;
@@ -2702,17 +2702,17 @@ pub const H2FrameParser = struct {
         this.remainingLength = header.length;
         const stream = this.handleReceivedStreamID(header.streamIdentifier);
         return switch (header.type) {
-            @intFromEnum(FrameType.HTTP_FRAME_SETTINGS) => this.handleSettingsFrame(header, bytes[FrameHeader.byteSize..]) + FrameHeader.byteSize,
-            @intFromEnum(FrameType.HTTP_FRAME_WINDOW_UPDATE) => this.handleWindowUpdateFrame(header, bytes[FrameHeader.byteSize..], stream) + FrameHeader.byteSize,
-            @intFromEnum(FrameType.HTTP_FRAME_HEADERS) => (try this.handleHeadersFrame(header, bytes[FrameHeader.byteSize..], stream)) + FrameHeader.byteSize,
-            @intFromEnum(FrameType.HTTP_FRAME_DATA) => this.handleDataFrame(header, bytes[FrameHeader.byteSize..], stream) + FrameHeader.byteSize,
-            @intFromEnum(FrameType.HTTP_FRAME_CONTINUATION) => (try this.handleContinuationFrame(header, bytes[FrameHeader.byteSize..], stream)) + FrameHeader.byteSize,
-            @intFromEnum(FrameType.HTTP_FRAME_PRIORITY) => this.handlePriorityFrame(header, bytes[FrameHeader.byteSize..], stream) + FrameHeader.byteSize,
-            @intFromEnum(FrameType.HTTP_FRAME_PING) => this.handlePingFrame(header, bytes[FrameHeader.byteSize..], stream) + FrameHeader.byteSize,
-            @intFromEnum(FrameType.HTTP_FRAME_GOAWAY) => this.handleGoAwayFrame(header, bytes[FrameHeader.byteSize..], stream) + FrameHeader.byteSize,
-            @intFromEnum(FrameType.HTTP_FRAME_RST_STREAM) => this.handleRSTStreamFrame(header, bytes[FrameHeader.byteSize..], stream) + FrameHeader.byteSize,
-            @intFromEnum(FrameType.HTTP_FRAME_ALTSVC) => (try this.handleAltsvcFrame(header, bytes[FrameHeader.byteSize..], stream)) + FrameHeader.byteSize,
-            @intFromEnum(FrameType.HTTP_FRAME_ORIGIN) => (try this.handleOriginFrame(header, bytes[FrameHeader.byteSize..], stream)) + FrameHeader.byteSize,
+            @backingInt(FrameType.HTTP_FRAME_SETTINGS) => this.handleSettingsFrame(header, bytes[FrameHeader.byteSize..]) + FrameHeader.byteSize,
+            @backingInt(FrameType.HTTP_FRAME_WINDOW_UPDATE) => this.handleWindowUpdateFrame(header, bytes[FrameHeader.byteSize..], stream) + FrameHeader.byteSize,
+            @backingInt(FrameType.HTTP_FRAME_HEADERS) => (try this.handleHeadersFrame(header, bytes[FrameHeader.byteSize..], stream)) + FrameHeader.byteSize,
+            @backingInt(FrameType.HTTP_FRAME_DATA) => this.handleDataFrame(header, bytes[FrameHeader.byteSize..], stream) + FrameHeader.byteSize,
+            @backingInt(FrameType.HTTP_FRAME_CONTINUATION) => (try this.handleContinuationFrame(header, bytes[FrameHeader.byteSize..], stream)) + FrameHeader.byteSize,
+            @backingInt(FrameType.HTTP_FRAME_PRIORITY) => this.handlePriorityFrame(header, bytes[FrameHeader.byteSize..], stream) + FrameHeader.byteSize,
+            @backingInt(FrameType.HTTP_FRAME_PING) => this.handlePingFrame(header, bytes[FrameHeader.byteSize..], stream) + FrameHeader.byteSize,
+            @backingInt(FrameType.HTTP_FRAME_GOAWAY) => this.handleGoAwayFrame(header, bytes[FrameHeader.byteSize..], stream) + FrameHeader.byteSize,
+            @backingInt(FrameType.HTTP_FRAME_RST_STREAM) => this.handleRSTStreamFrame(header, bytes[FrameHeader.byteSize..], stream) + FrameHeader.byteSize,
+            @backingInt(FrameType.HTTP_FRAME_ALTSVC) => (try this.handleAltsvcFrame(header, bytes[FrameHeader.byteSize..], stream)) + FrameHeader.byteSize,
+            @backingInt(FrameType.HTTP_FRAME_ORIGIN) => (try this.handleOriginFrame(header, bytes[FrameHeader.byteSize..], stream)) + FrameHeader.byteSize,
             else => {
                 this.sendGoAway(header.streamIdentifier, ErrorCode.PROTOCOL_ERROR, "Unknown frame type", this.lastStreamID, true);
                 return bytes.len;
@@ -2981,14 +2981,14 @@ pub const H2FrameParser = struct {
                 if (!opaque_data_arg.isEmptyOrUndefinedOrNull()) {
                     if (opaque_data_arg.asArrayBuffer(globalObject)) |array_buffer| {
                         const slice = array_buffer.byteSlice();
-                        this.sendGoAway(0, @enumFromInt(errorCode), slice, lastStreamID, false);
+                        this.sendGoAway(0, @fromBackingInt(@intCast(errorCode)), slice, lastStreamID, false);
                         return .js_undefined;
                     }
                 }
             }
         }
 
-        this.sendGoAway(0, @enumFromInt(errorCode), "", lastStreamID, false);
+        this.sendGoAway(0, @fromBackingInt(@intCast(errorCode)), "", lastStreamID, false);
         return .js_undefined;
     }
 
@@ -3024,7 +3024,7 @@ pub const H2FrameParser = struct {
             const writer = &writer_state;
 
             var frame: FrameHeader = .{
-                .type = @intFromEnum(FrameType.HTTP_FRAME_ORIGIN),
+                .type = @backingInt(FrameType.HTTP_FRAME_ORIGIN),
                 .flags = 0,
                 .streamIdentifier = 0,
                 .length = 0,
@@ -3049,7 +3049,7 @@ pub const H2FrameParser = struct {
             const writer = &writer_state;
 
             var frame: FrameHeader = .{
-                .type = @intFromEnum(FrameType.HTTP_FRAME_ORIGIN),
+                .type = @backingInt(FrameType.HTTP_FRAME_ORIGIN),
                 .flags = 0,
                 .streamIdentifier = 0,
                 .length = @intCast(slice.len + 2),
@@ -3088,7 +3088,7 @@ pub const H2FrameParser = struct {
 
             const total_length: u32 = @intCast(writer.end);
             var frame: FrameHeader = .{
-                .type = @intFromEnum(FrameType.HTTP_FRAME_ORIGIN),
+                .type = @backingInt(FrameType.HTTP_FRAME_ORIGIN),
                 .flags = 0,
                 .streamIdentifier = 0,
                 .length = @intCast(total_length - FrameHeader.byteSize), // payload length
@@ -3201,7 +3201,7 @@ pub const H2FrameParser = struct {
             return jsc.JSValue.jsBoolean(signal_ref.isAborted());
         }
         // closed with cancel = aborted
-        return jsc.JSValue.jsBoolean(stream.state == .CLOSED and stream.rstCode == @intFromEnum(ErrorCode.CANCEL));
+        return jsc.JSValue.jsBoolean(stream.state == .CLOSED and stream.rstCode == @backingInt(ErrorCode.CANCEL));
     }
 
     pub fn getStreamState(this: *H2FrameParser, globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
@@ -3227,7 +3227,7 @@ pub const H2FrameParser = struct {
         var state = jsc.JSValue.createEmptyObject(globalObject, 6);
 
         state.put(globalObject, jsc.ZigString.static("localWindowSize"), jsc.JSValue.jsNumber(stream.windowSize));
-        state.put(globalObject, jsc.ZigString.static("state"), jsc.JSValue.jsNumber(@intFromEnum(stream.state)));
+        state.put(globalObject, jsc.ZigString.static("state"), jsc.JSValue.jsNumber(@backingInt(stream.state)));
         state.put(globalObject, jsc.ZigString.static("localClose"), jsc.JSValue.jsNumber(@as(i32, if (stream.canSendData()) 0 else 1)));
         state.put(globalObject, jsc.ZigString.static("remoteClose"), jsc.JSValue.jsNumber(@as(i32, if (stream.canReceiveData()) 0 else 1)));
         // TODO: sumDependencyWeight
@@ -3321,7 +3321,7 @@ pub const H2FrameParser = struct {
                 .weight = @truncate(stream.weight),
             };
             var frame: FrameHeader = .{
-                .type = @intFromEnum(FrameType.HTTP_FRAME_PRIORITY),
+                .type = @backingInt(FrameType.HTTP_FRAME_PRIORITY),
                 .flags = 0,
                 .streamIdentifier = stream.id,
                 .length = @intCast(StreamPriority.byteSize),
@@ -3362,7 +3362,7 @@ pub const H2FrameParser = struct {
 
         const error_code = error_arg.toU32();
 
-        this.endStream(stream, @enumFromInt(error_code));
+        this.endStream(stream, @fromBackingInt(@intCast(error_code)));
 
         return .true;
     }
@@ -3416,7 +3416,7 @@ pub const H2FrameParser = struct {
                         } else {
                             stream.state = .HALF_CLOSED_LOCAL;
                         }
-                        this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@intFromEnum(stream.state)));
+                        this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@backingInt(stream.state)));
                     }
                 }
             }
@@ -3426,8 +3426,8 @@ pub const H2FrameParser = struct {
         if (payload.len == 0) {
             // empty payload we still need to send a frame
             var dataHeader: FrameHeader = .{
-                .type = @intFromEnum(FrameType.HTTP_FRAME_DATA),
-                .flags = if (can_close) @intFromEnum(DataFrameFlags.END_STREAM) else 0,
+                .type = @backingInt(FrameType.HTTP_FRAME_DATA),
+                .flags = if (can_close) @backingInt(DataFrameFlags.END_STREAM) else 0,
                 .streamIdentifier = @intCast(stream_id),
                 .length = 0,
             };
@@ -3466,12 +3466,12 @@ pub const H2FrameParser = struct {
                     log("padding: {d} size: {d} max_size: {d} payload_size: {d}", .{ padding, size, max_size, payload_size });
                     stream.remoteUsedWindowSize += payload_size;
                     this.remoteUsedWindowSize += payload_size;
-                    var flags: u8 = if (end_stream) @intFromEnum(DataFrameFlags.END_STREAM) else 0;
+                    var flags: u8 = if (end_stream) @backingInt(DataFrameFlags.END_STREAM) else 0;
                     if (padding != 0) {
-                        flags |= @intFromEnum(DataFrameFlags.PADDED);
+                        flags |= @backingInt(DataFrameFlags.PADDED);
                     }
                     var dataHeader: FrameHeader = .{
-                        .type = @intFromEnum(FrameType.HTTP_FRAME_DATA),
+                        .type = @backingInt(FrameType.HTTP_FRAME_DATA),
                         .flags = flags,
                         .streamIdentifier = @intCast(stream_id),
                         .length = @truncate(payload_size),
@@ -3684,12 +3684,12 @@ pub const H2FrameParser = struct {
                         const identifier = stream.getIdentifier();
                         identifier.ensureStillAlive();
                         stream.freeResources(this, false);
-                        stream.rstCode = @intFromEnum(ErrorCode.FRAME_SIZE_ERROR);
+                        stream.rstCode = @backingInt(ErrorCode.FRAME_SIZE_ERROR);
                         this.dispatchWith2Extra(
                             .onFrameError,
                             identifier,
-                            jsc.JSValue.jsNumber(@intFromEnum(FrameType.HTTP_FRAME_HEADERS)),
-                            jsc.JSValue.jsNumber(@intFromEnum(ErrorCode.FRAME_SIZE_ERROR)),
+                            jsc.JSValue.jsNumber(@backingInt(FrameType.HTTP_FRAME_HEADERS)),
+                            jsc.JSValue.jsNumber(@backingInt(ErrorCode.FRAME_SIZE_ERROR)),
                         );
                         this.dispatchWithExtra(.onStreamError, identifier, jsc.JSValue.jsNumber(stream.rstCode));
                         return .js_undefined;
@@ -3724,12 +3724,12 @@ pub const H2FrameParser = struct {
                     const identifier = stream.getIdentifier();
                     identifier.ensureStillAlive();
                     stream.freeResources(this, false);
-                    stream.rstCode = @intFromEnum(ErrorCode.FRAME_SIZE_ERROR);
+                    stream.rstCode = @backingInt(ErrorCode.FRAME_SIZE_ERROR);
                     this.dispatchWith2Extra(
                         .onFrameError,
                         identifier,
-                        jsc.JSValue.jsNumber(@intFromEnum(FrameType.HTTP_FRAME_HEADERS)),
-                        jsc.JSValue.jsNumber(@intFromEnum(ErrorCode.FRAME_SIZE_ERROR)),
+                        jsc.JSValue.jsNumber(@backingInt(FrameType.HTTP_FRAME_HEADERS)),
+                        jsc.JSValue.jsNumber(@backingInt(ErrorCode.FRAME_SIZE_ERROR)),
                     );
                     this.dispatchWithExtra(.onStreamError, identifier, jsc.JSValue.jsNumber(stream.rstCode));
                     return .js_undefined;
@@ -3740,7 +3740,7 @@ pub const H2FrameParser = struct {
         const encoded_size = encoded_data.len;
 
         // RFC 7540 Section 8.1: Trailers are sent as a HEADERS frame with END_STREAM flag
-        const base_flags: u8 = @intFromEnum(HeadersFrameFlags.END_STREAM);
+        const base_flags: u8 = @backingInt(HeadersFrameFlags.END_STREAM);
         // RFC 7540 Section 4.2: SETTINGS_MAX_FRAME_SIZE determines max frame payload
         const actual_max_frame_size = (this.remoteSettings orelse this.localSettings).maxFrameSize;
 
@@ -3752,8 +3752,8 @@ pub const H2FrameParser = struct {
         if (encoded_size <= actual_max_frame_size) {
             // Single HEADERS frame - header block fits in one frame
             var frame: FrameHeader = .{
-                .type = @intFromEnum(FrameType.HTTP_FRAME_HEADERS),
-                .flags = base_flags | @intFromEnum(HeadersFrameFlags.END_HEADERS),
+                .type = @backingInt(FrameType.HTTP_FRAME_HEADERS),
+                .flags = base_flags | @backingInt(HeadersFrameFlags.END_HEADERS),
                 .streamIdentifier = stream.id,
                 .length = @intCast(encoded_size),
             };
@@ -3771,7 +3771,7 @@ pub const H2FrameParser = struct {
             const first_chunk_size = actual_max_frame_size;
 
             var headers_frame: FrameHeader = .{
-                .type = @intFromEnum(FrameType.HTTP_FRAME_HEADERS),
+                .type = @backingInt(FrameType.HTTP_FRAME_HEADERS),
                 .flags = base_flags, // END_STREAM but NOT END_HEADERS
                 .streamIdentifier = stream.id,
                 .length = @intCast(first_chunk_size),
@@ -3789,8 +3789,8 @@ pub const H2FrameParser = struct {
 
                 // RFC 7540 Section 6.10: END_HEADERS flag must be set on the last frame
                 var cont_frame: FrameHeader = .{
-                    .type = @intFromEnum(FrameType.HTTP_FRAME_CONTINUATION),
-                    .flags = if (is_last) @intFromEnum(HeadersFrameFlags.END_HEADERS) else 0,
+                    .type = @backingInt(FrameType.HTTP_FRAME_CONTINUATION),
+                    .flags = if (is_last) @backingInt(HeadersFrameFlags.END_HEADERS) else 0,
                     .streamIdentifier = stream.id,
                     .length = @intCast(chunk_size),
                 };
@@ -3808,7 +3808,7 @@ pub const H2FrameParser = struct {
         } else {
             stream.state = .HALF_CLOSED_LOCAL;
         }
-        this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@intFromEnum(stream.state)));
+        this.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@backingInt(stream.state)));
         return .js_undefined;
     }
 
@@ -4000,11 +4000,11 @@ pub const H2FrameParser = struct {
             if (stream.state != .CLOSED) {
                 const old_state = stream.state;
                 stream.state = .CLOSED;
-                stream.rstCode = @intFromEnum(ErrorCode.CANCEL);
+                stream.rstCode = @backingInt(ErrorCode.CANCEL);
                 const identifier = stream.getIdentifier();
                 identifier.ensureStillAlive();
                 stream.freeResources(this, false);
-                this.dispatchWith2Extra(.onAborted, identifier, .js_undefined, jsc.JSValue.jsNumber(@intFromEnum(old_state)));
+                this.dispatchWith2Extra(.onAborted, identifier, .js_undefined, jsc.JSValue.jsNumber(@backingInt(old_state)));
             }
         }
         return .js_undefined;
@@ -4184,7 +4184,7 @@ pub const H2FrameParser = struct {
                                 stream.setContext(stream_ctx_arg, globalObject);
                             }
                             stream.state = .CLOSED;
-                            stream.rstCode = @intFromEnum(ErrorCode.COMPRESSION_ERROR);
+                            stream.rstCode = @backingInt(ErrorCode.COMPRESSION_ERROR);
                             this.dispatchWithExtra(.onStreamError, stream.getIdentifier(), jsc.JSValue.jsNumber(stream.rstCode));
                             return .js_undefined;
                         };
@@ -4221,7 +4221,7 @@ pub const H2FrameParser = struct {
                         if (!stream_ctx_arg.isEmptyOrUndefinedOrNull() and stream_ctx_arg.isObject()) {
                             stream.setContext(stream_ctx_arg, globalObject);
                         }
-                        stream.rstCode = @intFromEnum(ErrorCode.COMPRESSION_ERROR);
+                        stream.rstCode = @backingInt(ErrorCode.COMPRESSION_ERROR);
                         this.dispatchWithExtra(.onStreamError, stream.getIdentifier(), jsc.JSValue.jsNumber(stream.rstCode));
                         return jsc.JSValue.jsNumber(stream_id);
                     };
@@ -4237,7 +4237,7 @@ pub const H2FrameParser = struct {
         if (!stream_ctx_arg.isEmptyOrUndefinedOrNull() and stream_ctx_arg.isObject()) {
             stream.setContext(stream_ctx_arg, globalObject);
         }
-        var flags: u8 = @intFromEnum(HeadersFrameFlags.END_HEADERS);
+        var flags: u8 = @backingInt(HeadersFrameFlags.END_HEADERS);
         var exclusive: bool = false;
         var has_priority: bool = false;
         var weight: i32 = 0;
@@ -4249,7 +4249,7 @@ pub const H2FrameParser = struct {
             const options = args_list.ptr[4];
             if (!options.isObject()) {
                 stream.state = .CLOSED;
-                stream.rstCode = @intFromEnum(ErrorCode.INTERNAL_ERROR);
+                stream.rstCode = @backingInt(ErrorCode.INTERNAL_ERROR);
                 this.dispatchWithExtra(.onStreamError, stream.getIdentifier(), jsc.JSValue.jsNumber(stream.rstCode));
                 return jsc.JSValue.jsNumber(stream_id);
             }
@@ -4285,7 +4285,7 @@ pub const H2FrameParser = struct {
                         end_stream = true;
                         // will end the stream after trailers
                         if (!waitForTrailers or this.isServer) {
-                            flags |= @intFromEnum(HeadersFrameFlags.END_STREAM);
+                            flags |= @backingInt(HeadersFrameFlags.END_STREAM);
                         }
                     }
                 } else {
@@ -4311,7 +4311,7 @@ pub const H2FrameParser = struct {
                     parent = parent_js.toInt32();
                     if (parent <= 0 or parent > MAX_STREAM_ID) {
                         stream.state = .CLOSED;
-                        stream.rstCode = @intFromEnum(ErrorCode.INTERNAL_ERROR);
+                        stream.rstCode = @backingInt(ErrorCode.INTERNAL_ERROR);
                         this.dispatchWithExtra(.onStreamError, stream.getIdentifier(), jsc.JSValue.jsNumber(stream.rstCode));
                         return jsc.JSValue.jsNumber(stream.id);
                     }
@@ -4327,7 +4327,7 @@ pub const H2FrameParser = struct {
                     weight = weight_js.toInt32();
                     if (weight < 1 or weight > std.math.maxInt(u8)) {
                         stream.state = .CLOSED;
-                        stream.rstCode = @intFromEnum(ErrorCode.INTERNAL_ERROR);
+                        stream.rstCode = @backingInt(ErrorCode.INTERNAL_ERROR);
                         this.dispatchWithExtra(.onStreamError, stream.getIdentifier(), jsc.JSValue.jsNumber(stream.rstCode));
                         return jsc.JSValue.jsNumber(stream_id);
                     }
@@ -4338,7 +4338,7 @@ pub const H2FrameParser = struct {
 
                 if (weight < 1 or weight > std.math.maxInt(u8)) {
                     stream.state = .CLOSED;
-                    stream.rstCode = @intFromEnum(ErrorCode.INTERNAL_ERROR);
+                    stream.rstCode = @backingInt(ErrorCode.INTERNAL_ERROR);
                     this.dispatchWithExtra(.onStreamError, stream.getIdentifier(), jsc.JSValue.jsNumber(stream.rstCode));
                     return jsc.JSValue.jsNumber(stream_id);
                 }
@@ -4363,19 +4363,19 @@ pub const H2FrameParser = struct {
         // too much memory being use
         if (this.getSessionMemoryUsage() > this.maxSessionMemory) {
             stream.state = .CLOSED;
-            stream.rstCode = @intFromEnum(ErrorCode.ENHANCE_YOUR_CALM);
+            stream.rstCode = @backingInt(ErrorCode.ENHANCE_YOUR_CALM);
             this.rejectedStreams += 1;
             this.dispatchWithExtra(.onStreamError, stream.getIdentifier(), jsc.JSValue.jsNumber(stream.rstCode));
             if (this.rejectedStreams >= this.maxRejectedStreams) {
                 const chunk = try this.handlers.binary_type.toJS("ENHANCE_YOUR_CALM", this.handlers.globalObject);
-                this.dispatchWith2Extra(.onError, jsc.JSValue.jsNumber(@intFromEnum(ErrorCode.ENHANCE_YOUR_CALM)), jsc.JSValue.jsNumber(this.lastStreamID), chunk);
+                this.dispatchWith2Extra(.onError, jsc.JSValue.jsNumber(@backingInt(ErrorCode.ENHANCE_YOUR_CALM)), jsc.JSValue.jsNumber(this.lastStreamID), chunk);
             }
             return jsc.JSValue.jsNumber(stream_id);
         }
         var length: usize = encoded_size;
         if (has_priority) {
             length += 5;
-            flags |= @intFromEnum(HeadersFrameFlags.PRIORITY);
+            flags |= @backingInt(HeadersFrameFlags.PRIORITY);
         }
 
         log("request encoded_size {}", .{encoded_size});
@@ -4383,13 +4383,13 @@ pub const H2FrameParser = struct {
         // Check if headers block exceeds maxSendHeaderBlockLength
         if (this.maxSendHeaderBlockLength != 0 and encoded_size > this.maxSendHeaderBlockLength) {
             stream.state = .CLOSED;
-            stream.rstCode = @intFromEnum(ErrorCode.REFUSED_STREAM);
+            stream.rstCode = @backingInt(ErrorCode.REFUSED_STREAM);
 
             this.dispatchWith2Extra(
                 .onFrameError,
                 stream.getIdentifier(),
-                jsc.JSValue.jsNumber(@intFromEnum(FrameType.HTTP_FRAME_HEADERS)),
-                jsc.JSValue.jsNumber(@intFromEnum(ErrorCode.FRAME_SIZE_ERROR)),
+                jsc.JSValue.jsNumber(@backingInt(FrameType.HTTP_FRAME_HEADERS)),
+                jsc.JSValue.jsNumber(@backingInt(ErrorCode.FRAME_SIZE_ERROR)),
             );
 
             this.dispatchWithExtra(.onStreamError, stream.getIdentifier(), jsc.JSValue.jsNumber(stream.rstCode));
@@ -4424,11 +4424,11 @@ pub const H2FrameParser = struct {
             log("padding: {d} size: {d} max_size: {d} payload_size: {d}", .{ padding, encoded_size, encoded_data.len, payload_size });
 
             if (padding != 0) {
-                flags |= @intFromEnum(HeadersFrameFlags.PADDED);
+                flags |= @backingInt(HeadersFrameFlags.PADDED);
             }
 
             var frame: FrameHeader = .{
-                .type = @intFromEnum(FrameType.HTTP_FRAME_HEADERS),
+                .type = @backingInt(FrameType.HTTP_FRAME_HEADERS),
                 .flags = flags,
                 .streamIdentifier = stream.id,
                 .length = @intCast(payload_size),
@@ -4474,11 +4474,11 @@ pub const H2FrameParser = struct {
             // RFC 7540 Section 6.2: First chunk goes in HEADERS frame (without END_HEADERS flag)
             // HEADERS frame can carry PRIORITY but CONTINUATION frames cannot.
             const first_chunk_size = actual_max_frame_size - priority_overhead;
-            const headers_flags = flags & ~@as(u8, @intFromEnum(HeadersFrameFlags.END_HEADERS));
+            const headers_flags = flags & ~@as(u8, @backingInt(HeadersFrameFlags.END_HEADERS));
 
             var headers_frame: FrameHeader = .{
-                .type = @intFromEnum(FrameType.HTTP_FRAME_HEADERS),
-                .flags = headers_flags | (if (has_priority) @intFromEnum(HeadersFrameFlags.PRIORITY) else 0),
+                .type = @backingInt(FrameType.HTTP_FRAME_HEADERS),
+                .flags = headers_flags | (if (has_priority) @backingInt(HeadersFrameFlags.PRIORITY) else 0),
                 .streamIdentifier = stream.id,
                 .length = @intCast(first_chunk_size + priority_overhead),
             };
@@ -4510,8 +4510,8 @@ pub const H2FrameParser = struct {
 
                 // RFC 7540 Section 6.10: END_HEADERS flag must be set on the last frame
                 var cont_frame: FrameHeader = .{
-                    .type = @intFromEnum(FrameType.HTTP_FRAME_CONTINUATION),
-                    .flags = if (is_last) @intFromEnum(HeadersFrameFlags.END_HEADERS) else 0,
+                    .type = @backingInt(FrameType.HTTP_FRAME_CONTINUATION),
+                    .flags = if (is_last) @backingInt(HeadersFrameFlags.END_HEADERS) else 0,
                     .streamIdentifier = stream.id,
                     .length = @intCast(chunk_size),
                 };

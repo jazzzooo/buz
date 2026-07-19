@@ -47,7 +47,7 @@ const DirWatcher = struct {
             const err = w.GetLastError();
             log("failed to start watching directory: {s}", .{@tagName(err)});
             return .{ .err = .{
-                .errno = @intFromEnum(bun.sys.SystemErrno.init(err) orelse bun.sys.SystemErrno.EINVAL),
+                .errno = @backingInt(bun.sys.SystemErrno.init(err) orelse bun.sys.SystemErrno.EINVAL),
                 .syscall = .watch,
             } };
         }
@@ -68,7 +68,7 @@ const EventIterator = struct {
         const name_ptr: [*]u16 = @ptrCast(@alignCast(this.watcher.buf[this.offset + info_size ..]));
         const filename: []u16 = name_ptr[0 .. info.FileNameLength / @sizeOf(u16)];
 
-        const action: Action = @enumFromInt(info.Action);
+        const action: Action = @fromBackingInt(@intCast(info.Action));
 
         if (info.NextEntryOffset == 0) {
             this.hasNext = false;
@@ -156,7 +156,7 @@ pub fn next(this: *WindowsWatcher, timeout: Timeout) bun.sys.Maybe(?EventIterato
     var key: w.ULONG_PTR = 0;
     var overlapped: ?*bun.windows.libuv.OVERLAPPED = null;
     while (true) {
-        const rc = w.GetQueuedCompletionStatus(this.iocp, &nbytes, &key, @ptrCast(&overlapped), @intFromEnum(timeout));
+        const rc = w.GetQueuedCompletionStatus(this.iocp, &nbytes, &key, @ptrCast(&overlapped), @backingInt(timeout));
         if (!rc.toBool()) {
             const err = w.GetLastError();
             if (err == .TIMEOUT or err == .WAIT_TIMEOUT) {
@@ -164,7 +164,7 @@ pub fn next(this: *WindowsWatcher, timeout: Timeout) bun.sys.Maybe(?EventIterato
             } else {
                 log("GetQueuedCompletionStatus failed: {s}", .{@tagName(err)});
                 return .{ .err = .{
-                    .errno = @intFromEnum(bun.sys.SystemErrno.init(err) orelse bun.sys.SystemErrno.EINVAL),
+                    .errno = @backingInt(bun.sys.SystemErrno.init(err) orelse bun.sys.SystemErrno.EINVAL),
                     .syscall = .watch,
                 } };
             }
@@ -180,7 +180,7 @@ pub fn next(this: *WindowsWatcher, timeout: Timeout) bun.sys.Maybe(?EventIterato
                 // TODO close handles?
                 log("shutdown notification in WindowsWatcher.next", .{});
                 return .{ .err = .{
-                    .errno = @intFromEnum(bun.sys.SystemErrno.ESHUTDOWN),
+                    .errno = @backingInt(bun.sys.SystemErrno.ESHUTDOWN),
                     .syscall = .watch,
                 } };
             }
@@ -188,7 +188,7 @@ pub fn next(this: *WindowsWatcher, timeout: Timeout) bun.sys.Maybe(?EventIterato
         } else {
             log("GetQueuedCompletionStatus returned no overlapped event", .{});
             return .{ .err = .{
-                .errno = @truncate(@intFromEnum(bun.sys.E.INVAL)),
+                .errno = @truncate(@backingInt(bun.sys.E.INVAL)),
                 .syscall = .watch,
             } };
         }

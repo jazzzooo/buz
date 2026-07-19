@@ -2,7 +2,7 @@
 //! Also contains the code used by `bun.String.encode` and `bun.String.encodeInto`
 
 export fn Bun__encoding__writeLatin1(input: [*]const u8, len: usize, to: [*]u8, to_len: usize, encoding: u8) usize {
-    return switch (@as(Encoding, @enumFromInt(encoding))) {
+    return switch (@as(Encoding, @fromBackingInt(@intCast(encoding)))) {
         .utf8 => writeU8(input, len, to, to_len, .utf8),
         .latin1 => writeU8(input, len, to, to_len, .latin1),
         .ascii => writeU8(input, len, to, to_len, .ascii),
@@ -16,7 +16,7 @@ export fn Bun__encoding__writeLatin1(input: [*]const u8, len: usize, to: [*]u8, 
 }
 
 export fn Bun__encoding__writeUTF16(input: [*]const u16, len: usize, to: [*]u8, to_len: usize, encoding: u8) usize {
-    return switch (@as(Encoding, @enumFromInt(encoding))) {
+    return switch (@as(Encoding, @fromBackingInt(@intCast(encoding)))) {
         .utf8 => writeU16(input, len, to, to_len, .utf8, false),
         .latin1 => writeU16(input, len, to, to_len, .ascii, false),
         .ascii => writeU16(input, len, to, to_len, .ascii, false),
@@ -40,7 +40,7 @@ export fn Bun__encoding__byteLengthUTF16AsUTF8(input: [*]const u16, len: usize) 
 }
 
 export fn Bun__encoding__constructFromLatin1(globalObject: *JSGlobalObject, input: [*]const u8, len: usize, encoding: u8) JSValue {
-    const slice = switch (@as(Encoding, @enumFromInt(encoding))) {
+    const slice = switch (@as(Encoding, @fromBackingInt(@intCast(encoding)))) {
         .hex => constructFromU8(input, len, bun.default_allocator, .hex),
         .ascii => constructFromU8(input, len, bun.default_allocator, .ascii),
         .base64url => constructFromU8(input, len, bun.default_allocator, .base64url),
@@ -54,7 +54,7 @@ export fn Bun__encoding__constructFromLatin1(globalObject: *JSGlobalObject, inpu
 }
 
 export fn Bun__encoding__constructFromUTF16(globalObject: *JSGlobalObject, input: [*]const u16, len: usize, encoding: u8) JSValue {
-    const slice = switch (@as(Encoding, @enumFromInt(encoding))) {
+    const slice = switch (@as(Encoding, @fromBackingInt(@intCast(encoding)))) {
         .base64 => constructFromU16(input, len, bun.default_allocator, .base64),
         .hex => constructFromU16(input, len, bun.default_allocator, .hex),
         .base64url => constructFromU16(input, len, bun.default_allocator, .base64url),
@@ -74,7 +74,7 @@ export fn Bun__encoding__toStringUTF8(input: [*]const u8, len: usize, globalObje
 }
 
 export fn Bun__encoding__toString(input: [*]const u8, len: usize, globalObject: *jsc.JSGlobalObject, encoding: u8) JSValue {
-    return toString(input[0..len], globalObject, @enumFromInt(encoding)) catch return .zero;
+    return toString(input[0..len], globalObject, @fromBackingInt(@intCast(encoding))) catch return .zero;
 }
 
 // pub fn writeUTF16AsUTF8(utf16: [*]const u16, len: usize, to: [*]u8, to_len: usize) callconv(.c) i32 {

@@ -110,7 +110,7 @@ const Precompute = struct {
         for (0..max_state_int + 1) |state_int| {
             for (info.field_names) |field1_name| {
                 for (info.field_names) |field2_name| {
-                    var state: BreakState = @enumFromInt(state_int);
+                    var state: BreakState = @fromBackingInt(@intCast(state_int));
 
                     const key: Key = .{
                         .gb1 = @field(GraphemeBreakNoControl, field1_name),

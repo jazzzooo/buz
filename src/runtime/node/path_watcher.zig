@@ -406,10 +406,10 @@ const Platform = switch (Environment.os) {
             pub fn deinit(_: *@This()) void {}
         };
         fn init(_: *PathWatcherManager) bun.sys.Maybe(void) {
-            return .{ .err = .{ .errno = @intFromEnum(bun.sys.E.NOTSUP), .syscall = .watch } };
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.NOTSUP), .syscall = .watch } };
         }
         fn addWatch(_: *PathWatcherManager, _: *PathWatcher) bun.sys.Maybe(void) {
-            return .{ .err = .{ .errno = @intFromEnum(bun.sys.E.NOTSUP), .syscall = .watch } };
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.NOTSUP), .syscall = .watch } };
         }
         fn removeWatch(_: *PathWatcherManager, _: *PathWatcher) void {}
     },
@@ -459,7 +459,7 @@ const Linux = struct {
         // a daemon — detach it instead of stashing a handle we'd never join.
         var thread = std.Thread.spawn(.{}, threadMain, .{manager}) catch {
             manager.platform.fd.close();
-            return .{ .err = .{ .errno = @intFromEnum(bun.sys.E.NOMEM), .syscall = .watch } };
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.NOMEM), .syscall = .watch } };
         };
         thread.detach();
         return .success;
@@ -573,7 +573,7 @@ const Linux = struct {
                 else => |errno| {
                     // Fatal: surface to every watcher, then exit the thread.
                     const err: bun.sys.Error = .{
-                        .errno = @truncate(@intFromEnum(errno)),
+                        .errno = @truncate(@backingInt(errno)),
                         .syscall = .read,
                     };
                     manager.mutex.lock();
@@ -713,7 +713,7 @@ const Darwin = struct {
             onFSEventFlush,
             @ptrCast(watcher),
         ) catch |e| return .{ .err = .{
-            .errno = @intFromEnum(switch (e) {
+            .errno = @backingInt(switch (e) {
                 error.FailedToCreateCoreFoudationSourceLoop => bun.sys.E.INVAL,
                 else => bun.sys.E.NOMEM,
             }),
@@ -806,7 +806,7 @@ const Kqueue = struct {
         // Daemon reader — the manager is process-global and never torn down.
         var thread = std.Thread.spawn(.{}, threadMain, .{manager}) catch {
             manager.platform.kq.close();
-            return .{ .err = .{ .errno = @intFromEnum(bun.sys.E.NOMEM), .syscall = .watch } };
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.NOMEM), .syscall = .watch } };
         };
         thread.detach();
         return .success;
@@ -866,7 +866,7 @@ const Kqueue = struct {
             const errno = bun.sys.getErrno(krc);
             fd.close();
             if (subpath.len > 0) return .success; // best-effort on children
-            return .{ .err = .{ .errno = @truncate(@intFromEnum(errno)), .syscall = .kevent } };
+            return .{ .err = .{ .errno = @truncate(@backingInt(errno)), .syscall = .kevent } };
         }
 
         bun.handleOom(plat.entries.put(bun.default_allocator, @intCast(fd.native()), .{

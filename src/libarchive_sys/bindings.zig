@@ -380,7 +380,7 @@ pub const Archive = opaque {
 
     extern fn archive_write_set_format(*struct_archive, format_code: i32) Result;
     pub fn writeSetFormat(archive: *Archive, format: Flags.Format) Result {
-        return archive_write_set_format(archive, @intFromEnum(format));
+        return archive_write_set_format(archive, @backingInt(format));
     }
 
     // deprecated
@@ -397,7 +397,7 @@ pub const Archive = opaque {
 
     extern fn archive_write_add_filter(*Archive, filter_code: i32) Result;
     pub fn writeAddFilter(archive: *Archive, filter: Flags.Filter) Result {
-        return archive_write_add_filter(archive, @intFromEnum(filter));
+        return archive_write_add_filter(archive, @backingInt(filter));
     }
     extern fn archive_write_add_filter_by_name(*Archive, name: [*c]const u8) Result;
     pub fn writeAddFilterByName(archive: *Archive, name: [:0]const u8) Result {

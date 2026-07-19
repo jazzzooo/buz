@@ -389,13 +389,13 @@ fn openArchive(this: *TarballStream) !void {
     if (lib.archive_read_set_format(@ptrCast(archive), 0x30000) != 0) return error.Fail;
     _ = archive.readSetOptions("read_concatenated_archives");
 
-    switch (@as(lib.Archive.Result, @enumFromInt(lib.archive_read_open(
+    switch (@as(lib.Archive.Result, @fromBackingInt(@intCast(lib.archive_read_open(
         @ptrCast(archive),
         this,
         null,
         archiveReadCallback,
         null,
-    )))) {
+    ))))) {
         .ok, .warn => {},
         .retry => {
             // open() runs the filter bidder which we bypassed, but the
@@ -488,7 +488,7 @@ fn archiveReadCallback(
     // in vendor/libarchive make every layer (filter_ahead → gzip → tar)
     // preserve its state and propagate ARCHIVE_RETRY to our `step()`
     // loop, which then returns so this worker can be reused.
-    return @intFromEnum(lib.Archive.Result.retry);
+    return @backingInt(lib.Archive.Result.retry);
 }
 
 /// Process one entry header returned by `readNextHeader`. Opens the
@@ -627,7 +627,7 @@ fn openOutputFile(
         return switch (bun.sys.openatWindows(dest_fd, path, flags, 0)) {
             .result => |fd| fd,
             .err => |e| switch (e.errno) {
-                @intFromEnum(bun.sys.E.PERM), @intFromEnum(bun.sys.E.NOENT) => brk: {
+                @backingInt(bun.sys.E.PERM), @backingInt(bun.sys.E.NOENT) => brk: {
                     dest_fd.makePath(io, u16, bun.Dirname.dirname(u16, path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
                     break :brk try bun.sys.openatWindows(dest_fd, path, flags, 0).unwrap();
                 },

@@ -6,7 +6,7 @@ pub const VM = opaque {
 
     extern fn JSC__VM__create(heap_type: u8) *VM;
     pub fn create(heap_type: HeapType) *VM {
-        return JSC__VM__create(@intFromEnum(heap_type));
+        return JSC__VM__create(@backingInt(heap_type));
     }
 
     extern fn JSC__VM__deinit(vm: *VM, global_object: *JSGlobalObject) void;

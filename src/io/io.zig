@@ -410,7 +410,7 @@ const Pollable = struct {
 
     pub fn init(t: Tag, p: *Poll) Pollable {
         return Pollable{
-            .value = bun.TaggedPointer.init(p, @intFromEnum(t)),
+            .value = bun.TaggedPointer.init(p, @backingInt(t)),
         };
     }
 
@@ -424,7 +424,7 @@ const Pollable = struct {
 
     pub fn tag(this: Pollable) Tag {
         if (this.value.data == 0) return .empty;
-        return @enumFromInt(this.value.data);
+        return @fromBackingInt(@intCast(this.value.data));
     }
 
     pub fn get(this: Pollable, comptime t: Tag) *Tag.Type(t) {
@@ -627,7 +627,7 @@ pub const Poll = struct {
                 var this: *Pollable.Tag.Type(t) = @alignCast(@fieldParentPtr("io_poll", poll));
                 if (event.flags == std.c.EV.ERROR) {
                     log("error({d}) = {d}", .{ event.ident, event.data });
-                    this.onIOError(bun.sys.Error.fromCode(@enumFromInt(event.data), .kevent));
+                    this.onIOError(bun.sys.Error.fromCode(@fromBackingInt(@intCast(event.data)), .kevent));
                 } else {
                     log("ready({d}) = {d}", .{ event.ident, event.data });
                     this.onReady();

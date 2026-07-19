@@ -113,7 +113,7 @@ pub fn watcherReleaseAndSubmitEvent(self: *Self, ev: *HotReloadEvent) void {
     // There are files to be processed.
 
     const ev_index: u2 = @intCast(ev - &self.events[0]);
-    const old_next = self.next_event.swap(@enumFromInt(ev_index), .acq_rel);
+    const old_next = self.next_event.swap(@fromBackingInt(@intCast(ev_index)), .acq_rel);
     switch (old_next) {
         .done => {
             // Dev server is done running events. We need to schedule the event directly.
@@ -147,7 +147,7 @@ pub fn watcherReleaseAndSubmitEvent(self: *Self, ev: *HotReloadEvent) void {
 
         else => {
             // This is an index into the `events` array.
-            const old_index: u2 = @intCast(@intFromEnum(old_next));
+            const old_index: u2 = @intCast(@backingInt(old_next));
             bun.assertf(
                 self.pending_event == old_index,
                 "watcherReleaseAndSubmitEvent: expected `pending_event` to be {d}; got {?d}",
@@ -190,7 +190,7 @@ pub fn recycleEventFromDevServer(self: *Self, old_event: *HotReloadEvent) ?*HotR
                 return null; // done running events
             },
             .done => unreachable,
-            else => break &self.events[@intFromEnum(next)],
+            else => break &self.events[@backingInt(next)],
         }
     };
 

@@ -93,11 +93,11 @@ const advanced = struct {
             return IPCDecodeError.NotEnoughBytes;
         }
 
-        const message_type: IPCMessageType = @enumFromInt(data[0]);
+        const message_type: IPCMessageType = @fromBackingInt(@intCast(data[0]));
         const message_len = std.mem.readInt(u32, data[1 .. @sizeOf(u32) + 1], .little);
 
         log("Received IPC message type {d} ({s}) len {d}", .{
-            @intFromEnum(message_type),
+            @backingInt(message_type),
             std.enums.tagName(IPCMessageType, message_type) orelse "unknown",
             message_len,
         });
@@ -885,7 +885,7 @@ pub const SendQueue = struct {
 
                 pipe.ref(); // ref on write
                 if (this.windows.windows_write.?.write_req.write(pipe.asStream(), &this.windows.windows_write.?.write_buffer, write_req, &_windowsOnWriteComplete).asErr()) |err| {
-                    _windowsOnWriteComplete(write_req, @enumFromInt(-@as(c_int, err.errno)));
+                    _windowsOnWriteComplete(write_req, @fromBackingInt(@intCast(-@as(c_int, err.errno))));
                 }
                 // write request is queued. it will call _onWriteComplete when it completes.
             },

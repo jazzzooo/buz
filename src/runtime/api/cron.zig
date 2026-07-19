@@ -127,7 +127,7 @@ pub const CronRegisterJob = struct {
                 }
             },
             .signaled => |sig| if (this.state != .booting_out) {
-                this.setErr("Process killed by signal {d}", .{@intFromEnum(sig)});
+                this.setErr("Process killed by signal {d}", .{@backingInt(sig)});
                 this.finish();
                 return;
             },
@@ -611,7 +611,7 @@ pub const CronRemoveJob = struct {
                 }
             },
             .signaled => |sig| if (this.state != .booting_out) {
-                this.setErr("Process killed by signal {d}", .{@intFromEnum(sig)});
+                this.setErr("Process killed by signal {d}", .{@backingInt(sig)});
                 this.finish();
                 return;
             },

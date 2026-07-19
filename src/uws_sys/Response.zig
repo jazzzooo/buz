@@ -675,27 +675,27 @@ pub const State = enum(u8) {
     _,
 
     pub inline fn isResponsePending(this: State) bool {
-        return @intFromEnum(this) & @intFromEnum(State.HTTP_RESPONSE_PENDING) != 0;
+        return @backingInt(this) & @backingInt(State.HTTP_RESPONSE_PENDING) != 0;
     }
 
     pub inline fn hasWrittenContentLengthHeader(this: State) bool {
-        return @intFromEnum(this) & @intFromEnum(State.HTTP_WROTE_CONTENT_LENGTH_HEADER) != 0;
+        return @backingInt(this) & @backingInt(State.HTTP_WROTE_CONTENT_LENGTH_HEADER) != 0;
     }
 
     pub inline fn isHttpEndCalled(this: State) bool {
-        return @intFromEnum(this) & @intFromEnum(State.HTTP_END_CALLED) != 0;
+        return @backingInt(this) & @backingInt(State.HTTP_END_CALLED) != 0;
     }
 
     pub inline fn isHttpWriteCalled(this: State) bool {
-        return @intFromEnum(this) & @intFromEnum(State.HTTP_WRITE_CALLED) != 0;
+        return @backingInt(this) & @backingInt(State.HTTP_WRITE_CALLED) != 0;
     }
 
     pub inline fn isHttpStatusCalled(this: State) bool {
-        return @intFromEnum(this) & @intFromEnum(State.HTTP_STATUS_CALLED) != 0;
+        return @backingInt(this) & @backingInt(State.HTTP_STATUS_CALLED) != 0;
     }
 
     pub inline fn isHttpConnectionClose(this: State) bool {
-        return @intFromEnum(this) & @intFromEnum(State.HTTP_CONNECTION_CLOSE) != 0;
+        return @backingInt(this) & @backingInt(State.HTTP_CONNECTION_CLOSE) != 0;
     }
 };
 

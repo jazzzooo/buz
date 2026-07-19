@@ -120,7 +120,7 @@ pub const SupportsCondition = union(enum) {
             struct {
                 pub fn hash(self: @This(), s: SeenDeclKey) u32 {
                     _ = self; // autofix
-                    return std.array_hash_map.hashString(s[1]) +% @intFromEnum(s[0]);
+                    return std.array_hash_map.hashString(s[1]) +% @backingInt(s[0]);
                 }
                 pub fn eql(self: @This(), a: SeenDeclKey, b: SeenDeclKey, b_index: usize) bool {
                     _ = self; // autofix
@@ -129,7 +129,7 @@ pub const SupportsCondition = union(enum) {
                 }
 
                 pub inline fn seenDeclKeyEql(this: SeenDeclKey, that: SeenDeclKey) bool {
-                    return @intFromEnum(this[0]) == @intFromEnum(that[0]) and bun.strings.eql(this[1], that[1]);
+                    return @backingInt(this[0]) == @backingInt(that[0]) and bun.strings.eql(this[1], that[1]);
                 }
             },
             false,

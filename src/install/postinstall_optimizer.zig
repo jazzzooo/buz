@@ -53,7 +53,7 @@ pub const PostinstallOptimizer = enum {
         target_os: Npm.OperatingSystem,
     ) ?PackageID {
         // Windows needs file extensions.
-        if (target_os.isMatch(@enumFromInt(Npm.OperatingSystem.win32))) {
+        if (target_os.isMatch(@fromBackingInt(@intCast(Npm.OperatingSystem.win32)))) {
             return null;
         }
 

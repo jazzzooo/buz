@@ -543,7 +543,7 @@ pub fn GraphemeBreakTable(comptime GB: type, comptime State: type) type {
         data: [n]Result,
 
         inline fn index(gb1: GB, gb2: GB, state: State) usize {
-            return @intFromEnum(state) * n_gb_2 + @intFromEnum(gb1) * n_gb + @intFromEnum(gb2);
+            return @backingInt(state) * n_gb_2 + @backingInt(gb1) * n_gb + @backingInt(gb2);
         }
 
         pub fn set(self: *@This(), gb1: GB, gb2: GB, state: State, result: Result) void {
@@ -570,9 +570,9 @@ pub fn buildGraphemeBreakTable(
     for (state_values) |state_value| {
         for (gb_values) |gb1_value| {
             for (gb_values) |gb2_value| {
-                const original_state: State = @enumFromInt(state_value);
-                const gb1: GB = @enumFromInt(gb1_value);
-                const gb2: GB = @enumFromInt(gb2_value);
+                const original_state: State = @fromBackingInt(@intCast(state_value));
+                const gb1: GB = @fromBackingInt(@intCast(gb1_value));
+                const gb2: GB = @fromBackingInt(@intCast(gb2_value));
                 var state = original_state;
                 const result = compute(gb1, gb2, &state);
                 table.set(gb1, gb2, original_state, .{

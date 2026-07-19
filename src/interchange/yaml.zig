@@ -78,32 +78,32 @@ pub const Indent = enum(usize) {
     _,
 
     pub fn from(indent: usize) Indent {
-        return @enumFromInt(indent);
+        return @fromBackingInt(@intCast(indent));
     }
 
     pub fn cast(indent: Indent) usize {
-        return @intFromEnum(indent);
+        return @backingInt(indent);
     }
 
     pub fn inc(indent: *Indent, n: usize) void {
-        indent.* = @enumFromInt(@intFromEnum(indent.*) + n);
+        indent.* = @fromBackingInt(@intCast(@backingInt(indent.*) + n));
     }
 
     pub fn add(indent: Indent, n: usize) Indent {
-        return @enumFromInt(@intFromEnum(indent) + n);
+        return @fromBackingInt(@intCast(@backingInt(indent) + n));
     }
 
     pub fn isLessThan(indent: Indent, other: Indent) bool {
-        return @intFromEnum(indent) < @intFromEnum(other);
+        return @backingInt(indent) < @backingInt(other);
     }
 
     pub fn isLessThanOrEqual(indent: Indent, other: Indent) bool {
-        return @intFromEnum(indent) <= @intFromEnum(other);
+        return @backingInt(indent) <= @backingInt(other);
     }
 
     pub fn cmp(l: Indent, r: Indent) std.math.Order {
-        if (@intFromEnum(l) > @intFromEnum(r)) return .gt;
-        if (@intFromEnum(l) < @intFromEnum(r)) return .lt;
+        if (@backingInt(l) > @backingInt(r)) return .gt;
+        if (@backingInt(l) < @backingInt(r)) return .lt;
         return .eq;
     }
 
@@ -124,7 +124,7 @@ pub const Indent = enum(usize) {
         pub const default: Indicator = .auto;
 
         pub fn get(indicator: Indicator) u8 {
-            return @intFromEnum(indicator);
+            return @backingInt(indicator);
         }
     };
 
@@ -155,23 +155,23 @@ pub const Pos = enum(usize) {
     _,
 
     pub fn from(pos: usize) Pos {
-        return @enumFromInt(pos);
+        return @fromBackingInt(@intCast(pos));
     }
 
     pub fn cast(pos: Pos) usize {
-        return @intFromEnum(pos);
+        return @backingInt(pos);
     }
 
     pub fn loc(pos: Pos) logger.Loc {
-        return .{ .start = @intCast(@intFromEnum(pos)) };
+        return .{ .start = @intCast(@backingInt(pos)) };
     }
 
     pub fn add(pos: Pos, n: usize) Pos {
-        return @enumFromInt(@intFromEnum(pos) + n);
+        return @fromBackingInt(@intCast(@backingInt(pos) + n));
     }
 
     pub fn sub(pos: Pos, n: usize) Pos {
-        return @enumFromInt(@intFromEnum(pos) - n);
+        return @fromBackingInt(@intCast(@backingInt(pos) - n));
     }
 
     pub fn isLessThan(pos: Pos, other: usize) bool {
@@ -183,11 +183,11 @@ pub const Line = enum(usize) {
     _,
 
     pub fn from(line: usize) Line {
-        return @enumFromInt(line);
+        return @fromBackingInt(@intCast(line));
     }
 
     pub fn inc(line: *Line, n: usize) void {
-        line.* = @enumFromInt(@intFromEnum(line.*) + n);
+        line.* = @fromBackingInt(@intCast(@backingInt(line.*) + n));
     }
 };
 
@@ -2725,7 +2725,7 @@ pub fn Parser(comptime enc: Encoding) type {
                         return error.UnexpectedCharacter;
                     }
 
-                    indent_indicator = @enumFromInt(digit - '0');
+                    indent_indicator = @fromBackingInt(@intCast(digit - '0'));
                     self.inc(1);
                     continue :next self.next();
                 },
@@ -3358,7 +3358,7 @@ pub fn Parser(comptime enc: Encoding) type {
             U = 8,
 
             pub fn characters(comptime escape: @This()) u8 {
-                return @intFromEnum(escape);
+                return @backingInt(escape);
             }
 
             pub fn cp(comptime escape: @This()) type {
@@ -3379,7 +3379,7 @@ pub fn Parser(comptime enc: Encoding) type {
             text: *std.array_list.Managed(enc.unit()),
         ) DecodeHexCodePointError!void {
             var value: escape.cp() = 0;
-            for (0..@intFromEnum(escape)) |_| {
+            for (0..@backingInt(escape)) |_| {
                 self.inc(1);
                 const digit = self.next();
                 const num: u8 = switch (digit) {

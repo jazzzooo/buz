@@ -298,7 +298,7 @@ pub const LengthValue = union(enum) {
 
     pub fn isZero(this: *const LengthValue) bool {
         inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
-            if (@intFromEnum(this.*) == field_value) {
+            if (@backingInt(this.*) == field_value) {
                 return @field(this, field_name) == 0.0;
             }
         }
@@ -330,7 +330,7 @@ pub const LengthValue = union(enum) {
 
     pub inline fn eql(this: *const @This(), other: *const @This()) bool {
         inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
-            if (field_value == @intFromEnum(this.*) and field_value == @intFromEnum(other.*)) {
+            if (field_value == @backingInt(this.*) and field_value == @backingInt(other.*)) {
                 return @field(this, field_name) == @field(other, field_name);
             }
         }
@@ -353,7 +353,7 @@ pub const LengthValue = union(enum) {
 
     pub fn sign(this: *const @This()) f32 {
         inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
-            if (field_value == @intFromEnum(this.*)) {
+            if (field_value == @backingInt(this.*)) {
                 return css.signfns.signF32(@field(this, field_name));
             }
         }
@@ -376,7 +376,7 @@ pub const LengthValue = union(enum) {
 
     pub fn toUnitValue(this: *const @This()) struct { CSSNumber, []const u8 } {
         inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
-            if (field_value == @intFromEnum(this.*)) {
+            if (field_value == @backingInt(this.*)) {
                 return .{ @field(this, field_name), field_name };
             }
         }
@@ -385,7 +385,7 @@ pub const LengthValue = union(enum) {
 
     pub fn map(this: *const @This(), comptime map_fn: *const fn (f32) f32) LengthValue {
         inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
-            if (field_value == @intFromEnum(this.*)) {
+            if (field_value == @backingInt(this.*)) {
                 return @unionInit(LengthValue, field_name, map_fn(@field(this, field_name)));
             }
         }
@@ -394,7 +394,7 @@ pub const LengthValue = union(enum) {
 
     pub fn mulF32(this: @This(), _: Allocator, other: f32) LengthValue {
         inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
-            if (field_value == @intFromEnum(this)) {
+            if (field_value == @backingInt(this)) {
                 return @unionInit(LengthValue, field_name, @field(this, field_name) * other);
             }
         }
@@ -406,9 +406,9 @@ pub const LengthValue = union(enum) {
     }
 
     pub fn partialCmp(this: *const LengthValue, other: *const LengthValue) ?std.math.Order {
-        if (@intFromEnum(this.*) == @intFromEnum(other.*)) {
+        if (@backingInt(this.*) == @backingInt(other.*)) {
             inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
-                if (field_value == @intFromEnum(this.*)) {
+                if (field_value == @backingInt(this.*)) {
                     const a = @field(this, field_name);
                     const b = @field(other, field_name);
                     return css.generic.partialCmpF32(&a, &b);
@@ -431,9 +431,9 @@ pub const LengthValue = union(enum) {
         ctx: anytype,
         comptime op_fn: *const fn (@TypeOf(ctx), a: f32, b: f32) f32,
     ) ?LengthValue {
-        if (@intFromEnum(this.*) == @intFromEnum(other.*)) {
+        if (@backingInt(this.*) == @backingInt(other.*)) {
             inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
-                if (field_value == @intFromEnum(this.*)) {
+                if (field_value == @backingInt(this.*)) {
                     const a = @field(this, field_name);
                     const b = @field(other, field_name);
                     return @unionInit(LengthValue, field_name, op_fn(ctx, a, b));
@@ -457,9 +457,9 @@ pub const LengthValue = union(enum) {
         ctx: anytype,
         comptime op_fn: *const fn (@TypeOf(ctx), a: f32, b: f32) R,
     ) ?R {
-        if (@intFromEnum(this.*) == @intFromEnum(other.*)) {
+        if (@backingInt(this.*) == @backingInt(other.*)) {
             inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
-                if (field_value == @intFromEnum(this.*)) {
+                if (field_value == @backingInt(this.*)) {
                     const a = @field(this, field_name);
                     const b = @field(other, field_name);
                     return op_fn(ctx, a, b);
@@ -481,9 +481,9 @@ pub const LengthValue = union(enum) {
     }
 
     pub fn tryAdd(this: *const LengthValue, _: std.mem.Allocator, rhs: *const LengthValue) ?LengthValue {
-        if (@intFromEnum(this.*) == @intFromEnum(rhs.*)) {
+        if (@backingInt(this.*) == @backingInt(rhs.*)) {
             inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
-                if (field_value == @intFromEnum(this.*)) {
+                if (field_value == @backingInt(this.*)) {
                     return @unionInit(LengthValue, field_name, @field(this, field_name) + @field(rhs, field_name));
                 }
             }
@@ -499,7 +499,7 @@ pub const LengthValue = union(enum) {
 
     pub fn isCompatible(this: *const @This(), browsers: css.targets.Browsers) bool {
         inline for (tag_info.field_names, tag_info.field_values) |field_name, field_value| {
-            if (field_value == @intFromEnum(this.*)) {
+            if (field_value == @backingInt(this.*)) {
                 if (comptime @TypeOf(@field(FeatureMap, field_name)) == css.compat.Feature) {
                     const feature = @field(FeatureMap, field_name);
                     return css.compat.Feature.isCompatible(feature, browsers);

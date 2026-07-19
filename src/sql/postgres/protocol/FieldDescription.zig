@@ -10,7 +10,7 @@ column_index: short = 0,
 type_oid: int4 = 0,
 binary: bool = false,
 pub fn typeTag(this: @This()) types.Tag {
-    return @enumFromInt(@as(short, @truncate(this.type_oid)));
+    return @fromBackingInt(@intCast(@as(short, @truncate(this.type_oid))));
 }
 
 pub fn deinit(this: *@This()) void {

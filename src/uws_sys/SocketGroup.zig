@@ -105,7 +105,7 @@ pub const SocketGroup = extern struct {
         socket_ext_size: c_int,
         err: *c_int,
     ) ?*uws.ListenSocket {
-        return c.us_socket_group_listen(self, @intFromEnum(kind), ssl_ctx, host, port, options, socket_ext_size, err);
+        return c.us_socket_group_listen(self, @backingInt(kind), ssl_ctx, host, port, options, socket_ext_size, err);
     }
 
     pub fn listenUnix(
@@ -118,7 +118,7 @@ pub const SocketGroup = extern struct {
         socket_ext_size: c_int,
         err: *c_int,
     ) ?*uws.ListenSocket {
-        return c.us_socket_group_listen_unix(self, @intFromEnum(kind), ssl_ctx, path, pathlen, options, socket_ext_size, err);
+        return c.us_socket_group_listen_unix(self, @backingInt(kind), ssl_ctx, path, pathlen, options, socket_ext_size, err);
     }
 
     pub const ConnectResult = union(enum) {
@@ -141,7 +141,7 @@ pub const SocketGroup = extern struct {
         // `us_connecting_socket_t*` placeholder. Named to match the C side so
         // the branches read the right way round — see PR review #3161005603.
         var has_dns_resolved: c_int = 0;
-        const ptr = c.us_socket_group_connect(self, @intFromEnum(kind), ssl_ctx, host, port, options, socket_ext_size, &has_dns_resolved) orelse return .failed;
+        const ptr = c.us_socket_group_connect(self, @backingInt(kind), ssl_ctx, host, port, options, socket_ext_size, &has_dns_resolved) orelse return .failed;
         return if (has_dns_resolved != 0)
             .{ .socket = @ptrCast(@alignCast(ptr)) }
         else
@@ -157,7 +157,7 @@ pub const SocketGroup = extern struct {
         options: c_int,
         socket_ext_size: c_int,
     ) ?*us_socket_t {
-        return c.us_socket_group_connect_unix(self, @intFromEnum(kind), ssl_ctx, path, pathlen, options, socket_ext_size);
+        return c.us_socket_group_connect_unix(self, @backingInt(kind), ssl_ctx, path, pathlen, options, socket_ext_size);
     }
 
     pub fn fromFd(
@@ -168,11 +168,11 @@ pub const SocketGroup = extern struct {
         fd: uws.LIBUS_SOCKET_DESCRIPTOR,
         ipc: bool,
     ) ?*us_socket_t {
-        return c.us_socket_from_fd(self, @intFromEnum(kind), ssl_ctx, socket_ext_size, fd, @intFromBool(ipc));
+        return c.us_socket_from_fd(self, @backingInt(kind), ssl_ctx, socket_ext_size, fd, @intFromBool(ipc));
     }
 
     pub fn pair(self: *SocketGroup, kind: SocketKind, ext_size: c_int, fds: *[2]uws.LIBUS_SOCKET_DESCRIPTOR) ?*us_socket_t {
-        return c.us_socket_pair(self, @intFromEnum(kind), ext_size, fds);
+        return c.us_socket_pair(self, @backingInt(kind), ext_size, fds);
     }
 
     pub fn nextInLoop(self: *SocketGroup) ?*SocketGroup {

@@ -183,7 +183,7 @@ pub fn ResolutionType(comptime SemverIntType: type) type {
             rhs_buf: []const u8,
         ) std.math.Order {
             if (lhs.tag != rhs.tag) {
-                return std.math.order(@intFromEnum(lhs.tag), @intFromEnum(rhs.tag));
+                return std.math.order(@backingInt(lhs.tag), @backingInt(rhs.tag));
             }
 
             return switch (lhs.tag) {

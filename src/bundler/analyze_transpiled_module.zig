@@ -163,7 +163,7 @@ pub const StringContext = struct {
         return @as(u32, @truncate(std.hash.Wyhash.hash(0, s)));
     }
     pub fn eql(self: @This(), fetch_key: []const u8, item_key: StringMapKey, item_i: usize) bool {
-        return bun.strings.eqlLong(fetch_key, self.strings_buf[@intFromEnum(item_key)..][0..self.strings_lens[item_i]], true);
+        return bun.strings.eqlLong(fetch_key, self.strings_buf[@backingInt(item_key)..][0..self.strings_lens[item_i]], true);
     }
 };
 
@@ -195,7 +195,7 @@ pub const ModuleInfo = struct {
         json = std.math.maxInt(u32) - 3,
         _, // host_defined: cast to StringID
         pub fn hostDefined(value: StringID) FetchParameters {
-            return @enumFromInt(@intFromEnum(value));
+            return @fromBackingInt(@intCast(@backingInt(value)));
         }
     };
 
@@ -231,7 +231,7 @@ pub const ModuleInfo = struct {
     }
     pub fn addExportInfoLocal(self: *ModuleInfo, export_name: StringID, local_name: StringID) !void {
         if (try self._hasOrAddExportedName(export_name)) return; // a syntax error will be emitted later in this case
-        try self._addRecord(.export_info_local, &.{ export_name, local_name, @enumFromInt(std.math.maxInt(u32)) });
+        try self._addRecord(.export_info_local, &.{ export_name, local_name, @fromBackingInt(@intCast(std.math.maxInt(u32))) });
     }
     pub fn addExportInfoNamespace(self: *ModuleInfo, export_name: StringID, module_name: StringID) !void {
         if (try self._hasOrAddExportedName(export_name)) return; // a syntax error will be emitted later in this case
@@ -286,13 +286,13 @@ pub const ModuleInfo = struct {
             .strings_buf = self.strings_buf.items,
             .strings_lens = self.strings_lens.items,
         });
-        if (gpres.found_existing) return @enumFromInt(@as(u32, @intCast(gpres.index)));
+        if (gpres.found_existing) return @fromBackingInt(@intCast(@as(u32, @intCast(gpres.index))));
 
-        gpres.key_ptr.* = @enumFromInt(@as(u32, @truncate(self.strings_buf.items.len)));
+        gpres.key_ptr.* = @fromBackingInt(@intCast(@as(u32, @truncate(self.strings_buf.items.len))));
         gpres.value_ptr.* = {};
         self.strings_buf.appendSliceAssumeCapacity(value);
         self.strings_lens.appendAssumeCapacity(@as(u32, @truncate(value.len)));
-        return @enumFromInt(@as(u32, @intCast(gpres.index)));
+        return @fromBackingInt(@intCast(@as(u32, @intCast(gpres.index))));
     }
     pub fn requestModule(self: *ModuleInfo, import_record_path: StringID, fetch_parameters: FetchParameters) !void {
         // jsc only records the attributes of the first import with the given import_record_path. so only put if not exists.

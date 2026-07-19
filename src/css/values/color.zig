@@ -582,7 +582,7 @@ pub const CssColor = union(enum) {
     }
 
     pub fn eql(this: *const This, other: *const This) bool {
-        if (@intFromEnum(this.*) != @intFromEnum(other.*)) return false;
+        if (@backingInt(this.*) != @backingInt(other.*)) return false;
 
         return switch (this.*) {
             .current_color => true,

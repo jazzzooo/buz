@@ -935,7 +935,7 @@ pub const Putter = struct {
             array,
             this.list.ptr,
             @truncate(this.fields.len),
-            @intFromEnum(result_mode),
+            @backingInt(result_mode),
             layout,
         );
     }
@@ -958,7 +958,7 @@ pub const Putter = struct {
         if (is_raw) {
             cell.* = SQLDataCell.raw(optional_bytes);
         } else {
-            const tag = if (std.math.maxInt(short) < oid) .text else @as(types.Tag, @enumFromInt(@as(short, @intCast(oid))));
+            const tag = if (std.math.maxInt(short) < oid) .text else @as(types.Tag, @fromBackingInt(@intCast(@as(short, @intCast(oid)))));
             cell.* = if (optional_bytes) |data|
                 try fromBytes((field.binary or this.binary) and tag.isBinaryFormatSupported(), this.bigint, tag, data.slice(), this.globalObject)
             else

@@ -57,7 +57,7 @@ export fn zig__ModuleInfoDeserialized__toJSModuleRecord(
             .javascript => module_record.addRequestedModuleJavaScript(identifiers, reqk),
             .webassembly => module_record.addRequestedModuleWebAssembly(identifiers, reqk),
             .json => module_record.addRequestedModuleJSON(identifiers, reqk),
-            else => |uv| module_record.addRequestedModuleHostDefined(identifiers, reqk, @enumFromInt(@intFromEnum(uv))),
+            else => |uv| module_record.addRequestedModuleHostDefined(identifiers, reqk, @fromBackingInt(@intCast(@backingInt(uv)))),
         }
     }
 

@@ -72,8 +72,8 @@ pub const RuntimeTranspilerCache = struct {
 
         pub fn encode(this: *const Metadata, writer: anytype) !void {
             try writer.writeInt(u32, this.cache_version, .little);
-            try writer.writeInt(u8, @intFromEnum(this.module_type), .little);
-            try writer.writeInt(u8, @intFromEnum(this.output_encoding), .little);
+            try writer.writeInt(u8, @backingInt(this.module_type), .little);
+            try writer.writeInt(u8, @backingInt(this.output_encoding), .little);
 
             try writer.writeInt(u64, this.features_hash, .little);
 
@@ -99,8 +99,8 @@ pub const RuntimeTranspilerCache = struct {
                 return error.StaleCache;
             }
 
-            this.module_type = @enumFromInt(try reader.takeInt(u8, .little));
-            this.output_encoding = @enumFromInt(try reader.takeInt(u8, .little));
+            this.module_type = @fromBackingInt(@intCast(try reader.takeInt(u8, .little)));
+            this.output_encoding = @fromBackingInt(@intCast(try reader.takeInt(u8, .little)));
 
             this.features_hash = try reader.takeInt(u64, .little);
 

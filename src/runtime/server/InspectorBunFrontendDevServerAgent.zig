@@ -100,7 +100,7 @@ pub const BunFrontendDevServerAgent = struct {
 
     pub fn notifyConsoleLog(this: BunFrontendDevServerAgent, devServerId: DebuggerId, kind: bun.bake.DevServer.ConsoleLogKind, data: *bun.String) void {
         if (this.handle) |handle| {
-            handle.notifyConsoleLog(devServerId.get(), @intFromEnum(kind), data);
+            handle.notifyConsoleLog(devServerId.get(), @backingInt(kind), data);
         }
     }
 

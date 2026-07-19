@@ -227,7 +227,7 @@ pub const CharacterSet = enum(u8) {
     pub const default = CharacterSet.utf8mb4_general_ci;
 
     pub fn label(this: CharacterSet) []const u8 {
-        if (@intFromEnum(this) < 100 and @intFromEnum(this) > 0) {
+        if (@backingInt(this) < 100 and @backingInt(this) > 0) {
             return @tagName(this);
         }
 

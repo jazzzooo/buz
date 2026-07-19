@@ -83,7 +83,7 @@ pub fn trace(comptime name: [:0]const u8) Ctx {
     }
 
     if (comptime bun.Environment.isMac) {
-        return .{ .enabled = Darwin.init(@intFromEnum(@field(PerfEvent, name))) };
+        return .{ .enabled = Darwin.init(@backingInt(@field(PerfEvent, name))) };
     } else if (comptime bun.Environment.isLinux) {
         return .{ .enabled = Linux.init(@field(PerfEvent, name)) };
     }

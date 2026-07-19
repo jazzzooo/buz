@@ -20,7 +20,7 @@ pub const JSCell = opaque {
 
     pub fn getType(this: *const JSCell) u8 {
         jsc.markMemberBinding(JSCell, @src());
-        return @enumFromInt(JSC__JSCell__getType(this));
+        return @fromBackingInt(@intCast(JSC__JSCell__getType(this)));
     }
 
     pub fn toJS(this: *JSCell) jsc.JSValue {
@@ -48,7 +48,7 @@ pub const JSCell = opaque {
     extern fn JSC__JSCell__getObject(this: *JSCell) *jsc.JSObject;
     extern fn JSC__JSCell__toObject(this: *JSCell, *JSGlobalObject) *jsc.JSObject;
     // NOTE: this function always returns a JSType, but by using `u8` then
-    // casting it via `@enumFromInt` we can ensure our `JSType` enum matches
+    // casting it via `@fromBackingInt` we can ensure our `JSType` enum matches
     // WebKit's. This protects us from possible future breaking changes made
     // when upgrading WebKit.
     extern fn JSC__JSCell__getType(this: *JSCell) u8;

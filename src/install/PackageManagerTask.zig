@@ -18,7 +18,7 @@ pub const Id = enum(u64) {
     _,
 
     pub fn get(this: @This()) u64 {
-        return @intFromEnum(this);
+        return @backingInt(this);
     }
 
     pub fn forNPMPackage(package_name: string, package_version: Semver.Version) Id {
@@ -27,28 +27,28 @@ pub const Id = enum(u64) {
         hasher.update(package_name);
         hasher.update("@");
         hasher.update(std.mem.asBytes(&package_version));
-        return @enumFromInt(hasher.final());
+        return @fromBackingInt(@intCast(hasher.final()));
     }
 
     pub fn forBinLink(package_id: PackageID) Id {
         var hasher = bun.Wyhash11.init(0);
         hasher.update("bin-link:");
         hasher.update(std.mem.asBytes(&package_id));
-        return @enumFromInt(hasher.final());
+        return @fromBackingInt(@intCast(hasher.final()));
     }
 
     pub fn forManifest(name: string) Id {
         var hasher = bun.Wyhash11.init(0);
         hasher.update("manifest:");
         hasher.update(name);
-        return @enumFromInt(hasher.final());
+        return @fromBackingInt(@intCast(hasher.final()));
     }
 
     pub fn forTarball(url: string) Id {
         var hasher = bun.Wyhash11.init(0);
         hasher.update("tarball:");
         hasher.update(url);
-        return @enumFromInt(hasher.final());
+        return @fromBackingInt(@intCast(hasher.final()));
     }
 
     // These cannot change:
@@ -56,7 +56,7 @@ pub const Id = enum(u64) {
     pub fn forGitClone(url: string) Id {
         var hasher = bun.Wyhash11.init(0);
         hasher.update(url);
-        return @enumFromInt(@as(u64, 4 << 61) | @as(u64, @as(u61, @truncate(hasher.final()))));
+        return @fromBackingInt(@intCast(@as(u64, 4 << 61) | @as(u64, @as(u61, @truncate(hasher.final())))));
     }
 
     pub fn forGitCheckout(url: string, resolved: string) Id {
@@ -64,7 +64,7 @@ pub const Id = enum(u64) {
         hasher.update(url);
         hasher.update("@");
         hasher.update(resolved);
-        return @enumFromInt(@as(u64, 5 << 61) | @as(u64, @as(u61, @truncate(hasher.final()))));
+        return @fromBackingInt(@intCast(@as(u64, 5 << 61) | @as(u64, @as(u61, @truncate(hasher.final())))));
     }
 };
 

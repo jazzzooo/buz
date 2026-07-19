@@ -173,10 +173,10 @@ pub const Time = union(Tag) {
         ctx: anytype,
         comptime op_fn: *const fn (@TypeOf(ctx), a: f32, b: f32) f32,
     ) Time {
-        const self_tag: u16 = @intFromEnum(this.*);
-        const other_tag: u16 = @intFromEnum(other.*);
-        const S: u16 = @intFromEnum(Tag.seconds);
-        const MS: u16 = @intFromEnum(Tag.milliseconds);
+        const self_tag: u16 = @backingInt(this.*);
+        const other_tag: u16 = @backingInt(other.*);
+        const S: u16 = @backingInt(Tag.seconds);
+        const MS: u16 = @backingInt(Tag.milliseconds);
 
         const switch_val: u16 = self_tag | (@as(u16, other_tag) << 8);
         return switch (switch_val) {
@@ -195,10 +195,10 @@ pub const Time = union(Tag) {
         ctx: anytype,
         comptime op_fn: *const fn (@TypeOf(ctx), a: f32, b: f32) R,
     ) R {
-        const self_tag: u16 = @intFromEnum(this.*);
-        const other_tag: u16 = @intFromEnum(other.*);
-        const S: u16 = @intFromEnum(Tag.seconds);
-        const MS: u16 = @intFromEnum(Tag.milliseconds);
+        const self_tag: u16 = @backingInt(this.*);
+        const other_tag: u16 = @backingInt(other.*);
+        const S: u16 = @backingInt(Tag.seconds);
+        const MS: u16 = @backingInt(Tag.milliseconds);
 
         const switch_val: u16 = self_tag | (@as(u16, other_tag) << 8);
         return switch (switch_val) {

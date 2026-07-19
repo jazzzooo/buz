@@ -67,7 +67,7 @@ pub const JSGlobalObject = opaque {
     }
 
     pub inline fn toJSValue(globalThis: *JSGlobalObject) JSValue {
-        return @enumFromInt(@intFromPtr(globalThis));
+        return @fromBackingInt(@intCast(@intFromPtr(globalThis)));
     }
 
     pub fn throwInvalidArguments(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) bun.JSError {
@@ -1046,7 +1046,7 @@ pub const JSGlobalObject = opaque {
     extern fn ScriptExecutionContextIdentifier__forGlobalObject(global: *jsc.JSGlobalObject) u32;
 
     pub fn scriptExecutionContextIdentifier(global: *jsc.JSGlobalObject) bun.webcore.ScriptExecutionContext.Identifier {
-        return @enumFromInt(ScriptExecutionContextIdentifier__forGlobalObject(global));
+        return @fromBackingInt(@intCast(ScriptExecutionContextIdentifier__forGlobalObject(global)));
     }
 
     pub const Extern = [_][]const u8{ "create", "getModuleRegistryMap", "resetModuleRegistryMap" };

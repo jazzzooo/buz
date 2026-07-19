@@ -7160,7 +7160,7 @@ pub const Property = union(PropertyIdTag) {
     }
 
     pub fn eql(lhs: *const Property, rhs: *const Property) bool {
-        if (@intFromEnum(lhs.*) != @intFromEnum(rhs.*)) return false;
+        if (@backingInt(lhs.*) != @backingInt(rhs.*)) return false;
         return switch (lhs.*) {
             .@"background-color" => |*v| css.generic.eql(CssColor, v, &rhs.@"background-color"),
             .@"background-image" => |*v| css.generic.eql(SmallList(Image, 1), v, &rhs.@"background-image"),
@@ -9193,11 +9193,11 @@ pub const PropertyId = union(PropertyIdTag) {
     }
 
     pub fn eql(lhs: *const PropertyId, rhs: *const PropertyId) bool {
-        if (@intFromEnum(lhs.*) != @intFromEnum(rhs.*)) return false;
+        if (@backingInt(lhs.*) != @backingInt(rhs.*)) return false;
         const enum_info = bun.meta.EnumInfo(PropertyId);
         const union_info = @typeInfo(PropertyId).@"union";
         inline for (enum_info.field_names, enum_info.field_values, union_info.field_types) |field_name, field_value, FieldType| {
-            if (field_value == @intFromEnum(lhs.*)) {
+            if (field_value == @backingInt(lhs.*)) {
                 if (comptime FieldType == css.VendorPrefix) {
                     return @field(lhs, field_name) == @field(rhs, field_name);
                 } else {
@@ -9209,7 +9209,7 @@ pub const PropertyId = union(PropertyIdTag) {
     }
 
     pub fn hash(this: *const PropertyId, hasher: *std.hash.Wyhash) void {
-        const tag = @intFromEnum(this.*);
+        const tag = @backingInt(this.*);
         hasher.update(std.mem.asBytes(&tag));
     }
 

@@ -522,7 +522,7 @@ fn escapePatchFilename(allocator: std.mem.Allocator, name: []const u8) ?[]const 
         for (ty.@"enum".field_names, ty.@"enum".field_values) |field_name, field_value| {
             if (field_name.len == 1) {
                 const c = field_name[0];
-                table[c] = @enumFromInt(field_value);
+                table[c] = @fromBackingInt(@intCast(field_value));
             }
         }
         break :brk table;

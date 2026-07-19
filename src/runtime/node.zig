@@ -84,7 +84,7 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
         /// only meant to be returned in an operation when there is an aborted
         /// `AbortSignal` object associated with the operation.
         pub const aborted: @This() = .{ .err = .{
-            .errno = @intFromEnum(posix.E.INTR),
+            .errno = @backingInt(posix.E.INTR),
             .syscall = .access,
         } };
 
@@ -130,7 +130,7 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
 
         pub inline fn initErrWithP(e: bun.sys.SystemErrno, syscall: sys.Tag, file_path: anytype) Maybe(ReturnType, ErrorType) {
             return .{ .err = .{
-                .errno = @intFromEnum(e),
+                .errno = @backingInt(e),
                 .syscall = syscall,
                 .path = file_path,
             } };
@@ -220,7 +220,7 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
         pub fn getErrno(this: @This()) posix.E {
             return switch (this) {
                 .result => posix.E.SUCCESS,
-                .err => |e| @enumFromInt(e.errno),
+                .err => |e| @fromBackingInt(@intCast(e.errno)),
             };
         }
 
@@ -353,8 +353,8 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
 
 fn translateToErrInt(err: anytype) bun.sys.Error.Int {
     return switch (@TypeOf(err)) {
-        bun.windows.NTSTATUS => @intFromEnum(bun.windows.translateNTStatusToErrno(err)),
-        else => @truncate(@intFromEnum(err)),
+        bun.windows.NTSTATUS => @backingInt(bun.windows.translateNTStatusToErrno(err)),
+        else => @truncate(@backingInt(err)),
     };
 }
 

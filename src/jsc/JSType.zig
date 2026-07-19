@@ -636,7 +636,7 @@ pub const JSType = enum(u8) {
 
     pub inline fn isObject(this: JSType) bool {
         // inline constexpr bool isObjectType(JSType type) { return type >= ObjectType; }
-        return @intFromEnum(this) >= @intFromEnum(JSType.Object);
+        return @backingInt(this) >= @backingInt(JSType.Object);
     }
 
     pub fn isFunction(this: JSType) bool {

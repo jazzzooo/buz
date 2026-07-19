@@ -633,7 +633,7 @@ pub const Kind = enum(u2) {
     setImmediate = 2,
 
     pub fn big(this: Kind) Big {
-        return @enumFromInt(@intFromEnum(this));
+        return @fromBackingInt(@intCast(@backingInt(this)));
     }
 
     pub const Big = enum(u32) {
@@ -651,7 +651,7 @@ pub const ID = extern struct {
 
     pub inline fn asyncID(this: ID) u64 {
         return @as(u64, @as(u32, @bitCast(this.id))) |
-            (@as(u64, @intFromEnum(this.kind)) << 32);
+            (@as(u64, @backingInt(this.kind)) << 32);
     }
 
     pub fn repeats(this: ID) bool {

@@ -73,7 +73,7 @@ fn envIsNull() napi_status {
     // in this case we don't actually have an environment to set the last error on, so it doesn't
     // make sense to call napi_set_last_error
     @branchHint(.cold);
-    return @intFromEnum(NapiStatus.invalid_arg);
+    return @backingInt(NapiStatus.invalid_arg);
 }
 
 /// This is nullable because native modules may pass null pointers for the NAPI environment, which
@@ -108,14 +108,14 @@ pub const NapiHandleScope = opaque {
     /// callbacks, as the value must remain alive as long as the handle scope is active, even if the
     /// native module doesn't keep it visible on the stack.
     pub fn append(env: *NapiEnv, value: jsc.JSValue) void {
-        NapiHandleScope__append(env, @intFromEnum(value));
+        NapiHandleScope__append(env, @backingInt(value));
     }
 
     /// Move a value from the current handle scope (which must be escapable) to the reserved escape
     /// slot in the parent handle scope, allowing that value to outlive the current handle scope.
     /// Returns an error if escape() has already been called on this handle scope.
     pub fn escape(self: *NapiHandleScope, value: jsc.JSValue) error{EscapeCalledTwice}!void {
-        if (!NapiHandleScope__escape(self, @intFromEnum(value))) {
+        if (!NapiHandleScope__escape(self, @backingInt(value))) {
             return error.EscapeCalledTwice;
         }
     }
@@ -137,16 +137,16 @@ pub const napi_value = enum(i64) {
         val: jsc.JSValue,
     ) void {
         NapiHandleScope.append(env, val);
-        self.* = @enumFromInt(@intFromEnum(val));
+        self.* = @fromBackingInt(@intCast(@backingInt(val)));
     }
 
     pub fn get(self: *const napi_value) jsc.JSValue {
-        return @enumFromInt(@intFromEnum(self.*));
+        return @fromBackingInt(@intCast(@backingInt(self.*)));
     }
 
     pub fn create(env: *NapiEnv, val: jsc.JSValue) napi_value {
         NapiHandleScope.append(env, val);
-        return @enumFromInt(@intFromEnum(val));
+        return @fromBackingInt(@intCast(@backingInt(val)));
     }
 };
 
@@ -768,11 +768,11 @@ pub extern fn napi_check_object_type_tag(env: napi_env, _: napi_value, _: [*c]co
 // do nothing for both of these
 pub export fn napi_open_callback_scope(_: napi_env, _: napi_value, _: *anyopaque, _: *anyopaque) napi_status {
     log("napi_open_callback_scope", .{});
-    return @intFromEnum(NapiStatus.ok);
+    return @backingInt(NapiStatus.ok);
 }
 pub export fn napi_close_callback_scope(_: napi_env, _: *anyopaque) napi_status {
     log("napi_close_callback_scope", .{});
-    return @intFromEnum(NapiStatus.ok);
+    return @backingInt(NapiStatus.ok);
 }
 pub extern fn napi_throw(env: napi_env, @"error": napi_value) napi_status;
 pub extern fn napi_throw_error(env: napi_env, code: [*c]const u8, msg: [*c]const u8) napi_status;
@@ -1114,7 +1114,7 @@ pub const napi_async_work = struct {
 
         complete(
             env,
-            @intFromEnum(status),
+            @backingInt(status),
             this.data,
         );
 
@@ -1636,22 +1636,22 @@ pub const ThreadSafeFunction = struct {
         } else {
             if (this.queue.isBlocked()) {
                 // don't set the error on the env as this is run from another thread
-                return @intFromEnum(NapiStatus.queue_full);
+                return @backingInt(NapiStatus.queue_full);
             }
         }
 
         if (this.isClosing()) {
             if (this.thread_count.load(.seq_cst) <= 0) {
-                return @intFromEnum(NapiStatus.invalid_arg);
+                return @backingInt(NapiStatus.invalid_arg);
             }
             _ = this.release(.release, true);
-            return @intFromEnum(NapiStatus.closing);
+            return @backingInt(NapiStatus.closing);
         }
 
         _ = this.queue.count.fetchAdd(1, .seq_cst);
         bun.handleOom(this.queue.data.writeItem(ctx));
         this.scheduleDispatch();
-        return @intFromEnum(NapiStatus.ok);
+        return @backingInt(NapiStatus.ok);
     }
 
     fn scheduleDispatch(this: *ThreadSafeFunction) void {
@@ -1700,10 +1700,10 @@ pub const ThreadSafeFunction = struct {
         this.lock.lock();
         defer this.lock.unlock();
         if (this.isClosing()) {
-            return @intFromEnum(NapiStatus.closing);
+            return @backingInt(NapiStatus.closing);
         }
         _ = this.thread_count.fetchAdd(1, .seq_cst);
-        return @intFromEnum(NapiStatus.ok);
+        return @backingInt(NapiStatus.ok);
     }
 
     pub fn release(this: *ThreadSafeFunction, mode: napi_threadsafe_function_release_mode, already_locked: bool) napi_status {
@@ -1711,7 +1711,7 @@ pub const ThreadSafeFunction = struct {
         defer if (!already_locked) this.lock.unlock();
 
         if (this.thread_count.load(.seq_cst) < 0) {
-            return @intFromEnum(NapiStatus.invalid_arg);
+            return @backingInt(NapiStatus.invalid_arg);
         }
 
         const prev_remaining = this.thread_count.fetchSub(1, .seq_cst);
@@ -1729,7 +1729,7 @@ pub const ThreadSafeFunction = struct {
             }
         }
 
-        return @intFromEnum(NapiStatus.ok);
+        return @backingInt(NapiStatus.ok);
     }
 };
 
@@ -1790,7 +1790,7 @@ pub export fn napi_create_threadsafe_function(
 pub export fn napi_get_threadsafe_function_context(func: napi_threadsafe_function, result: *?*anyopaque) napi_status {
     log("napi_get_threadsafe_function_context", .{});
     result.* = func.ctx;
-    return @intFromEnum(NapiStatus.ok);
+    return @backingInt(NapiStatus.ok);
 }
 pub export fn napi_call_threadsafe_function(func: napi_threadsafe_function, data: ?*anyopaque, is_blocking: napi_threadsafe_function_call_mode) napi_status {
     log("napi_call_threadsafe_function", .{});

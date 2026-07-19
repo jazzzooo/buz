@@ -55,7 +55,7 @@ pub const BufferReadStream = struct {
 
         const rc = this.archive.readOpenMemory(this.buf);
 
-        this.reading = @intFromEnum(rc) > -1;
+        this.reading = @backingInt(rc) > -1;
 
         // _ = lib.archive_read_support_compression_all(this.archive);
 
@@ -119,7 +119,7 @@ pub const BufferReadStream = struct {
         const buflen = @as(isize, @intCast(this.buf.len));
         const pos = @as(isize, @intCast(this.pos));
 
-        switch (@as(Seek, @enumFromInt(whence))) {
+        switch (@as(Seek, @fromBackingInt(@intCast(whence)))) {
             Seek.current => {
                 const new_pos = @max(@min(pos + offset, buflen - 1), 0);
                 this.pos = @as(usize, @intCast(new_pos));
@@ -525,8 +525,8 @@ pub const Archiver = struct {
                                 switch (bun.sys.openatWindows(dir_fd, path, flags, 0)) {
                                     .result => |fd| fd,
                                     .err => |e| switch (e.errno) {
-                                        @intFromEnum(bun.sys.E.PERM),
-                                        @intFromEnum(bun.sys.E.NOENT),
+                                        @backingInt(bun.sys.E.PERM),
+                                        @backingInt(bun.sys.E.NOENT),
                                         => brk: {
                                             bun.MakePath.makePath(io, u16, dir, bun.Dirname.dirname(u16, path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
                                             break :brk try bun.sys.openatWindows(dir_fd, path, flags, 0).unwrap();

@@ -10,7 +10,7 @@ fn getDlError(allocator: std.mem.Allocator) ![]const u8 {
     if (Environment.isWindows) {
         // On Windows, we need to use GetLastError() and FormatMessageW()
         const err = bun.windows.GetLastError();
-        const err_int = @intFromEnum(err);
+        const err_int = @backingInt(err);
 
         // For now, just return the error code as we'd need to implement FormatMessageW in Zig
         // This is still better than a generic message
@@ -1310,7 +1310,7 @@ pub const FFI = struct {
                     const int = val.to(i32);
                     switch (int) {
                         0...ABIType.max => {
-                            abi_types.appendAssumeCapacity(@as(ABIType, @enumFromInt(int)));
+                            abi_types.appendAssumeCapacity(@as(ABIType, @fromBackingInt(@intCast(int))));
                             continue;
                         },
                         else => {
@@ -1347,7 +1347,7 @@ pub const FFI = struct {
                 const int = ret_value.toInt32();
                 switch (int) {
                     0...ABIType.max => {
-                        return_type = @as(ABIType, @enumFromInt(int));
+                        return_type = @as(ABIType, @fromBackingInt(@intCast(int)));
                         break :brk;
                     },
                     else => {
@@ -2035,7 +2035,7 @@ pub const FFI = struct {
         napi_env = 18,
         napi_value = 19,
         buffer = 20,
-        pub const max = @intFromEnum(ABIType.napi_value);
+        pub const max = @backingInt(ABIType.napi_value);
 
         /// Types that we can directly pass through as an `int64_t`
         pub fn needsACastInC(this: ABIType) bool {
@@ -2098,11 +2098,11 @@ pub const FFI = struct {
                 // these are not all valid identifiers
                 try writer.writeAll(self.name);
                 try writer.writeAll("']:");
-                try std.fmt.formatInt(@intFromEnum(self.entry), 10, .lower, .{}, writer);
+                try std.fmt.formatInt(@backingInt(self.entry), 10, .lower, .{}, writer);
                 try writer.writeAll(",'");
-                try std.fmt.formatInt(@intFromEnum(self.entry), 10, .lower, .{}, writer);
+                try std.fmt.formatInt(@backingInt(self.entry), 10, .lower, .{}, writer);
                 try writer.writeAll("':");
-                try std.fmt.formatInt(@intFromEnum(self.entry), 10, .lower, .{}, writer);
+                try std.fmt.formatInt(@backingInt(self.entry), 10, .lower, .{}, writer);
             }
         };
         pub const map_to_js_object = brk: {
@@ -2407,8 +2407,8 @@ const CompilerRT = struct {
             .JSArrayBufferView__offsetOfLength = offsets.JSArrayBufferView__offsetOfLength,
             .JSArrayBufferView__offsetOfVector = offsets.JSArrayBufferView__offsetOfVector,
             .JSCell__offsetOfType = offsets.JSCell__offsetOfType,
-            .JSTypeArrayBufferViewMin = @intFromEnum(jsc.JSValue.JSType.min_typed_array),
-            .JSTypeArrayBufferViewMax = @intFromEnum(jsc.JSValue.JSType.max_typed_array),
+            .JSTypeArrayBufferViewMin = @backingInt(jsc.JSValue.JSType.min_typed_array),
+            .JSTypeArrayBufferViewMax = @backingInt(jsc.JSValue.JSType.max_typed_array),
         });
     }
 

@@ -606,9 +606,9 @@ pub fn DeriveParse(comptime T: type) type {
             };
             if (Map.getCaseInsensitiveWithEql(ident, bun.strings.eqlComptimeIgnoreLen)) |matched| {
                 inline for (enum_info.field_names, enum_info.field_values) |field_name, field_value| {
-                    if (field_value == @intFromEnum(matched)) {
+                    if (field_value == @backingInt(matched)) {
                         if (comptime is_union_enum) return .{ .result = @unionInit(T, field_name, void) };
-                        return .{ .result = @enumFromInt(field_value) };
+                        return .{ .result = @fromBackingInt(@intCast(field_value)) };
                     }
                 }
                 unreachable;
@@ -685,7 +685,7 @@ pub fn DeriveParse(comptime T: type) type {
                 if (comptime first_void_index < first_payload_index) {
                     if (input.tryParse(Parser.expectIdentMatching, .{void_field_name}).isOk()) {
                         if (comptime is_union_enum) return .{ .result = @unionInit(T, void_field_name, {}) };
-                        return .{ .result = @enumFromInt(void_field_value) };
+                        return .{ .result = @fromBackingInt(@intCast(void_field_value)) };
                     }
 
                     inline for (
@@ -723,7 +723,7 @@ pub fn DeriveParse(comptime T: type) type {
                     // We can generate this as the last statements of the function, avoiding the `input.tryParse` routine above
                     if (input.expectIdentMatching(void_field_name).asErr()) |e| return .{ .err = e };
                     if (comptime is_union_enum) return .{ .result = @unionInit(T, void_field_name, {}) };
-                    return .{ .result = @enumFromInt(void_field_value) };
+                    return .{ .result = @fromBackingInt(@intCast(void_field_value)) };
                 }
             } else if (comptime first_void_index < first_payload_index) {
                 // Multiple fields declared before the payload fields, use tryParse
@@ -731,9 +731,9 @@ pub fn DeriveParse(comptime T: type) type {
                 if (input.tryParse(Parser.expectIdent, .{}).asValue()) |ident| {
                     if (Map.getCaseInsensitiveWithEql(ident, bun.strings.eqlComptimeIgnoreLen)) |matched| {
                         inline for (void_field_names, void_field_values) |field_name, field_value| {
-                            if (field_value == @intFromEnum(matched)) {
+                            if (field_value == @backingInt(matched)) {
                                 if (comptime is_union_enum) return .{ .result = @unionInit(T, field_name, {}) };
-                                return .{ .result = @enumFromInt(field_value) };
+                                return .{ .result = @fromBackingInt(@intCast(field_value)) };
                             }
                         }
                         unreachable;
@@ -780,9 +780,9 @@ pub fn DeriveParse(comptime T: type) type {
                 };
                 if (Map.getCaseInsensitiveWithEql(ident, bun.strings.eqlComptimeIgnoreLen)) |matched| {
                     inline for (void_field_names, void_field_values) |field_name, field_value| {
-                        if (field_value == @intFromEnum(matched)) {
+                        if (field_value == @backingInt(matched)) {
                             if (comptime is_union_enum) return .{ .result = @unionInit(T, field_name, {}) };
-                            return .{ .result = @enumFromInt(field_value) };
+                            return .{ .result = @fromBackingInt(@intCast(field_value)) };
                         }
                     }
                     unreachable;
@@ -836,7 +836,7 @@ pub fn DeriveToCss(comptime T: type) type {
         pub fn toCss(this: *const T, dest: *Printer) PrintErr!void {
             if (comptime is_enum_or_union_enum) {
                 inline for (enum_info.field_names, enum_info.field_values, 0..) |field_name, field_value, i| {
-                    if (@intFromEnum(this.*) == field_value) {
+                    if (@backingInt(this.*) == field_value) {
                         const FieldType = if (comptime tyinfo == .@"enum") void else tyinfo.@"union".field_types[i];
                         if (comptime FieldType == void) {
                             return dest.writeStr(field_name);
@@ -881,7 +881,7 @@ pub fn DeriveToCss(comptime T: type) type {
 
 pub const enum_property_util = struct {
     pub fn asStr(comptime T: type, this: *const T) []const u8 {
-        const tag = @intFromEnum(this.*);
+        const tag = @backingInt(this.*);
         const enum_info = bun.meta.EnumInfo(T);
         inline for (enum_info.field_names, enum_info.field_values) |field_name, field_value| {
             if (tag == field_value) return field_name;
@@ -915,7 +915,7 @@ pub fn DefineEnumProperty(comptime T: type) type {
 
     return struct {
         pub fn eql(lhs: *const T, rhs: *const T) bool {
-            return @intFromEnum(lhs.*) == @intFromEnum(rhs.*);
+            return @backingInt(lhs.*) == @backingInt(rhs.*);
         }
 
         pub fn parse(input: *Parser) Result(T) {
@@ -927,7 +927,7 @@ pub fn DefineEnumProperty(comptime T: type) type {
 
             // todo_stuff.match_ignore_ascii_case
             inline for (enum_info.field_names, enum_info.field_values) |field_name, field_value| {
-                if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, field_name)) return .{ .result = @enumFromInt(field_value) };
+                if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, field_name)) return .{ .result = @fromBackingInt(@intCast(field_value)) };
             }
 
             return .{ .err = location.newUnexpectedTokenError(.{ .ident = ident }) };
@@ -942,7 +942,7 @@ pub fn DefineEnumProperty(comptime T: type) type {
         }
 
         pub fn hash(this: *const T, hasher: *std.hash.Wyhash) void {
-            const tag = @intFromEnum(this.*);
+            const tag = @backingInt(this.*);
             hasher.update(std.mem.asBytes(&tag));
         }
     };
@@ -963,7 +963,7 @@ pub fn DeriveValueType(comptime T: type, comptime ValueTypeMap: anytype) type {
     return struct {
         pub fn valueType(this: *const T) MediaFeatureType {
             inline for (enum_info.field_values, 0..) |field_value, i| {
-                if (field_value == @intFromEnum(this.*)) {
+                if (field_value == @backingInt(this.*)) {
                     return field_values[i];
                 }
             }
@@ -1722,7 +1722,7 @@ pub fn TopLevelRuleParser(comptime AtRuleParserT: type) type {
                 if (Map.getASCIIICaseInsensitive(name)) |prelude| {
                     switch (prelude) {
                         .import => {
-                            if (@intFromEnum(this.state) > @intFromEnum(State.imports)) {
+                            if (@backingInt(this.state) > @backingInt(State.imports)) {
                                 return .{ .err = input.newCustomError(@as(ParserError, ParserError.unexpected_import_rule)) };
                             }
                             const url_str = switch (input.expectUrlOrString()) {
@@ -1773,7 +1773,7 @@ pub fn TopLevelRuleParser(comptime AtRuleParserT: type) type {
                             };
                         },
                         .namespace => {
-                            if (@intFromEnum(this.state) > @intFromEnum(State.namespaces)) {
+                            if (@backingInt(this.state) > @backingInt(State.namespaces)) {
                                 return .{ .err = input.newCustomError(ParserError{ .unexpected_namespace_rule = {} }) };
                             }
 
@@ -1890,7 +1890,7 @@ pub fn TopLevelRuleParser(comptime AtRuleParserT: type) type {
                         return .success;
                     },
                     .layer => {
-                        if (@intFromEnum(this.state) <= @intFromEnum(State.layers)) {
+                        if (@backingInt(this.state) <= @backingInt(State.layers)) {
                             this.state = .layers;
                         } else {
                             this.state = .body;
@@ -3050,7 +3050,7 @@ pub fn fillPropertyBitSet(allocator: Allocator, bitset: *PropertyBitset, block: 
             .composes => continue,
             else => @as(PropertyIdTag, prop.*),
         };
-        const int: u16 = @intFromEnum(tag);
+        const int: u16 = @backingInt(tag);
         bitset.set(int);
     }
     for (block.important_declarations.items) |*prop| {
@@ -3063,7 +3063,7 @@ pub fn fillPropertyBitSet(allocator: Allocator, bitset: *PropertyBitset, block: 
             .composes => continue,
             else => @as(PropertyIdTag, prop.*),
         };
-        const int: u16 = @intFromEnum(tag);
+        const int: u16 = @backingInt(tag);
         bitset.set(int);
     }
 }

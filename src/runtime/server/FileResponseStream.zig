@@ -259,7 +259,7 @@ fn onSendfile(this: *FileResponseStream) bool {
                 .INTR => continue,
                 .AGAIN => return this.armSendfileWritable(),
                 else => {
-                    this.failWith(.{ .errno = @intFromEnum(errno), .syscall = .sendfile, .fd = this.fd });
+                    this.failWith(.{ .errno = @backingInt(errno), .syscall = .sendfile, .fd = this.fd });
                     return false;
                 },
             }
@@ -294,7 +294,7 @@ fn onSendfile(this: *FileResponseStream) bool {
                     return false;
                 },
                 else => {
-                    this.failWith(.{ .errno = @intFromEnum(errno), .syscall = .sendfile, .fd = this.fd });
+                    this.failWith(.{ .errno = @backingInt(errno), .syscall = .sendfile, .fd = this.fd });
                     return false;
                 },
             }

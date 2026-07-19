@@ -22,7 +22,7 @@ pub const SystemError = extern struct {
 
     pub fn getErrno(this: *const SystemError) bun.sys.E {
         // The inverse in bun.sys.Error.toSystemError()
-        return @enumFromInt(this.errno * -1);
+        return @fromBackingInt(@intCast(this.errno * -1));
     }
 
     pub fn deref(this: *const SystemError) void {

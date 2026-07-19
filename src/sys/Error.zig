@@ -2,9 +2,9 @@
 const Error = @This();
 
 const retry_errno = if (Environment.isWindows)
-    @as(Int, @intCast(@intFromEnum(E.INTR)))
+    @as(Int, @intCast(@backingInt(E.INTR)))
 else
-    @as(Int, @intCast(@intFromEnum(E.AGAIN)));
+    @as(Int, @intCast(@backingInt(E.AGAIN)));
 
 const todo_errno = std.math.maxInt(Int) - 1;
 
@@ -29,7 +29,7 @@ pub fn clone(this: *const Error, allocator: std.mem.Allocator) Error {
 
 pub fn fromCode(errno: E, syscall_tag: sys.Tag) Error {
     return .{
-        .errno = @as(Int, @intCast(@intFromEnum(errno))),
+        .errno = @as(Int, @intCast(@backingInt(errno))),
         .syscall = syscall_tag,
     };
 }
@@ -58,7 +58,7 @@ pub fn format(self: Error, writer: *std.Io.Writer) std.Io.Writer.Error!void {
 }
 
 pub inline fn getErrno(this: Error) E {
-    return @as(E, @enumFromInt(this.errno));
+    return @as(E, @fromBackingInt(@intCast(this.errno)));
 }
 
 pub inline fn isRetry(this: *const Error) bool {
@@ -153,16 +153,16 @@ pub fn name(this: *const Error) []const u8 {
             // setRuntimeSafety(false) because we use tagName function, which will be null on invalid enum value.
             @setRuntimeSafety(false);
             if (this.from_libuv) {
-                break :brk @as(SystemErrno, @enumFromInt(@intFromEnum(bun.windows.libuv.translateUVErrorToE(-@as(c_int, this.errno)))));
+                break :brk @as(SystemErrno, @fromBackingInt(@intCast(@backingInt(bun.windows.libuv.translateUVErrorToE(-@as(c_int, this.errno))))));
             }
 
-            break :brk @as(SystemErrno, @enumFromInt(this.errno));
+            break :brk @as(SystemErrno, @fromBackingInt(@intCast(this.errno)));
         };
         if (std.enums.tagName(SystemErrno, system_errno)) |errname| {
             return errname;
         }
     } else if (this.errno > 0 and this.errno < SystemErrno.max) {
-        const system_errno = @as(SystemErrno, @enumFromInt(this.errno));
+        const system_errno = @as(SystemErrno, @fromBackingInt(@intCast(this.errno)));
         if (std.enums.tagName(SystemErrno, system_errno)) |errname| {
             return errname;
         }
@@ -180,7 +180,7 @@ pub fn toZigErr(this: Error) anyerror {
 pub fn getErrorCodeTagName(err: *const Error) ?struct { [:0]const u8, SystemErrno } {
     if (!Environment.isWindows) {
         if (err.errno > 0 and err.errno < SystemErrno.max) {
-            const system_errno = @as(SystemErrno, @enumFromInt(err.errno));
+            const system_errno = @as(SystemErrno, @fromBackingInt(@intCast(err.errno)));
             return .{ @tagName(system_errno), system_errno };
         }
     } else {
@@ -188,10 +188,10 @@ pub fn getErrorCodeTagName(err: *const Error) ?struct { [:0]const u8, SystemErrn
             // setRuntimeSafety(false) because we use tagName function, which will be null on invalid enum value.
             @setRuntimeSafety(false);
             if (err.from_libuv) {
-                break :brk @enumFromInt(@intFromEnum(bun.windows.libuv.translateUVErrorToE(@as(c_int, err.errno) * -1)));
+                break :brk @fromBackingInt(@intCast(@backingInt(bun.windows.libuv.translateUVErrorToE(@as(c_int, err.errno) * -1))));
             }
 
-            break :brk @enumFromInt(err.errno);
+            break :brk @fromBackingInt(@intCast(err.errno));
         };
         if (std.enums.tagName(SystemErrno, system_errno)) |errname| {
             return .{ errname, system_errno };

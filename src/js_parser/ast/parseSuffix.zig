@@ -397,7 +397,7 @@ pub fn ParseSuffix(
             }
 
             try p.lexer.next();
-            left.* = p.newExpr(E.Binary{ .op = .bin_add_assign, .left = left.*, .right = try p.parseExpr(@as(Op.Level, @enumFromInt(@intFromEnum(Op.Level.assign) - 1))) }, left.loc);
+            left.* = p.newExpr(E.Binary{ .op = .bin_add_assign, .left = left.*, .right = try p.parseExpr(@as(Op.Level, @fromBackingInt(@intCast(@backingInt(Op.Level.assign) - 1)))) }, left.loc);
             return .next;
         }
         fn t_minus(p: *P, level: Level, left: *Expr) anyerror!Continuation {

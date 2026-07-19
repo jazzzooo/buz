@@ -107,7 +107,7 @@ export fn WTFTimer__create(run_loop_timer: *RunLoopTimer) ?*anyopaque {
         },
         .run_loop_timer = run_loop_timer,
         .repeat = false,
-        .script_execution_context_id = @enumFromInt(vm.initial_script_execution_context_identifier),
+        .script_execution_context_id = @fromBackingInt(@intCast(vm.initial_script_execution_context_identifier)),
     });
 
     return this;

@@ -204,7 +204,7 @@ pub const ImportRecord = struct {
         }
 
         pub inline fn isInternal(this: Tag) bool {
-            return @intFromEnum(this) >= @intFromEnum(Tag.runtime);
+            return @backingInt(this) >= @backingInt(Tag.runtime);
         }
     };
 

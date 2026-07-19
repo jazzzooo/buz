@@ -188,7 +188,7 @@ const DarwinImpl = struct {
         };
 
         if (status >= 0) return;
-        switch (@as(c.E, @enumFromInt(-status))) {
+        switch (@as(c.E, @fromBackingInt(@intCast(-status)))) {
             // Wait was interrupted by the OS or other spurious signalling.
             .INTR => {},
             // Address of the futex was paged out. This is unlikely, but possible in theory, and
@@ -216,7 +216,7 @@ const DarwinImpl = struct {
             const status = c.__ulock_wake(flags, addr, 0);
 
             if (status >= 0) return;
-            switch (@as(c.E, @enumFromInt(-status))) {
+            switch (@as(c.E, @fromBackingInt(@intCast(-status)))) {
                 .INTR => continue, // spurious wake()
                 .FAULT => @panic("__ulock_wake() returned EFAULT unexpectedly"), // __ulock_wake doesn't generate EFAULT according to darwin pthread_cond_t
                 .NOENT => return, // nothing was woken up
@@ -288,7 +288,7 @@ const FreebsdImpl = struct {
 
         const rc = c._umtx_op(
             @intFromPtr(&ptr.raw),
-            @intFromEnum(c.UMTX_OP.WAIT_UINT_PRIVATE),
+            @backingInt(c.UMTX_OP.WAIT_UINT_PRIVATE),
             @as(c_ulong, expect),
             tm_size,
             @intFromPtr(tm_ptr),
@@ -314,7 +314,7 @@ const FreebsdImpl = struct {
         const n: c_ulong = @min(max_waiters, std.math.maxInt(c_int));
         const rc = c._umtx_op(
             @intFromPtr(&ptr.raw),
-            @intFromEnum(c.UMTX_OP.WAKE_PRIVATE),
+            @backingInt(c.UMTX_OP.WAKE_PRIVATE),
             n,
             0, // there is no timeout struct
             0, // there is no timeout struct pointer

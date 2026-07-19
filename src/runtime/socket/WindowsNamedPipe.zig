@@ -323,7 +323,7 @@ pub fn getAcceptedBy(this: *WindowsNamedPipe, server: *uv.Pipe, ssl_ctx: ?*Borin
         }) catch {
             return .{
                 .err = .{
-                    .errno = @intFromEnum(bun.sys.E.PIPE),
+                    .errno = @backingInt(bun.sys.E.PIPE),
                     .syscall = .connect,
                 },
             };
@@ -420,14 +420,14 @@ fn initTLSWrapper(this: *WindowsNamedPipe, ssl_options: ?jsc.API.ServerConfig.SS
         this.flags.is_ssl = true;
         this.wrapper = WrapperType.initWithCTX(ctx, true, handlers) catch {
             BoringSSL.SSL_CTX_free(ctx);
-            return .{ .err = .{ .errno = @intFromEnum(bun.sys.E.PIPE), .syscall = .connect } };
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.PIPE), .syscall = .connect } };
         };
         return .success;
     }
     if (ssl_options) |tls| {
         this.flags.is_ssl = true;
         this.wrapper = WrapperType.init(tls, true, handlers) catch {
-            return .{ .err = .{ .errno = @intFromEnum(bun.sys.E.PIPE), .syscall = .connect } };
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.PIPE), .syscall = .connect } };
         };
         return .success;
     }

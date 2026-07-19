@@ -67,7 +67,7 @@ fn handleChangeCwdErr(this: *Cd, err: Syscall.Error, new_cwd_: []const u8) Yield
     const errno: usize = @intCast(err.errno);
 
     switch (errno) {
-        @as(usize, @intFromEnum(Syscall.E.NOTDIR)) => {
+        @as(usize, @backingInt(Syscall.E.NOTDIR)) => {
             if (this.bltn().stderr.needsIO() == null) {
                 const buf = this.bltn().fmtErrorArena(.cd, "not a directory: {s}\n", .{new_cwd_});
                 _ = this.bltn().writeNoIO(.stderr, buf);
@@ -77,7 +77,7 @@ fn handleChangeCwdErr(this: *Cd, err: Syscall.Error, new_cwd_: []const u8) Yield
 
             return this.writeStderrNonBlocking("not a directory: {s}\n", .{new_cwd_});
         },
-        @as(usize, @intFromEnum(Syscall.E.NOENT)) => {
+        @as(usize, @backingInt(Syscall.E.NOENT)) => {
             if (this.bltn().stderr.needsIO() == null) {
                 const buf = this.bltn().fmtErrorArena(.cd, "not a directory: {s}\n", .{new_cwd_});
                 _ = this.bltn().writeNoIO(.stderr, buf);
@@ -87,7 +87,7 @@ fn handleChangeCwdErr(this: *Cd, err: Syscall.Error, new_cwd_: []const u8) Yield
 
             return this.writeStderrNonBlocking("not a directory: {s}\n", .{new_cwd_});
         },
-        @as(usize, @intFromEnum(Syscall.E.NAMETOOLONG)) => {
+        @as(usize, @backingInt(Syscall.E.NAMETOOLONG)) => {
             if (this.bltn().stderr.needsIO() == null) {
                 const buf = this.bltn().fmtErrorArena(.cd, "file name too long\n", .{});
                 _ = this.bltn().writeNoIO(.stderr, buf);
