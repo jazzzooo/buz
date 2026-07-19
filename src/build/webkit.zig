@@ -56,7 +56,7 @@ pub fn addStep(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode) *Step.WriteF
 
     // ─── JSCBuiltins ───
     const builtins_dir = blk: {
-        const run = b.addSystemCommand(&.{"python3"});
+        const run = addPythonCommand(b);
         run.addFileArg(jscPath(b, "Scripts/generate-js-builtins.py"));
         addTreeInputs(b, run, jsc_root ++ "/Scripts");
         run.addArgs(&.{ "--framework", "JavaScriptCore", "--output-directory" });
@@ -67,36 +67,36 @@ pub fn addStep(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode) *Step.WriteF
     };
 
     // ─── stdout-redirect generators ───
-    const keyword_lookup_h = toolStdout(b, "python3", "KeywordLookupGenerator.py", "parser/Keywords.table", "KeywordLookup.h");
+    const keyword_lookup_h = toolStdout(b, &.{ "python3", "-B" }, "KeywordLookupGenerator.py", "parser/Keywords.table", "KeywordLookup.h");
     var luts: std.ArrayList(Named) = .empty;
     for (cmakeList(arena, cmake, "JavaScriptCore_OBJECT_LUT_SOURCES")) |src| {
         const stem = std.fs.path.stem(src);
         const name = b.fmt("{s}.lut.h", .{stem});
-        luts.append(arena, .{ .name = name, .file = toolStdout(b, "perl", "create_hash_table", src, name) }) catch @panic("OOM");
+        luts.append(arena, .{ .name = name, .file = toolStdout(b, &.{"perl"}, "create_hash_table", src, name) }) catch @panic("OOM");
     }
-    luts.append(arena, .{ .name = "Lexer.lut.h", .file = toolStdout(b, "perl", "create_hash_table", "parser/Keywords.table", "Lexer.lut.h") }) catch @panic("OOM");
+    luts.append(arena, .{ .name = "Lexer.lut.h", .file = toolStdout(b, &.{"perl"}, "create_hash_table", "parser/Keywords.table", "Lexer.lut.h") }) catch @panic("OOM");
 
     // ─── yarr + lexer tables ───
     const regexp_tables_h = blk: {
-        const run = b.addSystemCommand(&.{"python3"});
+        const run = addPythonCommand(b);
         run.addFileArg(jscPath(b, "yarr/create_regex_tables"));
         break :blk run.addOutputFileArg("RegExpJitTables.h");
     };
     const yarr_unicode_h = blk: {
-        const run = b.addSystemCommand(&.{"python3"});
+        const run = addPythonCommand(b);
         run.addFileArg(jscPath(b, "yarr/generateYarrUnicodePropertyTables.py"));
         run.addFileInput(jscPath(b, "yarr/hasher.py"));
         run.addDirectoryArg(jscPath(b, "ucd"));
         break :blk run.addOutputFileArg("UnicodePatternTables.h");
     };
     const yarr_canon_cpp = blk: {
-        const run = b.addSystemCommand(&.{"python3"});
+        const run = addPythonCommand(b);
         run.addFileArg(jscPath(b, "yarr/generateYarrCanonicalizeUnicode"));
         run.addFileArg(jscPath(b, "ucd/CaseFolding.txt"));
         break :blk run.addOutputFileArg("YarrCanonicalizeUnicode.cpp");
     };
     const lexer_unicode_h = blk: {
-        const run = b.addSystemCommand(&.{"python3"});
+        const run = addPythonCommand(b);
         run.addFileArg(jscPath(b, "parser/generateLexerUnicodePropertyTables.py"));
         run.addFileArg(jscPath(b, "ucd/UnicodeData.txt"));
         break :blk run.addOutputFileArg("LexerUnicodePropertyTables.h");
@@ -104,7 +104,7 @@ pub fn addStep(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode) *Step.WriteF
 
     // ─── inspector protocol ───
     const combined_domains_json = blk: {
-        const run = b.addSystemCommand(&.{"python3"});
+        const run = addPythonCommand(b);
         run.addFileArg(jscPath(b, "Scripts/generate-combined-inspector-json.py"));
         for (cmakeList(arena, cmake, "JavaScriptCore_INSPECTOR_DOMAINS")) |f| run.addFileArg(jscPath(b, f));
         // FEATURE_DEFINES_WITH_SPACE_SEPARATOR as the JSCOnly cmake
@@ -113,7 +113,7 @@ pub fn addStep(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode) *Step.WriteF
         break :blk run.addOutputFileArg("CombinedDomains.json");
     };
     const inspector_dir = blk: {
-        const run = b.addSystemCommand(&.{"python3"});
+        const run = addPythonCommand(b);
         run.addFileArg(jscPath(b, "inspector/scripts/generate-inspector-protocol-bindings.py"));
         addTreeInputs(b, run, jsc_root ++ "/inspector/scripts");
         run.addArg("--outputDir");
@@ -340,6 +340,7 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, derived_wf: 
     // remote-inspector transport), matching the cmake configuration.
     const gusb_out = b.run(&.{
         "python3",
+        "-B",
         rootJoin(b, "vendor/webkit/Source/WTF/Scripts/generate-unified-source-bundles.py"),
         "--derived-sources-path",
         derived_stable,
@@ -542,16 +543,20 @@ fn jscPath(b: *Build, sub: []const u8) LazyPath {
 }
 
 fn genPython(b: *Build, generator: []const u8, extra_dep: []const u8, input: []const u8, out_name: []const u8) LazyPath {
-    const run = b.addSystemCommand(&.{"python3"});
+    const run = addPythonCommand(b);
     run.addFileArg(jscPath(b, generator));
     run.addFileInput(jscPath(b, extra_dep));
     run.addFileArg(jscPath(b, input));
     return run.addOutputFileArg(out_name);
 }
 
-/// `interp script input`, with captured stdout as the generated file.
-fn toolStdout(b: *Build, interp: []const u8, script: []const u8, input: []const u8, out_name: []const u8) LazyPath {
-    const run = b.addSystemCommand(&.{interp});
+fn addPythonCommand(b: *Build) *Step.Run {
+    return b.addSystemCommand(&.{ "python3", "-B" });
+}
+
+/// `command script input`, with captured stdout as the generated file.
+fn toolStdout(b: *Build, command: []const []const u8, script: []const u8, input: []const u8, out_name: []const u8) LazyPath {
+    const run = b.addSystemCommand(command);
     run.addFileArg(jscPath(b, script));
     run.addFileArg(jscPath(b, input));
     return run.captureStdOut(.{ .basename = out_name });
@@ -740,6 +745,7 @@ fn addTreeInputs(b: *Build, run: *Step.Run, root: []const u8) void {
     defer walker.deinit();
     while (walker.next(io) catch @panic("walk")) |entry| {
         if (entry.kind != .file) continue;
+        if (std.mem.indexOf(u8, entry.path, "__pycache__") != null) continue;
         run.addFileInput(b.path(b.fmt("{s}/{s}", .{ root, entry.path })));
     }
 }

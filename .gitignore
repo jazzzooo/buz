@@ -37,6 +37,7 @@
 *.out.js
 *.out.refresh.js
 *.pdb
+*.py[cod]
 *.sqlite
 *.swp
 *.tmp
@@ -48,6 +49,7 @@
 **/*.pdb
 **/*.sln*
 **/*.vcxproj*
+**/__pycache__/
 **/package-lock.json
 /.cache
 /.webkit-cache
