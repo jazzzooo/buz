@@ -1481,34 +1481,6 @@ pub fn addLink(
     const exe_name = if (opts.mode == .debug) "bun-debug" else "bun-profile";
     run.step.name = b.fmt("link {s}", .{exe_name});
 
-    // The incremental ELF flush (zig-upstream's src/link/Elf2.zig) emits
-    // rela sections out of offset order, and mold rejects a TLS group
-    // (TLSLD + its __tls_get_addr PLT32 call) that is not adjacent and
-    // in order — with or without relaxation — so sort them. The sorted
-    // object lives at a stable path so the link's cache manifest can
-    // stat-match the unchanged archive inputs instead of re-hashing them
-    // every cycle.
-    const zig_obj: LazyPath = if (opts.mode == .debug) obj: {
-        const tool = b.addExecutable(.{
-            .name = "sort-relas",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/build/sort_relas.zig"),
-                .target = b.graph.host,
-                .optimize = .ReleaseFast,
-            }),
-        });
-        // No resident incremental state for a run-to-completion host tool.
-        tool.incremental = false;
-        const stable_obj = rootJoin(b, b.fmt("build/zig/{s}/{s}.o", .{ @tagName(opts.mode), exe_name }));
-        const normalize = b.addRunArtifact(tool);
-        normalize.addFileArg(zig_obj_bin);
-        normalize.addArg(stable_obj);
-        normalize.has_side_effects = true;
-        normalize.step.name = b.fmt("normalize {s}.o", .{exe_name});
-        run.step.dependOn(&normalize.step);
-        break :obj .{ .cwd_relative = stable_obj };
-    } else zig_obj_bin;
-
     run.addArgs(&.{"-o"});
     const exe = run.addOutputFileArg(exe_name);
 
@@ -1533,7 +1505,7 @@ pub fn addLink(
     run.addArg("--whole-archive");
     for (archives) |lib| run.addArtifactArg(lib);
     run.addArg("--no-whole-archive");
-    run.addFileArg(zig_obj);
+    run.addFileArg(zig_obj_bin);
     run.addFileArg(b.path("src/build/prebuilt/liblolhtml.a"));
     for ([_][]const u8{ "libWTF.a", "libJavaScriptCore.a", "libicudata.a", "libicui18n.a", "libicuuc.a", "libbmalloc.a" }) |lib| {
         run.addFileArg(deps.webkit.path(b.fmt("lib/{s}", .{lib})));
