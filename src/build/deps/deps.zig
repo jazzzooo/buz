@@ -66,7 +66,6 @@ pub const all = [_]Dep{
 };
 
 pub const base_flags_debug: []const []const u8 = &.{
-    "-O0",
     "-g3",
     "-gz=zstd",
     "-glldb",
@@ -96,8 +95,6 @@ pub const base_flags_debug: []const []const u8 = &.{
 };
 
 pub const base_flags_release: []const []const u8 = &.{
-    "-DNDEBUG",
-    "-O3",
     "-g1",
     "-glldb",
     "-fno-exceptions",
@@ -206,7 +203,6 @@ pub const bun_cxx_flags_release: []const []const u8 = &.{
     "-DREPORTED_NODEJS_VERSION=\"24.3.0\"",
     "-DREPORTED_NODEJS_ABI_VERSION=137",
     "-DUSE_BUN_MIMALLOC=1",
-    "-DNDEBUG",
     "-DLAZY_LOAD_SQLITE=0",
 };
 
@@ -285,7 +281,6 @@ pub const bun_c_flags_release: []const []const u8 = &.{
     "-DREPORTED_NODEJS_VERSION=\"24.3.0\"",
     "-DREPORTED_NODEJS_ABI_VERSION=137",
     "-DUSE_BUN_MIMALLOC=1",
-    "-DNDEBUG",
     "-DLAZY_LOAD_SQLITE=0",
 };
 

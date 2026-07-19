@@ -4,7 +4,7 @@
 //! exactly), and the data archive wraps the shipped icudt75l.dat blob via
 //! .incbin, reproducing genccode's single `icudt75_dat` rodata symbol.
 //! Flags mirror the oven-sh CI invocation (-Os, no legacy conversion,
-//! exceptions off) in both build modes; ICU is built once there too.
+//! exceptions off); Debug also uses ICU's ReleaseFast configuration.
 
 const std = @import("std");
 const exe = @import("exe.zig");
@@ -43,9 +43,10 @@ pub const Ctx = struct {
     data: *Step.Compile,
 };
 
-pub fn addLibs(b: *Build, deps: *const exe.DepPkgs) Ctx {
-    const uc = newLib(b, "icuuc");
-    const i18n = newLib(b, "icui18n");
+pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.OptimizeMode) Ctx {
+    const library_optimize: std.builtin.OptimizeMode = if (optimize == .Debug) .ReleaseFast else optimize;
+    const uc = newLib(b, "icuuc", library_optimize);
+    const i18n = newLib(b, "icui18n", library_optimize);
     for ([_]*Step.Compile{ uc, i18n }) |lib| {
         lib.root_module.addIncludePath(deps.icu.path("icu/source/common"));
     }
@@ -66,7 +67,7 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs) Ctx {
     const data = blk: {
         const mod = b.createModule(.{
             .target = exe.cppTarget(b, &.{}),
-            .optimize = .ReleaseFast,
+            .optimize = library_optimize,
         });
         const wf = b.addWriteFiles();
         _ = wf.addCopyFile(filtered_dat, "icudt75l.dat");
@@ -94,7 +95,7 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs) Ctx {
 /// (zig c++ links it so the C++ ABI matches the archives), list the package
 /// contents, and strip the unreachable entries.
 fn filterData(b: *Build, deps: *const exe.DepPkgs, uc: *Step.Compile, i18n: *Step.Compile) LazyPath {
-    const tool_lib = newLib(b, "icupkg-tool");
+    const tool_lib = newLib(b, "icupkg-tool", .ReleaseFast);
     tool_lib.root_module.addIncludePath(deps.icu.path("icu/source/common"));
     tool_lib.root_module.addIncludePath(deps.icu.path("icu/source/i18n"));
     tool_lib.root_module.addIncludePath(deps.icu.path("icu/source/tools/toolutil"));
@@ -134,11 +135,10 @@ fn filterData(b: *Build, deps: *const exe.DepPkgs, uc: *Step.Compile, i18n: *Ste
     return filter.addOutputFileArg("icudt75l.dat");
 }
 
-fn newLib(b: *Build, name: []const u8) *Step.Compile {
+fn newLib(b: *Build, name: []const u8, optimize: std.builtin.OptimizeMode) *Step.Compile {
     const mod = b.createModule(.{
         .target = exe.cppTarget(b, &.{}),
-        // -Os is in the flags; the mode only gates zig's own defaults.
-        .optimize = .ReleaseFast,
+        .optimize = optimize,
         // libc++, matching the rest of the C++ world.
         .link_libc = true,
         .link_libcpp = true,

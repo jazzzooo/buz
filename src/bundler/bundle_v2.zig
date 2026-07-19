@@ -907,8 +907,6 @@ pub const BundleV2 = struct {
         thread_pool: ?*ThreadPoolLib,
         heap: ThreadLocalArena,
     ) !*BundleV2 {
-        transpiler.env.loadTracy();
-
         const this = try alloc.create(BundleV2);
         transpiler.options.mark_builtins_as_external = transpiler.options.target.isBun() or transpiler.options.target == .node;
         transpiler.resolver.opts.mark_builtins_as_external = transpiler.options.target.isBun() or transpiler.options.target == .node;

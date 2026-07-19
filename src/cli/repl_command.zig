@@ -175,8 +175,6 @@ const ReplRunner = struct {
                 _ = vm.global.setTimeZone(&jsc.ZigString.init(tz));
             }
         }
-
-        vm.transpiler.env.loadTracy();
     }
 };
 

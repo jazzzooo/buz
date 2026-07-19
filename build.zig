@@ -52,11 +52,9 @@ const BunBuildOptions = struct {
     sha: []const u8,
     /// enable debug logs in release builds
     enable_logs: bool = false,
-    enable_fuzzilli: bool,
     enable_valgrind: bool,
     enable_tinycc: bool,
     use_mimalloc: bool,
-    tracy_callstack_depth: u16,
     reported_nodejs_version: Version,
     /// To make iterating on some '@embedFile's faster, we load them at runtime
     /// instead of at compile time. This is disabled in release or if this flag
@@ -118,7 +116,6 @@ const BunBuildOptions = struct {
         opts.addOption([:0]const u8, "sha", b.allocator.dupeSentinel(u8, this.sha, 0) catch @panic("OOM"));
         opts.addOption(bool, "baseline", this.isBaseline());
         opts.addOption(bool, "enable_logs", this.enable_logs);
-        opts.addOption(bool, "enable_fuzzilli", this.enable_fuzzilli);
         opts.addOption(bool, "enable_valgrind", this.enable_valgrind);
         opts.addOption(bool, "enable_tinycc", this.enable_tinycc);
         opts.addOption(bool, "use_mimalloc", this.use_mimalloc);
@@ -227,16 +224,13 @@ pub fn build(b: *Build) !void {
     const pkgs = b.graph.arena.create(bun_exe.DepPkgs) catch @panic("OOM");
     pkgs.* = resolved;
     const cg = bun_exe.addCodegen(b, pkgs, mode);
-    const webkit_derived = bun_webkit.addStep(b, pkgs, mode);
+    const webkit_derived = bun_webkit.addStep(b, pkgs, optimize);
     const webkit_ctx = b.graph.arena.create(bun_webkit.Ctx) catch @panic("OOM");
-    webkit_ctx.* = bun_webkit.addLibs(b, pkgs, mode, webkit_derived);
+    webkit_ctx.* = bun_webkit.addLibs(b, pkgs, mode, optimize, webkit_derived);
     const icu_ctx = b.graph.arena.create(bun_icu.Ctx) catch @panic("OOM");
-    icu_ctx.* = bun_icu.addLibs(b, pkgs);
+    icu_ctx.* = bun_icu.addLibs(b, pkgs, optimize);
 
-    const codegen_embed = b.option(bool, "codegen_embed", "If codegen files should be embedded in the binary") orelse switch (b.graph.release_mode) {
-        .off => false,
-        else => true,
-    };
+    const codegen_embed = b.option(bool, "codegen_embed", "Embed generated runtime assets in Debug builds") orelse false;
 
     const bun_version = b.option([]const u8, "version", "Value of `Bun.version`") orelse
         packageJsonVersion(b) orelse "0.0.0";
@@ -301,9 +295,7 @@ pub fn build(b: *Build) !void {
 
             break :sha sha;
         },
-        .tracy_callstack_depth = b.option(u16, "tracy_callstack_depth", "") orelse 10,
         .enable_logs = b.option(bool, "enable_logs", "Enable logs in release") orelse (optimize == .Debug),
-        .enable_fuzzilli = b.option(bool, "enable_fuzzilli", "Enable fuzzilli instrumentation") orelse false,
         .enable_valgrind = b.option(bool, "enable_valgrind", "Enable valgrind") orelse false,
         .enable_tinycc = b.option(bool, "enable_tinycc", "Enable TinyCC for FFI JIT compilation") orelse true,
         .use_mimalloc = b.option(bool, "use_mimalloc", "Use mimalloc as default allocator") orelse true,
@@ -318,12 +310,13 @@ pub fn build(b: *Build) !void {
         var o = build_options;
         // The executable and its C++ dependencies share the host target.
         o.target = b.graph.host;
-        o.codegen_embed = mode == .release;
         o.cached_options_module = null;
         const obj = addBunObject(b, &o);
 
         const exe_opts: bun_exe.Options = .{
             .mode = mode,
+            .optimize = optimize,
+            .codegen_embed = o.shouldEmbedCode(),
             .version = bun_version,
             .sha = if (std.mem.eql(u8, build_options.sha, zero_sha)) null else build_options.sha,
             .target = o.target,
@@ -506,11 +499,9 @@ pub fn build(b: *Build) !void {
                 .canary_revision = build_options.canary_revision,
                 .sha = build_options.sha,
                 .enable_logs = build_options.enable_logs,
-                .enable_fuzzilli = false,
                 .enable_valgrind = false,
                 .enable_tinycc = false,
                 .use_mimalloc = build_options.use_mimalloc,
-                .tracy_callstack_depth = build_options.tracy_callstack_depth,
                 .reported_nodejs_version = build_options.reported_nodejs_version,
                 .codegen_embed = build_options.codegen_embed,
                 .codegen_path = build_options.codegen_path,
@@ -712,13 +703,11 @@ fn addMultiCheck(
 
                 .canary_revision = root_build_options.canary_revision,
                 .sha = root_build_options.sha,
-                .tracy_callstack_depth = root_build_options.tracy_callstack_depth,
                 .version = root_build_options.version,
                 .reported_nodejs_version = root_build_options.reported_nodejs_version,
                 .codegen_path = root_build_options.codegen_path,
                 .enable_valgrind = root_build_options.enable_valgrind,
                 .enable_tinycc = root_build_options.enable_tinycc,
-                .enable_fuzzilli = root_build_options.enable_fuzzilli,
                 .use_mimalloc = root_build_options.use_mimalloc,
                 .override_no_export_cpp_apis = root_build_options.override_no_export_cpp_apis,
                 .android_ndk_sysroot = root_build_options.android_ndk_sysroot,
@@ -850,7 +839,7 @@ pub fn addBunObject(b: *Build, opts: *BunBuildOptions) *Compile {
         .name = if (opts.optimize == .Debug) "bun-debug" else "bun",
         .root_module = root,
     });
-    configureObj(b, opts, obj);
+    configureObj(opts, obj);
     // Generated imports come from the stable synced dir.
     obj.step.dependOn(opts.codegen.sync_step);
     return obj;
@@ -875,12 +864,12 @@ fn addBunWasmObject(b: *Build, opts: *BunBuildOptions) *Compile {
         .name = if (opts.optimize == .Debug) "bun-wasm-debug" else "bun-wasm",
         .root_module = root,
     });
-    configureObj(b, opts, obj);
+    configureObj(opts, obj);
     obj.step.dependOn(opts.codegen.sync_step);
     return obj;
 }
 
-fn configureObj(b: *Build, opts: *BunBuildOptions, obj: *Compile) void {
+fn configureObj(opts: *BunBuildOptions, obj: *Compile) void {
     // Flags on root module get used for the compilation
     obj.root_module.omit_frame_pointer = false;
     obj.root_module.strip = false; // stripped at the end
@@ -893,10 +882,6 @@ fn configureObj(b: *Build, opts: *BunBuildOptions, obj: *Compile) void {
     // `--watch -fincremental` for the resident dev loop; one-shot builds get
     // the content-addressed whole-cache.
 
-    if (opts.enable_fuzzilli) {
-        const fail_step = b.addFail("fuzzilli requires an ASan build, which is not currently supported");
-        obj.step.dependOn(&fail_step.step);
-    }
     obj.bundle_compiler_rt = false;
     obj.bundle_ubsan_rt = false;
 

@@ -135,7 +135,10 @@ const c_files = [_][]const u8{
 };
 
 pub const Options = struct {
+    /// Debug/release feature configuration, independent of optimization.
     mode: Mode,
+    optimize: std.builtin.OptimizeMode,
+    codegen_embed: bool,
     /// `Bun.version`, from package.json unless overridden.
     version: []const u8,
     /// 40-hex git sha or null. Baked into bun_dependency_versions.h for
@@ -716,6 +719,10 @@ pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options
             .release => recipes.base_flags_release,
         };
         var list: std.ArrayList([]const u8) = .empty;
+        // Zig uses -O2 for C/C++; Bun's performance-oriented modes use -O3.
+        if (opts.optimize == .ReleaseSafe or opts.optimize == .ReleaseFast) {
+            list.append(arena, "-O3") catch @panic("OOM");
+        }
         list.appendSlice(arena, mode_flags) catch @panic("OOM");
         // zig injects -Werror=date-time; mimalloc's release config uses __DATE__.
         list.append(arena, "-Wno-date-time") catch @panic("OOM");
@@ -748,7 +755,7 @@ pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options
         // Extern-template s_info instantiations whose definitions live in
         // the JSC library (JSBuffer.cpp).
         cxx_flags.append(arena, "-Wno-undefined-var-template") catch @panic("OOM");
-        if (opts.mode == .debug) {
+        if (opts.mode == .debug and !opts.codegen_embed) {
             cxx_flags.append(arena, b.fmt("-DBUN_DYNAMIC_JS_LOAD_PATH=\"{s}\"", .{cg.js_install_abs})) catch @panic("OOM");
         }
         // Debug builds force-include a precompiled root-pch.h (clang picks up
@@ -781,7 +788,7 @@ pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options
         var c_flags: std.ArrayList([]const u8) = .empty;
         c_flags.appendSlice(arena, base_flags) catch @panic("OOM");
         c_flags.appendSlice(arena, bun_c_flags) catch @panic("OOM");
-        if (opts.mode == .debug) {
+        if (opts.mode == .debug and !opts.codegen_embed) {
             c_flags.append(arena, b.fmt("-DBUN_DYNAMIC_JS_LOAD_PATH=\"{s}\"", .{cg.js_install_abs})) catch @panic("OOM");
         }
         for (allCSources(b)) |f| {
@@ -942,7 +949,7 @@ fn hasLangOverride(flags: []const []const u8) bool {
 fn newCppLib(b: *Build, name: []const u8, opts: Options, is_cxx: bool, extra_features: []const []const u8) *Step.Compile {
     const mod = b.createModule(.{
         .target = cppTarget(b, extra_features),
-        .optimize = if (opts.mode == .debug) .Debug else .ReleaseFast,
+        .optimize = opts.optimize,
         // The whole C++ world (WebKit, ICU, deps, bun-cxx) compiles against
         // zig's bundled libc++; the C++ ABI must stay uniform across it.
         // link_libcpp does not imply the libc headers.
@@ -1014,7 +1021,7 @@ pub const ZigCxxRuntime = struct {
 /// The static C++ runtime pieces zig links for -lc++, discovered by parsing
 /// a --verbose-link of a trivial program (they live at content-hashed global
 /// cache paths).
-pub fn discoverZigCxxRuntime(b: *Build) ZigCxxRuntime {
+pub fn discoverZigCxxRuntime(b: *Build, optimize: std.builtin.OptimizeMode) ZigCxxRuntime {
     const arena = b.graph.arena;
     if (zig_cxx_runtime_cache) |c| return c;
     const io = b.graph.io;
@@ -1023,6 +1030,7 @@ pub fn discoverZigCxxRuntime(b: *Build) ZigCxxRuntime {
     defer dir.close(io);
     dir.writeFile(io, .{ .sub_path = "cxx-runtime-probe.cpp", .data = "int main(){return 0;}\n" }) catch @panic("write cxx probe");
     // --verbose-link prints to stderr.
+    const runtime_optimize: std.builtin.OptimizeMode = if (optimize == .Debug) .ReleaseFast else optimize;
     const out = b.run(&.{
         "sh",
         "-c",
@@ -1030,8 +1038,8 @@ pub fn discoverZigCxxRuntime(b: *Build) ZigCxxRuntime {
             // native: crt1.o must match the host glibc the binary links
             // against (the generic target's crt1 references the pre-2.34
             // __libc_csu_* symbols).
-            "exec \"$0\" build-exe -target native -O ReleaseFast -lc++ --verbose-link -femit-bin={s}/cxx-runtime-probe {s}/cxx-runtime-probe.cpp 2>&1",
-            .{ dir_abs, dir_abs },
+            "exec \"$0\" build-exe -target native -O {s} -lc++ --verbose-link -femit-bin={s}/cxx-runtime-probe {s}/cxx-runtime-probe.cpp 2>&1",
+            .{ @tagName(runtime_optimize), dir_abs, dir_abs },
         ),
         b.graph.zig_exe,
     });
@@ -1511,7 +1519,7 @@ pub fn addLink(
     cg: *const Codegen,
     opts: Options,
 ) BunExe {
-    const cxxrt = discoverZigCxxRuntime(b);
+    const cxxrt = discoverZigCxxRuntime(b, opts.optimize);
 
     // Direct mold invocation: every input is explicit, so no compiler driver
     // is involved in the link at all.

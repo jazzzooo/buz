@@ -293,8 +293,6 @@ pub const Run = struct {
             }
         }
 
-        vm.transpiler.env.loadTracy();
-
         bun.http.experimental_http2_client_from_cli = ctx.runtime_options.experimental_http2_fetch;
         bun.http.experimental_http3_client_from_cli = ctx.runtime_options.experimental_http3_fetch;
         doPreconnect(ctx.runtime_options.preconnect);

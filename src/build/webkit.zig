@@ -16,7 +16,7 @@ const jsc_root = "vendor/webkit/Source/JavaScriptCore";
 
 const Named = struct { name: []const u8, file: LazyPath };
 
-pub fn addStep(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode) *Step.WriteFile {
+pub fn addStep(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.OptimizeMode) *Step.WriteFile {
     const arena = b.graph.arena;
     const cmake = readCMakeLists(b);
 
@@ -156,7 +156,7 @@ pub fn addStep(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode) *Step.WriteF
     };
 
     const wf1 = writeLayer(b, base.items, &.{.{ .name = "LLIntDesiredSettings.h", .file = settings_h }});
-    const settings_obj = extractorObject(b, deps, mode, cmake, "LLIntSettingsExtractor", wf1);
+    const settings_obj = extractorObject(b, deps, optimize, cmake, "LLIntSettingsExtractor", wf1);
 
     const offsets_h = blk: {
         const run = b.addSystemCommand(&.{"ruby"});
@@ -175,7 +175,7 @@ pub fn addStep(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode) *Step.WriteF
         .{ .name = "LLIntDesiredSettings.h", .file = settings_h },
         .{ .name = "LLIntDesiredOffsets.h", .file = offsets_h },
     });
-    const offsets_obj = extractorObject(b, deps, mode, cmake, "LLIntOffsetsExtractor", wf2);
+    const offsets_obj = extractorObject(b, deps, optimize, cmake, "LLIntOffsetsExtractor", wf2);
 
     const llint_assembly_h = blk: {
         const run = b.addSystemCommand(&.{"ruby"});
@@ -284,14 +284,14 @@ pub const Ctx = struct {
 /// WebKit sync updates them without touching this file. bmalloc splits into a
 /// C and a C++ archive because the module-level libc-header policy differs
 /// (see newCppLib in exe.zig).
-pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, derived_wf: *Step.WriteFile) Ctx {
+pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: std.builtin.OptimizeMode, derived_wf: *Step.WriteFile) Ctx {
     const arena = b.graph.arena;
     const cmake = readCMakeLists(b);
     const manifest = readManifest(b);
 
-    const bmalloc_c = newLib(b, deps, mode, "webkit-bmalloc-c", false, cmake);
-    const bmalloc_cxx = newLib(b, deps, mode, "webkit-bmalloc-cxx", true, cmake);
-    const wtf = newLib(b, deps, mode, "webkit-wtf", true, cmake);
+    const bmalloc_c = newLib(b, deps, optimize, "webkit-bmalloc-c", false, cmake);
+    const bmalloc_cxx = newLib(b, deps, optimize, "webkit-bmalloc-cxx", true, cmake);
+    const wtf = newLib(b, deps, optimize, "webkit-wtf", true, cmake);
 
     const bmalloc_includes = [_][]const u8{ "bmalloc", "bmalloc/bmalloc", "bmalloc/libpas/src/libpas" };
     const wtf_includes = [_][]const u8{ "WTF", "WTF/wtf", "WTF/wtf/dtoa", "WTF/wtf/fast_float", "WTF/wtf/persistence", "WTF/wtf/simdutf", "WTF/wtf/text", "WTF/wtf/text/icu", "WTF/wtf/threads", "WTF/wtf/unicode", "bmalloc" };
@@ -362,8 +362,8 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, derived_wf: 
     sync.has_side_effects = true;
     sync.step.name = "sync webkit-derived";
 
-    const jsc = newLib(b, deps, mode, "webkit-jsc", true, cmake);
-    const jsc_c = newLib(b, deps, mode, "webkit-jsc-c", false, cmake);
+    const jsc = newLib(b, deps, optimize, "webkit-jsc", true, cmake);
+    const jsc_c = newLib(b, deps, optimize, "webkit-jsc-c", false, cmake);
     for ([_]*Step.Compile{ jsc, jsc_c }) |lib| {
         lib.step.dependOn(&sync.step);
         const m = lib.root_module;
@@ -468,10 +468,10 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, derived_wf: 
     };
 }
 
-fn newLib(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, name: []const u8, is_cxx: bool, cmake: []const u8) *Step.Compile {
+fn newLib(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.OptimizeMode, name: []const u8, is_cxx: bool, cmake: []const u8) *Step.Compile {
     const mod = b.createModule(.{
         .target = exe.cppTarget(b, &.{}),
-        .optimize = if (mode == .debug) .Debug else .ReleaseFast,
+        .optimize = optimize,
         // Same libc++/libc policy as newCppLib in exe.zig.
         .link_libc = true,
         .link_libcpp = is_cxx,
@@ -575,12 +575,12 @@ fn writeLayer(b: *Build, base: []const Named, extra: []const Named) LazyPath {
 
 /// Target-compiled C++ whose object file the offlineasm scripts scan for
 /// magic-marker constant arrays; never linked or executed.
-fn extractorObject(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, cmake: []const u8, comptime name: []const u8, derived: LazyPath) *Step.Compile {
+fn extractorObject(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.OptimizeMode, cmake: []const u8, comptime name: []const u8, derived: LazyPath) *Step.Compile {
     const arena = b.graph.arena;
 
     const mod = b.createModule(.{
         .target = exe.cppTarget(b, &.{}),
-        .optimize = if (mode == .debug) .Debug else .ReleaseFast,
+        .optimize = optimize,
         // libc++, like every other C++ TU: the offsets it encodes must match
         // the real JSC compile.
         .link_libc = true,

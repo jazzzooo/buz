@@ -75,8 +75,6 @@ pub const Loader = struct {
             this.get("bamboo.buildKey")) != null;
     }
 
-    pub fn loadTracy(_: *const Loader) void {}
-
     pub fn getS3Credentials(this: *Loader) s3.S3Credentials {
         if (this.aws_credentials) |credentials| {
             return credentials;

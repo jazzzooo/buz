@@ -1783,9 +1783,6 @@ pub fn HiveRef(comptime T: type, comptime capacity: u16) type {
     };
 }
 
-pub const tracy = @import("./perf/tracy.zig");
-pub const trace = tracy.trace;
-
 pub fn openFileForPath(file_path: [:0]const u8) !std.Io.File {
     const O_PATH = if (comptime Environment.isLinux) O.PATH else O.RDONLY;
     const flags: u32 = O.CLOEXEC | O.NOCTTY | O_PATH;
