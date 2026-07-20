@@ -727,7 +727,7 @@ pub fn VersionType(comptime IntType: type) type {
         };
 
         pub const ParseResult = struct {
-            wildcard: Query.Token.Wildcard = .none,
+            wildcard: Query.Wildcard = .none,
             valid: bool = true,
             version: This.Partial = .{},
             len: u32 = 0,
@@ -878,15 +878,15 @@ pub fn VersionType(comptime IntType: type) type {
                         if (result.wildcard == .none) {
                             switch (part_i) {
                                 0 => {
-                                    result.wildcard = Query.Token.Wildcard.major;
+                                    result.wildcard = Query.Wildcard.major;
                                     part_i = 1;
                                 },
                                 1 => {
-                                    result.wildcard = Query.Token.Wildcard.minor;
+                                    result.wildcard = Query.Wildcard.minor;
                                     part_i = 2;
                                 },
                                 2 => {
-                                    result.wildcard = Query.Token.Wildcard.patch;
+                                    result.wildcard = Query.Wildcard.patch;
                                     part_i = 3;
                                 },
                                 else => {},
@@ -921,13 +921,13 @@ pub fn VersionType(comptime IntType: type) type {
             if (result.wildcard == .none) {
                 switch (part_i) {
                     0 => {
-                        result.wildcard = Query.Token.Wildcard.major;
+                        result.wildcard = Query.Wildcard.major;
                     },
                     1 => {
-                        result.wildcard = Query.Token.Wildcard.minor;
+                        result.wildcard = Query.Wildcard.minor;
                     },
                     2 => {
-                        result.wildcard = Query.Token.Wildcard.patch;
+                        result.wildcard = Query.Wildcard.patch;
                     },
                     else => {},
                 }

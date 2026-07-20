@@ -813,12 +813,8 @@ test("a version range made of hundreds of thousands of 'v' or '= ' prefix charac
 }, 30_000);
 
 test("a version range with hundreds of thousands of '||' or AND-ed comparators evaluates without crashing", async () => {
-  // Ranges are stored as linked lists: one node per "||" alternative and one
-  // node per space-separated AND comparator. Walking a very long chain must be
-  // iterative; a recursive traversal overflows the thread stack on a ~750KB
-  // range string and the child process dies with SIGSEGV instead of returning
-  // an answer. The chains are built inside the spawned script because a string
-  // this large cannot be passed as a single argv entry on Linux.
+  // The chains are built inside the spawned script because a string this large
+  // cannot be passed as a single argv entry on Linux.
   await using proc = Bun.spawn({
     cmd: [
       bunExe(),
@@ -829,7 +825,7 @@ test("a version range with hundreds of thousands of '||' or AND-ed comparators e
         const andChain = Array(n).fill(">1").join(" ");
         process.stdout.write(
           JSON.stringify([
-            // "2.0.0" matches none of the "1" alternatives, so every OR node is visited
+            // "2.0.0" matches none of the "1" alternatives, so every alternative is visited
             Bun.semver.satisfies("2.0.0", orChain),
             // a match at the very end of the OR chain is still found
             Bun.semver.satisfies("2.0.0", orChain + "||2"),

@@ -34,7 +34,7 @@ pub fn anyRangeSatisfies(this: *const Range) bool {
     return this.left.op == .gte and this.left.version.eql(.{});
 }
 
-pub fn initWildcard(version: Version, wildcard: Query.Token.Wildcard) Range {
+pub fn initWildcard(version: Version, wildcard: Query.Wildcard) Range {
     switch (wildcard) {
         .none => {
             return .{

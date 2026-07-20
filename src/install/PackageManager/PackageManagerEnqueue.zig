@@ -464,18 +464,13 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
             if (this.known_npm_aliases.get(name_hash)) |aliased| {
                 const group = dependency.version.value.npm.version;
                 const buf = this.lockfile.buffers.string_bytes.items;
-                var curr_list: ?*const Semver.Query.List = &aliased.value.npm.version.head;
-                while (curr_list) |queries| {
-                    var curr: ?*const Semver.Query = &queries.head;
-                    while (curr) |query| {
-                        if (group.satisfies(query.range.left.version, buf, buf) or group.satisfies(query.range.right.version, buf, buf)) {
-                            name = aliased.value.npm.name;
-                            name_hash = String.Builder.stringHash(this.lockfile.str(&name));
-                            break :version aliased;
-                        }
-                        curr = query.next;
+                const alias_group = &aliased.value.npm.version;
+                for (alias_group.ranges()) |range| {
+                    if (group.satisfies(range.left.version, buf, buf) or group.satisfies(range.right.version, buf, buf)) {
+                        name = aliased.value.npm.name;
+                        name_hash = String.Builder.stringHash(this.lockfile.str(&name));
+                        break :version aliased;
                     }
-                    curr_list = queries.next;
                 }
 
                 // fallthrough. a package that matches the name of an alias but does not match
@@ -764,8 +759,9 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
 
                                         // If it's an exact package version already living in the cache
                                         // We can skip the network request, even if it's beyond the caching period
-                                        if (version.tag == .npm and version.value.npm.version.isExact()) {
-                                            if (loaded_manifest.?.findByVersion(version.value.npm.version.head.head.range.left.version)) |find_result| {
+                                        const exact_version = if (version.tag == .npm) version.value.npm.version.getExactVersion() else null;
+                                        if (exact_version) |exact| {
+                                            if (loaded_manifest.?.findByVersion(exact)) |find_result| {
                                                 if (this.options.minimum_release_age_ms) |min_age_ms| {
                                                     if (!loaded_manifest.?.shouldExcludeFromAgeFilter(this.options.minimum_release_age_excludes) and Npm.PackageManifest.isPackageVersionTooRecent(find_result.package, min_age_ms)) {
                                                         const package_name = this.lockfile.str(&name);

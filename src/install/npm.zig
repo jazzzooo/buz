@@ -1611,11 +1611,10 @@ pub const PackageManifest = struct {
         };
         bun.debugAssert(this.pkg.has_extended_manifest);
 
-        const left = group.head.head.range.left;
         var newest_filtered: ?Semver.Version = null;
 
-        if (left.op == .eql) {
-            const result = this.findByVersion(left.version);
+        if (group.getExactVersion()) |exact_version| {
+            const result = this.findByVersion(exact_version);
             if (result) |r| {
                 if (isPackageVersionTooRecent(r.package, min_age_ms)) {
                     return .{ .err = .too_recent };
@@ -1625,13 +1624,14 @@ pub const PackageManifest = struct {
             return .{ .err = .not_found };
         }
 
+        const left = group.firstComparator();
         if (this.findByDistTag("latest")) |result| {
             if (group.satisfies(result.version, group_buf, this.string_buf)) {
                 if (isPackageVersionTooRecent(result.package, min_age_ms)) {
                     newest_filtered = result.version;
                 }
                 if (newest_filtered == null) {
-                    if (group.flags.isSet(Semver.Query.Group.Flags.pre)) {
+                    if (group.flags.contains(.pre)) {
                         if (left.version.order(result.version, group_buf, this.string_buf) == .eq) {
                             return .{ .found = result };
                         }
@@ -1653,7 +1653,7 @@ pub const PackageManifest = struct {
             return result;
         }
 
-        if (group.flags.isSet(Semver.Query.Group.Flags.pre)) {
+        if (group.flags.contains(.pre)) {
             if (this.searchVersionList(
                 this.pkg.prereleases.keys.get(this.versions),
                 this.pkg.prereleases.values.get(this.package_versions),
@@ -1674,15 +1674,12 @@ pub const PackageManifest = struct {
     }
 
     pub fn findBestVersion(this: *const PackageManifest, group: Semver.Query.Group, group_buf: string) ?FindResult {
-        const left = group.head.head.range.left;
-        // Fast path: exact version
-        if (left.op == .eql) {
-            return this.findByVersion(left.version);
-        }
+        if (group.getExactVersion()) |exact_version| return this.findByVersion(exact_version);
 
+        const left = group.firstComparator();
         if (this.findByDistTag("latest")) |result| {
             if (group.satisfies(result.version, group_buf, this.string_buf)) {
-                if (group.flags.isSet(Semver.Query.Group.Flags.pre)) {
+                if (group.flags.contains(.pre)) {
                     if (left.version.order(result.version, group_buf, this.string_buf) == .eq) {
                         // if prerelease, use latest if semver+tag match range exactly
                         return result;
@@ -1710,7 +1707,7 @@ pub const PackageManifest = struct {
             }
         }
 
-        if (group.flags.isSet(Semver.Query.Group.Flags.pre)) {
+        if (group.flags.contains(.pre)) {
             const prereleases = this.pkg.prereleases.keys.get(this.versions);
             var i = prereleases.len;
             while (i > 0) : (i -= 1) {
