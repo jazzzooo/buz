@@ -198,11 +198,10 @@ pub const BunExe = struct {
 /// Resolve all zon dependencies. Returns null while lazy fetches are pending;
 /// every missing dependency is marked before returning, so the runner fetches
 /// them in one round and re-runs configure.
-pub fn resolveDeps(b: *Build, mode: Mode) ?DepPkgs {
+pub fn resolveDeps(b: *Build) ?DepPkgs {
     const arena = b.graph.arena;
     var ok = true;
     const bootstrap = lazyDep(b, "bun_bootstrap", &ok);
-    _ = mode;
     const icu = lazyDep(b, "icu", &ok);
     const nodejs = lazyDep(b, "nodejs_headers", &ok);
     const mold = lazyDep(b, "mold", &ok);

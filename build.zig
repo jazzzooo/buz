@@ -220,7 +220,7 @@ pub fn build(b: *Build) !void {
     }
     // Null = lazy fetches pending: end configuration cleanly so the runner
     // fetches the marked dependencies and re-runs it.
-    const resolved = bun_exe.resolveDeps(b, mode) orelse return;
+    const resolved = bun_exe.resolveDeps(b) orelse return;
     const pkgs = b.graph.arena.create(bun_exe.DepPkgs) catch @panic("OOM");
     pkgs.* = resolved;
     const cg = bun_exe.addCodegen(b, pkgs, mode);
