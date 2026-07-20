@@ -274,9 +274,12 @@ pub fn downloadToPath(this: *const CompileTarget, io: std.Io, env: *bun.DotEnv.L
                     bun.sys.moveFileZ(.fromStdDir(tmpdir), if (this.os == .windows) "bun.exe" else "bun", bun.invalid_fd, dest_z) catch {
                         if (!did_retry) {
                             did_retry = true;
-                            const dirname = bun.path.dirname(dest_z, .loose);
-                            if (dirname.len > 0) {
-                                bun.makePath(std.Io.Dir.cwd(), io, dirname) catch {};
+                            const dirname = if (this.os == .windows)
+                                std.fs.path.dirnameWindows(dest_z)
+                            else
+                                std.fs.path.dirnamePosix(dest_z);
+                            if (dirname) |dir| {
+                                bun.makePath(std.Io.Dir.cwd(), io, dir) catch {};
                                 continue;
                             }
 

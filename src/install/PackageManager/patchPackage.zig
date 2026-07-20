@@ -793,8 +793,7 @@ fn detachModuleFolderFromSharedStore(io: std.Io, module_folder: []const u8) void
             }
             // Re-create the now-missing path segments below the removed
             // symlink so `module_folder`'s parent exists for the copy.
-            const parent = bun.path.dirname(native, .auto);
-            if (parent.len > 0) {
+            if (std.fs.path.dirname(native)) |parent| {
                 FD.cwd().makePath(io, u8, parent) catch {};
             }
             return;

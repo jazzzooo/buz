@@ -109,22 +109,13 @@ pub const JSBundler = struct {
                 defer bun.path_buffer_pool.put(source_file_buf);
                 const normalized_source_file = bun.path.pathToPosixBuf(u8, abs_source_file, source_file_buf);
 
-                // Extract directory from source_file using posix path handling
-                // For "/entry.js", we want "/"; for "/src/index.js", we want "/src/"
-                // For "C:/foo/bar.js", we want "C:/foo"
                 const buf = bun.path_buffer_pool.get();
                 defer bun.path_buffer_pool.put(buf);
-                const source_dir = bun.path.dirname(normalized_source_file, .posix);
-                // If dirname returns empty but path starts with drive letter, extract the drive + root
-                const effective_source_dir = if (source_dir.len == 0)
-                    (if (normalized_source_file.len >= 3 and normalized_source_file[1] == ':' and normalized_source_file[2] == '/')
-                        normalized_source_file[0..3] // "C:/"
-                    else if (normalized_source_file.len > 0 and normalized_source_file[0] == '/')
-                        "/"
-                    else
-                        Fs.FileSystem.instance.top_level_dir)
-                else
-                    source_dir;
+                const parsed = std.fs.path.parsePathWindows(u8, normalized_source_file);
+                const effective_source_dir = switch (parsed.kind) {
+                    .drive_absolute, .unc_absolute, .root_local_device, .local_device => std.fs.path.dirnameWindows(normalized_source_file) orelse parsed.root,
+                    else => std.fs.path.dirnamePosix(normalized_source_file) orelse Fs.FileSystem.instance.top_level_dir,
+                };
                 // Use .loose to preserve Windows drive letters, then normalize in-place on Windows
                 const joined_len = bun.path.joinAbsStringBuf(effective_source_dir, buf, &.{specifier}, .loose).len;
                 if (bun.Environment.isWindows) {

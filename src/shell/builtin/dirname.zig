@@ -9,7 +9,9 @@ pub fn start(this: *@This()) Yield {
 
     while (iter.next()) |item| {
         const arg = std.mem.sliceTo(item, 0);
-        _ = this.print(bun.path.dirname(arg, .posix));
+        const dir = std.fs.path.dirnamePosix(arg) orelse
+            if (std.fs.path.isAbsolutePosix(arg)) "/" else ".";
+        _ = this.print(dir);
         _ = this.print("\n");
     }
 

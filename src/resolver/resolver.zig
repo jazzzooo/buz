@@ -1743,7 +1743,7 @@ pub const Resolver = struct {
     /// to `./hello.js` or `./hello/index.js`
     pub fn bustDirCacheFromSpecifier(r: *ThisResolver, import_source_file: []const u8, specifier: []const u8) bool {
         if (std.fs.path.isAbsolute(specifier)) {
-            const dir = bun.path.dirname(specifier, .auto);
+            const dir = std.fs.path.dirname(specifier) orelse specifier;
             const a = r.bustDirCache(dir);
             const b = r.bustDirCache(specifier);
             return a or b;
@@ -1754,8 +1754,8 @@ pub const Resolver = struct {
         if (!std.fs.path.isAbsolute(import_source_file))
             return false;
 
-        const joined = bun.path.joinAbsString(bun.path.dirname(import_source_file, .auto), &.{specifier}, .auto);
-        const dir = bun.path.dirname(joined, .auto);
+        const joined = bun.path.joinAbsString(std.fs.path.dirname(import_source_file) orelse import_source_file, &.{specifier}, .auto);
+        const dir = std.fs.path.dirname(joined) orelse joined;
 
         const a = r.bustDirCache(dir);
         const b = r.bustDirCache(joined);

@@ -4801,7 +4801,7 @@ pub const NodeFS = struct {
 
             switch (comptime ExpectedType) {
                 bun.jsc.Node.Dirent => {
-                    const path_u8 = bun.path.dirname(bun.path.join(&[_]string{ root_basename, name_to_copy }, .auto), .auto);
+                    const path_u8 = std.fs.path.dirname(bun.path.join(&[_]string{ root_basename, name_to_copy }, .auto)) orelse "";
                     if (dirent_path_prev.isEmpty() or !bun.strings.eql(dirent_path_prev.byteSlice(), path_u8)) {
                         dirent_path_prev.deref();
                         dirent_path_prev = bun.String.cloneUTF8(path_u8);
@@ -4964,7 +4964,7 @@ pub const NodeFS = struct {
 
                 switch (comptime ExpectedType) {
                     bun.jsc.Node.Dirent => {
-                        const path_u8 = bun.path.dirname(bun.path.join(&[_]string{ root_basename, name_to_copy }, .auto), .auto);
+                        const path_u8 = std.fs.path.dirname(bun.path.join(&[_]string{ root_basename, name_to_copy }, .auto)) orelse "";
                         if (dirent_path_prev.isEmpty() or !bun.strings.eql(dirent_path_prev.byteSlice(), path_u8)) {
                             dirent_path_prev.deref();
                             dirent_path_prev = jsc.WebCore.encoding.toBunString(strings.withoutNTPrefix(std.meta.Child(@TypeOf(path_u8)), path_u8), args.encoding);
@@ -6370,7 +6370,7 @@ pub const NodeFS = struct {
 
         var cwd_buf: bun.PathBuffer = undefined;
         var resolved_buf: bun.PathBuffer = undefined;
-        const src_dir = bun.path.dirname(src, .posix);
+        const src_dir = std.fs.path.dirnamePosix(src) orelse "";
         const cwd = bun.getcwd(&cwd_buf) catch {
             // If we can't resolve cwd, preserve the link target as-is rather
             // than pointing the copied link back at the source path.
@@ -6519,7 +6519,7 @@ pub const NodeFS = struct {
             const first_try = ret.errnoSysP(c.copyfile(src, dest, null, mode_), .copyfile, src) orelse return ret.success;
             if (first_try == .err and first_try.err.errno == @backingInt(Syscall.E.NOENT)) {
                 const mkdir_result = this.mkdirRecursive(.{
-                    .path = PathLike{ .string = PathString.init(bun.path.dirname(dest, .auto)) },
+                    .path = PathLike{ .string = PathString.init(std.fs.path.dirname(dest) orelse "") },
                     .recursive = true,
                 });
                 if (mkdir_result == .err) return .{ .err = mkdir_result.err };
@@ -6796,7 +6796,13 @@ pub const NodeFS = struct {
                     switch (err) {
                         .FILE_EXISTS, .ALREADY_EXISTS => errpath = dest,
                         .PATH_NOT_FOUND => {
-                            bun.makePathW(std.Io.Dir.cwd(), this.vm.?.io, bun.path.dirnameW(dest)) catch {};
+                            const parent = parent: {
+                                var it = std.fs.path.ComponentIterator(.windows, u16).init(dest);
+                                _ = it.last() orelse break :parent null;
+                                const up = it.previous() orelse break :parent it.root();
+                                break :parent up.path;
+                            };
+                            if (parent) |dir| bun.makePathW(std.Io.Dir.cwd(), this.vm.?.io, dir) catch {};
                             const second_try = windows.CopyFileW(src, dest, windows.BOOL.fromBool(mode.shouldntOverwrite()));
                             if (second_try.toBool()) return ret.success;
                             err = windows.GetLastError();

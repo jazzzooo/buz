@@ -360,7 +360,7 @@ const ServePlugins = struct {
     fn loadAndResolvePlugins(this: *ServePlugins, global: *jsc.JSGlobalObject) bun.JSError!void {
         bun.assert(this.state == .unqueued);
         const plugin_list = this.state.unqueued;
-        const bunfig_folder = bun.path.dirname(global.bunVM().transpiler.options.bunfig_path, .auto);
+        const bunfig_folder = std.fs.path.dirname(global.bunVM().transpiler.options.bunfig_path) orelse "";
 
         this.ref();
         defer this.deref();

@@ -736,7 +736,7 @@ pub const Bin = extern struct {
             };
             defer bunx_file.close();
 
-            const rel_target = path.relativeBufZ(this.rel_buf, path.dirname(abs_dest, .auto), abs_target);
+            const rel_target = path.relativeBufZ(this.rel_buf, std.fs.path.dirname(abs_dest).?, abs_target);
             bun.assertWithLocation(strings.hasPrefixComptime(rel_target, "..\\"), @src());
 
             const rel_target_w = strings.toWPathNormalized(&target_buf, rel_target["..\\".len..]);
@@ -804,7 +804,7 @@ pub const Bin = extern struct {
                 }
             }
 
-            const abs_dest_dir = path.dirname(abs_dest, .auto);
+            const abs_dest_dir = std.fs.path.dirname(abs_dest).?;
             const rel_target = path.relativeBufZ(this.rel_buf, abs_dest_dir, abs_target);
 
             bun.assertWithLocation(strings.hasPrefixComptime(rel_target, ".."), @src());

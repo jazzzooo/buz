@@ -103,7 +103,7 @@ pub fn processFileList(
                 it = dep.next.unwrap();
 
                 if ((dev.server_transpiler.resolver.resolve(
-                    bun.path.dirname(dep.source_file_path, .auto),
+                    std.fs.path.dirname(dep.source_file_path) orelse "",
                     dep.specifier,
                     .stmt,
                 ) catch null) != null) {

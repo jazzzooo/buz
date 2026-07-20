@@ -142,7 +142,7 @@ pub fn processNamesArray(
         );
 
         // skip root package.json
-        if (strings.eqlLong(bun.path.dirname(abs_package_json_path, .auto), source.path.name.dir, true)) continue;
+        if (strings.eqlLong(std.fs.path.dirname(abs_package_json_path) orelse "", source.path.name.dir, true)) continue;
 
         const workspace_entry = processWorkspaceName(
             allocator,
@@ -223,8 +223,7 @@ pub fn processNamesArray(
             };
 
             var walker: GlobWalker = .{};
-            var cwd = bun.path.dirname(source.path.text, .auto);
-            cwd = if (bun.strings.eql(cwd, "")) bun.fs.FileSystem.instance.top_level_dir else cwd;
+            const cwd = std.fs.path.dirname(source.path.text) orelse bun.fs.FileSystem.instance.top_level_dir;
             if ((try walker.initWithCwd(&arena, glob_pattern, cwd, false, false, false, false, true)).asErr()) |e| {
                 log.addErrorFmt(
                     source,
@@ -265,7 +264,7 @@ pub fn processNamesArray(
                     return error.GlobError;
                 },
             }) |matched_path| {
-                const entry_dir: []const u8 = Path.dirname(matched_path, .auto);
+                const entry_dir = std.fs.path.dirname(matched_path) orelse "";
 
                 // skip root package.json
                 if (strings.eqlComptime(matched_path, "package.json")) continue;

@@ -1311,8 +1311,7 @@ fn resolvePath(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, pat
     defer srcloc.str.deref();
     const caller_utf8 = srcloc.str.toUTF8(bun.default_allocator);
     defer caller_utf8.deinit();
-    const raw_dir = bun.path.dirname(caller_utf8.slice(), .auto);
-    const source_dir = if (raw_dir.len == 0) "." else raw_dir;
+    const source_dir = std.fs.path.dirname(caller_utf8.slice()) orelse ".";
     var resolved = vm.transpiler.resolver.resolve(source_dir, path, .entry_point_run) catch return error.ModuleNotFound;
     const entry_path = resolved.path() orelse return error.ModuleNotFound;
     return bun.default_allocator.dupeSentinel(u8, entry_path.text, 0);

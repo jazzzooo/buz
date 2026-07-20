@@ -241,7 +241,7 @@ pub const Lookup = struct {
         }
 
         if (std.fs.path.isAbsolute(base_filename)) {
-            const dir = bun.path.dirname(base_filename, .auto);
+            const dir = std.fs.path.dirname(base_filename) orelse base_filename;
             const resolved = bun.handleOom(std.fs.path.resolve(bun.default_allocator, &.{ dir, name }));
             defer bun.default_allocator.free(resolved);
             return bun.String.cloneUTF8(resolved);
@@ -296,7 +296,7 @@ pub const Lookup = struct {
 
             var buf: bun.PathBuffer = undefined;
             const normalized = bun.path.joinAbsStringBufZ(
-                bun.path.dirname(base_filename, .auto),
+                std.fs.path.dirname(base_filename) orelse "",
                 &buf,
                 &.{name},
                 .loose,

@@ -92,7 +92,7 @@ pub const PatchFile = struct {
                 },
                 .file_creation => {
                     const filepath = bun.PathString.init(bun.handleOom(arena.allocator().dupeSentinel(u8, part.file_creation.path, 0)));
-                    const filedir = bun.path.dirname(filepath.slice(), .auto);
+                    const filedir = std.fs.path.dirname(filepath.slice()) orelse "";
                     const mode = part.file_creation.mode;
 
                     var nodefs = bun.api.node.fs.NodeFS{};

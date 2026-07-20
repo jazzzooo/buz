@@ -71,11 +71,7 @@ pub const PmPkgCommand = struct {
                 return try allocator.dupe(u8, pkg_path);
             }
 
-            const parent = bun.path.dirname(current_dir, .auto);
-            if (strings.eql(parent, current_dir)) {
-                break;
-            }
-            current_dir = parent;
+            current_dir = std.fs.path.dirname(current_dir) orelse break;
         }
 
         Output.errGeneric("No package.json found", .{});
@@ -304,8 +300,7 @@ pub const PmPkgCommand = struct {
                     switch (value.data) {
                         .e_string => |str| {
                             const bin_path = str.slice(ctx.allocator);
-                            var pkg_dir = bun.path.dirname(path, .auto);
-                            if (pkg_dir.len == 0) pkg_dir = cwd;
+                            const pkg_dir = std.fs.path.dirname(path) orelse cwd;
                             var buf: bun.PathBuffer = undefined;
                             const full_path = bun.path.joinAbsStringBufZ(pkg_dir, &buf, &.{bin_path}, .auto);
 

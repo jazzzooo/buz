@@ -194,11 +194,7 @@ pub const PmVersionCommand = struct {
                 return try allocator.dupe(u8, current_dir);
             }
 
-            const parent = bun.path.dirname(current_dir, .auto);
-            if (strings.eql(parent, current_dir)) {
-                break;
-            }
-            current_dir = parent;
+            current_dir = std.fs.path.dirname(current_dir) orelse break;
         }
 
         return try allocator.dupe(u8, start_dir);

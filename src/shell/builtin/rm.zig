@@ -186,12 +186,8 @@ pub noinline fn next(this: *Rm) Yield {
                                     for (filepath_args) |filepath| {
                                         const path = filepath[0..bun.len(filepath)];
                                         const resolved_path = if (ResolvePath.Platform.auto.isAbsolute(path)) path else bun.path.join(&[_][]const u8{ cwd, path }, .auto);
-                                        const is_root = brk: {
-                                            const normalized = bun.path.normalizeString(resolved_path, false, .auto);
-                                            const dirname = ResolvePath.dirname(normalized, .auto);
-                                            const is_root = std.mem.eql(u8, dirname, "");
-                                            break :brk is_root;
-                                        };
+                                        const normalized = bun.path.normalizeString(resolved_path, false, .auto);
+                                        const is_root = std.fs.path.dirname(normalized) == null;
 
                                         if (is_root) {
                                             if (this.bltn().stderr.needsIO()) |safeguard| {

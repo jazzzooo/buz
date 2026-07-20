@@ -63,8 +63,8 @@ pub fn trackResolutionFailure(store: *DirectoryWatchStore, import_source: []cons
 
     const buf = bun.path_buffer_pool.get();
     defer bun.path_buffer_pool.put(buf);
-    const joined = bun.path.joinAbsStringBuf(bun.path.dirname(import_source, .auto), buf, &.{specifier}, .auto);
-    const dir = bun.path.dirname(joined, .auto);
+    const joined = bun.path.joinAbsStringBuf(std.fs.path.dirname(import_source) orelse "", buf, &.{specifier}, .auto);
+    const dir = std.fs.path.dirname(joined) orelse "";
 
     // The `import_source` parameter is not a stable string. Since the
     // import source will be added to IncrementalGraph anyways, this is a

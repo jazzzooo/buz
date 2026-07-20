@@ -464,34 +464,6 @@ pub fn relativeNormalized(from: []const u8, to: []const u8, comptime platform: P
     return relativeNormalizedBuf(relative_to_common_path_buf(), from, to, platform, always_copy);
 }
 
-pub fn dirname(str: []const u8, comptime platform: Platform) []const u8 {
-    switch (platform) {
-        .loose => {
-            const separator = platform.lastIndexOfSeparator(u8, str) orelse return "";
-            return str[0..separator];
-        },
-        .posix => {
-            const separator = platform.lastIndexOfSeparator(u8, str) orelse return "";
-            if (separator == 0) return "/";
-            if (separator == str.len - 1) return dirname(str[0 .. str.len - 1], platform);
-            return str[0..separator];
-        },
-        .windows => {
-            const separator = platform.lastIndexOfSeparator(u8, str) orelse return std.fs.path.diskDesignatorWindows(str);
-            return str[0..separator];
-        },
-        .nt => @compileError("not implemented"),
-    }
-}
-
-pub fn dirnameW(str: []const u16) []const u16 {
-    const separator = std.mem.lastIndexOfAny(u16, str, strings.literal(u16, "/\\")) orelse {
-        const parsed = std.fs.path.parsePathWindows(u16, str);
-        return if (parsed.kind == .drive_relative) parsed.root else &.{};
-    };
-    return str[0..separator];
-}
-
 pub fn relative(from: []const u8, to: []const u8) []const u8 {
     return relativePlatform(from, to, .auto, false);
 }

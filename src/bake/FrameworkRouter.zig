@@ -571,7 +571,7 @@ pub const Style = union(enum) {
 
         if (kind == .layout and !allow_layouts) return null;
 
-        const dirname = bun.path.dirname(without_ext, .posix);
+        const dirname = std.fs.path.dirnamePosix(without_ext) orelse "";
         if (dirname.len <= 1) return .{
             .kind = kind,
             .parts = &.{},
