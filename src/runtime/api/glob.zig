@@ -21,39 +21,20 @@ const ScanOpts = struct {
         defer cwd_string.deref();
         if (cwd_string.isEmpty()) return "";
 
-        const cwd_str: []const u8 = cwd_str: {
-            const cwd_utf8 = cwd_string.toUTF8WithoutRef(allocator);
-
-            // If its absolute return as is
-            if (ResolvePath.Platform.auto.isAbsolute(cwd_utf8.slice())) {
-                break :cwd_str (try cwd_utf8.cloneIfBorrowed(allocator)).slice();
-            }
-
-            defer cwd_utf8.deinit();
-            var path_buf2: [bun.MAX_PATH_BYTES * 2]u8 = undefined;
-
-            if (!absolute) {
-                const parts: []const []const u8 = &.{cwd_utf8.slice()};
-                const cwd_str = ResolvePath.joinStringBuf(&path_buf2, parts, .auto);
-                break :cwd_str try allocator.dupe(u8, cwd_str);
-            }
-
-            // Convert to an absolute path
+        const cwd_utf8 = cwd_string.toUTF8WithoutRef(allocator);
+        defer cwd_utf8.deinit();
+        const cwd = cwd_utf8.slice();
+        const cwd_str = if (absolute and !std.fs.path.isAbsolute(cwd)) cwd_str: {
             var path_buf: bun.PathBuffer = undefined;
-            const cwd = switch (bun.sys.getcwd((&path_buf))) {
-                .result => |cwd| cwd,
+            const process_cwd = switch (bun.sys.getcwd(&path_buf)) {
+                .result => |result| result,
                 .err => |err| {
                     const errJs = try err.toJS(globalThis);
                     return globalThis.throwValue(errJs);
                 },
             };
-
-            const cwd_str = ResolvePath.joinStringBuf(&path_buf2, &[_][]const u8{
-                cwd,
-                cwd_utf8.slice(),
-            }, .auto);
-            break :cwd_str try allocator.dupe(u8, cwd_str);
-        };
+            break :cwd_str try std.fs.path.resolve(allocator, &.{ process_cwd, cwd });
+        } else try std.fs.path.resolve(allocator, &.{cwd});
 
         if (cwd_str.len > bun.MAX_PATH_BYTES) {
             return globalThis.throw("{s}: invalid `cwd`, longer than {d} bytes", .{ fnName, bun.MAX_PATH_BYTES });
@@ -380,7 +361,6 @@ pub fn match(this: *Glob, globalThis: *JSGlobalObject, callframe: *jsc.CallFrame
 
 const string = []const u8;
 
-const ResolvePath = @import("../../paths/resolve_path.zig");
 const Syscall = @import("../../sys/sys.zig");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
