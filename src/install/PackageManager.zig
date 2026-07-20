@@ -1,5 +1,5 @@
 cache_directory_: ?std.Io.Dir = null,
-cache_directory_path: stringZ = "",
+cache_directory_path: string = "",
 root_dir: *Fs.FileSystem.DirEntry,
 allocator: std.mem.Allocator,
 log: *logger.Log,

@@ -399,7 +399,7 @@ pub const Framework = struct {
         }
 
         for (clone.file_system_router_types) |*fsr| {
-            fsr.root = try arena.dupe(u8, bun.path.joinAbs(server.fs.top_level_dir, .auto, fsr.root));
+            fsr.root = try std.fs.path.resolve(arena, &.{ server.fs.top_level_dir, fsr.root });
             if (fsr.entry_client) |*entry_client| f.resolveHelper(client, entry_client, &had_errors, "client side entrypoint");
             f.resolveHelper(client, &fsr.entry_server, &had_errors, "server side entrypoint");
         }

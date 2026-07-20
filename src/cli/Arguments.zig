@@ -456,7 +456,7 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
     if (args.option("--cwd")) |cwd_arg| {
         cwd = brk: {
             var outbuf: bun.PathBuffer = undefined;
-            const out = bun.path.joinAbs(try bun.getcwd(&outbuf), .loose, cwd_arg);
+            const out = bun.path.joinAbsString(try bun.getcwd(&outbuf), &.{cwd_arg}, .loose);
             bun.sys.chdir("", out).unwrap() catch |err| {
                 Output.err(err, "Could not change directory to \"{s}\"\n", .{cwd_arg});
                 Global.exit(1);
@@ -726,7 +726,7 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
     }
 
     opts.tsconfig_override = if (args.option("--tsconfig-override")) |ts|
-        resolve_path.joinAbsString(cwd, &[_]string{ts}, .auto)
+        try std.fs.path.resolve(allocator, &.{ cwd, ts })
     else
         null;
 

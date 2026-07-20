@@ -242,7 +242,9 @@ pub const Lookup = struct {
 
         if (std.fs.path.isAbsolute(base_filename)) {
             const dir = bun.path.dirname(base_filename, .auto);
-            return bun.String.cloneUTF8(bun.path.joinAbs(dir, .auto, name));
+            const resolved = bun.handleOom(std.fs.path.resolve(bun.default_allocator, &.{ dir, name }));
+            defer bun.default_allocator.free(resolved);
+            return bun.String.cloneUTF8(resolved);
         }
 
         return bun.String.init(name);

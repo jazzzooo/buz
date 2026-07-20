@@ -645,7 +645,7 @@ const Linux = struct {
 
                     // Build the path relative to this owner's root.
                     const rel: []const u8 = if (watcher.is_file)
-                        bun.path.basename(watcher.path)
+                        std.fs.path.basename(watcher.path)
                     else if (owner.subpath.len == 0)
                         name
                     else if (name.len == 0)
@@ -926,7 +926,7 @@ const Kqueue = struct {
                 // kqueue has no filenames. For a file watch, report the basename; for a
                 // directory, report the subpath (empty for root → caller re-scans).
                 const rel: []const u8 = if (entry.is_file and entry.subpath.len == 0)
-                    bun.path.basename(watcher.path)
+                    std.fs.path.basename(watcher.path)
                 else
                     entry.subpath;
 

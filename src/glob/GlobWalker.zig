@@ -467,7 +467,7 @@ pub fn GlobWalker_(
                     var starting_component_idx = this.walker.basename_excluding_special_syntax_component_idx;
 
                     if (path_without_special_syntax.len == 0) {
-                        path_without_special_syntax = if (!bun.Environment.isWindows) "/" else ResolvePath.windowsFilesystemRoot(this.walker.cwd);
+                        path_without_special_syntax = if (!bun.Environment.isWindows) "/" else std.fs.path.parsePathWindows(u8, this.walker.cwd).root;
                     } else {
                         // Skip the components associated with the literal path
                         starting_component_idx += 1;

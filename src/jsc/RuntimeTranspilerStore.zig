@@ -45,7 +45,7 @@ pub fn dumpSourceStringFailiable(vm: *VirtualMachine, specifier: string, written
     if (std.fs.path.dirname(specifier)) |dir_path| {
         const root_len = switch (Environment.os) {
             else => "/".len,
-            .windows => bun.path.windowsFilesystemRoot(dir_path).len,
+            .windows => std.fs.path.parsePathWindows(u8, dir_path).root.len,
         };
         var parent = try bun.MakePath.makeOpenPath(vm.io, dir, dir_path[root_len..], .{});
         defer parent.close(vm.io);

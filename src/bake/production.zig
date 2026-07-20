@@ -283,7 +283,8 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
     };
 
     for (options.framework.file_system_router_types) |fsr| {
-        const joined_root = bun.path.joinAbs(cwd, .auto, fsr.root);
+        const joined_root = try std.fs.path.resolve(allocator, &.{ cwd, fsr.root });
+        defer allocator.free(joined_root);
         const entry = server_transpiler.resolver.readDirInfoIgnoreError(joined_root) orelse
             continue;
         try router_types.append(allocator, .{
@@ -833,11 +834,12 @@ pub export fn BakeProdResolve(global: *jsc.JSGlobalObject, a_str: bun.String, sp
     if (Environment.allow_assert)
         bun.assert(bun.strings.hasPrefix(referrer.slice(), "bake:"));
 
-    return bun.String.createFormat("bake:{s}", .{bun.path.joinAbs(
+    const resolved = std.fs.path.resolvePosix(alloc, &.{
         bun.Dirname.dirname(u8, referrer.slice()[5..]) orelse referrer.slice()[5..],
-        .posix, // force posix paths in bake
         specifier.slice(),
-    )}) catch return bun.String.dead;
+    }) catch return bun.String.dead;
+    defer alloc.free(resolved);
+    return bun.String.createFormat("bake:{s}", .{resolved}) catch return bun.String.dead;
 }
 
 /// After a production bundle is generated, prerendering needs to be able to

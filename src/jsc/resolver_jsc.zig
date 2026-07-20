@@ -44,7 +44,7 @@ pub fn nodeModulePathsJSValue(in_str: bun.String, globalObject: *bun.jsc.JSGloba
         .auto,
     );
     const root_index = switch (bun.Environment.os) {
-        .windows => bun.path.windowsFilesystemRoot(full_path).len,
+        .windows => std.fs.path.parsePathWindows(u8, full_path).root.len,
         else => 1,
     };
     var root_path: []const u8 = full_path[0..root_index];

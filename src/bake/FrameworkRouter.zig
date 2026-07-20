@@ -1184,9 +1184,7 @@ pub const JSFrameworkRouter = struct {
         var style = try Style.fromJS(try opts.getOptional(global, "style", JSValue) orelse .js_undefined, global);
         errdefer style.deinit();
 
-        const abs_root = try bun.default_allocator.dupe(u8, bun.strings.withoutTrailingSlash(
-            bun.path.joinAbs(bun.fs.FileSystem.instance.top_level_dir, .auto, root.slice()),
-        ));
+        const abs_root = try std.fs.path.resolve(bun.default_allocator, &.{ bun.fs.FileSystem.instance.top_level_dir, root.slice() });
         errdefer bun.default_allocator.free(abs_root);
 
         const types = try bun.default_allocator.dupe(Type, &.{.{

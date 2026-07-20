@@ -1137,7 +1137,12 @@ pub fn normalizePathWindows(
         if (path.len > buf.len -| (if (opts.add_nt_prefix) nt_prefix_headroom else 2)) {
             return name_too_long;
         }
-        const norm = bun.path.normalizeStringGenericTZ(u16, path, buf, .{ .add_nt_prefix = opts.add_nt_prefix, .zero_terminate = true });
+        const norm = bun.path.normalizeStringGenericTZ(u16, path, buf, .{
+            .add_nt_prefix = opts.add_nt_prefix,
+            .path_type = .windows,
+            .separator = std.fs.path.sep_windows,
+            .zero_terminate = true,
+        });
         return .{ .result = norm };
     }
 
@@ -1166,8 +1171,10 @@ pub fn normalizePathWindows(
         } };
     };
 
-    if (path.len >= 2 and bun.path.isDriveLetterT(u16, path[0]) and path[1] == ':') {
-        path = path[2..];
+    const parsed = std.fs.path.parsePathWindows(u16, path);
+    if (parsed.kind == .drive_absolute or parsed.kind == .drive_relative) {
+        const volume_len = parsed.root.len - @intFromBool(parsed.kind == .drive_absolute);
+        path = path[volume_len..];
     }
 
     const buf1 = bun.w_path_buffer_pool.get();
@@ -1179,7 +1186,12 @@ pub fn normalizePathWindows(
     @memcpy(buf1[0..base_path.len], base_path);
     buf1[base_path.len] = '\\';
     @memcpy(buf1[base_path.len + 1 .. joined_len], path);
-    const norm = bun.path.normalizeStringGenericTZ(u16, buf1[0..joined_len], buf, .{ .add_nt_prefix = true, .zero_terminate = true });
+    const norm = bun.path.normalizeStringGenericTZ(u16, buf1[0..joined_len], buf, .{
+        .add_nt_prefix = true,
+        .path_type = .windows,
+        .separator = std.fs.path.sep_windows,
+        .zero_terminate = true,
+    });
     return .{
         .result = norm,
     };

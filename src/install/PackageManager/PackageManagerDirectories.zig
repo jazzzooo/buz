@@ -122,7 +122,7 @@ noinline fn ensureCacheDirectory(this: *PackageManager) std.Io.Dir {
     loop: while (true) {
         if (this.options.enable.cache) {
             const cache_dir = fetchCacheDirectoryPath(this.env, &this.options);
-            this.cache_directory_path = bun.handleOom(this.allocator.dupeSentinel(u8, cache_dir.path, 0));
+            this.cache_directory_path = bun.handleOom(this.allocator.dupe(u8, cache_dir.path));
 
             return bun.MakePath.makeOpenPath(this.io, std.Io.Dir.cwd(), cache_dir.path, .{}) catch {
                 this.options.enable.cache = false;
@@ -131,14 +131,14 @@ noinline fn ensureCacheDirectory(this: *PackageManager) std.Io.Dir {
             };
         }
 
-        this.cache_directory_path = this.allocator.dupeSentinel(u8, Path.joinAbsString(
-            Fs.FileSystem.instance.top_level_dir,
+        this.cache_directory_path = std.fs.path.resolve(
+            this.allocator,
             &.{
+                Fs.FileSystem.instance.top_level_dir,
                 "node_modules",
                 ".cache",
             },
-            .auto,
-        ), 0) catch |err| bun.handleOom(err);
+        ) catch |err| bun.handleOom(err);
 
         return bun.MakePath.makeOpenPath(this.io, std.Io.Dir.cwd(), "node_modules/.cache", .{}) catch |err| {
             Output.prettyErrorln("<r><red>error<r>: bun is unable to write files: {s}", .{@errorName(err)});

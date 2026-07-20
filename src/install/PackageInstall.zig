@@ -1194,7 +1194,7 @@ pub const PackageInstall = struct {
                 };
                 var task = UninstallTask.new(.{
                     .manager = this.manager,
-                    .absolute_path = bun.handleOom(bun.default_allocator.dupeSentinel(u8, bun.path.joinAbsString(FileSystem.instance.top_level_dir, &.{ this.node_modules.path.items, temp_path }, .auto), 0)),
+                    .absolute_path = bun.handleOom(std.fs.path.resolve(bun.default_allocator, &.{ FileSystem.instance.top_level_dir, this.node_modules.path.items, temp_path })),
                 });
                 this.manager.incrementPendingTasks(1);
                 this.manager.thread_pool.schedule(bun.ThreadPool.Batch.from(&task.task));

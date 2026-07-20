@@ -1809,7 +1809,7 @@ pub fn Package(comptime SemverIntType: type) type {
                                 for (workspace_names.values(), workspace_names.keys()) |value, note_path| {
                                     if (note_path.ptr == path.ptr) continue;
                                     if (strings.eqlLong(value.name, entry.name, true)) {
-                                        const note_abs_path = bun.handleOom(allocator.dupeSentinel(u8, Path.joinAbsStringZ(cwd, &.{ note_path, "package.json" }, .auto), 0));
+                                        const note_abs_path = bun.handleOom(std.fs.path.resolve(allocator, &.{ cwd, note_path, "package.json" }));
 
                                         const note_src = bun.sys.File.toSource(note_abs_path, allocator, .{}).unwrap() catch logger.Source.initEmptyFile(note_abs_path);
 

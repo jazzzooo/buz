@@ -1113,7 +1113,9 @@ pub fn getWorkspaceFilters(manager: *PackageManager, original_cwd: []const u8) !
             }
 
             var abs_path = Path.pathToPosixBuf(u8, FileSystem.instance.top_level_dir, path_buf);
-            break :abs_root_path strings.withoutTrailingSlash(abs_path[Path.windowsVolumeNameLen(abs_path)[0]..]);
+            const root = std.fs.path.parsePathWindows(u8, abs_path).root;
+            const volume = std.mem.trimEnd(u8, root, "/\\");
+            break :abs_root_path strings.withoutTrailingSlash(abs_path[volume.len..]);
         };
 
         for (workspace_filters.items) |filter| {

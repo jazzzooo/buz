@@ -109,7 +109,7 @@ pub const ShellMvBatchedTask = struct {
     }
 
     pub fn moveInDir(this: *@This(), src: [:0]const u8, buf: *bun.PathBuffer) bool {
-        const path_in_dir_ = bun.path.normalizeBuf(ResolvePath.basename(src), buf, .auto);
+        const path_in_dir_ = bun.path.normalizeBuf(std.fs.path.basename(src), buf, .auto);
         if (path_in_dir_.len + 1 >= buf.len) {
             this.err = Syscall.Error.fromCode(Syscall.E.NAMETOOLONG, .rename);
             return false;
@@ -121,7 +121,7 @@ pub const ShellMvBatchedTask = struct {
             .err => |e| {
                 const target_path = ResolvePath.joinZ(&[_][]const u8{
                     this.target,
-                    ResolvePath.basename(src),
+                    std.fs.path.basename(src),
                 }, .auto);
 
                 this.err = e.withPath(bun.handleOom(bun.default_allocator.dupeSentinel(u8, target_path[0..], 0)));

@@ -572,7 +572,7 @@ pub const FileSystem = struct {
 
                     var tmp_buf: bun.PathBuffer = undefined;
                     const cwd = bun.getcwd(&tmp_buf) catch @panic("Failed to get cwd for platformTempDir");
-                    const root = bun.path.windowsFilesystemRoot(cwd);
+                    const root = std.fs.path.parsePathWindows(u8, cwd).root;
                     return std.fmt.allocPrint(
                         bun.default_allocator,
                         "{s}\\Windows\\Temp",
@@ -1526,7 +1526,6 @@ pub const NodeJSPathName = struct {
 
     pub fn init(_path: string, comptime isWindows: bool) NodeJSPathName {
         const platform: path_handler.Platform = if (isWindows) .windows else .posix;
-        const getLastSep = comptime platform.getLastSeparatorFunc();
 
         var path = _path;
         var base = path;
@@ -1534,7 +1533,7 @@ pub const NodeJSPathName = struct {
         var ext: string = "";
         var dir = path;
         var is_absolute = true;
-        var _i = getLastSep(path);
+        var _i = platform.lastIndexOfSeparator(u8, path);
         var first = true;
         while (_i) |i| {
             // Stop if we found a non-trailing slash
@@ -1557,7 +1556,7 @@ pub const NodeJSPathName = struct {
 
             path = path[0..i];
 
-            _i = getLastSep(path);
+            _i = platform.lastIndexOfSeparator(u8, path);
         }
 
         // clean trailing slashs
@@ -1602,7 +1601,7 @@ pub const PathName = struct {
 
     pub fn findExtname(_path: string) string {
         var start: usize = 0;
-        if (bun.path.lastIndexOfSep(_path)) |i| {
+        if (bun.path.Platform.auto.lastIndexOfSeparator(u8, _path)) |i| {
             start = i + 1;
         }
         const base = _path[start..];
@@ -1666,7 +1665,7 @@ pub const PathName = struct {
         return if (this.dir.len == 0) "./" else this.dir.ptr[0 .. this.dir.len + @as(
             usize,
             @intCast(@intFromBool(
-                !bun.path.isSepAny(this.dir[this.dir.len - 1]) and (@intFromPtr(this.dir.ptr) + this.dir.len + 1) == @intFromPtr(this.base.ptr),
+                !std.fs.path.PathType.windows.isSep(u8, this.dir[this.dir.len - 1]) and (@intFromPtr(this.dir.ptr) + this.dir.len + 1) == @intFromPtr(this.base.ptr),
             )),
         )];
     }
@@ -1687,12 +1686,12 @@ pub const PathName = struct {
         const has_disk_designator = path.len > 2 and path[1] == ':' and switch (path[0]) {
             'a'...'z', 'A'...'Z' => true,
             else => false,
-        } and bun.path.isSepAny(path[2]);
+        } and std.fs.path.PathType.windows.isSep(u8, path[2]);
         if (has_disk_designator) {
             path = path[2..];
         }
 
-        while (bun.path.lastIndexOfSep(path)) |i| {
+        while (bun.path.Platform.auto.lastIndexOfSeparator(u8, path)) |i| {
             // Stop if we found a non-trailing slash
             if (i + 1 != path.len and path.len > i + 1) {
                 base = path[i + 1 ..];
@@ -1717,7 +1716,7 @@ pub const PathName = struct {
             dir = &([_]u8{});
         }
 
-        if (base.len > 1 and bun.path.isSepAny(base[base.len - 1])) {
+        if (base.len > 1 and std.fs.path.PathType.windows.isSep(u8, base[base.len - 1])) {
             base = base[0 .. base.len - 1];
         }
 

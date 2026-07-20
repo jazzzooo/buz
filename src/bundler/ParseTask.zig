@@ -570,7 +570,7 @@ fn getAST(
                 strings.eqlComptime(source.path.pretty[source.path.pretty.len - css_module_suffix.len ..], css_module_suffix);
             const parser_options = if (enable_css_modules) init: {
                 var parseropts = bun.css.ParserOptions.default(allocator, &temp_log);
-                parseropts.filename = bun.path.basename(source.path.pretty);
+                parseropts.filename = std.fs.path.basename(source.path.pretty);
                 parseropts.css_modules = bun.css.CssModuleConfig{};
                 break :init parseropts;
             } else bun.css.ParserOptions.default(allocator, &temp_log);

@@ -196,7 +196,7 @@ pub const PackageManagerCommand = struct {
             try PmViewCommand.view(ctx.allocator, pm, if (pm.options.positionals.len > 1) pm.options.positionals[1] else "", property_path, pm.options.json_output);
             Global.exit(0);
         } else if (strings.eqlComptime(subcommand, "bin")) {
-            const output_path = Path.joinAbs(Fs.FileSystem.instance.top_level_dir, .auto, bun.asByteSlice(pm.options.bin_path));
+            const output_path = Path.joinAbsString(Fs.FileSystem.instance.top_level_dir, &.{bun.asByteSlice(pm.options.bin_path)}, .auto);
             Output.prettyln("{s}", .{output_path});
             if (Output.stdout_descriptor_type == .terminal) {
                 Output.prettyln("\n", .{});

@@ -591,7 +591,7 @@ pub const PathLike = union(enum) {
 
         if (Environment.isWindows) {
             if (std.fs.path.isAbsolute(sliced)) {
-                if (sliced.len > 2 and bun.path.isDriveLetter(sliced[0]) and sliced[1] == ':' and bun.path.isSepAny(sliced[2])) {
+                if (std.fs.path.parsePathWindows(u8, sliced).kind == .drive_absolute) {
                     // Add the long path syntax. This affects most of node:fs
                     // Normalize the path directly into buf without an intermediate
                     // buffer. The input (sliced) already has a drive letter, so
@@ -653,12 +653,13 @@ pub const PathLike = union(enum) {
             const s = this.slice();
             const b = bun.path_buffer_pool.get();
             defer bun.path_buffer_pool.put(b);
+            const windows_path = std.fs.path.PathType.windows;
             // Device paths (\\.\, \\?\) and NT object paths (\??\) should not be normalized
             // because the "." in \\.\pipe\name would be incorrectly stripped as a "current directory" component.
-            if (s.len >= 4 and bun.path.isSepAny(s[0]) and bun.path.isSepAny(s[1]) and (s[2] == '.' or s[2] == '?') and bun.path.isSepAny(s[3])) {
+            if (s.len >= 4 and windows_path.isSep(u8, s[0]) and windows_path.isSep(u8, s[1]) and (s[2] == '.' or s[2] == '?') and windows_path.isSep(u8, s[3])) {
                 return strings.toKernel32Path(@alignCast(std.mem.bytesAsSlice(u16, buf)), s);
             }
-            if (s.len > 0 and bun.path.isSepAny(s[0])) {
+            if (s.len > 0 and windows_path.isSep(u8, s[0])) {
                 const resolve = path_handler.PosixToWinNormalizer.resolveCWDWithExternalBuf(buf, s) catch @panic("Error while resolving path.");
                 const normal = path_handler.normalizeBuf(resolve, b, .windows);
                 return strings.toKernel32Path(@alignCast(std.mem.bytesAsSlice(u16, buf)), normal);

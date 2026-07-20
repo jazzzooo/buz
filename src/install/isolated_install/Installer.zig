@@ -26,7 +26,7 @@ pub const Installer = struct {
     /// directory and `node_modules/.bun/<storepath>` becomes a symlink into
     /// it, so warm installs are O(packages) symlinks instead of O(files)
     /// clonefile work.
-    global_store_path: ?[:0]const u8,
+    global_store_path: ?[]const u8,
 
     /// Per-process suffix for staging global-store entries. Each entry is
     /// built under `<cache>/links/<storepath>-<hash>.tmp-<this>/` (package

@@ -9,7 +9,8 @@ pub fn start(this: *@This()) Yield {
 
     while (iter.next()) |item| {
         const arg = std.mem.sliceTo(item, 0);
-        this.print(bun.path.basename(arg));
+        const base = std.fs.path.basename(arg);
+        this.print(if (base.len == 0 and arg.len > 0) "/" else base);
         this.print("\n");
     }
 

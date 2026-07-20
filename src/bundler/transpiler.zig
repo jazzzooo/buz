@@ -498,7 +498,7 @@ pub const Transpiler = struct {
                 const enable_css_modules = file_path.text.len > css_module_suffix.len and
                     strings.eqlComptime(file_path.text[file_path.text.len - css_module_suffix.len ..], css_module_suffix);
                 if (enable_css_modules) {
-                    opts.filename = bun.path.basename(file_path.text);
+                    opts.filename = std.fs.path.basename(file_path.text);
                     opts.css_modules = bun.css.CssModuleConfig{};
                 }
                 var sheet, var extra = switch (bun.css.StyleSheet(bun.css.DefaultAtRule).parse(

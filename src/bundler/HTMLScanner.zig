@@ -22,24 +22,34 @@ pub fn deinit(this: *HTMLScanner) void {
 }
 
 fn createImportRecord(this: *HTMLScanner, input_path: []const u8, kind: ImportKind) !void {
-    // In HTML, sometimes people do /src/index.js
-    // In that case, we don't want to use the absolute filesystem path, we want to use the path relative to the project root
-    const path_to_use = if (input_path.len > 1 and input_path[0] == '/')
-        bun.path.joinAbsString(bun.fs.FileSystem.instance.top_level_dir, &[_][]const u8{input_path[1..]}, .auto)
+    const path: []u8 = path: {
+        // In HTML, sometimes people do /src/index.js
+        // In that case, we don't want to use the absolute filesystem path, we want to use the path relative to the project root
+        if (input_path.len > 1 and input_path[0] == '/') {
+            break :path try std.fs.path.resolve(this.allocator, &.{ bun.fs.FileSystem.instance.top_level_dir, input_path[1..] });
+        }
 
         // Check if imports to (e.g) "App.tsx" are actually relative imoprts w/o the "./"
-    else if (input_path.len > 2 and input_path[0] != '.' and input_path[1] != '/') blk: {
-        const index_of_dot = std.mem.lastIndexOfScalar(u8, input_path, '.') orelse break :blk input_path;
-        const ext = input_path[index_of_dot..];
-        if (ext.len > 4) break :blk input_path;
-        // /foo/bar/index.html -> /foo/bar
-        const dirname: []const u8 = std.fs.path.dirname(this.source.path.text) orelse break :blk input_path;
-        const resolved = bun.path.joinAbsString(dirname, &[_][]const u8{input_path}, .auto);
-        break :blk if (bun.sys.exists(resolved)) resolved else input_path;
-    } else input_path;
+        if (input_path.len > 2 and input_path[0] != '.' and input_path[1] != '/') {
+            if (std.mem.lastIndexOfScalar(u8, input_path, '.')) |index_of_dot| {
+                const ext = input_path[index_of_dot..];
+                if (ext.len <= 4) {
+                    // /foo/bar/index.html -> /foo/bar
+                    if (std.fs.path.dirname(this.source.path.text)) |dirname| {
+                        const resolved = try std.fs.path.resolve(this.allocator, &.{ dirname, input_path });
+                        if (bun.sys.exists(resolved)) break :path resolved;
+                        this.allocator.free(resolved);
+                    }
+                }
+            }
+        }
+
+        break :path try this.allocator.dupe(u8, input_path);
+    };
+    errdefer this.allocator.free(path);
 
     const record = ImportRecord{
-        .path = fs.Path.init(try this.allocator.dupeSentinel(u8, path_to_use, 0)),
+        .path = fs.Path.init(path),
         .kind = kind,
         .range = logger.Range.None,
     };

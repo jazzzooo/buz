@@ -192,10 +192,10 @@ pub const InstallCompletionsCommand = struct {
                         const input = bun.argv[i + 1];
 
                         if (!std.fs.path.isAbsolute(input)) {
-                            completions_dir = resolve_path.joinAbs(
+                            completions_dir = resolve_path.joinAbsString(
                                 cwd,
+                                &.{input},
                                 .auto,
-                                input,
                             );
                         } else {
                             completions_dir = input;

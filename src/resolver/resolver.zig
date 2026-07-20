@@ -1754,7 +1754,7 @@ pub const Resolver = struct {
         if (!std.fs.path.isAbsolute(import_source_file))
             return false;
 
-        const joined = bun.path.joinAbs(bun.path.dirname(import_source_file, .auto), .auto, specifier);
+        const joined = bun.path.joinAbsString(bun.path.dirname(import_source_file, .auto), &.{specifier}, .auto);
         const dir = bun.path.dirname(joined, .auto);
 
         const a = r.bustDirCache(dir);
@@ -2779,7 +2779,7 @@ pub const Resolver = struct {
             .status = .not_found,
         };
         const root_path = if (Environment.isWindows)
-            bun.strings.withoutTrailingSlashWindowsPath(ResolvePath.windowsFilesystemRoot(path))
+            bun.strings.withoutTrailingSlashWindowsPath(std.fs.path.parsePathWindows(u8, path).root)
         else
             // we cannot just use "/"
             // we will write to the buffer past the ptr len so it must be a non-const buffer
@@ -4315,10 +4315,11 @@ pub const Dirname = struct {
     pub fn dirname(path: string) string {
         if (path.len == 0)
             return std.fs.path.sep_str;
+        const windows_path = std.fs.path.PathType.windows;
 
         const root = brk: {
             if (Environment.isWindows) {
-                const root = ResolvePath.windowsFilesystemRoot(path);
+                const root = std.fs.path.parsePathWindows(u8, path).root;
 
                 // Preserve the trailing slash for UNC paths.
                 // Going from `\\server\share\folder` should end up
@@ -4329,19 +4330,19 @@ pub const Dirname = struct {
         };
 
         var end_index: usize = path.len - 1;
-        while (bun.path.isSepAny(path[end_index])) {
+        while (windows_path.isSep(u8, path[end_index])) {
             if (end_index == 0)
                 return root;
             end_index -= 1;
         }
 
-        while (!bun.path.isSepAny(path[end_index])) {
+        while (!windows_path.isSep(u8, path[end_index])) {
             if (end_index == 0)
                 return root;
             end_index -= 1;
         }
 
-        if (end_index == 0 and bun.path.isSepAny(path[0]))
+        if (end_index == 0 and windows_path.isSep(u8, path[0]))
             return path[0..1];
 
         if (end_index == 0)

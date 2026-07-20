@@ -1829,7 +1829,7 @@ pub const ShellSyscall = struct {
                 };
                 break :brk dirfd;
             };
-            const source_root = ResolvePath.windowsFilesystemRoot(dirpath);
+            const source_root = std.fs.path.parsePathWindows(u8, dirpath).root;
             std.mem.copyForwards(u8, buf[0..source_root.len], source_root);
             @memcpy(buf[source_root.len..][0 .. to.len - 1], to[1..]);
             buf[source_root.len + to.len - 1] = 0;

@@ -13,7 +13,7 @@ pub const PluginRunner = struct {
         if (Environment.isWindows and
             colon == 1 and
             specifier.len > 3 and
-            bun.path.isSepAny(specifier[2]) and
+            std.fs.path.PathType.windows.isSep(u8, specifier[2]) and
             ((specifier[0] > 'a' and specifier[0] < 'z') or (specifier[0] > 'A' and specifier[0] < 'Z')))
             return "";
         return specifier[0..colon];

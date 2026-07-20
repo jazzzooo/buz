@@ -463,7 +463,7 @@ pub noinline fn computeChunks(
                 };
             };
 
-            chunk.template.placeholder.dir = try resolve_path.relativeAlloc(this.allocator(), this.resolver.opts.root_dir, dir);
+            chunk.template.placeholder.dir = try std.fs.path.relative(this.allocator(), bun.fs.FileSystem.instance.top_level_dir, null, this.resolver.opts.root_dir, dir);
         }
     }
 

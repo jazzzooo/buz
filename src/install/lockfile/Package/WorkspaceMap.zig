@@ -310,7 +310,7 @@ pub fn processNamesArray(
                 ) catch |err| {
                     bun.handleErrorReturnTrace(err, @errorReturnTrace());
 
-                    const entry_base: []const u8 = Path.basename(matched_path);
+                    const entry_base: []const u8 = std.fs.path.basename(matched_path);
                     switch (err) {
                         error.FileNotFound, error.PermissionDenied => continue,
                         error.MissingPackageName => {

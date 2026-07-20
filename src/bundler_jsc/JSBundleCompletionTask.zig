@@ -377,9 +377,9 @@ pub const JSBundleCompletionTask = struct {
                     // Derive the .map filename from the sourcemap's own dest_path,
                     // placed in the same directory as the compiled executable.
                     const map_basename = if (current.dest_path.len > 0)
-                        bun.path.basename(current.dest_path)
+                        std.fs.path.basename(current.dest_path)
                     else
-                        bun.path.basename(bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "{s}.map", .{full_outfile_path})));
+                        std.fs.path.basename(bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "{s}.map", .{full_outfile_path})));
 
                     const sourcemap_full_path = if (dirname.len == 0 or strings.eqlComptime(dirname, "."))
                         bun.handleOom(bun.default_allocator.dupe(u8, map_basename))
@@ -520,22 +520,14 @@ pub const JSBundleCompletionTask = struct {
                     const result = output_file.toJS(
                         if (!this.config.outdir.isEmpty())
                             if (std.fs.path.isAbsolute(this.config.outdir.list.items))
-                                bun.default_allocator.dupe(
-                                    u8,
-                                    bun.path.joinAbsString(
-                                        this.config.outdir.slice(),
-                                        &[_]string{output_file.dest_path},
-                                        .auto,
-                                    ),
+                                std.fs.path.resolve(
+                                    bun.default_allocator,
+                                    &.{ this.config.outdir.slice(), output_file.dest_path },
                                 ) catch unreachable
                             else
-                                bun.default_allocator.dupe(
-                                    u8,
-                                    bun.path.joinAbsString(
-                                        bun.fs.FileSystem.instance.top_level_dir,
-                                        &[_]string{ this.config.dir.slice(), this.config.outdir.slice(), output_file.dest_path },
-                                        .auto,
-                                    ),
+                                std.fs.path.resolve(
+                                    bun.default_allocator,
+                                    &.{ bun.fs.FileSystem.instance.top_level_dir, this.config.dir.slice(), this.config.outdir.slice(), output_file.dest_path },
                                 ) catch unreachable
                         else
                             bun.default_allocator.dupe(

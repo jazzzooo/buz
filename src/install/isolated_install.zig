@@ -873,7 +873,7 @@ pub fn installIsolatedPackages(
         }
     };
 
-    const global_store_path: ?[:0]const u8 = if (manager.options.enable.global_virtual_store) global_store_path: {
+    const global_store_path: ?[]const u8 = if (manager.options.enable.global_virtual_store) global_store_path: {
         const entries = store.entries.slice();
         const entry_hashes = entries.items(.entry_hash);
         const entry_node_ids = entries.items(.node_id);
@@ -1252,7 +1252,7 @@ pub fn installIsolatedPackages(
         _ = manager.getCacheDirectory();
         const cache_dir_path = manager.cache_directory_path;
         if (cache_dir_path.len == 0) break :global_store_path null;
-        break :global_store_path try manager.allocator.dupeSentinel(u8, bun.path.joinAbsString(cache_dir_path, &.{"links"}, .auto), 0);
+        break :global_store_path try std.fs.path.resolve(manager.allocator, &.{ cache_dir_path, "links" });
     } else null;
     defer if (global_store_path) |p| manager.allocator.free(p);
 

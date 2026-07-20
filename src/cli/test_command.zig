@@ -1594,7 +1594,7 @@ pub const TestCommand = struct {
 
             const dir_to_scan = brk: {
                 if (ctx.debug.test_directory.len > 0) {
-                    break :brk try vm.allocator.dupe(u8, resolve_path.joinAbs(scanner.fs.top_level_dir, .auto, ctx.debug.test_directory));
+                    break :brk try std.fs.path.resolve(vm.allocator, &.{ scanner.fs.top_level_dir, ctx.debug.test_directory });
                 }
 
                 break :brk scanner.fs.top_level_dir;

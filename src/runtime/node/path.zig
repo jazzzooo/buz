@@ -1012,12 +1012,8 @@ pub fn isAbsolute(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: 
     return jsc.JSValue.jsBoolean(isAbsolutePosixZigString(pathZStr));
 }
 
-pub fn isSepPosixT(comptime T: type, byte: T) bool {
-    return byte == CHAR_FORWARD_SLASH;
-}
-
-pub fn isSepWindowsT(comptime T: type, byte: T) bool {
-    return byte == CHAR_FORWARD_SLASH or byte == CHAR_BACKWARD_SLASH;
+fn isSepWindowsT(comptime T: type, byte: T) bool {
+    return std.fs.path.PathType.windows.isSep(T, byte);
 }
 
 /// Based on Node v21.6.1 private helper isWindowsDeviceRoot:
@@ -1240,11 +1236,7 @@ pub fn join(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]jsc
 /// Resolves . and .. elements in a path with directory names
 fn normalizeStringT(comptime T: type, path: []const T, allowAboveRoot: bool, separator: T, comptime platform: bun.path.Platform, buf: []T) [:0]T {
     const len = path.len;
-    const isSepT =
-        if (platform == .posix)
-            isSepPosixT
-        else
-            isSepWindowsT;
+    const path_type = comptime platform.pathType();
 
     var bufOffset: usize = 0;
     var bufSize: usize = 0;
@@ -1260,13 +1252,13 @@ fn normalizeStringT(comptime T: type, path: []const T, allowAboveRoot: bool, sep
     while (i <= len) : (i += 1) {
         if (i < len) {
             byte = path[i];
-        } else if (isSepT(T, byte)) {
+        } else if (path_type.isSep(T, byte)) {
             break;
         } else {
             byte = CHAR_FORWARD_SLASH;
         }
 
-        if (isSepT(T, byte)) {
+        if (path_type.isSep(T, byte)) {
             // Translated from the following JS code:
             //   if (lastSlash === i - 1 || dots === 1) {
             if ((lastSlash == null and i == 0) or

@@ -509,7 +509,7 @@ pub const ShellCpTask = struct {
         // Handle the "2nd synopsis": -R source_files... -> target
         else if (this.opts.recursive) {
             if (tgt_exists) {
-                const basename = ResolvePath.basename(src[0..src.len]);
+                const basename = std.fs.path.basename(src[0..src.len]);
                 const parts: []const []const u8 = &.{
                     tgt[0..tgt.len],
                     basename,
@@ -527,7 +527,7 @@ pub const ShellCpTask = struct {
         else {
             if (src_is_dir) return .{ .custom = bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "{s} is a directory (not copied)", .{this.src})) };
             if (!tgt_exists or !tgt_is_dir) return .{ .custom = bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "{s} is not a directory", .{this.tgt})) };
-            const basename = ResolvePath.basename(src[0..src.len]);
+            const basename = std.fs.path.basename(src[0..src.len]);
             const parts: []const []const u8 = &.{
                 tgt[0..tgt.len],
                 basename,

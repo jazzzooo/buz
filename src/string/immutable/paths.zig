@@ -33,7 +33,7 @@ pub fn isWindowsAbsolutePathMissingDriveLetter(comptime T: type, chars: []const 
     // '\\Server\Share' -> false (unc)
     // '\\Server\\Share' -> true (not unc because extra slashes)
     // '\Server\Share' -> true (posix path)
-    return bun.path.windowsFilesystemRootT(T, chars).len == 1;
+    return std.fs.path.parsePathWindows(T, chars).root.len == 1;
 }
 
 pub fn fromWPath(buf: []u8, utf16: []const u16) [:0]const u8 {
@@ -174,7 +174,7 @@ pub fn toWPathNormalized(wbuf: []u16, utf8: []const u8) [:0]u16 {
     var path_to_use = normalizeSlashesOnly(renormalized, utf8, '\\');
 
     // is there a trailing slash? Let's remove it before converting to UTF-16
-    if (path_to_use.len > 3 and bun.path.isSepAny(path_to_use[path_to_use.len - 1])) {
+    if (path_to_use.len > 3 and std.fs.path.PathType.windows.isSep(u8, path_to_use[path_to_use.len - 1])) {
         path_to_use = path_to_use[0 .. path_to_use.len - 1];
     }
 
@@ -185,7 +185,7 @@ pub fn toWPathNormalized16(wbuf: []u16, path: []const u16) [:0]u16 {
     var path_to_use = normalizeSlashesOnlyT(u16, wbuf, path, '\\', true);
 
     // is there a trailing slash? Let's remove it before converting to UTF-16
-    if (path_to_use.len > 3 and bun.path.isSepAnyT(u16, path_to_use[path_to_use.len - 1])) {
+    if (path_to_use.len > 3 and std.fs.path.PathType.windows.isSep(u16, path_to_use[path_to_use.len - 1])) {
         path_to_use = path_to_use[0 .. path_to_use.len - 1];
     }
 
@@ -201,7 +201,7 @@ pub fn toPathNormalized(buf: []u8, utf8: []const u8) [:0]const u8 {
     var path_to_use = normalizeSlashesOnly(renormalized, utf8, '\\');
 
     // is there a trailing slash? Let's remove it before converting to UTF-16
-    if (path_to_use.len > 3 and bun.path.isSepAny(path_to_use[path_to_use.len - 1])) {
+    if (path_to_use.len > 3 and std.fs.path.PathType.windows.isSep(u8, path_to_use[path_to_use.len - 1])) {
         path_to_use = path_to_use[0 .. path_to_use.len - 1];
     }
 
@@ -253,7 +253,7 @@ pub fn toKernel32Path(wbuf: []u16, utf8: []const u8) [:0]u16 {
     if (hasPrefixComptime(path, bun.windows.long_path_prefix_u8)) {
         return toWPath(wbuf, path);
     }
-    if (utf8.len > 2 and bun.path.isDriveLetter(utf8[0]) and utf8[1] == ':' and bun.path.isSepAny(utf8[2])) {
+    if (std.fs.path.parsePathWindows(u8, utf8).kind == .drive_absolute) {
         wbuf[0..4].* = bun.windows.long_path_prefix;
         const wpath = toWPath(wbuf[4..], path);
         return wbuf[0 .. wpath.len + 4 :0];
@@ -373,7 +373,7 @@ pub fn withoutTrailingSlashWindowsPath(input: string) []const u8 {
     if (Environment.isPosix or input.len < 3 or input[1] != ':')
         return withoutTrailingSlash(input);
 
-    const root_len = bun.path.windowsFilesystemRoot(input).len + 1;
+    const root_len = std.fs.path.parsePathWindows(u8, input).root.len + 1;
 
     var path = input;
     while (path.len > root_len and (switch (path[path.len - 1]) {

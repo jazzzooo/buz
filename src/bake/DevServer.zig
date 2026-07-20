@@ -1567,7 +1567,7 @@ fn generateHTMLPayload(dev: *DevServer, route_bundle_index: RouteBundle.Index, r
     const before_head_end = bundled_html[0..script_injection_offset];
     const after_head_end = bundled_html[script_injection_offset..];
 
-    var display_name = bun.strings.withoutSuffixComptime(bun.path.basename(html.html_bundle.data.bundle.data.path), ".html");
+    var display_name = bun.strings.withoutSuffixComptime(std.fs.path.basename(html.html_bundle.data.bundle.data.path), ".html");
     // TODO: function for URL safe chars
     if (!bun.strings.isAllASCII(display_name)) display_name = "page";
 
@@ -3639,7 +3639,7 @@ pub fn dumpBundle(io: std.Io, dump_dir: std.Io.Dir, graph: bake.Graph, rel_path:
     var inner_dir = try bun.MakePath.makeOpenPath(io, dump_dir, bun.Dirname.dirname(u8, name).?, .{});
     defer inner_dir.close(io);
 
-    const file = try inner_dir.createFile(io, bun.path.basename(name), .{});
+    const file = try inner_dir.createFile(io, std.fs.path.basename(name), .{});
     defer file.close(io);
     var file_buffer: [1024]u8 = undefined;
     var file_writer = file.writerStreaming(io, &file_buffer);
