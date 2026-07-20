@@ -890,7 +890,7 @@ pub const RunCommand = struct {
         }
 
         const bun_node_exe = try bunNodeFileUtf8(ctx.allocator);
-        const bun_node_dir_win = bun.Dirname.dirname(u8, bun_node_exe) orelse return error.FailedToGetTempPath;
+        const bun_node_dir_win = std.fs.path.dirname(bun_node_exe) orelse return error.FailedToGetTempPath;
         const found_node = this_transpiler.env.loadNodeJSConfig(
             this_transpiler.fs,
             if (force_using_bun) bun_node_exe else "",

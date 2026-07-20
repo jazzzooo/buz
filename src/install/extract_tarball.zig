@@ -359,7 +359,7 @@ pub fn moveToCacheDirectory(
         var path2_buf: bun.WPathBuffer = undefined;
         const path2 = bun.strings.toWPathNormalized(&path2_buf, folder_name);
         if (create_subdir) {
-            if (bun.Dirname.dirname(u16, path2)) |folder| {
+            if (bun.path.dirnameWindowsWtf16(path2)) |folder| {
                 _ = bun.MakePath.makePath(this.package_manager.io, u16, cache_dir, folder) catch {};
             }
         }
@@ -447,7 +447,7 @@ pub fn moveToCacheDirectory(
         //
 
         if (create_subdir) {
-            if (bun.Dirname.dirname(u8, folder_name)) |folder| {
+            if (std.fs.path.dirname(folder_name)) |folder| {
                 bun.MakePath.makePath(this.package_manager.io, u8, cache_dir, folder) catch {};
             }
         }

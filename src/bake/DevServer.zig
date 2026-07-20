@@ -3636,7 +3636,7 @@ pub fn dumpBundle(io: std.Io, dump_dir: std.Io.Dir, graph: bake.Graph, rel_path:
         @tagName(graph),
         rel_path,
     }, .auto)[1..];
-    var inner_dir = try bun.MakePath.makeOpenPath(io, dump_dir, bun.Dirname.dirname(u8, name).?, .{});
+    var inner_dir = try bun.MakePath.makeOpenPath(io, dump_dir, std.fs.path.dirname(name).?, .{});
     defer inner_dir.close(io);
 
     const file = try inner_dir.createFile(io, std.fs.path.basename(name), .{});

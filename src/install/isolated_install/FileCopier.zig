@@ -114,7 +114,7 @@ pub const FileCopier = struct {
                                 // continuing here would let a staged
                                 // global-store entry be renamed into place
                                 // with files missing.
-                                const entry_dirname = bun.Dirname.dirname(u16, entry.path) orelse {
+                                const entry_dirname = bun.path.dirnameWindowsWtf16(entry.path) orelse {
                                     return .initErr(first_err);
                                 };
                                 bun.MakePath.makePath(this.io, u16, dest_dir, entry_dirname) catch {};
@@ -143,8 +143,12 @@ pub const FileCopier = struct {
                 defer src.close();
 
                 const dest = dest_dir.createFile(this.io, entry.path, .{}) catch dest: {
-                    if (bun.Dirname.dirname(bun.OSPathChar, entry.path)) |entry_dirname| {
-                        bun.MakePath.makePath(this.io, bun.OSPathChar, dest_dir, entry_dirname) catch {};
+                    const entry_dirname = if (comptime Environment.isWindows)
+                        bun.path.dirnameWindowsWtf16(entry.path)
+                    else
+                        std.fs.path.dirname(entry.path);
+                    if (entry_dirname) |dirname| {
+                        bun.MakePath.makePath(this.io, bun.OSPathChar, dest_dir, dirname) catch {};
                     }
 
                     break :dest dest_dir.createFile(this.io, entry.path, .{}) catch |err| {

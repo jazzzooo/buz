@@ -911,8 +911,10 @@ pub const CopyFileWindows = struct {
             .result => |fd| fd,
             .err => |err| {
                 if (this.mkdirp_if_not_exists and err.getErrno() == .NOENT) {
-                    this.mkdirp();
-                    return;
+                    if (this.destinationParent()) |parent| {
+                        this.mkdirp(parent);
+                        return;
+                    }
                 }
 
                 this.throw(err);
@@ -1077,27 +1079,28 @@ pub const CopyFileWindows = struct {
         bun.sys.syslog("uv_fs_copyfile() = {f}", .{rc});
         if (rc.errEnum()) |errno| {
             if (this.mkdirp_if_not_exists and errno == .NOENT) {
-                req.deinit();
-                this.mkdirp();
-                return;
-            } else {
-                var err = bun.sys.Error.fromCode(
-                    // #6336
-                    if (errno == .PERM) .NOENT else errno,
-
-                    .copyfile,
-                );
-                const destination = &this.destination_file_store.data.file;
-
-                // we don't really know which one it is
-                if (destination.pathlike == .path) {
-                    err = err.withPath(destination.pathlike.path.slice());
-                } else if (destination.pathlike == .fd) {
-                    err = err.withFd(destination.pathlike.fd);
+                if (this.destinationParent()) |parent| {
+                    req.deinit();
+                    this.mkdirp(parent);
+                    return;
                 }
-
-                this.throw(err);
             }
+            var err = bun.sys.Error.fromCode(
+                // #6336
+                if (errno == .PERM) .NOENT else errno,
+
+                .copyfile,
+            );
+            const destination = &this.destination_file_store.data.file;
+
+            // we don't really know which one it is
+            if (destination.pathlike == .path) {
+                err = err.withPath(destination.pathlike.path.slice());
+            } else if (destination.pathlike == .fd) {
+                err = err.withFd(destination.pathlike.fd);
+            }
+
+            this.throw(err);
             return;
         }
 
@@ -1203,27 +1206,21 @@ pub const CopyFileWindows = struct {
         bun.destroy(this);
     }
 
-    fn mkdirp(
-        this: *CopyFileWindows,
-    ) void {
+    fn destinationParent(this: *const CopyFileWindows) ?[]const u8 {
+        const destination = &this.destination_file_store.data.file;
+        if (destination.pathlike != .path) return null;
+        return std.fs.path.dirnameWindows(destination.pathlike.path.slice());
+    }
+
+    fn mkdirp(this: *CopyFileWindows, parent: []const u8) void {
         bun.sys.syslog("mkdirp", .{});
         this.mkdirp_if_not_exists = false;
-        var destination = &this.destination_file_store.data.file;
-        if (destination.pathlike != .path) {
-            this.throw(.{
-                .errno = @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.EINVAL))),
-                .syscall = .mkdir,
-            });
-            return;
-        }
 
         this.event_loop.refConcurrently();
         jsc.Node.fs.Async.AsyncMkdirp.new(.{
             .completion = @ptrCast(&onMkdirpCompleteConcurrent),
             .completion_ctx = this,
-            .path = bun.Dirname.dirname(u8, destination.pathlike.path.slice())
-            // this shouldn't happen
-            orelse destination.pathlike.path.slice(),
+            .path = parent,
         }).schedule();
     }
 

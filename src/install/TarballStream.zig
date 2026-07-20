@@ -628,7 +628,7 @@ fn openOutputFile(
             .result => |fd| fd,
             .err => |e| switch (e.errno) {
                 @backingInt(bun.sys.E.PERM), @backingInt(bun.sys.E.NOENT) => brk: {
-                    dest_fd.makePath(io, u16, bun.Dirname.dirname(u16, path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
+                    dest_fd.makePath(io, u16, bun.path.dirnameWindowsWtf16(path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
                     break :brk try bun.sys.openatWindows(dest_fd, path, flags, 0).unwrap();
                 },
                 else => return bun.errnoToZigErr(e.errno),

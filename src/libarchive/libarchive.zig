@@ -528,7 +528,7 @@ pub const Archiver = struct {
                                         @backingInt(bun.sys.E.PERM),
                                         @backingInt(bun.sys.E.NOENT),
                                         => brk: {
-                                            bun.MakePath.makePath(io, u16, dir, bun.Dirname.dirname(u16, path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
+                                            bun.MakePath.makePath(io, u16, dir, bun.path.dirnameWindowsWtf16(path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
                                             break :brk try bun.sys.openatWindows(dir_fd, path, flags, 0).unwrap();
                                         },
                                         else => return bun.errnoToZigErr(e.errno),

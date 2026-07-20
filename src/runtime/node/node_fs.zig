@@ -5888,6 +5888,7 @@ pub const NodeFS = struct {
         if (Environment.isWindows) {
             const target_path = args.target_path.slice();
             const new_path = args.new_path.slice();
+            const new_path_dir = std.fs.path.dirnameWindows(new_path) orelse ".";
             // Note: to_buf and sync_error_buf hold intermediate states, but the
             // ending state is:
             //    - new_path is in &sync_error_buf
@@ -5900,7 +5901,7 @@ pub const NodeFS = struct {
                         bun.getcwd(&to_buf) catch @panic("failed to resolve current working directory"),
                         &this.sync_error_buf,
                         &.{
-                            bun.Dirname.dirname(u8, new_path) orelse new_path,
+                            new_path_dir,
                             target_path,
                         },
                         .windows,
@@ -5926,7 +5927,7 @@ pub const NodeFS = struct {
                         bun.getcwd(&to_buf) catch @panic("failed to resolve current working directory"),
                         this.sync_error_buf[4..],
                         &.{
-                            bun.Dirname.dirname(u8, new_path) orelse new_path,
+                            new_path_dir,
                             target_path,
                         },
                         .windows,

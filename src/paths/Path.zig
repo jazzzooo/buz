@@ -440,7 +440,15 @@ pub fn Path(comptime opts: Options) type {
         }
 
         pub fn dirname(this: *const @This()) ?[]const opts.pathUnit() {
-            return bun.Dirname.dirname(opts.pathUnit(), this.slice());
+            const path_type = comptime switch (opts.sep) {
+                .windows => std.fs.path.PathType.windows,
+                .posix => std.fs.path.PathType.posix,
+                .any, .auto => if (Environment.isWindows) std.fs.path.PathType.windows else std.fs.path.PathType.posix,
+            };
+            var it = std.fs.path.ComponentIterator(path_type, opts.pathUnit()).init(this.slice());
+            _ = it.last() orelse return null;
+            const parent = it.previous() orelse return it.root();
+            return parent.path;
         }
 
         pub fn slice(this: *const @This()) []const opts.pathUnit() {

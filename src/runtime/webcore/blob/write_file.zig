@@ -450,12 +450,15 @@ pub const WriteFileWindows = struct {
 
         if (rc.errEnum()) |err| {
             if (err == .NOENT and this.mkdirp_if_not_exists) {
-                // cleanup the request so we can reuse it later.
-                req.deinit();
+                const path = this.file_blob.store.?.data.file.pathlike.path.slice();
+                if (std.fs.path.dirnameWindows(path)) |parent| {
+                    // cleanup the request so we can reuse it later.
+                    req.deinit();
 
-                // attempt to create the directory on another thread
-                this.mkdirp();
-                return;
+                    // attempt to create the directory on another thread
+                    this.mkdirp(parent);
+                    return;
+                }
             }
 
             switch (this.throw(.{
@@ -478,17 +481,14 @@ pub const WriteFileWindows = struct {
         };
     }
 
-    fn mkdirp(this: *WriteFileWindows) void {
+    fn mkdirp(this: *WriteFileWindows, parent: []const u8) void {
         log("mkdirp", .{});
         this.mkdirp_if_not_exists = false;
 
-        const path = this.file_blob.store.?.data.file.pathlike.path.slice();
         jsc.Node.fs.Async.AsyncMkdirp.new(.{
             .completion = @ptrCast(&onMkdirpCompleteConcurrent),
             .completion_ctx = this,
-            .path = bun.Dirname.dirname(u8, path)
-            // this shouldn't happen
-            orelse path,
+            .path = parent,
         }).schedule();
     }
 

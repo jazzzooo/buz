@@ -1,6 +1,13 @@
 threadlocal var parser_join_input_buffer: [4096]u8 = undefined;
 threadlocal var parser_buffer: [1024]u8 = undefined;
 
+pub fn dirnameWindowsWtf16(path: []const u16) ?[]const u16 {
+    var it = std.fs.path.ComponentIterator(.windows, u16).init(path);
+    _ = it.last() orelse return null;
+    const parent = it.previous() orelse return it.root();
+    return parent.path;
+}
+
 pub fn z(input: []const u8, output: *bun.PathBuffer) [:0]const u8 {
     if (input.len > bun.MAX_PATH_BYTES) {
         if (comptime bun.Environment.allow_assert) @panic("path too long");

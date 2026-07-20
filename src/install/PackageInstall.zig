@@ -641,7 +641,7 @@ pub const PackageInstall = struct {
                             },
                             .file => {
                                 if (!bun.windows.CopyFileW(src.ptr, dest.ptr, .FALSE).toBool()) {
-                                    if (bun.Dirname.dirname(u16, entry.path)) |entry_dirname| {
+                                    if (bun.path.dirnameWindowsWtf16(entry.path)) |entry_dirname| {
                                         bun.MakePath.makePath(io, u16, destination_dir_, entry_dirname) catch {};
                                         if (bun.windows.CopyFileW(src.ptr, dest.ptr, .FALSE).toBool()) {
                                             continue;
@@ -674,8 +674,12 @@ pub const PackageInstall = struct {
 
                         debug("createFile {f} {s}\n", .{ bun.FD.fromStdDir(destination_dir_), entry.path });
                         var outfile = createFile(destination_dir_, io, entry.path, .{}) catch brk: {
-                            if (bun.Dirname.dirname(bun.OSPathChar, entry.path)) |entry_dirname| {
-                                bun.MakePath.makePath(io, bun.OSPathChar, destination_dir_, entry_dirname) catch {};
+                            const entry_dirname = if (comptime Environment.isWindows)
+                                bun.path.dirnameWindowsWtf16(entry.path)
+                            else
+                                std.fs.path.dirname(entry.path);
+                            if (entry_dirname) |dirname| {
+                                bun.MakePath.makePath(io, bun.OSPathChar, destination_dir_, dirname) catch {};
                             }
                             break :brk createFile(destination_dir_, io, entry.path, .{}) catch |err| {
                                 if (progress_) |progress| {
@@ -1052,7 +1056,7 @@ pub const PackageInstall = struct {
                             .file => {
                                 switch (bun.sys.symlinkW(dest, src, .{})) {
                                     .err => |err| {
-                                        if (bun.Dirname.dirname(u16, entry.path)) |entry_dirname| {
+                                        if (bun.path.dirnameWindowsWtf16(entry.path)) |entry_dirname| {
                                             bun.MakePath.makePath(io, u16, destination_dir, entry_dirname) catch {};
                                             if (bun.sys.symlinkW(dest, src, .{}) == .result) {
                                                 continue;

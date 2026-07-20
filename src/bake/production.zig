@@ -835,7 +835,7 @@ pub export fn BakeProdResolve(global: *jsc.JSGlobalObject, a_str: bun.String, sp
         bun.assert(bun.strings.hasPrefix(referrer.slice(), "bake:"));
 
     const resolved = std.fs.path.resolvePosix(alloc, &.{
-        bun.Dirname.dirname(u8, referrer.slice()[5..]) orelse referrer.slice()[5..],
+        std.fs.path.dirnamePosix(referrer.slice()[5..]) orelse "/",
         specifier.slice(),
     }) catch return bun.String.dead;
     defer alloc.free(resolved);

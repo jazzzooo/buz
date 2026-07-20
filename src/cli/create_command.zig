@@ -491,7 +491,7 @@ pub const CreateCommand = struct {
                                     .file => {
                                         defer node_.completeOne();
                                         if (!bun.windows.CopyFileW(src.ptr, dst.ptr, .FALSE).toBool()) {
-                                            if (bun.Dirname.dirname(u16, entry.path)) |entry_dirname| {
+                                            if (bun.path.dirnameWindowsWtf16(entry.path)) |entry_dirname| {
                                                 bun.MakePath.makePath(io, u16, destination_dir_, entry_dirname) catch {};
                                                 if (bun.windows.CopyFileW(src.ptr, dst.ptr, .FALSE).toBool()) {
                                                     continue;
