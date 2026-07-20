@@ -94,22 +94,6 @@ pub const sep_windows = CHAR_BACKWARD_SLASH;
 pub const sep_str_posix = CHAR_STR_FORWARD_SLASH;
 pub const sep_str_windows = CHAR_STR_BACKWARD_SLASH;
 
-/// Based on Node v21.6.1 private helper formatExt:
-/// https://github.com/nodejs/node/blob/6ae20aa63de78294b18d5015481485b7cd8fbb60/lib/path.js#L130C10-L130C19
-inline fn formatExtT(comptime T: type, ext: []const T, buf: []T) []const T {
-    const len = ext.len;
-    if (len == 0) {
-        return &.{};
-    }
-    if (ext[0] == CHAR_DOT) {
-        return ext;
-    }
-    const bufSize = len + 1;
-    buf[0] = CHAR_DOT;
-    bun.memmove(buf[1..bufSize], ext);
-    return buf[0..bufSize];
-}
-
 /// Based on Node v21.6.1 private helper posixCwd:
 /// https://github.com/nodejs/node/blob/6ae20aa63de78294b18d5015481485b7cd8fbb60/lib/path.js#L1074
 inline fn posixCwdT(comptime T: type, buf: []T) MaybeBuf(T) {
@@ -815,101 +799,6 @@ pub fn extname(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]
     return extnameJS_T(u8, globalObject, isWindows, pathZSlice.slice());
 }
 
-/// Based on Node v21.6.1 private helper _format:
-/// https://github.com/nodejs/node/blob/6ae20aa63de78294b18d5015481485b7cd8fbb60/lib/path.js#L145
-fn _formatT(comptime T: type, pathObject: PathParsed(T), sep: T, buf: []T) []const T {
-    comptime validatePathT(T, "_formatT");
-
-    // validateObject of `pathObject` is performed in pub fn format.
-    const root = pathObject.root;
-    const dir = pathObject.dir;
-    const base = pathObject.base;
-    const ext = pathObject.ext;
-    // Prefix with _ to avoid shadowing the identifier in the outer scope.
-    const _name = pathObject.name;
-
-    // Translated from the following JS code:
-    //   const dir = pathObject.dir || pathObject.root;
-    const dirIsRoot = dir.len == 0 or std.mem.eql(u8, dir, root);
-    const dirOrRoot = if (dirIsRoot) root else dir;
-    const dirLen = dirOrRoot.len;
-
-    var bufOffset: usize = 0;
-    var bufSize: usize = 0;
-
-    // Translated from the following JS code:
-    //   const base = pathObject.base ||
-    //     `${pathObject.name || ''}${formatExt(pathObject.ext)}`;
-    var baseLen = base.len;
-    var baseOrNameExt = base;
-    if (baseLen > 0) {
-        bun.memmove(buf[0..baseLen], base);
-    } else {
-        const formattedExt = formatExtT(T, ext, buf);
-        const nameLen = _name.len;
-        const extLen = formattedExt.len;
-        bufOffset = nameLen;
-        bufSize = bufOffset + extLen;
-        if (extLen > 0) {
-            // Move all bytes to the right by _name.len.
-            // Use bun.copy because formattedExt and buf overlap.
-            bun.copy(T, buf[bufOffset..bufSize], formattedExt);
-        }
-        if (nameLen > 0) {
-            bun.memmove(buf[0..nameLen], _name);
-        }
-        if (bufSize > 0) {
-            baseOrNameExt = buf[0..bufSize];
-        }
-    }
-
-    // Translated from the following JS code:
-    //   if (!dir) {
-    //     return base;
-    //   }
-    if (dirLen == 0) {
-        return baseOrNameExt;
-    }
-
-    // Translated from the following JS code:
-    //   return dir === pathObject.root ? `${dir}${base}` : `${dir}${sep}${base}`;
-    baseLen = baseOrNameExt.len;
-    if (baseLen > 0) {
-        bufOffset = if (dirIsRoot) dirLen else dirLen + 1;
-        bufSize = bufOffset + baseLen;
-        // Move all bytes to the right by dirLen + (maybe 1 for the separator).
-        // Use bun.copy because baseOrNameExt and buf overlap.
-        bun.copy(T, buf[bufOffset..bufSize], baseOrNameExt);
-    }
-    bun.memmove(buf[0..dirLen], dirOrRoot);
-    bufSize = dirLen + baseLen;
-    if (!dirIsRoot) {
-        bufSize += 1;
-        buf[dirLen] = sep;
-    }
-    return buf[0..bufSize];
-}
-
-pub fn formatPosixJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, pathObject: PathParsed(T), buf: []T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, _formatT(T, pathObject, CHAR_FORWARD_SLASH, buf));
-}
-
-pub fn formatWindowsJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, pathObject: PathParsed(T), buf: []T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, _formatT(T, pathObject, CHAR_BACKWARD_SLASH, buf));
-}
-
-pub fn formatJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, allocator: std.mem.Allocator, isWindows: bool, pathObject: PathParsed(T)) bun.JSError!jsc.JSValue {
-    const baseLen = pathObject.base.len;
-    const dirLen = pathObject.dir.len;
-    // Add one for the possible separator.
-    const bufLen: usize = @max(1 +
-        (if (dirLen > 0) dirLen else pathObject.root.len) +
-        (if (baseLen > 0) baseLen else pathObject.name.len + pathObject.ext.len), PATH_SIZE(T));
-    const buf = bun.handleOom(allocator.alloc(T, bufLen));
-    defer allocator.free(buf);
-    return if (isWindows) formatWindowsJS_T(T, globalObject, pathObject, buf) else formatPosixJS_T(T, globalObject, pathObject, buf);
-}
-
 pub fn format(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]jsc.JSValue, args_len: u16) bun.JSError!jsc.JSValue {
     const pathObject_ptr: jsc.JSValue = if (args_len > 0) args_ptr[0] else .js_undefined;
     // Supress exeption in zig. It does globalThis.vm().throwError() in JS land.
@@ -959,7 +848,23 @@ pub fn format(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]j
         ext_slice = try jsValue.toSlice(globalObject, allocator);
         ext = ext_slice.?.slice();
     }
-    return formatJS_T(u8, globalObject, allocator, isWindows, .{ .root = root, .dir = dir, .base = base, .ext = ext, .name = _name });
+    const dir_or_root = if (dir.len > 0) dir else root;
+    const separator = if (dir.len > 0 and !std.mem.eql(u8, dir, root))
+        if (isWindows) CHAR_STR_BACKWARD_SLASH else CHAR_STR_FORWARD_SLASH
+    else
+        "";
+    const output = if (base.len > 0)
+        bun.handleOom(std.mem.concat(allocator, u8, &.{ dir_or_root, separator, base }))
+    else
+        bun.handleOom(std.mem.concat(allocator, u8, &.{
+            dir_or_root,
+            separator,
+            _name,
+            if (ext.len > 0 and ext[0] != CHAR_DOT) CHAR_STR_DOT else "",
+            ext,
+        }));
+    defer allocator.free(output);
+    return bun.String.createUTF8ForJS(globalObject, output);
 }
 
 /// Based on Node v21.6.1 path.posix.isAbsolute:
