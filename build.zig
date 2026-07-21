@@ -379,8 +379,8 @@ pub fn build(b: *Build) !void {
             .{ .os = .mac, .arch = .aarch64 },
             .{ .os = .linux, .arch = .x86_64 },
             .{ .os = .linux, .arch = .aarch64 },
-            .{ .os = .linux, .arch = .x86_64, .musl = true },
-            .{ .os = .linux, .arch = .aarch64, .musl = true },
+            .{ .os = .linux, .arch = .x86_64, .abi = .musl },
+            .{ .os = .linux, .arch = .aarch64, .abi = .musl },
         }, &.{ .Debug, .ReleaseFast });
     }
 
@@ -394,8 +394,8 @@ pub fn build(b: *Build) !void {
             .{ .os = .mac, .arch = .aarch64 },
             .{ .os = .linux, .arch = .x86_64 },
             .{ .os = .linux, .arch = .aarch64 },
-            .{ .os = .linux, .arch = .x86_64, .musl = true },
-            .{ .os = .linux, .arch = .aarch64, .musl = true },
+            .{ .os = .linux, .arch = .x86_64, .abi = .musl },
+            .{ .os = .linux, .arch = .aarch64, .abi = .musl },
         }, &.{.Debug});
     }
 
@@ -450,15 +450,15 @@ pub fn build(b: *Build) !void {
         {
             const step = b.step("check-android", "Check for semantic analysis errors on Android");
             addMultiCheck(b, step, build_options, &.{
-                .{ .os = .linux, .arch = .x86_64, .android = true },
-                .{ .os = .linux, .arch = .aarch64, .android = true },
+                .{ .os = .linux, .arch = .x86_64, .abi = .android },
+                .{ .os = .linux, .arch = .aarch64, .abi = .android },
             }, &.{ .Debug, .ReleaseFast });
         }
         {
             const step = b.step("check-android-debug", "Check for semantic analysis errors on Android");
             addMultiCheck(b, step, build_options, &.{
-                .{ .os = .linux, .arch = .x86_64, .android = true },
-                .{ .os = .linux, .arch = .aarch64, .android = true },
+                .{ .os = .linux, .arch = .x86_64, .abi = .android },
+                .{ .os = .linux, .arch = .aarch64, .abi = .android },
             }, &.{.Debug});
         }
     }
@@ -671,8 +671,7 @@ pub fn build(b: *Build) !void {
 const TargetDescription = struct {
     os: OperatingSystem,
     arch: Arch,
-    musl: bool = false,
-    android: bool = false,
+    abi: ?Target.Abi = null,
 
     fn resolveTarget(desc: TargetDescription, b: *Build) std.Build.ResolvedTarget {
         return b.resolveTargetQuery(.{
@@ -680,7 +679,7 @@ const TargetDescription = struct {
             .cpu_arch = desc.arch,
             .cpu_model = getCpuModel(desc.os, desc.arch) orelse .determined_by_arch_os,
             .os_version_min = getOSVersionMin(desc.os),
-            .abi = if (desc.android) .android else if (desc.musl) .musl else null,
+            .abi = desc.abi orelse if (desc.os == .linux) .gnu else null,
         });
     }
 };
@@ -740,7 +739,7 @@ fn getTranslateC(b: *Build, initial_target: std.Build.ResolvedTarget, optimize: 
         .{ "WINDOWS", translate_c.target.result.os.tag == .windows },
         .{ "POSIX", translate_c.target.result.os.tag != .windows },
         .{ "LINUX", translate_c.target.result.os.tag == .linux },
-        .{ "MUSL", target.query.abi != null and target.query.abi.?.isMusl() },
+        .{ "MUSL", target.result.abi.isMusl() },
         .{ "DARWIN", translate_c.target.result.os.tag.isDarwin() },
         .{ "FREEBSD", translate_c.target.result.os.tag == .freebsd },
     }) |entry| {
