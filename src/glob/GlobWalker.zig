@@ -97,8 +97,9 @@ fn dummyFilterFalse(val: []const u8) bool {
 
 pub fn statatWindows(fd: bun.FD, path: [:0]const u8) Maybe(bun.Stat) {
     if (comptime !bun.Environment.isWindows) @compileError("oi don't use this");
+    var dir_buf: bun.PathBuffer = undefined;
     var buf: bun.PathBuffer = undefined;
-    const dir = switch (Syscall.getFdPath(fd, &buf)) {
+    const dir = switch (Syscall.getFdPath(fd, &dir_buf)) {
         .err => |e| return .{ .err = e },
         .result => |s| s,
     };
@@ -106,7 +107,8 @@ pub fn statatWindows(fd: bun.FD, path: [:0]const u8) Maybe(bun.Stat) {
         dir[0..dir.len],
         path,
     };
-    const statpath = ResolvePath.joinZBuf(&buf, parts, .auto);
+    const statpath = std.mem.printSentinel(&buf, "{f}", .{std.fs.path.fmtJoin(parts)}, 0) catch
+        return .initErr(Syscall.Error.fromCode(.NAMETOOLONG, .stat));
     return Syscall.stat(statpath);
 }
 
@@ -249,9 +251,8 @@ pub const DirEntryAccessor = struct {
         var buf: bun.PathBuffer = undefined;
         if (!bun.path.Platform.auto.isAbsolute(path)) {
             if (handle.value) |entry| {
-                const slice = bun.path.joinStringBuf(&buf, [_][]const u8{ entry.dir, path }, .auto);
-                buf[slice.len] = 0;
-                path = buf[0..slice.len :0];
+                path = std.mem.printSentinel(&buf, "{f}", .{std.fs.path.fmtJoin(&.{ entry.dir, path })}, 0) catch
+                    return .initErr(Syscall.Error.fromCode(.NAMETOOLONG, .open));
             }
         }
         return Syscall.stat(path);
@@ -259,20 +260,10 @@ pub const DirEntryAccessor = struct {
 
     /// Like statat but does not follow symlinks.
     pub fn lstatat(handle: Handle, path_: [:0]const u8) Maybe(bun.Stat) {
-        var path: [:0]const u8 = path_;
-        var buf: bun.PathBuffer = undefined;
         if (handle.value) |entry| {
-            return Syscall.lstatat(entry.fd, path);
+            return Syscall.lstatat(entry.fd, path_);
         }
-
-        if (!bun.path.Platform.auto.isAbsolute(path)) {
-            if (handle.value) |entry| {
-                const slice = bun.path.joinStringBuf(&buf, [_][]const u8{ entry.dir, path }, .auto);
-                buf[slice.len] = 0;
-                path = buf[0..slice.len :0];
-            }
-        }
-        return Syscall.lstat(path);
+        return Syscall.lstat(path_);
     }
 
     pub fn open(path: [:0]const u8) !Maybe(Handle) {
@@ -285,7 +276,8 @@ pub const DirEntryAccessor = struct {
 
         if (!bun.path.Platform.auto.isAbsolute(path)) {
             if (handle.value) |entry| {
-                path = bun.path.joinStringBuf(&buf, [_][]const u8{ entry.dir, path }, .auto);
+                path = std.mem.print(&buf, "{f}", .{std.fs.path.fmtJoin(&.{ entry.dir, path })}) catch
+                    return .initErr(Syscall.Error.fromCode(.NAMETOOLONG, .open));
             }
         }
         // TODO do we want to propagate ENOTDIR through the 'Maybe' to match the SyscallAccessor?
@@ -323,7 +315,6 @@ pub fn GlobWalker_(
     const count_fds = Accessor.count_fds and bun.Environment.isDebug;
 
     const stdJoin = comptime if (!sentinel) std.fs.path.join else std.fs.path.joinZ;
-    const bunJoin = comptime if (!sentinel) ResolvePath.join else ResolvePath.joinZ;
     const MatchedPath = comptime if (!sentinel) []const u8 else [:0]const u8;
 
     return struct {
@@ -1549,16 +1540,7 @@ pub fn GlobWalker_(
         }
 
         inline fn join(this: *GlobWalker, subdir_parts: []const []const u8) !MatchedPath {
-            if (!this.absolute) {
-                // If relative paths enabled, stdlib join is preferred over
-                // ResolvePath.joinBuf because it doesn't try to normalize the path
-                return try stdJoin(this.arena.allocator(), subdir_parts);
-            }
-
-            const out = try this.arena.allocator().dupe(u8, bunJoin(subdir_parts, .auto));
-            if (comptime sentinel) return out[0 .. out.len - 1 :0];
-
-            return out;
+            return try stdJoin(this.arena.allocator(), subdir_parts);
         }
 
         inline fn startsWithDot(filepath: []const u8) bool {

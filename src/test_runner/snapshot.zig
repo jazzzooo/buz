@@ -45,13 +45,8 @@ pub const Snapshots = struct {
     fn snapshotFilePath(test_path: string, buf: *bun.PathBuffer) error{NameTooLong}![:0]const u8 {
         const dir = std.fs.path.dirname(test_path) orelse ".";
         const filename = std.fs.path.basename(test_path);
-        const path_without_extension = bun.path.joinStringBufChecked(buf, &.{ dir, snapshots_dir_name, filename }, .auto) orelse return error.NameTooLong;
-        const start = @intFromPtr(path_without_extension.ptr) - @intFromPtr(buf.ptr);
-        if (start + path_without_extension.len + ".snap".len >= buf.len) return error.NameTooLong;
-        @memcpy(buf[start + path_without_extension.len ..][0..".snap".len], ".snap");
-        const len = path_without_extension.len + ".snap".len;
-        buf[start + len] = 0;
-        return buf[start..][0..len :0];
+        return std.mem.printSentinel(buf, "{f}.snap", .{std.fs.path.fmtJoin(&.{ dir, snapshots_dir_name, filename })}, 0) catch
+            return error.NameTooLong;
     }
 
     /// Reset per-run snapshot counters to 0. Keys stay owned by the map until
@@ -499,7 +494,12 @@ pub const Snapshots = struct {
             var snapshot_file_path_buf: bun.PathBuffer = undefined;
 
             if (this.snapshot_dir_path == null or !strings.eqlLong(dir_path, this.snapshot_dir_path.?, true)) {
-                const snapshot_dir_path = bun.path.joinStringBufZ(&snapshot_file_path_buf, &[_]string{ dir_path, snapshots_dir_name }, .auto);
+                const snapshot_dir_path = std.mem.printSentinel(
+                    &snapshot_file_path_buf,
+                    "{f}",
+                    .{std.fs.path.fmtJoin(&.{ dir_path, snapshots_dir_name })},
+                    0,
+                ) catch return .initErr(bun.sys.Error.fromCode(.NAMETOOLONG, .mkdir));
                 switch (bun.sys.mkdir(snapshot_dir_path, 0o777)) {
                     .result => this.snapshot_dir_path = dir_path,
                     .err => |err| {

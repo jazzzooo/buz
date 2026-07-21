@@ -23,7 +23,8 @@ pub const ExecCommand = struct {
             cwd,
             "[eval]",
         };
-        const script_path = bun.path.join(parts, .auto);
+        var script_path_buf: bun.PathBuffer = undefined;
+        const script_path = try std.mem.print(&script_path_buf, "{f}", .{std.fs.path.fmtJoin(parts)});
 
         const code = bun.shell.Interpreter.initAndRunFromSource(ctx, mini, script_path, script, null) catch |err| {
             Output.err(err, "failed to run script <b>{s}<r>", .{script_path});
@@ -40,6 +41,8 @@ pub const ExecCommand = struct {
         // }
     }
 };
+
+const std = @import("std");
 
 const bun = @import("bun");
 const Global = bun.Global;

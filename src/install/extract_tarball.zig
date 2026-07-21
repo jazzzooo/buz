@@ -509,9 +509,15 @@ pub fn moveToCacheDirectory(
         else => this.package_manager.lockfile.trusted_dependencies != null and
             this.package_manager.lockfile.trusted_dependencies.?.contains(@truncate(Semver.String.Builder.stringHash(name))),
     }) {
+        const json_path_z = std.mem.printSentinel(
+            &bufs.json_path_buf,
+            "{f}",
+            .{std.fs.path.fmtJoin(&.{ folder_name, "package.json" })},
+            0,
+        ) catch return error.InstallFailed;
         const json_file, json_buf = bun.sys.File.readFileFrom(
             bun.FD.fromStdDir(cache_dir),
-            bun.path.joinZBuf(&bufs.json_path_buf, &[_]string{ folder_name, "package.json" }, .auto),
+            json_path_z,
             bun.default_allocator,
         ).unwrap() catch |err| {
             if (this.resolution.tag == .github and err == error.ENOENT) {

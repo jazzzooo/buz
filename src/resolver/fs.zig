@@ -421,22 +421,6 @@ pub const FileSystem = struct {
         return @call(bun.callmod_inline, path_handler.normalizeStringBuf, .{ str, buf, false, bun.path.Platform.auto, false });
     }
 
-    pub fn join(_: *@This(), parts: anytype) string {
-        return @call(bun.callmod_inline, path_handler.joinStringBuf, .{
-            &join_buf,
-            parts,
-            bun.path.Platform.loose,
-        });
-    }
-
-    pub fn joinBuf(_: *@This(), parts: anytype, buf: []u8) string {
-        return @call(bun.callmod_inline, path_handler.joinStringBuf, .{
-            buf,
-            parts,
-            bun.path.Platform.loose,
-        });
-    }
-
     pub fn absAlloc(f: *@This(), allocator: std.mem.Allocator, parts: anytype) !string {
         const joined = path_handler.joinAbsString(
             f.top_level_dir,
@@ -476,11 +460,6 @@ pub const FileSystem = struct {
 
     pub fn absBufZ(f: *@This(), parts: anytype, buf: []u8) stringZ {
         return path_handler.joinAbsStringBufZ(f.top_level_dir, buf, parts, .loose);
-    }
-
-    pub fn joinAlloc(f: *@This(), allocator: std.mem.Allocator, parts: anytype) !string {
-        const joined = f.join(parts);
-        return try allocator.dupe(u8, joined);
     }
 
     pub fn printLimits() void {
@@ -1513,7 +1492,6 @@ pub fn nonUniqueNameString(path: string, allocator: std.mem.Allocator) !string {
 }
 
 threadlocal var normalize_buf: [1024]u8 = undefined;
-threadlocal var join_buf: [1024]u8 = undefined;
 
 pub const Path = struct {
     /// The display path. In the bundler, this is relative to the current

@@ -185,9 +185,9 @@ pub noinline fn next(this: *Rm) Yield {
 
                                     for (filepath_args) |filepath| {
                                         const path = filepath[0..bun.len(filepath)];
-                                        const resolved_path = if (ResolvePath.Platform.auto.isAbsolute(path)) path else bun.path.join(&[_][]const u8{ cwd, path }, .auto);
-                                        const normalized = bun.path.normalizeString(resolved_path, false, .auto);
-                                        const is_root = std.fs.path.dirname(normalized) == null;
+                                        const resolved_path = bun.handleOom(std.fs.path.resolve(bun.default_allocator, &.{ cwd, path }));
+                                        defer bun.default_allocator.free(resolved_path);
+                                        const is_root = std.fs.path.dirname(resolved_path) == null;
 
                                         if (is_root) {
                                             if (this.bltn().stderr.needsIO()) |safeguard| {
@@ -270,8 +270,7 @@ pub noinline fn next(this: *Rm) Yield {
                     for (this.state.exec.filepath_args) |root_raw| {
                         const root = root_raw[0..std.mem.len(root_raw)];
                         const root_path_string = bun.PathString.init(root[0..root.len]);
-                        const is_absolute = ResolvePath.Platform.auto.isAbsolute(root);
-                        var task = ShellRmTask.create(root_path_string, this, cwd, &this.state.exec.error_signal, is_absolute);
+                        var task = ShellRmTask.create(root_path_string, this, cwd, &this.state.exec.error_signal);
                         task.schedule();
                         // task.
                     }
@@ -470,7 +469,6 @@ pub const ShellRmTask = struct {
 
     root_task: DirTask,
     root_path: bun.PathString = bun.PathString.empty,
-    root_is_absolute: bool,
 
     error_signal: *std.atomic.Value(bool),
     err_mutex: bun.Mutex = .{},
@@ -483,28 +481,6 @@ pub const ShellRmTask = struct {
     event_loop: jsc.EventLoopHandle,
     concurrent_task: jsc.EventLoopTask,
     task: jsc.WorkPoolTask = .{ .callback = workPoolCallback },
-    join_style: JoinStyle,
-
-    /// On Windows we allow posix path separators
-    /// But this results in weird looking paths if we use our path.join function which uses the platform separator:
-    /// `foo/bar + baz -> foo/bar\baz`
-    ///
-    /// So detect which path separator the user is using and prefer that.
-    /// If both are used, pick the first one.
-    const JoinStyle = union(enum) {
-        posix,
-        windows,
-
-        pub fn fromPath(p: bun.PathString) JoinStyle {
-            if (comptime bun.Environment.isPosix) return .posix;
-            const backslash = std.mem.indexOfScalar(u8, p.slice(), '\\') orelse std.math.maxInt(usize);
-            const forwardslash = std.mem.indexOfScalar(u8, p.slice(), '/') orelse std.math.maxInt(usize);
-            if (forwardslash <= backslash)
-                return .posix;
-            return .windows;
-        }
-    };
-
     const CwdPath = if (bun.Environment.isWindows) [:0]const u8 else u0;
 
     const ParentRmTask = @This();
@@ -706,7 +682,7 @@ pub const ShellRmTask = struct {
         }
     };
 
-    pub fn create(root_path: bun.PathString, rm: *Rm, cwd: bun.FD, error_signal: *std.atomic.Value(bool), is_absolute: bool) *ShellRmTask {
+    pub fn create(root_path: bun.PathString, rm: *Rm, cwd: bun.FD, error_signal: *std.atomic.Value(bool)) *ShellRmTask {
         const task = bun.handleOom(bun.default_allocator.create(ShellRmTask));
         task.* = ShellRmTask{
             .rm = rm,
@@ -725,8 +701,6 @@ pub const ShellRmTask = struct {
             .event_loop = rm.bltn().eventLoop(),
             .concurrent_task = jsc.EventLoopTask.fromEventLoop(rm.bltn().eventLoop()),
             .error_signal = error_signal,
-            .root_is_absolute = is_absolute,
-            .join_style = JoinStyle.fromPath(root_path),
         };
         return task;
     }
@@ -735,18 +709,17 @@ pub const ShellRmTask = struct {
         jsc.WorkPool.schedule(&this.task);
     }
 
-    pub fn enqueue(this: *ShellRmTask, parent_dir: *DirTask, path: [:0]const u8, is_absolute: bool, kind_hint: DirTask.EntryKindHint) void {
+    pub fn enqueue(this: *ShellRmTask, parent_dir: *DirTask, path: [:0]const u8, kind_hint: DirTask.EntryKindHint) void {
         if (this.error_signal.load(.seq_cst)) {
             return;
         }
-        const new_path = this.join(
+        const new_path = bun.handleOom(std.fs.path.joinZ(
             bun.default_allocator,
             &[_][]const u8{
                 parent_dir.path[0..parent_dir.path.len],
                 path[0..path.len],
             },
-            is_absolute,
-        );
+        ));
         this.enqueueNoJoin(parent_dir, new_path, kind_hint);
     }
 
@@ -801,12 +774,6 @@ pub const ShellRmTask = struct {
         } else {
             this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
         }
-    }
-
-    pub fn bufJoin(this: *ShellRmTask, buf: *bun.PathBuffer, parts: []const []const u8, _: Syscall.Tag) Maybe([:0]const u8) {
-        if (this.join_style == .posix) {
-            return .{ .result = ResolvePath.joinZBuf(buf, parts, .posix) };
-        } else return .{ .result = ResolvePath.joinZBuf(buf, parts, .windows) };
     }
 
     pub fn removeEntry(this: *ShellRmTask, dir_task: *DirTask, is_absolute: bool) Maybe(void) {
@@ -913,21 +880,16 @@ pub const ShellRmTask = struct {
             defer i += 1;
             switch (current.kind) {
                 .directory => {
-                    this.enqueue(dir_task, current.name.sliceAssumeZ(), is_absolute, .dir);
+                    this.enqueue(dir_task, current.name.sliceAssumeZ(), .dir);
                 },
                 else => {
                     const name = current.name.sliceAssumeZ();
-                    const file_path = switch (this.bufJoin(
+                    const file_path = std.mem.printSentinel(
                         buf,
-                        &[_][]const u8{
-                            path[0..path.len],
-                            name[0..name.len],
-                        },
-                        .unlink,
-                    )) {
-                        .err => |e| return .{ .err = e },
-                        .result => |p| p,
-                    };
+                        "{f}",
+                        .{std.fs.path.fmtJoin(&.{ path[0..path.len], name[0..name.len] })},
+                        0,
+                    ) catch return .{ .err = Syscall.Error.fromCode(.NAMETOOLONG, .unlink) };
 
                     switch (this.removeEntryFile(dir_task, file_path, is_absolute, buf, &remove_child_vtable)) {
                         .err => |e| return .{ .err = e },
@@ -1174,19 +1136,6 @@ pub const ShellRmTask = struct {
         return err.withPath(bun.handleOom(bun.default_allocator.dupeSentinel(u8, path[0..path.len], 0)));
     }
 
-    inline fn join(this: *ShellRmTask, alloc: Allocator, subdir_parts: []const []const u8, is_absolute: bool) [:0]const u8 {
-        _ = this;
-        if (!is_absolute) {
-            // If relative paths enabled, stdlib join is preferred over
-            // ResolvePath.joinBuf because it doesn't try to normalize the path
-            return bun.handleOom(std.fs.path.joinZ(alloc, subdir_parts));
-        }
-
-        const out = bun.handleOom(alloc.dupeSentinel(u8, bun.path.join(subdir_parts, .auto), 0));
-
-        return out;
-    }
-
     pub fn workPoolCallback(task: *jsc.WorkPoolTask) void {
         var this: *ShellRmTask = @alignCast(@fieldParentPtr("task", task));
         this.root_task.runFromThreadPoolImpl();
@@ -1242,8 +1191,6 @@ const log = bun.Output.scoped(.Rm, .hidden);
 
 const builtin = @import("builtin");
 const std = @import("std");
-const Allocator = std.mem.Allocator;
-
 const interpreter = @import("../interpreter.zig");
 const ShellSyscall = interpreter.ShellSyscall;
 

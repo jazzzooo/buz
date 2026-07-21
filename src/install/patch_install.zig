@@ -236,10 +236,17 @@ pub const PatchTask = struct {
 
         var absolute_patchfile_path_buf: bun.PathBuffer = undefined;
         // 1. Parse the patch file
-        const absolute_patchfile_path = bun.path.joinZBuf(&absolute_patchfile_path_buf, &[_][]const u8{
-            dir,
-            patchfile_path,
-        }, .auto);
+        const absolute_patchfile_path = std.mem.printSentinel(
+            &absolute_patchfile_path_buf,
+            "{f}",
+            .{std.fs.path.fmtJoin(&.{ dir, patchfile_path })},
+            0,
+        ) catch return try log.addErrorFmtOpts(
+            this.manager.allocator,
+            "patch file path is too long",
+            .{},
+            .{},
+        );
         // TODO: can the patch file be anything other than utf-8?
 
         const patchfile_txt = switch (bun.sys.File.readFrom(
@@ -376,14 +383,12 @@ pub const PatchTask = struct {
 
         // 6. rename to cache dir
         var path_in_tmpdir_buf: bun.PathBuffer = undefined;
-        const path_in_tmpdir = bun.path.joinZBuf(
+        const path_in_tmpdir = std.mem.printSentinel(
             &path_in_tmpdir_buf,
-            &[_][]const u8{
-                tempdir_name,
-                // tempdir_name,
-            },
-            .auto,
-        );
+            "{s}",
+            .{tempdir_name},
+            0,
+        ) catch return try log.addErrorFmtOpts(this.manager.allocator, "temporary path is too long", .{}, .{});
 
         if (bun.sys.renameatConcurrently(
             this.manager.io,
@@ -409,14 +414,15 @@ pub const PatchTask = struct {
 
         var absolute_patchfile_path_buf: bun.PathBuffer = undefined;
         // parse the patch file
-        const absolute_patchfile_path = bun.path.joinZBuf(
+        const absolute_patchfile_path = std.mem.printSentinel(
             &absolute_patchfile_path_buf,
-            &[_][]const u8{
-                dir,
-                patchfile_path,
-            },
-            .auto,
-        );
+            "{f}",
+            .{std.fs.path.fmtJoin(&.{ dir, patchfile_path })},
+            0,
+        ) catch {
+            bun.handleOom(log.addErrorFmt(null, Loc.Empty, this.manager.allocator, "Patch file path is too long", .{}));
+            return null;
+        };
 
         const stat: bun.Stat = switch (bun.sys.stat(absolute_patchfile_path)) {
             .err => |e| {

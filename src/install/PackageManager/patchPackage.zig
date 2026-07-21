@@ -87,7 +87,16 @@ pub fn doPatchCommit(
     const _cache_dir: std.Io.Dir, const _cache_dir_subpath: stringZ, const _changes_dir: []const u8, const _pkg: Package = switch (arg_kind) {
         .path => result: {
             const package_json_source: *const logger.Source = &brk: {
-                const package_json_path = bun.path.joinZ(&[_][]const u8{ argument, "package.json" }, .auto);
+                var package_json_path_buf: bun.PathBuffer = undefined;
+                const package_json_path = std.mem.printSentinel(
+                    &package_json_path_buf,
+                    "{f}",
+                    .{std.fs.path.fmtJoin(&.{ argument, "package.json" })},
+                    0,
+                ) catch {
+                    Output.prettyErrorln("<r><red>error<r>: package path is too long", .{});
+                    Global.crash();
+                };
 
                 switch (bun.sys.File.toSource(package_json_path, manager.allocator, .{})) {
                     .result => |s| break :brk s,
@@ -162,10 +171,15 @@ pub fn doPatchCommit(
             const name, const version = Dependency.splitNameAndMaybeVersion(argument);
             const pkg_id, const node_modules = pkgInfoForNameAndVersion(lockfile, &iterator, argument, name, version);
 
-            const changes_dir = bun.path.joinZBuf(pathbuf[0..], &[_][]const u8{
-                node_modules.relative_path,
-                name,
-            }, .auto);
+            const changes_dir = std.mem.printSentinel(
+                pathbuf,
+                "{f}",
+                .{std.fs.path.fmtJoin(&.{ node_modules.relative_path, name })},
+                0,
+            ) catch {
+                Output.prettyErrorln("<r><red>error<r>: package path is too long", .{});
+                Global.crash();
+            };
             const pkg = lockfile.packages.get(pkg_id);
 
             const cache_result = manager.computeCacheDirAndSubpath(
@@ -201,11 +215,12 @@ pub fn doPatchCommit(
                     Global.crash();
                 },
             };
-            break :old_folder bun.path.join(&[_][]const u8{
+            break :old_folder bun.handleOom(std.fs.path.join(manager.allocator, &[_][]const u8{
                 cache_dir_path,
                 cache_dir_subpath,
-            }, .posix);
+            }));
         };
+        defer manager.allocator.free(old_folder);
 
         const random_tempdir = bun.fs.FileSystem.tmpname("node_modules_tmp", buf2[0..], bun.fastRandom()) catch |e| {
             Output.err(e, "failed to make tempdir", .{});
@@ -427,13 +442,14 @@ pub fn doPatchCommit(
     }
     defer if (deinit) manager.allocator.free(patch_filename);
 
-    const path_in_patches_dir = bun.path.joinZ(
+    const path_in_patches_dir = bun.handleOom(std.fs.path.joinZ(
+        manager.allocator,
         &[_][]const u8{
             manager.options.patch_features.commit.patches_dir,
             patch_filename,
         },
-        .posix,
-    );
+    ));
+    defer manager.allocator.free(path_in_patches_dir);
 
     var nodefs = bun.jsc.Node.fs.NodeFS{};
     const args = bun.jsc.Node.fs.Arguments.Mkdir{
@@ -459,7 +475,10 @@ pub fn doPatchCommit(
 
     const patch_key = bun.handleOom(std.fmt.allocPrint(manager.allocator, "{s}", .{resolution_label}));
     const patchfile_path = bun.handleOom(manager.allocator.dupe(u8, path_in_patches_dir));
-    _ = bun.sys.unlink(bun.path.joinZ(&[_][]const u8{ changes_dir, ".bun-patch-tag" }, .auto));
+    var patch_tag_path_buf: bun.PathBuffer = undefined;
+    if (std.mem.printSentinel(&patch_tag_path_buf, "{f}", .{std.fs.path.fmtJoin(&.{ changes_dir, ".bun-patch-tag" })}, 0) catch null) |patch_tag_path| {
+        _ = bun.sys.unlink(patch_tag_path);
+    }
 
     return .{
         .patch_key = patch_key,
@@ -555,6 +574,8 @@ pub fn preparePatch(manager: *PackageManager) !void {
     var folder_path_buf: bun.PathBuffer = undefined;
     var iterator = Lockfile.Tree.Iterator(.node_modules).init(manager.lockfile);
     var resolution_buf: [1024]u8 = undefined;
+    var module_folder_owned: ?[]u8 = null;
+    defer if (module_folder_owned) |path| manager.allocator.free(path);
 
     var win_normalizer: if (bun.Environment.isWindows) bun.PathBuffer else struct {} = undefined;
 
@@ -577,7 +598,16 @@ pub fn preparePatch(manager: *PackageManager) !void {
             var lockfile = manager.lockfile;
 
             const package_json_source: *const logger.Source = &src: {
-                const package_json_path = bun.path.joinZ(&[_][]const u8{ argument, "package.json" }, .auto);
+                var package_json_path_buf: bun.PathBuffer = undefined;
+                const package_json_path = std.mem.printSentinel(
+                    &package_json_path_buf,
+                    "{f}",
+                    .{std.fs.path.fmtJoin(&.{ argument, "package.json" })},
+                    0,
+                ) catch {
+                    Output.prettyErrorln("<r><red>error<r>: package path is too long", .{});
+                    Global.crash();
+                };
 
                 switch (bun.sys.File.toSource(package_json_path, manager.allocator, .{})) {
                     .result => |s| break :src s,
@@ -697,7 +727,8 @@ pub fn preparePatch(manager: *PackageManager) !void {
             const cache_dir = cache_result.cache_dir;
             const cache_dir_subpath = cache_result.cache_dir_subpath;
 
-            const module_folder_ = bun.path.join(&[_][]const u8{ folder.relative_path, name }, .auto);
+            const module_folder_ = bun.handleOom(std.fs.path.join(manager.allocator, &.{ folder.relative_path, name }));
+            module_folder_owned = module_folder_;
             const buf = if (comptime bun.Environment.isWindows) bun.path.pathToPosixBuf(u8, module_folder_, win_normalizer[0..]) else module_folder_;
 
             break :brk .{
@@ -734,8 +765,9 @@ pub fn preparePatch(manager: *PackageManager) !void {
 
     if (not_in_workspace_root) {
         var bufn: bun.PathBuffer = undefined;
-        Output.pretty("\nTo patch <b>{s}<r>, edit the following folder:\n\n  <cyan>{s}<r>\n", .{ pkg_name, bun.path.joinStringBuf(bufn[0..], &[_][]const u8{ bun.fs.FileSystem.instance.topLevelDirWithoutTrailingSlash(), module_folder }, .posix) });
-        Output.pretty("\nOnce you're done with your changes, run:\n\n  <cyan>bun patch --commit '{s}'<r>\n", .{bun.path.joinStringBuf(bufn[0..], &[_][]const u8{ bun.fs.FileSystem.instance.topLevelDirWithoutTrailingSlash(), module_folder }, .posix)});
+        const absolute_module_folder = std.mem.print(&bufn, "{f}", .{std.fs.path.fmtJoin(&.{ bun.fs.FileSystem.instance.topLevelDirWithoutTrailingSlash(), module_folder })}) catch module_folder;
+        Output.pretty("\nTo patch <b>{s}<r>, edit the following folder:\n\n  <cyan>{s}<r>\n", .{ pkg_name, absolute_module_folder });
+        Output.pretty("\nOnce you're done with your changes, run:\n\n  <cyan>bun patch --commit '{s}'<r>\n", .{absolute_module_folder});
     } else {
         Output.pretty("\nTo patch <b>{s}<r>, edit the following folder:\n\n  <cyan>{s}<r>\n", .{ pkg_name, module_folder });
         Output.pretty("\nOnce you're done with your changes, run:\n\n  <cyan>bun patch --commit '{s}'<r>\n", .{module_folder});
@@ -1025,7 +1057,7 @@ fn pathArgumentRelativeToRootWorkspacePackage(manager: *PackageManager, lockfile
     if (workspace_package_id == 0) return null;
     const workspace_res = lockfile.packages.items(.resolution)[workspace_package_id];
     const rel_path: []const u8 = workspace_res.value.workspace.slice(lockfile.buffers.string_bytes.items);
-    return bun.handleOom(bun.default_allocator.dupe(u8, bun.path.join(&[_][]const u8{ rel_path, argument }, .posix)));
+    return bun.handleOom(std.fs.path.resolvePosix(manager.allocator, &.{ rel_path, argument }));
 }
 
 const PatchArgKind = enum {

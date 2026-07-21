@@ -75,20 +75,16 @@ pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
                 },
                 .file => {
                     const destfile_path_buf = bun.w_path_buffer_pool.get();
-                    const destfile_path_buf2 = bun.w_path_buffer_pool.get();
-                    defer bun.w_path_buffer_pool.put(destfile_path_buf2);
                     defer bun.w_path_buffer_pool.put(destfile_path_buf);
-                    // `dest` may already be absolute (global virtual store
-                    // entries live under the cache, not cwd); only prefix the
-                    // working-directory path when it's project-relative.
-                    const dest_parts: []const []const u16 = if (this.dest.len() > 0 and bun.path.Platform.windows.isAbsoluteT(u16, this.dest.slice()))
-                        &.{this.dest.slice()}
+                    const dest_is_absolute = this.dest.len() > 0 and bun.path.Platform.windows.isAbsoluteT(u16, this.dest.slice());
+                    var dest_abs: bun.AbsPath(.{ .sep = .auto, .unit = .os }) = .fromLongPath(dest_cwd);
+                    defer dest_abs.deinit();
+                    if (!dest_is_absolute) dest_abs.append(this.dest.slice());
+                    const dest_path = if (dest_is_absolute)
+                        this.dest.sliceZ()
                     else
-                        &.{ dest_cwd, this.dest.slice() };
-                    const destfile_path = bun.strings.addNTPathPrefixIfNeeded(destfile_path_buf2, bun.path.joinStringBufWZ(destfile_path_buf, dest_parts, .windows));
-
-                    const srcfile_path_buf = bun.w_path_buffer_pool.get();
-                    defer bun.w_path_buffer_pool.put(srcfile_path_buf);
+                        dest_abs.sliceZ();
+                    const destfile_path = bun.strings.addNTPathPrefixIfNeeded(destfile_path_buf, dest_path);
 
                     switch (sys.link(u16, this.src.sliceZ(), destfile_path)) {
                         .result => {},

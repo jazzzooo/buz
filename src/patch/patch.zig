@@ -40,6 +40,8 @@ pub const PatchFile = struct {
             if (state.patch_dir_abs_path) |p| return .{ .result = p };
             return switch (bun.sys.getFdPath(fd, &state.pathbuf)) {
                 .result => |p| {
+                    if (p.len >= state.pathbuf.len) return .initErr(bun.sys.Error.fromCode(.NAMETOOLONG, .open));
+                    state.pathbuf[p.len] = 0;
                     state.patch_dir_abs_path = state.pathbuf[0..p.len :0];
                     return .{ .result = state.patch_dir_abs_path.? };
                 },
@@ -57,6 +59,17 @@ pub const PatchFile = struct {
 
         for (this.parts.items) |*part| {
             defer _ = arena.reset(.retain_capacity);
+            const paths: []const []const u8 = switch (part.*) {
+                .file_patch => &.{part.file_patch.path},
+                .file_deletion => &.{part.file_deletion.path},
+                .file_creation => &.{part.file_creation.path},
+                .file_rename => &.{ part.file_rename.from_path, part.file_rename.to_path },
+                .file_mode_change => &.{part.file_mode_change.path},
+            };
+            for (paths) |path| {
+                if (!isConfinedPath(path)) return bun.sys.Error.fromCode(.INVAL, .open);
+            }
+
             switch (part.*) {
                 .file_deletion => {
                     const pathz = bun.handleOom(arena.allocator().dupeSentinel(u8, part.file_deletion.path, 0));
@@ -74,10 +87,10 @@ pub const PatchFile = struct {
                             .result => |p| p,
                             .err => |e| return e.withoutPath(),
                         };
-                        const path_to_make = bun.path.joinZ(&[_][]const u8{
+                        const path_to_make = bun.handleOom(std.fs.path.joinZ(arena.allocator(), &[_][]const u8{
                             abs_patch_dir,
                             todir,
-                        }, .auto);
+                        }));
                         var nodefs = bun.api.node.fs.NodeFS{};
                         if (nodefs.mkdirRecursive(.{
                             .path = .{ .string = bun.PathString.init(path_to_make) },
@@ -97,10 +110,15 @@ pub const PatchFile = struct {
 
                     var nodefs = bun.api.node.fs.NodeFS{};
                     if (filedir.len > 0) {
+                        const abs_patch_dir = switch (state.patchDirAbsPath(patch_dir)) {
+                            .result => |p| p,
+                            .err => |e| return e.withoutPath(),
+                        };
+                        const path_to_make = bun.handleOom(std.fs.path.joinZ(arena.allocator(), &.{ abs_patch_dir, filedir }));
                         if (nodefs.mkdirRecursive(.{
-                            .path = .{ .string = bun.PathString.init(filedir) },
+                            .path = .{ .string = bun.PathString.init(path_to_make) },
                             .recursive = true,
-                            .mode = @intCast(@backingInt(mode)),
+                            .mode = 0o755,
                         }).asErr()) |e| return e.withoutPath();
                     }
 
@@ -180,7 +198,8 @@ pub const PatchFile = struct {
                             .err => |e| return e.withoutPath(),
                         };
                         var buf: bun.PathBuffer = undefined;
-                        const joined_absfilepath = bun.path.joinZBuf(&buf, &[_][]const u8{ absfilepath, filepath }, .auto);
+                        const joined_absfilepath = std.mem.printSentinel(&buf, "{f}", .{std.fs.path.fmtJoin(&.{ absfilepath, filepath })}, 0) catch
+                            return bun.sys.Error.fromCode(.NAMETOOLONG, .open);
                         const fd = switch (bun.sys.open(joined_absfilepath, bun.O.RDWR, 0)) {
                             .err => |e| return e.withoutPath(),
                             .result => |f| f,
@@ -220,7 +239,7 @@ pub const PatchFile = struct {
         else
             bun.sys.stat(
                 switch (state.patchDirAbsPath(patch_dir)) {
-                    .result => |p| bun.path.joinZ(&[_][]const u8{ p, file_path }, .auto),
+                    .result => |p| bun.handleOom(std.fs.path.joinZ(arena.allocator(), &.{ p, file_path })),
                     .err => |e| return .{ .err = e },
                 },
             )) {
@@ -365,6 +384,17 @@ pub const PatchFile = struct {
         return .success;
     }
 };
+
+fn isConfinedPath(path: []const u8) bool {
+    if (path.len == 0 or std.mem.indexOfScalar(u8, path, 0) != null) return false;
+    if (std.fs.path.isAbsolutePosix(path) or std.fs.path.parsePathWindows(u8, path).kind != .relative) return false;
+
+    var components = std.mem.tokenizeAny(u8, path, "/\\");
+    while (components.next()) |component| {
+        if (std.mem.eql(u8, component, "..")) return false;
+    }
+    return true;
+}
 
 const FileDeets = struct {
     diff_line_from_path: ?[]const u8 = null,

@@ -186,7 +186,7 @@ const History = struct {
         if (home_path.len == 0) return;
 
         var path_buf: bun.PathBuffer = undefined;
-        const path = bun.path.joinZBuf(&path_buf, &[_][]const u8{ home_path, HISTORY_FILENAME }, .auto);
+        const path = std.mem.printSentinel(&path_buf, "{f}", .{std.fs.path.fmtJoin(&.{ home_path, HISTORY_FILENAME })}, 0) catch return;
         self.file_path = try self.allocator.dupe(u8, path);
 
         const content = switch (bun.sys.File.readFrom(bun.FD.cwd(), path, self.allocator)) {

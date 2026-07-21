@@ -119,12 +119,12 @@ pub const ShellMvBatchedTask = struct {
 
         switch (Syscall.renameat(this.cwd, src, this.target_fd.?, path_in_dir)) {
             .err => |e| {
-                const target_path = ResolvePath.joinZ(&[_][]const u8{
+                const target_path = bun.handleOom(std.fs.path.joinZ(bun.default_allocator, &[_][]const u8{
                     this.target,
                     std.fs.path.basename(src),
-                }, .auto);
+                }));
 
-                this.err = e.withPath(bun.handleOom(bun.default_allocator.dupeSentinel(u8, target_path[0..], 0)));
+                this.err = e.withPath(target_path);
                 this.err_path_owned = true;
                 return false;
             },

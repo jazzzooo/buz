@@ -408,14 +408,12 @@ pub const Bin = extern struct {
                 if (strings.hasPrefixComptime(target, "./") or strings.hasPrefixComptime(target, ".\\")) {
                     target = target[2..];
                 }
-                var parts = [_][]const u8{ this.package_name.slice(this.string_buffer), target };
+                const parts = [_][]const u8{ this.package_name.slice(this.string_buffer), target };
 
                 const dir = this.destination_node_modules;
 
-                const joined = path.joinStringBuf(&this.buf, &parts, .auto);
-                this.buf[joined.len] = 0;
-                const joined_: [:0]u8 = this.buf[0..joined.len :0];
-                var child_dir = try bun.openDir(dir, joined_);
+                const joined = try std.mem.printSentinel(&this.buf, "{f}", .{std.fs.path.fmtJoin(&parts)}, 0);
+                var child_dir = try bun.openDir(dir, joined);
                 this.dir_iterator = child_dir.iterate();
             }
 

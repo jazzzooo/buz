@@ -234,14 +234,11 @@ pub const ShellMkdirTask = struct {
 
         // We have to give an absolute path to our mkdir
         // implementation for it to work with cwd
-        const filepath: [:0]const u8 = brk: {
-            if (ResolvePath.Platform.auto.isAbsolute(this.filepath)) break :brk this.filepath;
-            const parts: []const []const u8 = &.{
-                this.cwd_path[0..],
-                this.filepath[0..],
-            };
-            break :brk ResolvePath.joinZ(parts, .auto);
-        };
+        const filepath = bun.handleOom(std.fs.path.joinZ(bun.default_allocator, if (ResolvePath.Platform.auto.isAbsolute(this.filepath))
+            &.{this.filepath}
+        else
+            &.{ this.cwd_path, this.filepath }));
+        defer bun.default_allocator.free(filepath);
 
         var node_fs = jsc.Node.fs.NodeFS{};
         // Recursive

@@ -4701,8 +4701,9 @@ pub const NodeFS = struct {
                     }
 
                     const path_parts = [_]string{ root_basename, basename };
+                    const error_path = std.mem.printSentinel(buf, "{f}", .{std.fs.path.fmtJoin(&path_parts)}, 0) catch args.path.slice();
                     return .{
-                        .err = err.withPath(bun.path.joinZBuf(buf, &path_parts, .auto)),
+                        .err = err.withPath(error_path),
                     };
                 }
                 return .{
@@ -4733,8 +4734,9 @@ pub const NodeFS = struct {
             .err => |err| {
                 if (comptime !is_root) {
                     const path_parts = [_]string{ root_basename, basename };
+                    const error_path = std.mem.printSentinel(buf, "{f}", .{std.fs.path.fmtJoin(&path_parts)}, 0) catch args.path.slice();
                     return .{
-                        .err = err.withPath(bun.path.joinZBuf(buf, &path_parts, .auto)),
+                        .err = err.withPath(error_path),
                     };
                 }
 
@@ -4752,7 +4754,7 @@ pub const NodeFS = struct {
                 }
 
                 const path_parts = [_]string{ basename, utf8_name };
-                break :brk bun.path.joinZBuf(buf, &path_parts, .auto);
+                break :brk std.mem.printSentinel(buf, "{f}", .{std.fs.path.fmtJoin(&path_parts)}, 0) catch continue;
             };
 
             // Track effective kind - may be resolved from .unknown via stat
@@ -4801,7 +4803,10 @@ pub const NodeFS = struct {
 
             switch (comptime ExpectedType) {
                 bun.jsc.Node.Dirent => {
-                    const path_u8 = std.fs.path.dirname(bun.path.join(&[_]string{ root_basename, name_to_copy }, .auto)) orelse "";
+                    var path_buf: bun.PathBuffer = undefined;
+                    var path_fba = std.heap.FixedBufferAllocator.init(&path_buf);
+                    const joined_path = std.fs.path.resolve(path_fba.allocator(), &.{ root_basename, name_to_copy }) catch root_basename;
+                    const path_u8 = std.fs.path.dirname(joined_path) orelse "";
                     if (dirent_path_prev.isEmpty() or !bun.strings.eql(dirent_path_prev.byteSlice(), path_u8)) {
                         dirent_path_prev.deref();
                         dirent_path_prev = bun.String.cloneUTF8(path_u8);
@@ -4922,7 +4927,7 @@ pub const NodeFS = struct {
                     }
 
                     const path_parts = [_]string{ basename, utf8_name };
-                    break :brk bun.path.joinZBuf(buf, &path_parts, .auto);
+                    break :brk std.mem.printSentinel(buf, "{f}", .{std.fs.path.fmtJoin(&path_parts)}, 0) catch continue;
                 };
 
                 // Track effective kind - may be resolved from .unknown via stat
@@ -4964,7 +4969,10 @@ pub const NodeFS = struct {
 
                 switch (comptime ExpectedType) {
                     bun.jsc.Node.Dirent => {
-                        const path_u8 = std.fs.path.dirname(bun.path.join(&[_]string{ root_basename, name_to_copy }, .auto)) orelse "";
+                        var path_buf: bun.PathBuffer = undefined;
+                        var path_fba = std.heap.FixedBufferAllocator.init(&path_buf);
+                        const joined_path = std.fs.path.resolve(path_fba.allocator(), &.{ root_basename, name_to_copy }) catch root_basename;
+                        const path_u8 = std.fs.path.dirname(joined_path) orelse "";
                         if (dirent_path_prev.isEmpty() or !bun.strings.eql(dirent_path_prev.byteSlice(), path_u8)) {
                             dirent_path_prev.deref();
                             dirent_path_prev = jsc.WebCore.encoding.toBunString(strings.withoutNTPrefix(std.meta.Child(@TypeOf(path_u8)), path_u8), args.encoding);

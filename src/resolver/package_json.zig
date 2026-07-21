@@ -115,6 +115,11 @@ pub const PackageJSON = struct {
         return normalized;
     }
 
+    fn resolvePackageTarget(buf: []u8, parts: []const []const u8) ?[]u8 {
+        var fba = std.heap.FixedBufferAllocator.init(buf);
+        return std.fs.path.resolve(fba.allocator(), parts) catch null;
+    }
+
     pub const SideEffects = union(enum) {
         /// either `package.json` is missing "sideEffects", it is true, or some
         /// other unsupported value. Treat all files as side effects
@@ -839,17 +844,14 @@ pub const PackageJSON = struct {
                                     continue;
 
                                 // Store the pattern relative to the package directory
-                                var joined = [_]string{
-                                    package_dir,
-                                    name,
-                                };
-
-                                const pattern = r.fs.join(&joined);
+                                const pattern = std.fs.path.resolve(allocator, &.{ package_dir, name }) catch unreachable;
 
                                 if (strings.containsChar(name, '*') or strings.containsChar(name, '?') or strings.containsChar(name, '[') or strings.containsChar(name, '{')) {
                                     // Normalize pattern to use forward slashes for cross-platform compatibility
-                                    const normalized_pattern = normalizePathForGlob(allocator, pattern) catch pattern;
-                                    glob_list.appendAssumeCapacity(normalized_pattern);
+                                    for (pattern) |*char| {
+                                        if (char.* == '\\') char.* = '/';
+                                    }
+                                    glob_list.appendAssumeCapacity(pattern);
                                 } else {
                                     _ = map.getOrPutAssumeCapacity(
                                         bun.StringHashMapUnowned.Key.init(pattern),
@@ -868,15 +870,12 @@ pub const PackageJSON = struct {
                                     continue;
 
                                 // Store the pattern relative to the package directory
-                                var joined = [_]string{
-                                    package_dir,
-                                    name,
-                                };
-
-                                const pattern = r.fs.join(&joined);
+                                const pattern = std.fs.path.resolve(allocator, &.{ package_dir, name }) catch unreachable;
                                 // Normalize pattern to use forward slashes for cross-platform compatibility
-                                const normalized_pattern = normalizePathForGlob(allocator, pattern) catch pattern;
-                                glob_list.appendAssumeCapacity(normalized_pattern);
+                                for (pattern) |*char| {
+                                    if (char.* == '\\') char.* = '/';
+                                }
+                                glob_list.appendAssumeCapacity(pattern);
                             }
                         }
                         package_json.side_effects = .{ .glob = glob_list };
@@ -885,13 +884,9 @@ pub const PackageJSON = struct {
                         map.ensureTotalCapacity(allocator, array.array.items.len) catch unreachable;
                         while (array.next()) |item| {
                             if (item.asString(allocator)) |name| {
-                                var joined = [_]string{
-                                    package_dir,
-                                    name,
-                                };
-
+                                const pattern = std.fs.path.resolve(allocator, &.{ package_dir, name }) catch unreachable;
                                 _ = map.getOrPutAssumeCapacity(
-                                    bun.StringHashMapUnowned.Key.init(r.fs.join(&joined)),
+                                    bun.StringHashMapUnowned.Key.init(pattern),
                                 );
                             }
                         }
@@ -1761,7 +1756,7 @@ pub const ESModule = struct {
                             return Resolution{ .path = result, .status = .PackageResolve, .debug = .{ .token = target.first_token } };
                         } else {
                             const parts2 = [_]string{ str, subpath };
-                            const result = resolve_path.joinStringBufChecked(resolve_target_buf2, &parts2, .auto) orelse return module_not_found;
+                            const result = PackageJSON.resolvePackageTarget(resolve_target_buf2, &parts2) orelse return module_not_found;
                             if (r.debug_logs) |log| {
                                 log.addNoteFmt("Resolved \".{s}\" to \".{s}\"", .{ str, result });
                             }
@@ -1807,7 +1802,7 @@ pub const ESModule = struct {
                     }
 
                     const parts = [_]string{ package_url, substituted_target };
-                    const result = resolve_path.joinStringBufChecked(resolve_target_buf2, &parts, .auto) orelse return module_not_found;
+                    const result = PackageJSON.resolvePackageTarget(resolve_target_buf2, &parts) orelse return module_not_found;
                     if (r.debug_logs) |log| {
                         log.addNoteFmt("Substituted \"{s}\" for \"*\" in \"{s}\" to get \"{s}\"", .{ subpath, str, result });
                     }
@@ -1819,7 +1814,7 @@ pub const ESModule = struct {
                     return Resolution{ .path = result, .status = status, .debug = .{ .token = target.first_token } };
                 } else {
                     const parts2 = [_]string{ package_url, str, subpath };
-                    const result = resolve_path.joinStringBufChecked(resolve_target_buf2, &parts2, .auto) orelse return module_not_found;
+                    const result = PackageJSON.resolvePackageTarget(resolve_target_buf2, &parts2) orelse return module_not_found;
                     if (r.debug_logs) |log| {
                         log.addNoteFmt("Resolved \"{s}\" with subpath \"{s}\" to \"{s}\"", .{ str, subpath, result });
                     }
@@ -2175,7 +2170,6 @@ const Install = @import("../install/install.zig");
 const cache = @import("../bundler/cache.zig");
 const fs = @import("./fs.zig");
 const options = @import("../bundler/options.zig");
-const resolve_path = @import("../paths/resolve_path.zig");
 const resolver = @import("./resolver.zig");
 const std = @import("std");
 

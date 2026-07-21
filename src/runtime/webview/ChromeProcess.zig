@@ -135,11 +135,11 @@ fn findChrome(alloc: std.mem.Allocator, explicitPath: ?[*:0]const u8) !?[:0]cons
         const home = bun.env_var.HOME.get() orelse "";
         for (bundles) |b| {
             const sys_parts = [_][]const u8{ "/Applications", b };
-            const sys = bun.path.joinStringBufZ(buf, &sys_parts, .auto);
+            const sys = std.mem.printSentinel(buf, "{f}", .{std.fs.path.fmtJoin(&sys_parts)}, 0) catch continue;
             if (bun.sys.isExecutableFilePath(sys)) return try alloc.dupeSentinel(u8, sys, 0);
             if (home.len > 0) {
                 const user_parts = [_][]const u8{ home, "Applications", b };
-                const user = bun.path.joinStringBufZ(buf, &user_parts, .auto);
+                const user = std.mem.printSentinel(buf, "{f}", .{std.fs.path.fmtJoin(&user_parts)}, 0) catch continue;
                 if (bun.sys.isExecutableFilePath(user)) return try alloc.dupeSentinel(u8, user, 0);
             }
         }
@@ -180,7 +180,7 @@ fn findPlaywrightShell(alloc: std.mem.Allocator) ?[:0]const u8 {
     else
         ".cache/ms-playwright";
     const parts = [_][]const u8{ home, cache_subpath };
-    const cache_dir = bun.path.joinStringBufZ(dir_buf, &parts, .auto);
+    const cache_dir = std.mem.printSentinel(dir_buf, "{f}", .{std.fs.path.fmtJoin(&parts)}, 0) catch return null;
 
     const fd = switch (bun.sys.open(cache_dir, bun.O.RDONLY | bun.O.DIRECTORY, 0)) {
         .result => |f| f,
@@ -220,13 +220,13 @@ fn findPlaywrightShell(alloc: std.mem.Allocator) ?[:0]const u8 {
     const bin_buf = bun.path_buffer_pool.get();
     defer bun.path_buffer_pool.put(bin_buf);
     const bin_parts = [_][]const u8{ cache_dir, best_name[0..best_len], subdir_cft };
-    const bin = bun.path.joinStringBufZ(bin_buf, &bin_parts, .auto);
+    const bin = std.mem.printSentinel(bin_buf, "{f}", .{std.fs.path.fmtJoin(&bin_parts)}, 0) catch return null;
     if (bun.sys.isExecutableFilePath(bin)) return alloc.dupeSentinel(u8, bin, 0) catch return null;
 
     // Fall back to the non-cft linux arm64 layout.
     if (comptime bun.Environment.isLinux and bun.Environment.isAarch64) {
         const bin_parts2 = [_][]const u8{ cache_dir, best_name[0..best_len], "chrome-linux/headless_shell" };
-        const bin2 = bun.path.joinStringBufZ(bin_buf, &bin_parts2, .auto);
+        const bin2 = std.mem.printSentinel(bin_buf, "{f}", .{std.fs.path.fmtJoin(&bin_parts2)}, 0) catch return null;
         if (bun.sys.isExecutableFilePath(bin2)) return alloc.dupeSentinel(u8, bin2, 0) catch return null;
     }
     return null;

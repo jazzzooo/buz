@@ -222,7 +222,6 @@ pub const ShellLsTask = struct {
     cwd: bun.FD,
     path: [:0]const u8 = &[0:0]u8{},
     output: std.array_list.Managed(u8),
-    is_absolute: bool = false,
     err: ?Syscall.Error = null,
     result_kind: enum { file, dir, idk } = .idk,
     /// Cached current time (seconds since epoch) for formatting timestamps.
@@ -268,31 +267,18 @@ pub const ShellLsTask = struct {
 
     pub fn enqueue(this: *@This(), path: [:0]const u8) void {
         debug("enqueue: {s}", .{path});
-        const new_path = this.join(
+        const new_path = bun.handleOom(std.fs.path.joinZ(
             this.ls.alloc_scope.allocator(),
             &[_][]const u8{
                 this.path[0..this.path.len],
                 path[0..path.len],
             },
-            this.is_absolute,
-        );
+        ));
 
         var subtask = @This().create(this.ls, this.opts, this.task_count, this.cwd, new_path, true, this.event_loop);
         _ = this.task_count.fetchAdd(1, .monotonic);
         subtask.print_directory = true;
         subtask.schedule();
-    }
-
-    inline fn join(_: *@This(), alloc: Allocator, subdir_parts: []const []const u8, is_absolute: bool) [:0]const u8 {
-        if (!is_absolute) {
-            // If relative paths enabled, stdlib join is preferred over
-            // ResolvePath.joinBuf because it doesn't try to normalize the path
-            return bun.handleOom(std.fs.path.joinZ(alloc, subdir_parts));
-        }
-
-        const out = bun.handleOom(alloc.dupeSentinel(u8, bun.path.join(subdir_parts, .auto), 0));
-
-        return out;
     }
 
     pub fn run(this: *@This()) void {
@@ -1012,8 +998,6 @@ pub inline fn bltn(this: *Ls) *Builtin {
 const log = bun.Output.scoped(.ls, .hidden);
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
-
 const interpreter = @import("../interpreter.zig");
 const Interpreter = interpreter.Interpreter;
 const OutputSrc = interpreter.OutputSrc;

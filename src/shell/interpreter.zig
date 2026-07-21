@@ -605,55 +605,12 @@ pub const Interpreter = struct {
             if (comptime @TypeOf(new_cwd_) != [:0]const u8 and @TypeOf(new_cwd_) != []const u8) {
                 @compileError("Bad type for new_cwd " ++ @typeName(@TypeOf(new_cwd_)));
             }
-            const is_sentinel = @TypeOf(new_cwd_) == [:0]const u8;
-            const is_abs = ResolvePath.Platform.auto.isAbsolute(new_cwd_);
-
-            // Both branches below write into the 4096-byte threadlocal
-            // `ResolvePath.join_buf` with no bounds check: the absolute branch
-            // `@memcpy`s `new_cwd_` directly, and the relative branch normalizes
-            // `cwd + "/" + new_cwd_` into it via `joinZ`. In ReleaseFast (where
-            // slice bounds are elided) an oversized input overflows adjacent TLS
-            // and segfaults. Normalization never grows the path, so bounding the
-            // un-normalized length is sufficient (and matches POSIX `chdir`, which
-            // returns ENAMETOOLONG on argument length, not canonicalized length).
-            const required_len = if (is_abs) new_cwd_.len else this.cwd().len + 1 + new_cwd_.len;
-            if (required_len >= ResolvePath.join_buf.len) {
-                return Maybe(void).initErr(Syscall.Error.fromCode(.NAMETOOLONG, .chdir));
-            }
-
-            const new_cwd: [:0]const u8 = brk: {
-                if (is_abs) {
-                    if (is_sentinel) {
-                        @memcpy(ResolvePath.join_buf[0..new_cwd_.len], new_cwd_[0..new_cwd_.len]);
-                        ResolvePath.join_buf[new_cwd_.len] = 0;
-                        break :brk ResolvePath.join_buf[0..new_cwd_.len :0];
-                    }
-                    std.mem.copyForwards(u8, &ResolvePath.join_buf, new_cwd_);
-                    ResolvePath.join_buf[new_cwd_.len] = 0;
-                    break :brk ResolvePath.join_buf[0..new_cwd_.len :0];
-                }
-
-                const existing_cwd = this.cwd();
-                const cwd_str = ResolvePath.joinZ(&[_][]const u8{
-                    existing_cwd,
-                    new_cwd_,
-                }, .auto);
-
-                // remove trailing separator
-                if (bun.Environment.isWindows) {
-                    const sep = '\\';
-                    if (cwd_str.len > 1 and cwd_str[cwd_str.len - 1] == sep) {
-                        ResolvePath.join_buf[cwd_str.len - 1] = 0;
-                        break :brk ResolvePath.join_buf[0 .. cwd_str.len - 1 :0];
-                    }
-                }
-                if (cwd_str.len > 1 and cwd_str[cwd_str.len - 1] == '/') {
-                    ResolvePath.join_buf[cwd_str.len - 1] = 0;
-                    break :brk ResolvePath.join_buf[0 .. cwd_str.len - 1 :0];
-                }
-
-                break :brk cwd_str;
-            };
+            var new_cwd_buf: bun.PathBuffer = undefined;
+            const new_cwd: [:0]const u8 = if (comptime @TypeOf(new_cwd_) == [:0]const u8)
+                new_cwd_
+            else
+                std.mem.printSentinel(&new_cwd_buf, "{s}", .{new_cwd_}, 0) catch
+                    return Maybe(void).initErr(Syscall.Error.fromCode(.NAMETOOLONG, .chdir));
 
             const new_cwd_fd = switch (ShellSyscall.openat(
                 this.cwd_fd,
@@ -666,13 +623,16 @@ pub const Interpreter = struct {
                     return Maybe(void).initErr(err);
                 },
             };
+            const resolved_cwd = bun.handleOom(std.fs.path.resolve(bun.default_allocator, &.{ this.cwd(), new_cwd_ }));
+            defer bun.default_allocator.free(resolved_cwd);
             _ = this.cwd_fd.closeAllowingBadFileDescriptor(null);
 
             this.__prev_cwd.clearRetainingCapacity();
             bun.handleOom(this.__prev_cwd.appendSlice(this.__cwd.items[0..]));
 
             this.__cwd.clearRetainingCapacity();
-            bun.handleOom(this.__cwd.appendSlice(new_cwd[0 .. new_cwd.len + 1]));
+            bun.handleOom(this.__cwd.appendSlice(resolved_cwd));
+            bun.handleOom(this.__cwd.append(0));
 
             if (comptime bun.Environment.isDebug) {
                 assert(this.__cwd.items[this.__cwd.items.len -| 1] == 0);
@@ -1837,20 +1797,21 @@ pub const ShellSyscall = struct {
         }
         if (ResolvePath.Platform.isAbsolute(.windows, to[0..to.len])) return .{ .result = to };
 
+        var dirpath_buf: bun.PathBuffer = undefined;
         const dirpath = brk: {
-            if (@TypeOf(dirfd) == bun.FD) break :brk switch (Syscall.getFdPath(dirfd, buf)) {
+            if (@TypeOf(dirfd) == bun.FD) break :brk switch (Syscall.getFdPath(dirfd, &dirpath_buf)) {
                 .result => |path| path,
                 .err => |e| return .{ .err = e.withFd(dirfd) },
             };
-            @memcpy(buf[0..dirfd.len], dirfd[0..dirfd.len]);
-            break :brk buf[0..dirfd.len];
+            break :brk dirfd;
         };
 
         const parts: []const []const u8 = &.{
             dirpath[0..dirpath.len],
             to[0..to.len],
         };
-        const joined = ResolvePath.joinZBuf(buf, parts, .auto);
+        const joined = std.mem.printSentinel(buf, "{f}", .{std.fs.path.fmtJoin(parts)}, 0) catch
+            return .{ .err = Syscall.Error.fromCode(.NAMETOOLONG, .open) };
         return .{ .result = joined };
     }
 

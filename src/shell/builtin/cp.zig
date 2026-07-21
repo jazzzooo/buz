@@ -438,26 +438,19 @@ pub const ShellCpTask = struct {
     }
 
     fn runFromThreadPoolImpl(this: *ShellCpTask) ?bun.shell.ShellErr {
-        var buf2: bun.PathBuffer = undefined;
-        var buf3: bun.PathBuffer = undefined;
         // We have to give an absolute path to our cp
         // implementation for it to work with cwd
-        const src: [:0]const u8 = brk: {
-            if (ResolvePath.Platform.auto.isAbsolute(this.src)) break :brk this.src;
-            const parts: []const []const u8 = &.{
-                this.cwd_path[0..],
-                this.src[0..],
-            };
-            break :brk ResolvePath.joinZ(parts, .auto);
-        };
-        var tgt: [:0]const u8 = brk: {
-            if (ResolvePath.Platform.auto.isAbsolute(this.tgt)) break :brk this.tgt;
-            const parts: []const []const u8 = &.{
-                this.cwd_path[0..],
-                this.tgt[0..],
-            };
-            break :brk ResolvePath.joinZBuf(buf2[0..bun.MAX_PATH_BYTES], parts, .auto);
-        };
+        this.src_absolute = bun.handleOom(std.fs.path.joinZ(bun.default_allocator, if (ResolvePath.Platform.auto.isAbsolute(this.src))
+            &.{this.src}
+        else
+            &.{ this.cwd_path, this.src }));
+        this.tgt_absolute = bun.handleOom(std.fs.path.joinZ(bun.default_allocator, if (ResolvePath.Platform.auto.isAbsolute(this.tgt))
+            &.{this.tgt}
+        else
+            &.{ this.cwd_path, this.tgt }));
+        const src = this.src_absolute.?;
+        const tgt = this.tgt_absolute.?;
+        const target_had_trailing_separator = hasTrailingSep(this.tgt);
 
         // Cases:
         // SRC       DEST
@@ -489,7 +482,7 @@ pub const ShellCpTask = struct {
             .err => |e| brk: {
                 if (e.getErrno() == .NOENT) {
                     // If it has a trailing directory separator, its a directory
-                    const is_dir = hasTrailingSep(tgt);
+                    const is_dir = target_had_trailing_separator;
                     break :brk .{ is_dir, false };
                 }
                 return bun.shell.ShellErr.newSys(e);
@@ -514,7 +507,9 @@ pub const ShellCpTask = struct {
                     tgt[0..tgt.len],
                     basename,
                 };
-                tgt = ResolvePath.joinZBuf(buf3[0..bun.MAX_PATH_BYTES], parts, .auto);
+                const joined = bun.handleOom(std.fs.path.joinZ(bun.default_allocator, parts));
+                bun.default_allocator.free(this.tgt_absolute.?);
+                this.tgt_absolute = joined;
             } else if (this.operands == 2) {
                 // source_dir -> new_target_dir
             } else {
@@ -532,12 +527,11 @@ pub const ShellCpTask = struct {
                 tgt[0..tgt.len],
                 basename,
             };
-            tgt = ResolvePath.joinZBuf(buf3[0..bun.MAX_PATH_BYTES], parts, .auto);
+            const joined = bun.handleOom(std.fs.path.joinZ(bun.default_allocator, parts));
+            bun.default_allocator.free(this.tgt_absolute.?);
+            this.tgt_absolute = joined;
             copying_many = true;
         }
-
-        this.src_absolute = bun.handleOom(bun.default_allocator.dupeSentinel(u8, src[0..src.len], 0));
-        this.tgt_absolute = bun.handleOom(bun.default_allocator.dupeSentinel(u8, tgt[0..tgt.len], 0));
 
         const args = jsc.Node.fs.Arguments.Cp{
             .src = jsc.Node.PathLike{ .string = bun.PathString.init(this.src_absolute.?) },

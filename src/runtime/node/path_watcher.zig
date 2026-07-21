@@ -384,11 +384,11 @@ fn walkSubtree(
         const child_is_file = entry.kind != .directory;
         if (dirs_only and child_is_file) continue;
         const name = entry.name.slice();
-        const child_abs = bun.path.joinZBuf(abs_buf, &[_][]const u8{ abs_dir, name }, .posix);
+        const child_abs = std.mem.printSentinel(abs_buf, "{f}", .{std.fs.path.fmtJoin(&.{ abs_dir, name })}, 0) catch continue;
         const child_rel: []const u8 = if (rel_dir.len == 0)
             name
         else
-            bun.path.joinStringBuf(rel_buf, &[_][]const u8{ rel_dir, name }, .posix);
+            std.mem.print(rel_buf, "{f}", .{std.fs.path.fmtJoin(&.{ rel_dir, name })}) catch continue;
         cb(ctx, child_abs, child_rel, child_is_file);
         if (!child_is_file) walkSubtree(child_abs, child_rel, dirs_only, ctx, cb);
     }
@@ -651,7 +651,7 @@ const Linux = struct {
                     else if (name.len == 0)
                         owner.subpath
                     else
-                        bun.path.joinStringBuf(&path_buf, &[_][]const u8{ owner.subpath, name }, .posix);
+                        std.mem.print(&path_buf, "{f}", .{std.fs.path.fmtJoin(&.{ owner.subpath, name })}) catch continue;
 
                     watcher.emit(event_type, rel, !is_dir_child and !(ev.mask & (IN.DELETE_SELF | IN.MOVE_SELF) != 0 and !watcher.is_file));
                     _ = bun.handleOom(touched.getOrPut(bun.default_allocator, watcher));
@@ -663,7 +663,7 @@ const Linux = struct {
                     if (watcher.recursive and is_dir_child and (ev.mask & (IN.CREATE | IN.MOVED_TO) != 0) and name.len > 0) {
                         const abs_buf = bun.path_buffer_pool.get();
                         defer bun.path_buffer_pool.put(abs_buf);
-                        const child_abs = bun.path.joinZBuf(abs_buf, &[_][]const u8{ watcher.path, owner.subpath, name }, .posix);
+                        const child_abs = std.mem.printSentinel(abs_buf, "{f}", .{std.fs.path.fmtJoin(&.{ watcher.path, owner.subpath, name })}, 0) catch continue;
                         // These may rehash `wd_map`; `owners` is re-fetched next iteration.
                         _ = addOne(manager, watcher, child_abs, rel);
                         walkAndAdd(manager, watcher, child_abs, rel);

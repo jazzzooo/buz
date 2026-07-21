@@ -711,97 +711,6 @@ pub fn joinAbsStringZ(_cwd: []const u8, parts: anytype, comptime platform: Platf
     );
 }
 
-pub threadlocal var join_buf: [4096]u8 = undefined;
-pub fn join(_parts: anytype, comptime platform: Platform) []const u8 {
-    return joinStringBuf(&join_buf, _parts, platform);
-}
-pub fn joinZ(_parts: anytype, comptime platform: Platform) [:0]const u8 {
-    return joinZBuf(&join_buf, _parts, platform);
-}
-
-pub fn joinZBuf(buf: []u8, _parts: anytype, comptime platform: Platform) [:0]const u8 {
-    const joined = joinStringBuf(buf[0 .. buf.len - 1], _parts, platform);
-    assert(bun.isSliceInBuffer(joined, buf));
-    const start_offset = @intFromPtr(joined.ptr) - @intFromPtr(buf.ptr);
-    buf[joined.len + start_offset] = 0;
-    return buf[start_offset..][0..joined.len :0];
-}
-pub fn joinStringBuf(buf: []u8, parts: anytype, comptime platform: Platform) []const u8 {
-    return joinStringBufT(u8, buf, parts, platform);
-}
-pub fn joinStringBufChecked(buf: []u8, parts: []const []const u8, comptime platform: Platform) ?[]const u8 {
-    return joinBufChecked(null, buf, parts, platform);
-}
-pub fn joinStringBufW(buf: []u16, parts: anytype, comptime platform: Platform) []const u16 {
-    return joinStringBufT(u16, buf, parts, platform);
-}
-
-pub fn joinStringBufWZ(buf: []u16, parts: anytype, comptime platform: Platform) [:0]const u16 {
-    const joined = joinStringBufT(u16, buf[0 .. buf.len - 1], parts, platform);
-    assert(bun.isSliceInBufferT(u16, joined, buf));
-    const start_offset = @intFromPtr(joined.ptr) / 2 - @intFromPtr(buf.ptr) / 2;
-    buf[joined.len + start_offset] = 0;
-    return buf[start_offset..][0..joined.len :0];
-}
-
-pub fn joinStringBufZ(buf: []u8, parts: anytype, comptime platform: Platform) [:0]const u8 {
-    const joined = joinStringBufT(u8, buf[0 .. buf.len - 1], parts, platform);
-    assert(bun.isSliceInBufferT(u8, joined, buf));
-    const start_offset = @intFromPtr(joined.ptr) - @intFromPtr(buf.ptr);
-    buf[joined.len + start_offset] = 0;
-    return buf[start_offset..][0..joined.len :0];
-}
-
-pub fn joinStringBufT(comptime T: type, buf: []T, parts: anytype, comptime platform: Platform) []const T {
-    var written: usize = 0;
-    var temp_buf_: [4096]T = undefined;
-    var temp_buf: []T = &temp_buf_;
-    var free_temp_buf = false;
-    defer {
-        if (free_temp_buf) {
-            bun.default_allocator.free(temp_buf);
-        }
-    }
-
-    var count: usize = 0;
-    for (parts) |part| {
-        if (part.len == 0) continue;
-        count += part.len + 1;
-    }
-
-    if (count * 2 > temp_buf.len) {
-        temp_buf = bun.handleOom(bun.default_allocator.alloc(T, count * 2));
-        free_temp_buf = true;
-    }
-
-    temp_buf[0] = 0;
-
-    for (parts) |part| {
-        if (part.len == 0) continue;
-
-        if (written > 0) {
-            temp_buf[written] = platform.separator();
-            written += 1;
-        }
-
-        const Element = std.meta.Elem(@TypeOf(part));
-        if (comptime T == u16 and Element == u8) {
-            const wrote = bun.strings.convertUTF8toUTF16InBuffer(temp_buf[written..], part);
-            written += wrote.len;
-        } else {
-            bun.copy(T, temp_buf[written..], part);
-            written += part.len;
-        }
-    }
-
-    if (written == 0) {
-        buf[0] = '.';
-        return buf[0..1];
-    }
-
-    return normalizeStringNodeT(T, temp_buf[0..written], buf, platform);
-}
-
 /// Inline `MAX_PATH_BYTES * 2` stack buffer that heap-allocates when the
 /// requested size exceeds it. Keeps `_joinAbsStringBuf`'s scratch buffer safe
 /// for arbitrarily long inputs while preserving zero-alloc behaviour for the
@@ -837,31 +746,20 @@ pub fn joinAbsStringBuf(cwd: []const u8, buf: []u8, _parts: anytype, comptime pl
 /// succeed.
 pub fn joinAbsStringBufChecked(cwd: []const u8, buf: []u8, parts: []const []const u8, comptime platform: Platform) ?[]const u8 {
     comptime if (platform == .nt) @compileError("joinAbsStringBufChecked does not support .nt (the \\\\?\\ prefix is not accounted for in scratch sizing)");
-    return joinBufChecked(cwd, buf, parts, platform);
-}
-
-fn joinBufChecked(cwd: ?[]const u8, buf: []u8, parts: []const []const u8, comptime platform: Platform) ?[]const u8 {
-    var total: usize = 2;
-    if (cwd) |base| total = std.math.add(usize, total, base.len) catch return null;
+    var total = std.math.add(usize, cwd.len, 2) catch return null;
     for (parts) |part| {
         total = std.math.add(usize, total, part.len) catch return null;
         total = std.math.add(usize, total, 1) catch return null;
     }
 
     if (total <= buf.len) {
-        return if (cwd) |base|
-            joinAbsStringBuf(base, buf, parts, platform)
-        else
-            joinStringBuf(buf, parts, platform);
+        return joinAbsStringBuf(cwd, buf, parts, platform);
     }
 
     const scratch = bun.handleOom(bun.default_allocator.alloc(u8, total));
     defer bun.default_allocator.free(scratch);
 
-    const joined = if (cwd) |base|
-        joinAbsStringBuf(base, scratch, parts, platform)
-    else
-        joinStringBuf(scratch, parts, platform);
+    const joined = joinAbsStringBuf(cwd, scratch, parts, platform);
 
     if (joined.len > buf.len) return null;
     bun.copy(u8, buf, joined);
@@ -1135,76 +1033,6 @@ pub fn normalizeStringWindowsT(
         .windows,
         preserve_trailing_slash,
     );
-}
-
-pub fn normalizeStringNodeT(
-    comptime T: type,
-    str: []const T,
-    buf: []T,
-    comptime platform: Platform,
-) []const T {
-    if (str.len == 0) {
-        buf[0] = '.';
-        return buf[0..1];
-    }
-
-    const is_absolute = platform.isAbsoluteT(T, str);
-    const trailing_separator = platform.isSeparatorT(T, str[str.len - 1]);
-
-    // `normalizeStringGeneric` handles absolute path cases for windows
-    // we should not prefix with /
-    var buf_ = if (platform == .windows) buf else buf[1..];
-
-    var out = if (!is_absolute) normalizeStringGenericT(
-        T,
-        str,
-        buf_,
-        true,
-        comptime platform.separator(),
-        comptime platform.pathType(),
-        false,
-    ) else normalizeStringGenericT(
-        T,
-        str,
-        buf_,
-        false,
-        comptime platform.separator(),
-        comptime platform.pathType(),
-        false,
-    );
-
-    if (out.len == 0) {
-        if (is_absolute) {
-            buf[0] = platform.separator();
-            return buf[0..1];
-        }
-
-        if (trailing_separator) {
-            const sep = platform.trailingSeparator();
-            buf[0..2].* = .{ sep[0], sep[1] };
-            return buf[0..2];
-        }
-
-        buf[0] = '.';
-        return buf[0..1];
-    }
-
-    if (trailing_separator) {
-        if (!platform.isSeparatorT(T, out[out.len - 1])) {
-            buf_[out.len] = platform.separator();
-            out = buf_[0 .. out.len + 1];
-        }
-    }
-
-    if (is_absolute) {
-        if (platform == .windows) {
-            return out;
-        }
-        buf[0] = platform.separator();
-        out = buf[0 .. out.len + 1];
-    }
-
-    return out;
 }
 
 /// The use case of this is when you do

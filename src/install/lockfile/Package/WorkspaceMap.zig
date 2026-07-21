@@ -220,7 +220,7 @@ pub fn processNamesArray(
 
             const glob_pattern = if (user_pattern.len == 0) "package.json" else brk: {
                 const parts = [_][]const u8{ user_pattern, "package.json" };
-                break :brk bun.handleOom(arena.allocator().dupe(u8, bun.path.join(parts, .auto)));
+                break :brk bun.handleOom(std.fs.path.join(arena.allocator(), &parts));
             };
 
             var walker: GlobWalker = .{};

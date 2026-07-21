@@ -69,14 +69,14 @@ pub const ClientEntryPoint = struct {
     path_buffer: bun.PathBuffer = undefined,
     source: logger.Source = undefined,
 
-    pub fn generateEntryPointPath(outbuffer: []u8, original_path: string) string {
+    pub fn generateEntryPointPath(outbuffer: []u8, original_path: string) !string {
         const filename = std.fs.path.basename(original_path);
         const extension = std.fs.path.extension(filename);
         const stem = filename[0 .. filename.len - extension.len];
         const generated_filename = std.fmt.bufPrint(&entry_path_filename_buf, "{s}.entry{s}", .{ stem, extension }) catch unreachable;
 
         if (std.fs.path.dirname(original_path)) |dir| {
-            return bun.path.joinStringBuf(outbuffer, &[_]string{ dir, generated_filename }, .auto);
+            return std.mem.print(outbuffer, "{f}", .{std.fs.path.fmtJoin(&.{ dir, generated_filename })});
         }
 
         return std.fmt.bufPrint(outbuffer, "{s}", .{generated_filename}) catch unreachable;
@@ -128,7 +128,7 @@ pub const ClientEntryPoint = struct {
             );
         }
 
-        entry.source = logger.Source.initPathString(generateEntryPointPath(&entry.path_buffer, original_path), code);
+        entry.source = logger.Source.initPathString(try generateEntryPointPath(&entry.path_buffer, original_path), code);
         entry.source.path.namespace = "client-entry";
     }
 };

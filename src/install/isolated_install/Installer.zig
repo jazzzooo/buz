@@ -597,9 +597,13 @@ pub const Installer = struct {
 
                             backend: switch (PackageInstall.Method.hardlink) {
                                 .hardlink => {
-                                    var src: bun.AbsPath(.{ .unit = .os, .sep = .auto }) = .initTopLevelDirLongPath();
+                                    const resolved_src = bun.handleOom(std.fs.path.resolve(bun.default_allocator, &.{
+                                        bun.fs.FileSystem.instance.topLevelDirWithoutTrailingSlash(),
+                                        pkg_res.value.folder.slice(string_buf),
+                                    }));
+                                    defer bun.default_allocator.free(resolved_src);
+                                    var src: bun.AbsPath(.{ .unit = .os, .sep = .auto }) = .fromLongPath(resolved_src);
                                     defer src.deinit();
-                                    src.appendJoin(pkg_res.value.folder.slice(string_buf));
 
                                     var dest: bun.Path(.{ .unit = .os, .sep = .auto }) = .init();
                                     defer dest.deinit();
@@ -844,7 +848,7 @@ pub const Installer = struct {
 
                             var src: bun.AbsPath(.{ .sep = .auto, .unit = .os }) = .fromLongPath(cache_dir_path.slice());
                             defer src.deinit();
-                            src.appendJoin(pkg_cache_dir_subpath.slice());
+                            src.append(pkg_cache_dir_subpath.slice());
 
                             var hardlinker: Hardlinker = try .init(
                                 installer.manager.io,

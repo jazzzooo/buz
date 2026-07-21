@@ -2523,7 +2523,7 @@ pub const Resolver = struct {
                             if (entries.get(file_name) != null) {
                                 if (r.debug_logs) |*debug| {
                                     const parts = [_]string{ package_json.name, package_subpath };
-                                    debug.addNoteFmt("The import {s} is missing the extension {s}", .{ ResolvePath.join(parts, .auto), ext });
+                                    debug.addNoteFmt("The import {f} is missing the extension {s}", .{ std.fs.path.fmtJoin(&parts), ext });
                                 }
                                 esm_resolution.status = .ModuleNotFoundMissingExtension;
                                 missing_suffix = ext;
@@ -2553,7 +2553,7 @@ pub const Resolver = struct {
                                             missing_suffix = std.fmt.allocPrint(r.allocator, "/{s}", .{file_name}) catch unreachable;
                                             defer r.allocator.free(missing_suffix);
                                             const parts = [_]string{ package_json.name, package_subpath };
-                                            debug.addNoteFmt("The import {s} is missing the suffix {s}", .{ ResolvePath.join(parts, .auto), missing_suffix });
+                                            debug.addNoteFmt("The import {f} is missing the suffix {s}", .{ std.fs.path.fmtJoin(&parts), missing_suffix });
                                         }
                                         break;
                                     }
@@ -3325,8 +3325,8 @@ pub const Resolver = struct {
 
             var index_path: string = "";
             {
-                var parts = [_]string{ std.mem.trimEnd(u8, path_to_check, std.fs.path.sep_str), std.fs.path.sep_str ++ "index" };
-                index_path = ResolvePath.joinStringBuf(bufs(.tsconfig_base_url), &parts, .auto);
+                const parts = [_]string{ std.mem.trimEnd(u8, path_to_check, std.fs.path.sep_str), std.fs.path.sep_str ++ "index" };
+                index_path = std.mem.print(bufs(.tsconfig_base_url), "{f}", .{std.fs.path.fmtJoin(&parts)}) catch "";
             }
 
             if (map.get(index_path)) |_remapped| {

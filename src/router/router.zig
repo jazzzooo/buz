@@ -397,11 +397,11 @@ const RouteLoader = struct {
                         if (resolver.readDirInfoIgnoreError(fs.abs(&abs_parts))) |_dir_info| {
                             const dir_info: *const DirInfo = _dir_info;
                             var child_public_dir_buf: bun.PathBuffer = undefined;
-                            const child_public_dir = bun.path.joinStringBuf(
+                            const child_public_dir = std.mem.print(
                                 &child_public_dir_buf,
-                                &[_]string{ public_dir, entry.base() },
-                                .auto,
-                            );
+                                "{f}",
+                                .{std.fs.path.fmtJoin(&.{ public_dir, entry.base() })},
+                            ) catch continue :outer;
 
                             this.load(
                                 ResolverType,

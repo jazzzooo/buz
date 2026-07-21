@@ -110,10 +110,13 @@ pub const PackageInstall = struct {
         var buf: BuntagHashBuf = undefined;
         const bunhashtag = buntaghashbuf_make(&buf, patchfile_contents_hash);
 
-        const patch_tag_path = bun.path.joinZ(&[_][]const u8{
-            this.destination_dir_subpath,
-            bunhashtag,
-        }, .posix);
+        var patch_tag_path_buf: bun.PathBuffer = undefined;
+        const patch_tag_path = std.mem.printSentinel(
+            &patch_tag_path_buf,
+            "{f}",
+            .{std.fs.path.fmtJoin(&.{ this.destination_dir_subpath, bunhashtag })},
+            0,
+        ) catch return false;
 
         const destination_dir = this.node_modules.openDir(root_node_modules_dir) catch return false;
         defer {
@@ -1394,9 +1397,9 @@ pub const PackageInstall = struct {
                     break :brk !exists;
                 }
                 const cache_dir_subpath_without_patch_hash = this.cache_dir_subpath[0 .. std.mem.lastIndexOf(u8, this.cache_dir_subpath, "_patch_hash=") orelse @panic("Patched dependency cache dir subpath does not have the \"_patch_hash=HASH\" suffix. This is a bug, please file a GitHub issue.")];
-                @memcpy(bun.path.join_buf[0..cache_dir_subpath_without_patch_hash.len], cache_dir_subpath_without_patch_hash);
-                bun.path.join_buf[cache_dir_subpath_without_patch_hash.len] = 0;
-                const exists = Syscall.directoryExistsAt(.fromStdDir(this.cache_dir), bun.path.join_buf[0..cache_dir_subpath_without_patch_hash.len :0]).unwrap() catch false;
+                var cache_path_buf: bun.PathBuffer = undefined;
+                const cache_path = std.mem.printSentinel(&cache_path_buf, "{s}", .{cache_dir_subpath_without_patch_hash}, 0) catch break :brk true;
+                const exists = Syscall.directoryExistsAt(.fromStdDir(this.cache_dir), cache_path).unwrap() catch false;
                 if (exists) manager.setPreinstallState(package_id, manager.lockfile, .done);
                 break :brk !exists;
             },
