@@ -203,25 +203,6 @@ fn expandFlat(
     }
 }
 
-fn calculateVariantsAmount(tokens: []const Token) u32 {
-    var brace_count: u32 = 0;
-    var count: u32 = 0;
-    for (tokens) |tok| {
-        switch (tok) {
-            .comma => count += 1,
-            .open => brace_count += 1,
-            .close => {
-                if (brace_count == 1) {
-                    count += 1;
-                }
-                brace_count -= 1;
-            },
-            else => {},
-        }
-    }
-    return count;
-}
-
 const ParserError = bun.OOM || error{
     UnexpectedToken,
 };
@@ -300,11 +281,6 @@ pub const Parser = struct {
         return .{ .variants = variants.items[0..] };
     }
 
-    fn has_eq_sign(self: *Parser, str: []const u8) ?u32 {
-        _ = self;
-        return @import("../shell/shell.zig").hasEqSign(str);
-    }
-
     fn advance(self: *Parser) Token {
         if (!self.is_at_end()) {
             self.current += 1;
@@ -331,17 +307,6 @@ pub const Parser = struct {
             return true;
         }
         return false;
-    }
-
-    fn match_any2(self: *Parser, comptime toktags: []const Token.Tag) ?Token {
-        const peeked = self.peek();
-        inline for (toktags) |tag| {
-            if (peeked == tag) {
-                _ = self.advance();
-                return peeked;
-            }
-        }
-        return null;
     }
 
     fn match_any(self: *Parser, comptime toktags: []const Token.Tag) bool {

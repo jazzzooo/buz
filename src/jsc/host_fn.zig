@@ -385,47 +385,6 @@ pub const DOMEffect = struct {
     };
 };
 
-fn DOMCallArgumentType(comptime Type: type) []const u8 {
-    const ChildType = if (@typeInfo(Type) == .pointer) std.meta.Child(Type) else Type;
-    return switch (ChildType) {
-        i8, u8, i16, u16, i32 => "JSC::SpecInt32Only",
-        u32, i64, u64 => "JSC::SpecInt52Any",
-        f64 => "JSC::SpecDoubleReal",
-        bool => "JSC::SpecBoolean",
-        jsc.JSString => "JSC::SpecString",
-        jsc.JSUint8Array => "JSC::SpecUint8Array",
-        else => @compileError("Unknown DOM type: " ++ @typeName(Type)),
-    };
-}
-
-fn DOMCallArgumentTypeWrapper(comptime Type: type) []const u8 {
-    const ChildType = if (@typeInfo(Type) == .pointer) std.meta.Child(Type) else Type;
-    return switch (ChildType) {
-        i32 => "int32_t",
-        f64 => "double",
-        u64 => "uint64_t",
-        i64 => "int64_t",
-        bool => "bool",
-        jsc.JSString => "JSC::JSString*",
-        jsc.JSUint8Array => "JSC::JSUint8Array*",
-        else => @compileError("Unknown DOM type: " ++ @typeName(Type)),
-    };
-}
-
-fn DOMCallResultType(comptime Type: type) []const u8 {
-    const ChildType = if (@typeInfo(Type) == .pointer) std.meta.Child(Type) else Type;
-    return switch (ChildType) {
-        i32 => "JSC::SpecInt32Only",
-        bool => "JSC::SpecBoolean",
-        jsc.JSString => "JSC::SpecString",
-        jsc.JSUint8Array => "JSC::SpecUint8Array",
-        jsc.JSCell => "JSC::SpecCell",
-        u52, i52 => "JSC::SpecInt52Any",
-        f64 => "JSC::SpecDoubleReal",
-        else => "JSC::SpecHeapTop",
-    };
-}
-
 pub fn DOMCall(
     comptime class_name: string,
     comptime Container: type,

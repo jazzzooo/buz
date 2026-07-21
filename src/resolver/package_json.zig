@@ -1969,20 +1969,6 @@ pub const ESModule = struct {
         return Resolution{ .status = .InvalidPackageTarget, .debug = .{ .token = target.first_token } };
     }
 
-    fn resolveExportsReverse(
-        r: *const ESModule,
-        query: string,
-        root: ExportsMap.Entry,
-    ) ?ReverseResolution {
-        if (root.data == .map and root.keysStartWithDot()) {
-            if (r.resolveImportsExportsReverse(query, root)) |res| {
-                return res;
-            }
-        }
-
-        return null;
-    }
-
     fn resolveImportsExportsReverse(
         r: *const ESModule,
         query: string,

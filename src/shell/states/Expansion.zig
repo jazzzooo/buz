@@ -700,13 +700,6 @@ fn expandVarArgv(this: *const Expansion, original_int: u8) []const u8 {
     }
 }
 
-fn currentWord(this: *Expansion) *const ast.SimpleAtom {
-    return switch (this.node) {
-        .simple => &this.node.simple,
-        .compound => &this.node.compound.atoms[this.word_idx],
-    };
-}
-
 /// Returns the size of the atom when expanded.
 /// If the calculation cannot be computed trivially (cmd substitution, brace expansion), this value is not accurate and `has_unknown` is set to true
 fn expansionSizeHint(this: *const Expansion, atom: *const ast.Atom, has_unknown: *bool) usize {

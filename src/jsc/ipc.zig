@@ -928,11 +928,6 @@ pub const SendQueue = struct {
         };
     }
 
-    fn onServerPipeClose(this: *uv.Pipe) callconv(.c) void {
-        // safely free the pipes
-        bun.default_allocator.destroy(this);
-    }
-
     pub fn windowsConfigureServer(this: *SendQueue, ipc_pipe: *uv.Pipe) bun.sys.Maybe(void) {
         log("configureServer", .{});
         ipc_pipe.data = this;

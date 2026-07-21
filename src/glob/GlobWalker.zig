@@ -67,28 +67,7 @@ const CursorState = struct {
         }
         // this.cp_idx += 1;
     }
-
-    inline fn manualBumpAscii(this: *CursorState, i: u32, nextCp: Codepoint) void {
-        this.cursor.i += i;
-        this.cursor.c = nextCp;
-        this.cursor.width = 1;
-    }
-
-    inline fn manualPeekAscii(this: *CursorState, i: u32, nextCp: Codepoint) CursorState {
-        return .{
-            .cursor = CodepointIterator.Cursor{
-                .i = this.cursor.i + i,
-                .c = @truncate(nextCp),
-                .width = 1,
-            },
-        };
-    }
 };
-
-fn dummyFilterTrue(val: []const u8) bool {
-    _ = val;
-    return true;
-}
 
 fn dummyFilterFalse(val: []const u8) bool {
     _ = val;
@@ -1513,30 +1492,6 @@ pub fn GlobWalker_(
             // if (comptime sentinel) return name[0 .. name.len - 1 :0];
             log("prepared match: {s}", .{name_matched_path});
             return name_matched_path;
-        }
-
-        fn appendMatchedPath(
-            this: *GlobWalker,
-            entry_name: []const u8,
-            dir_name: [:0]const u8,
-        ) !void {
-            const subdir_parts: []const []const u8 = &[_][]const u8{
-                dir_name[0..dir_name.len],
-                entry_name,
-            };
-            const name_matched_path = try this.join(subdir_parts);
-            const name = matchedPathToBunString(name_matched_path);
-            const result = try this.matchedPaths.getOrPut(this.arena.allocator(), name);
-            if (result.found_existing) {
-                log("(dupe) prepared match: {s}", .{name_matched_path});
-                return;
-            }
-            result.key_ptr.* = name;
-        }
-
-        fn appendMatchedPathSymlink(this: *GlobWalker, symlink_full_path: []const u8) !void {
-            const name = try this.arena.allocator().dupe(u8, symlink_full_path);
-            try this.matchedPaths.put(this.arena.allocator(), BunString.fromBytes(name), {});
         }
 
         inline fn join(this: *GlobWalker, subdir_parts: []const []const u8) !MatchedPath {

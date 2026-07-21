@@ -504,11 +504,6 @@ fn pton(global: *jsc.JSGlobalObject, comptime af: c_int, addr: [:0]const u8, dst
     };
 }
 
-inline fn asV4(this: *const SocketAddress) *const inet.sockaddr_in {
-    bun.debugAssert(this.family() == AF.INET);
-    return &this._addr.sin;
-}
-
 inline fn asV6(this: *const SocketAddress) *const inet.sockaddr_in6 {
     bun.debugAssert(this.family() == AF.INET6);
     return &this._addr.sin6;

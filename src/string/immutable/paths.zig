@@ -223,14 +223,6 @@ pub fn toKernel32Path(wbuf: []u16, utf8: []const u8) [:0]u16 {
     return toWPath(wbuf, path);
 }
 
-fn isUNCPath(comptime T: type, path: []const T) bool {
-    return path.len >= 3 and
-        bun.path.Platform.windows.isSeparatorT(T, path[0]) and
-        bun.path.Platform.windows.isSeparatorT(T, path[1]) and
-        !bun.path.Platform.windows.isSeparatorT(T, path[2]) and
-        path[2] != '.';
-}
-
 pub fn toWPathMaybeDir(wbuf: []u16, utf8: []const u8, comptime add_trailing_lash: bool) [:0]u16 {
     bun.unsafeAssert(wbuf.len > 0);
 

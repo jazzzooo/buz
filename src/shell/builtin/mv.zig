@@ -150,21 +150,6 @@ pub const ShellMvBatchedTask = struct {
         }
     }
 
-    /// From the man pages of `mv`:
-    /// ```txt
-    /// As the rename(2) call does not work across file systems, mv uses cp(1) and rm(1) to accomplish the move.  The effect is equivalent to:
-    ///     rm -f destination_path && \
-    ///     cp -pRP source_file destination && \
-    ///     rm -rf source_file
-    /// ```
-    fn moveAcrossFilesystems(this: *@This(), src: [:0]const u8, dest: [:0]const u8) void {
-        _ = this;
-        _ = src;
-        _ = dest;
-
-        // TODO
-    }
-
     pub fn runFromMainThread(this: *@This()) void {
         this.mv.batchedMoveTaskDone(this);
     }

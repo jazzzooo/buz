@@ -1,15 +1,3 @@
-fn embedDebugFallback(comptime msg: []const u8, comptime code: []const u8) []const u8 {
-    const FallbackMessage = struct {
-        pub var has_printed = false;
-    };
-    if (!FallbackMessage.has_printed) {
-        FallbackMessage.has_printed = true;
-        Output.debug(msg, .{});
-    }
-
-    return code;
-}
-
 pub const Fallback = struct {
     pub const HTMLTemplate = @embedFile("../fallback.html");
     pub const HTMLBackendTemplate = @embedFile("../fallback-backend.html");
@@ -528,7 +516,6 @@ const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const Output = bun.Output;
 const strings = bun.strings;
 
 const JSAst = bun.ast;

@@ -2477,11 +2477,6 @@ pub const PackCommand = struct {
             return line;
         }
 
-        fn maybeTrimLeadingSpaces(line: string) string {
-            // npm will trim, git will not
-            return line;
-        }
-
         // ignore files are always ignored, don't need to worry about opening or reading twice
         pub fn readFromDisk(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, dir_depth: usize) OOM!?IgnorePatterns {
             var patterns: std.ArrayListUnmanaged(Pattern) = .empty;

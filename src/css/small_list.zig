@@ -627,15 +627,6 @@ pub fn SmallList(comptime T: type, comptime N: comptime_int) type {
             return &this.capacity;
         }
 
-        fn growToHeap(this: *@This(), allocator: Allocator, additional: usize) void {
-            bun.assert(!this.spilled());
-            const new_size = growCapacity(this.capacity, this.capacity + additional);
-            var slc = bun.handleOom(allocator.alloc(T, new_size));
-            @memcpy(slc[0..this.capacity], this.data.inlined[0..this.capacity]);
-            this.data = .{ .heap = HeapData{ .len = this.capacity, .ptr = slc.ptr } };
-            this.capacity = new_size;
-        }
-
         inline fn spilled(this: *const @This()) bool {
             return this.capacity > N;
         }

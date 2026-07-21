@@ -736,14 +736,6 @@ pub const ZigString = extern struct {
         return strings.trim(this.full(), " \r\n");
     }
 
-    inline fn assertGlobalIfNeeded(this: *const ZigString) void {
-        if (comptime bun.Environment.allow_assert) {
-            if (this.isGloballyAllocated()) {
-                this.assertGlobal();
-            }
-        }
-    }
-
     inline fn assertGlobal(this: *const ZigString) void {
         if (comptime bun.Environment.allow_assert) {
             bun.assert(this.len == 0 or

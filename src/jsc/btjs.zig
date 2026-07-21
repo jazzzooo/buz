@@ -225,14 +225,6 @@ fn printLineFromFileAnyOs(out_stream: *std.Io.Writer, source_location: std.debug
     }
 }
 
-fn printLastUnwindError(it: *std.debug.StackIterator, debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Writer, tty_config: std.Io.Terminal) void {
-    if (!bun.Environment.isDebug) unreachable;
-    if (!std.debug.have_ucontext) return;
-    if (it.getLastError()) |unwind_error| {
-        printUnwindError(debug_info, out_stream, unwind_error.address, unwind_error.err, tty_config) catch {};
-    }
-}
-
 fn printUnwindError(debug_info: *std.debug.SelfInfo, out_stream: *std.Io.Writer, address: usize, err: std.debug.UnwindError, tty_config: std.Io.Terminal) !void {
     if (!bun.Environment.isDebug) unreachable;
 

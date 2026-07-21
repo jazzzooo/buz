@@ -1941,23 +1941,6 @@ fn testPureBitSet(comptime Set: type) !void {
     try testing.expect(full.differenceWith(even).eql(odd));
 }
 
-fn testStaticBitSet(comptime Set: type, comptime Container: @EnumLiteral()) !void {
-    var a = Set.initEmpty();
-    var b = Set.initFull();
-    try testing.expectEqual(@as(usize, 0), a.count());
-    try testing.expectEqual(@as(usize, Set.bit_length), b.count());
-
-    if (comptime Container == .ArrayBitSet) {
-        try testEql(&a, &b, Set.bit_length);
-    } else {
-        try testEql(a, b, Set.bit_length);
-    }
-
-    try testBitSet(&a, &b, Set.bit_length);
-
-    try testPureBitSet(Set);
-}
-
 const bun = @import("bun");
 const Environment = bun.Environment;
 

@@ -11,16 +11,6 @@ comptime {
     _ = CryptoObject__create;
 }
 
-fn throwInvalidParameter(globalThis: *jsc.JSGlobalObject) bun.JSError {
-    return globalThis.ERR(.CRYPTO_SCRYPT_INVALID_PARAMETER, "Invalid scrypt parameters", .{}).throw();
-}
-
-fn throwInvalidParams(globalThis: *jsc.JSGlobalObject, comptime error_type: @EnumLiteral(), comptime message: [:0]const u8, fmt: anytype) bun.JSError {
-    if (error_type != .RangeError) @compileError("Error type not added!");
-    BoringSSL.ERR_clear_error();
-    return globalThis.ERR(.CRYPTO_INVALID_SCRYPT_PARAMS, message, fmt).throw();
-}
-
 pub fn timingSafeEqual(_: *@This(), global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
     return jsc.Node.crypto.timingSafeEqual(global, callframe);
 }
@@ -285,4 +275,3 @@ const UUID7 = @import("../../jsc/uuid.zig").UUID7;
 
 const bun = @import("bun");
 const jsc = bun.jsc;
-const BoringSSL = bun.BoringSSL.c;

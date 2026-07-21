@@ -706,23 +706,6 @@ pub export fn napi_make_callback(env_: napi_env, _: *anyopaque, recv_: napi_valu
     return env.ok();
 }
 
-// Sometimes shared libraries reference symbols which are not used
-// We don't want to fail to load the library because of that
-// so we instead return an error and warn the user
-fn notImplementedYet(comptime name: []const u8) void {
-    bun.onceUnsafe(
-        struct {
-            pub fn warn() void {
-                if (jsc.VirtualMachine.get().log.level.atLeast(.warn)) {
-                    bun.Output.prettyErrorln("<r><yellow>warning<r><d>:<r> Node-API function <b>\"{s}\"<r> is not implemented yet.\n Track the status of Node-API in Bun: https://github.com/oven-sh/bun/issues/158", .{name});
-                    bun.Output.flush();
-                }
-            }
-        }.warn,
-        void,
-    );
-}
-
 pub export fn napi_open_escapable_handle_scope(env_: napi_env, result_: ?*napi_escapable_handle_scope) napi_status {
     log("napi_open_escapable_handle_scope", .{});
     const env = env_ orelse {

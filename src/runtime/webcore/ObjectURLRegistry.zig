@@ -44,13 +44,6 @@ pub fn singleton() *ObjectURLRegistry {
     return &Singleton.registry;
 }
 
-fn getDupedBlob(this: *ObjectURLRegistry, uuid: *const UUID) ?jsc.WebCore.Blob {
-    this.lock.lock();
-    defer this.lock.unlock();
-    const entry = this.map.get(uuid.*) orelse return null;
-    return entry.blob.dupeWithContentType(true);
-}
-
 fn uuidFromPathname(pathname: []const u8) ?UUID {
     return UUID.parse(pathname) catch return null;
 }

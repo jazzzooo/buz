@@ -761,10 +761,6 @@ pub const PackageInstaller = struct {
         return count;
     }
 
-    fn getPatchfileHash(patchfile_path: []const u8) ?u64 {
-        _ = patchfile_path; // autofix
-    }
-
     pub fn installPackageWithNameAndResolution(
         this: *PackageInstaller,
         dependency_id: DependencyID,

@@ -1599,12 +1599,6 @@ fn isLikelyObjectLiteral(code: []const u8) bool {
     return true;
 }
 
-fn setReplVariables(self: *Repl) void {
-    // For now, we rely on the C++ evaluation to handle this
-    // The C++ code sets _ and _error after each evaluation
-    _ = self;
-}
-
 fn printJSError(self: *Repl, error_value: jsc.JSValue) void {
     // Interactive REPL writes everything to stdout (single terminal stream).
     self.printJSErrorTo(error_value, Output.writer(), self.use_colors);

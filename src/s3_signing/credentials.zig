@@ -21,22 +21,6 @@ pub const S3Credentials = struct {
         return @sizeOf(S3Credentials) + this.accessKeyId.len + this.region.len + this.secretAccessKey.len + this.endpoint.len + this.bucket.len;
     }
 
-    fn hashConst(acl: []const u8) u64 {
-        var hasher = std.hash.Wyhash.init(0);
-        var remain = acl;
-
-        var buf: [@sizeOf(@TypeOf(hasher.buf))]u8 = undefined;
-
-        while (remain.len > 0) {
-            const end = @min(hasher.buf.len, remain.len);
-
-            hasher.update(strings.copyLowercaseIfNeeded(remain[0..end], &buf));
-            remain = remain[end..];
-        }
-
-        return hasher.final();
-    }
-
     pub const getCredentialsWithOptions = @import("../runtime/webcore/s3/credentials_jsc.zig").getCredentialsWithOptions;
 
     pub fn dupe(this: *const @This()) *S3Credentials {

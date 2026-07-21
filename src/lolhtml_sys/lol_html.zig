@@ -782,10 +782,6 @@ fn DirectiveFunctionTypeForHandler(comptime Container: type, comptime UserDataTy
     return *const fn (*UserDataType, *Container) bool;
 }
 
-fn DocTypeHandlerCallback(comptime UserDataType: type) type {
-    return *const fn (*DocType, *UserDataType) bool;
-}
-
 pub fn DirectiveHandler(comptime Container: type, comptime UserDataType: type, comptime Callback: (*const fn (this: *UserDataType, container: *Container) bool)) DirectiveFunctionType(Container) {
     return struct {
         pub fn callback(this: *Container, user_data: ?*anyopaque) callconv(.c) Directive {

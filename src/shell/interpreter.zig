@@ -1749,10 +1749,6 @@ pub fn ShellTask(
     };
 }
 
-inline fn errnocast(errno: anytype) u16 {
-    return @intCast(errno);
-}
-
 /// 'js' event loop will always return JSError
 /// 'mini' event loop will always return noreturn and exit 1
 pub fn throwShellErr(e: *const bun.shell.ShellErr, event_loop: jsc.EventLoopHandle) bun.JSError!noreturn {

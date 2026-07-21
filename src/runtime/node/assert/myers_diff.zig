@@ -322,10 +322,6 @@ pub fn printDiff(T: type, diffs: std.array_list.Managed(Diff(T))) !void {
 // ============================ EQUALITY FUNCTIONS ============================
 // =============================================================================
 
-fn areCharsEqual(comptime T: type, a: T, b: T) bool {
-    return a == b;
-}
-
 fn areLinesEqual(comptime T: type, a: T, b: T, comptime check_comma_disparity: bool) bool {
     return switch (T) {
         u8, u32 => a == b,

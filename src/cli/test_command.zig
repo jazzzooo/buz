@@ -2083,8 +2083,6 @@ pub const TestCommand = struct {
         vm_.runWithAPILock(Context, &ctx, Context.begin);
     }
 
-    fn timerNoop(_: *uws.Timer) callconv(.c) void {}
-
     pub fn run(
         reporter: *CommandLineReporter,
         vm: *jsc.VirtualMachine,

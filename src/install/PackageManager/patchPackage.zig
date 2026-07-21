@@ -487,30 +487,6 @@ pub fn doPatchCommit(
     };
 }
 
-fn patchCommitGetVersion(
-    buf: *[1024]u8,
-    patch_tag_path: [:0]const u8,
-) bun.sys.Maybe(string) {
-    const patch_tag_fd = switch (bun.sys.open(patch_tag_path, bun.O.RDONLY, 0)) {
-        .result => |fd| fd,
-        .err => |e| return .{ .err = e },
-    };
-    defer {
-        patch_tag_fd.close();
-        // we actually need to delete this
-        _ = bun.sys.unlink(patch_tag_path);
-    }
-
-    const version = switch (bun.sys.File.readFillBuf(.{ .handle = patch_tag_fd }, buf[0..])) {
-        .result => |v| v,
-        .err => |e| return .{ .err = e },
-    };
-
-    // maybe if someone opens it in their editor and hits save a newline will be inserted,
-    // so trim that off
-    return .{ .result = std.mem.trimEnd(u8, version, " \n\r\t") };
-}
-
 fn escapePatchFilename(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
     const EscapeVal = enum {
         @"/",

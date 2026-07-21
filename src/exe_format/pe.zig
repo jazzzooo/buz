@@ -184,10 +184,6 @@ pub const PEFile = struct {
         return viewAtConst(DOSHeader, self.data.items, self.dos_header_offset);
     }
 
-    fn getDosHeaderMut(self: *PEFile) !*align(1) DOSHeader {
-        return viewAtMut(DOSHeader, self.data.items, self.dos_header_offset);
-    }
-
     fn getPEHeader(self: *const PEFile) !*align(1) const PEHeader {
         return viewAtConst(PEHeader, self.data.items, self.pe_header_offset);
     }
@@ -209,14 +205,6 @@ pub const PEFile = struct {
         const size = @sizeOf(SectionHeader) * self.num_sections;
         if (start + size > self.data.items.len) return error.OutOfBounds;
         const ptr: [*]align(1) const SectionHeader = @ptrCast(self.data.items[start..].ptr);
-        return ptr[0..self.num_sections];
-    }
-
-    fn getSectionHeadersMut(self: *PEFile) ![]align(1) SectionHeader {
-        const start = self.section_headers_offset;
-        const size = @sizeOf(SectionHeader) * self.num_sections;
-        if (start + size > self.data.items.len) return error.OutOfBounds;
-        const ptr: [*]align(1) SectionHeader = @ptrCast(self.data.items[start..].ptr);
         return ptr[0..self.num_sections];
     }
 

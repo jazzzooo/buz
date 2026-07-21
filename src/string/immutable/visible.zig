@@ -1246,10 +1246,6 @@ pub const visible = struct {
         return len;
     }
 
-    fn visibleLatin1WidthFn(input: []const u8) usize {
-        return visibleLatin1Width(input);
-    }
-
     pub const width = struct {
         pub fn latin1(input: []const u8) usize {
             return visibleLatin1Width(input);

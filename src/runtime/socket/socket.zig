@@ -1,13 +1,5 @@
 pub const SocketAddress = @import("./SocketAddress.zig");
 
-fn JSSocketType(comptime ssl: bool) type {
-    if (!ssl) {
-        return jsc.Codegen.JSTCPSocket;
-    } else {
-        return jsc.Codegen.JSTLSSocket;
-    }
-}
-
 fn selectALPNCallback(ssl: ?*BoringSSL.SSL, out: [*c][*c]const u8, outlen: [*c]u8, in: [*c]const u8, inlen: c_uint, _: ?*anyopaque) callconv(.c) c_int {
     // SSL_CTX_set_alpn_select_cb registers on the listener-level SSL_CTX, so its
     // `arg` is shared across every accepted connection — using it for a

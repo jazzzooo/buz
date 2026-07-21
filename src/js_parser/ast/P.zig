@@ -3715,11 +3715,6 @@ pub fn NewParser_(
             }
         }
 
-        fn bindingCanBeRemovedIfUnused(p: *P, binding: Binding) bool {
-            if (!p.options.features.dead_code_elimination) return false;
-            return bindingCanBeRemovedIfUnusedWithoutDCECheck(p, binding);
-        }
-
         fn bindingCanBeRemovedIfUnusedWithoutDCECheck(p: *P, binding: Binding) bool {
             switch (binding.data) {
                 .b_array => |bi| {

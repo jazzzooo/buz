@@ -755,47 +755,6 @@ const HostProvider = enum {
     gitlab,
     sourcehut,
 
-    fn formatSsh(
-        self: Self,
-        allocator: std.mem.Allocator,
-        user: ?[]const u8,
-        project: []const u8,
-        committish: ?[]const u8,
-    ) error{OutOfMemory}![]const u8 {
-        return configs.get(self).format_ssh(self, allocator, user, project, committish);
-    }
-
-    fn formatSshUrl(
-        self: Self,
-        allocator: std.mem.Allocator,
-        user: ?[]const u8,
-        project: []const u8,
-        committish: ?[]const u8,
-    ) error{OutOfMemory}![]const u8 {
-        return configs.get(self).format_sshurl(self, allocator, user, project, committish);
-    }
-
-    fn formatHttps(
-        self: Self,
-        allocator: std.mem.Allocator,
-        auth: ?[]const u8,
-        user: ?[]const u8,
-        project: []const u8,
-        committish: ?[]const u8,
-    ) error{OutOfMemory}![]const u8 {
-        return configs.get(self).format_https(self, allocator, auth, user, project, committish);
-    }
-
-    fn formatShortcut(
-        self: Self,
-        allocator: std.mem.Allocator,
-        user: ?[]const u8,
-        project: []const u8,
-        committish: ?[]const u8,
-    ) error{OutOfMemory}![]const u8 {
-        return configs.get(self).format_shortcut(self, allocator, user, project, committish);
-    }
-
     fn extract(
         self: Self,
         allocator: std.mem.Allocator,
@@ -1552,18 +1511,6 @@ const HostProvider = enum {
     fn shortcutWithoutColon(self: Self) []const u8 {
         const shct = self.shortcut();
         return shct[0 .. shct.len - 1];
-    }
-
-    fn treePath(self: Self) ?[]const u8 {
-        return configs.get(self).tree_path;
-    }
-
-    fn blobPath(self: Self) ?[]const u8 {
-        return configs.get(self).blob_path;
-    }
-
-    fn editPath(self: Self) ?[]const u8 {
-        return configs.get(self).edit_path;
     }
 
     /// Find the appropriate host provider by its shortcut (e.g. "github:").
