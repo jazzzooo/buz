@@ -172,15 +172,18 @@ pub const Coordinator = struct {
         }
     }
 
-    pub fn relPath(this: *Coordinator, file_idx: u32) []const u8 {
-        return bun.path.relative(bun.fs.FileSystem.instance.top_level_dir, this.files[file_idx].slice());
+    pub fn relPath(this: *Coordinator, allocator: std.mem.Allocator, file_idx: u32) ![]u8 {
+        const root = bun.fs.FileSystem.instance.top_level_dir;
+        return std.fs.path.relative(allocator, root, null, root, this.files[file_idx].slice());
     }
 
     fn ensureHeader(this: *Coordinator, file_idx: u32) void {
         if (this.dots) return;
         if (this.last_header_idx == file_idx) return;
         this.last_header_idx = file_idx;
-        Output.errorWriter().print("\n{s}:\n", .{this.relPath(file_idx)}) catch {};
+        const relative_path = bun.handleOom(this.relPath(bun.default_allocator, file_idx));
+        defer bun.default_allocator.free(relative_path);
+        Output.errorWriter().print("\n{s}:\n", .{relative_path}) catch {};
     }
 
     fn breakDots(this: *Coordinator) void {
@@ -344,8 +347,10 @@ pub const Coordinator = struct {
     fn accountCrash(this: *Coordinator, file_idx: u32, status: bun.spawn.Status) void {
         this.breakDots();
         var buf: [32]u8 = undefined;
+        const relative_path = bun.handleOom(this.relPath(bun.default_allocator, file_idx));
+        defer bun.default_allocator.free(relative_path);
         Output.prettyError("<r><red>✗<r> <b>{s}<r> <d>(worker crashed: {s})<r>\n", .{
-            this.relPath(file_idx),
+            relative_path,
             describeStatus(&buf, status),
         });
         this.reporter.summary().fail += 1;
@@ -393,10 +398,12 @@ pub const Coordinator = struct {
     fn abortOnWorkerPanic(this: *Coordinator, file_idx: u32, status: bun.spawn.Status) void {
         this.breakDots();
         var buf: [32]u8 = undefined;
+        const relative_path = bun.handleOom(this.relPath(bun.default_allocator, file_idx));
+        defer bun.default_allocator.free(relative_path);
         Output.prettyError(
             "\n<red>error<r>: a test worker process crashed with <b>{s}<r> while running <b>{s}<r>.\n" ++
                 "This indicates a bug in Bun or in a native addon, not in the test itself. Aborting.\n",
-            .{ describeStatus(&buf, status), this.relPath(file_idx) },
+            .{ describeStatus(&buf, status), relative_path },
         );
         Output.flush();
         // .shutdown() only takes effect between files, so a worker that's
@@ -426,7 +433,9 @@ pub const Coordinator = struct {
     fn abortQueuedFiles(this: *Coordinator, reason: []const u8) void {
         for (this.workers) |*w| {
             while (w.range.popFront()) |idx| {
-                Output.prettyError("<r><red>✗<r> <b>{s}<r> <d>({s})<r>\n", .{ this.relPath(idx), reason });
+                const relative_path = bun.handleOom(this.relPath(bun.default_allocator, idx));
+                defer bun.default_allocator.free(relative_path);
+                Output.prettyError("<r><red>✗<r> <b>{s}<r> <d>({s})<r>\n", .{ relative_path, reason });
                 this.reporter.summary().fail += 1;
                 this.reporter.summary().files += 1;
                 bun.handleOom(this.crashed_files.append(bun.default_allocator, idx));

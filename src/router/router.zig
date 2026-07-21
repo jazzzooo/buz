@@ -300,8 +300,8 @@ const RouteLoader = struct {
         root_dir_info: *const DirInfo,
         base_dir: []const u8,
     ) Routes {
-        var root_public_dir_buf: bun.PathBuffer = undefined;
-        const relative_dir = bun.path.relativePlatformBuf(&root_public_dir_buf, base_dir, config.dir, .auto, true);
+        const relative_dir = bun.handleOom(std.fs.path.relative(allocator, base_dir, null, base_dir, config.dir));
+        defer allocator.free(relative_dir);
         const root_public_dir = if (strings.hasPrefixComptime(relative_dir, ".."))
             ""
         else

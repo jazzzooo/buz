@@ -186,15 +186,15 @@ pub fn processNamesArray(
 
         if (workspace_entry.name.len == 0) continue;
 
-        const rel_input_path = Path.relativePlatform(
+        const rel_input_path = try std.fs.path.relative(
+            allocator,
+            source_dir,
+            null,
             source_dir,
             strings.withoutSuffixComptime(abs_package_json_path, std.fs.path.sep_str ++ "package.json"),
-            .auto,
-            true,
         );
-        if (comptime Environment.isWindows) {
-            Path.dangerouslyConvertPathToPosixInPlace(u8, @constCast(rel_input_path));
-        }
+        defer allocator.free(rel_input_path);
+        Path.platformToPosixInPlace(u8, rel_input_path);
 
         if (string_builder) |builder| {
             builder.count(workspace_entry.name);
@@ -337,15 +337,15 @@ pub fn processNamesArray(
 
                 if (workspace_entry.name.len == 0) continue;
 
-                const workspace_path: string = Path.relativePlatform(
+                const workspace_path = try std.fs.path.relative(
+                    allocator,
+                    source_dir,
+                    null,
                     source_dir,
                     abs_workspace_dir_path,
-                    .auto,
-                    true,
                 );
-                if (comptime Environment.isWindows) {
-                    Path.dangerouslyConvertPathToPosixInPlace(u8, @constCast(workspace_path));
-                }
+                defer allocator.free(workspace_path);
+                Path.platformToPosixInPlace(u8, workspace_path);
 
                 if (string_builder) |builder| {
                     builder.count(workspace_entry.name);

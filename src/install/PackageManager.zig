@@ -721,10 +721,18 @@ pub fn init(
                         ) catch break;
 
                         for (workspace_names.keys(), workspace_names.values()) |path, entry| {
-                            const child_path = if (std.fs.path.isAbsolute(path))
-                                child_cwd
+                            const child_path_owned = if (std.fs.path.isAbsolute(path))
+                                null
                             else
-                                bun.path.relativeNormalized(std.fs.path.dirname(json_source.path.text) orelse parent, child_cwd, .auto, true);
+                                try std.fs.path.relative(
+                                    ctx.allocator,
+                                    parent,
+                                    null,
+                                    std.fs.path.dirname(json_source.path.text) orelse parent,
+                                    child_cwd,
+                                );
+                            defer if (child_path_owned) |child_path| ctx.allocator.free(child_path);
+                            const child_path = child_path_owned orelse child_cwd;
 
                             const maybe_workspace_path = if (comptime Environment.isWindows) brk: {
                                 @memcpy(parent_path_buf[0..child_path.len], child_path);

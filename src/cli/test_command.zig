@@ -1073,7 +1073,8 @@ pub const CommandLineReporter = struct {
 
         for (byte_ranges.items) |*entry| {
             if (opts.ignore_patterns.len > 0) {
-                const rel = bun.path.relative(relative_dir, entry.source_url.slice());
+                const rel = try std.fs.path.relative(bun.default_allocator, relative_dir, null, relative_dir, entry.source_url.slice());
+                defer bun.default_allocator.free(rel);
                 var skip = false;
                 for (opts.ignore_patterns) |p| if (bun.glob.match(p, rel).matches()) {
                     skip = true;
@@ -1083,7 +1084,7 @@ pub const CommandLineReporter = struct {
             }
             var report = CodeCoverageReport.generate(vm.global, bun.default_allocator, entry, opts.ignore_sourcemap) orelse continue;
             defer report.deinit(bun.default_allocator);
-            CodeCoverageReport.Lcov.writeFormat(&report, relative_dir, writer) catch continue;
+            CodeCoverageReport.Lcov.writeFormat(&report, relative_dir, bun.default_allocator, writer) catch continue;
         }
         try writer.flush();
     }
@@ -1118,7 +1119,8 @@ pub const CommandLineReporter = struct {
             var len = "All files".len;
             for (byte_ranges) |*entry| {
                 const utf8 = entry.source_url.slice();
-                const relative_path = bun.path.relative(relative_dir, utf8);
+                const relative_path = try std.fs.path.relative(bun.default_allocator, relative_dir, null, relative_dir, utf8);
+                defer bun.default_allocator.free(relative_path);
 
                 // Check if this file should be ignored based on coveragePathIgnorePatterns
                 if (opts.ignore_patterns.len > 0) {
@@ -1214,7 +1216,8 @@ pub const CommandLineReporter = struct {
             // Check if this file should be ignored based on coveragePathIgnorePatterns
             if (opts.ignore_patterns.len > 0) {
                 const utf8 = entry.source_url.slice();
-                const relative_path = bun.path.relative(relative_dir, utf8);
+                const relative_path = try std.fs.path.relative(bun.default_allocator, relative_dir, null, relative_dir, utf8);
+                defer bun.default_allocator.free(relative_path);
 
                 var should_ignore = false;
                 for (opts.ignore_patterns) |pattern| {
@@ -1234,7 +1237,7 @@ pub const CommandLineReporter = struct {
 
             if (comptime reporters.text) {
                 var fraction = base_fraction;
-                CodeCoverageReport.Text.writeFormat(&report, max_filepath_length, &fraction, relative_dir, console_writer, enable_ansi_colors) catch continue;
+                CodeCoverageReport.Text.writeFormat(&report, max_filepath_length, &fraction, relative_dir, bun.default_allocator, console_writer, enable_ansi_colors) catch continue;
                 avg.functions += fraction.functions;
                 avg.lines += fraction.lines;
                 avg.stmts += fraction.stmts;
@@ -1250,6 +1253,7 @@ pub const CommandLineReporter = struct {
                 CodeCoverageReport.Lcov.writeFormat(
                     &report,
                     relative_dir,
+                    bun.default_allocator,
                     lcov_writer,
                 ) catch continue;
             }
@@ -2108,7 +2112,14 @@ pub const TestCommand = struct {
         try vm.clearEntryPoint();
 
         const file_path = bun.handleOom(bun.fs.FileSystem.instance.filename_store.append([]const u8, resolution.path_pair.primary.text));
-        const file_title = bun.path.relative(FileSystem.instance.top_level_dir, file_path);
+        const file_title = try std.fs.path.relative(
+            bun.default_allocator,
+            FileSystem.instance.top_level_dir,
+            null,
+            FileSystem.instance.top_level_dir,
+            file_path,
+        );
+        defer bun.default_allocator.free(file_title);
         const file_id = bun.jsc.Jest.Jest.runner.?.getOrPutFile(file_path).file_id;
 
         // In Github Actions, append a special prefix that will group

@@ -121,6 +121,7 @@ pub const Report = struct {
             max_filename_length: usize,
             fraction: *Fraction,
             base_path: []const u8,
+            allocator: std.mem.Allocator,
             writer: *std.Io.Writer,
             comptime enable_colors: bool,
         ) !void {
@@ -136,8 +137,12 @@ pub const Report = struct {
             fraction.failing = failed;
 
             var filename = report.source_url.slice();
+            var filename_owned: ?[]u8 = null;
+            defer if (filename_owned) |path| allocator.free(path);
             if (base_path.len > 0) {
-                filename = bun.path.relative(base_path, filename);
+                filename_owned = try std.fs.path.relative(allocator, base_path, null, base_path, filename);
+                bun.path.platformToPosixInPlace(u8, filename_owned.?);
+                filename = filename_owned.?;
             }
 
             try writeFormatWithValues(
@@ -211,11 +216,16 @@ pub const Report = struct {
         pub fn writeFormat(
             report: *const Report,
             base_path: []const u8,
+            allocator: std.mem.Allocator,
             writer: *std.Io.Writer,
         ) !void {
             var filename = report.source_url.slice();
+            var filename_owned: ?[]u8 = null;
+            defer if (filename_owned) |path| allocator.free(path);
             if (base_path.len > 0) {
-                filename = bun.path.relative(base_path, filename);
+                filename_owned = try std.fs.path.relative(allocator, base_path, null, base_path, filename);
+                bun.path.platformToPosixInPlace(u8, filename_owned.?);
+                filename = filename_owned.?;
             }
 
             // TN: test name
@@ -687,7 +697,7 @@ pub const ByteRangeMapping = struct {
         defer allocating_writer.deinit();
         const buffered_writer = &allocating_writer.writer;
 
-        Report.Text.writeFormat(&report, source_url.utf8ByteLength(), &coverage_fraction, "", buffered_writer, false) catch {
+        Report.Text.writeFormat(&report, source_url.utf8ByteLength(), &coverage_fraction, "", bun.default_allocator, buffered_writer, false) catch {
             return globalThis.throwOutOfMemoryValue();
         };
 

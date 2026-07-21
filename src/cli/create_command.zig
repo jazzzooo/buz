@@ -1559,7 +1559,14 @@ pub const CreateCommand = struct {
             , .{create_react_app_entry_point_path});
         }
 
-        const rel_destination = filesystem.relativeTo(destination);
+        const rel_destination = try std.fs.path.relative(
+            ctx.allocator,
+            filesystem.top_level_dir,
+            null,
+            filesystem.top_level_dir,
+            destination,
+        );
+        defer ctx.allocator.free(rel_destination);
         const is_empty_destination = rel_destination.len == 0;
 
         if (is_empty_destination) {

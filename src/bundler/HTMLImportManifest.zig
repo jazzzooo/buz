@@ -180,21 +180,15 @@ pub fn write(index: u32, graph: *const Graph, linker_graph: *const LinkerGraph, 
             if (!first) try writer.writeAll(",");
             first = false;
 
+            const path_for_key_owned = if (ch.entry_point.is_entry_point)
+                try std.fs.path.relativePosix(bun.default_allocator, "/", root_dir, sources[ch.entry_point.source_index].path.text)
+            else
+                null;
+            defer if (path_for_key_owned) |path| bun.default_allocator.free(path);
+
             try writeEntryItem(
                 writer,
-                brk: {
-                    if (!ch.entry_point.is_entry_point) break :brk "";
-                    var path_for_key = bun.path.relativeNormalized(
-                        root_dir,
-                        sources[ch.entry_point.source_index].path.text,
-                        .posix,
-                        false,
-                    );
-
-                    path_for_key = bun.strings.removeLeadingDotSlash(path_for_key);
-
-                    break :brk path_for_key;
-                },
+                if (path_for_key_owned) |path| bun.strings.removeLeadingDotSlash(path) else "",
                 brk: {
                     if (inject_compiler_filesystem_prefix) {
                         temp_buffer.clearRetainingCapacity();
@@ -231,13 +225,14 @@ pub fn write(index: u32, graph: *const Graph, linker_graph: *const LinkerGraph, 
                 if (!first) try writer.writeAll(",");
                 first = false;
 
-                var path_for_key = bun.path.relativeNormalized(
+                const path_for_key_owned = try std.fs.path.relativePosix(
+                    bun.default_allocator,
+                    "/",
                     root_dir,
                     sources[source_index.get()].path.text,
-                    .posix,
-                    false,
                 );
-                path_for_key = bun.strings.removeLeadingDotSlash(path_for_key);
+                defer bun.default_allocator.free(path_for_key_owned);
+                const path_for_key = bun.strings.removeLeadingDotSlash(path_for_key_owned);
 
                 try writeEntryItem(
                     writer,

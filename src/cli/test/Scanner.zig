@@ -163,7 +163,14 @@ pub fn doesPathMatchFilter(this: *Scanner, name: []const u8) bool {
 /// The path is matched as a relative path from the project root.
 pub fn matchesPathIgnorePattern(this: *Scanner, abs_path: []const u8) bool {
     if (this.path_ignore_patterns.len == 0) return false;
-    const rel_path = bun.path.relative(this.fs.top_level_dir, abs_path);
+    const rel_path = bun.handleOom(std.fs.path.relative(
+        this.allocator(),
+        this.fs.top_level_dir,
+        null,
+        this.fs.top_level_dir,
+        abs_path,
+    ));
+    defer this.allocator().free(rel_path);
 
     // Build rel_path + '/' once. rel_path is a relative path from the project
     // root; 4096 bytes covers any sane test directory depth (POSIX PATH_MAX).
@@ -237,7 +244,14 @@ pub fn next(this: *Scanner, entry: *FileSystem.Entry, fd: bun.FD) void {
             const path = this.fs.absBuf(parts, &this.open_dir_buf);
 
             if (!this.doesAbsolutePathMatchFilter(path)) {
-                const rel_path = bun.path.relative(this.fs.top_level_dir, path);
+                const rel_path = bun.handleOom(std.fs.path.relative(
+                    this.allocator(),
+                    this.fs.top_level_dir,
+                    null,
+                    this.fs.top_level_dir,
+                    path,
+                ));
+                defer this.allocator().free(rel_path);
                 if (!this.doesPathMatchFilter(rel_path)) return;
             }
 

@@ -530,8 +530,6 @@ pub const Bin = extern struct {
 
         abs_target_buf: []u8,
         abs_dest_buf: []u8,
-        rel_buf: []u8,
-
         err: ?anyerror = null,
         skipped_due_to_missing_bin: bool = false,
 
@@ -736,7 +734,9 @@ pub const Bin = extern struct {
             };
             defer bunx_file.close();
 
-            const rel_target = path.relativeBufZ(this.rel_buf, std.fs.path.dirname(abs_dest).?, abs_target);
+            const abs_dest_dir = std.fs.path.dirname(abs_dest).?;
+            const rel_target = bun.handleOom(std.fs.path.relative(bun.default_allocator, abs_dest_dir, null, abs_dest_dir, abs_target));
+            defer bun.default_allocator.free(rel_target);
             bun.assertWithLocation(strings.hasPrefixComptime(rel_target, "..\\"), @src());
 
             const rel_target_w = strings.toWPathNormalized(&target_buf, rel_target["..\\".len..]);
@@ -805,7 +805,12 @@ pub const Bin = extern struct {
             }
 
             const abs_dest_dir = std.fs.path.dirname(abs_dest).?;
-            const rel_target = path.relativeBufZ(this.rel_buf, abs_dest_dir, abs_target);
+            var rel_target_buf = bun.handleOom(std.fs.path.relative(bun.default_allocator, abs_dest_dir, null, abs_dest_dir, abs_target));
+            const rel_target_len = rel_target_buf.len;
+            rel_target_buf = bun.handleOom(bun.default_allocator.realloc(rel_target_buf, rel_target_len + 1));
+            defer bun.default_allocator.free(rel_target_buf);
+            rel_target_buf[rel_target_len] = 0;
+            const rel_target = rel_target_buf[0..rel_target_len :0];
 
             bun.assertWithLocation(strings.hasPrefixComptime(rel_target, ".."), @src());
 

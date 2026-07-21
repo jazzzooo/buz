@@ -96,7 +96,10 @@ pub const AnyRoute = union(enum) {
             bun.fs.FileSystem.instance.top_level_dir;
 
         const abs_path = bun.fs.FileSystem.instance.abs(&[_][]const u8{path.path.slice()});
-        var relative_path = bun.fs.FileSystem.instance.relative(cwd, abs_path);
+        const relative_path_owned = try std.fs.path.relative(bun.default_allocator, cwd, null, cwd, abs_path);
+        defer bun.default_allocator.free(relative_path_owned);
+        bun.path.platformToPosixInPlace(u8, relative_path_owned);
+        var relative_path: []const u8 = relative_path_owned;
 
         if (strings.hasPrefixComptime(relative_path, "./")) {
             relative_path = relative_path[2..];

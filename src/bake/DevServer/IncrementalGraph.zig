@@ -1503,10 +1503,9 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
             // the error list as it changes while also supporting a REPL
             log.print(Output.errorWriter()) catch {};
             const failure = failure: {
-                const relative_path_buf = bun.path_buffer_pool.get();
-                defer bun.path_buffer_pool.put(relative_path_buf);
                 // this string is just going to be memcpy'd into the log buffer
-                const owner_display_name = dev.relativePath(relative_path_buf, gop.key_ptr.*);
+                const owner_display_name = try dev.relativePath(dev.allocator(), gop.key_ptr.*);
+                defer dev.allocator().free(owner_display_name);
                 break :failure try SerializedFailure.initFromLog(
                     dev,
                     fail_owner,
@@ -1743,10 +1742,10 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
                         w.writeAll("}, {\n  main: ") catch return error.OutOfMemory;
                         const initial_response_entry_point = options.initial_response_entry_point;
                         if (initial_response_entry_point.len > 0) {
-                            const relative_path_buf = bun.path_buffer_pool.get();
-                            defer bun.path_buffer_pool.put(relative_path_buf);
+                            const relative_path = try g.owner().relativePath(end_sfa.allocator(), initial_response_entry_point);
+                            defer end_sfa.allocator().free(relative_path);
                             bun.js_printer.writeJSONString(
-                                g.owner().relativePath(relative_path_buf, initial_response_entry_point),
+                                relative_path,
                                 @TypeOf(w),
                                 w,
                                 .utf8,
@@ -1769,10 +1768,10 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
 
                         if (options.react_refresh_entry_point.len > 0) {
                             w.writeAll(",\n  refresh: ") catch return error.OutOfMemory;
-                            const relative_path_buf = bun.path_buffer_pool.get();
-                            defer bun.path_buffer_pool.put(relative_path_buf);
+                            const relative_path = try g.owner().relativePath(end_sfa.allocator(), options.react_refresh_entry_point);
+                            defer end_sfa.allocator().free(relative_path);
                             bun.js_printer.writeJSONString(
-                                g.owner().relativePath(relative_path_buf, options.react_refresh_entry_point),
+                                relative_path,
                                 @TypeOf(w),
                                 w,
                                 .utf8,

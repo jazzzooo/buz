@@ -1374,14 +1374,15 @@ fn computeArgumentsForFrameworkRequest(
 } {
     const route_bundle = dev.routeBundlePtr(route_bundle_index);
     const router_type = dev.router.typePtr(dev.router.routePtr(framework_bundle.route_index).type);
+    const alloc = dev.allocator();
 
     return .{
         // routerTypeMain
         .router_type_main = router_type.server_file_string.get() orelse str: {
             const name = dev.server_graph.bundled_files.keys()[fromOpaqueFileId(.server, router_type.server_file).get()];
-            const relative_path_buf = bun.path_buffer_pool.get();
-            defer bun.path_buffer_pool.put(relative_path_buf);
-            const str = try bun.String.createUTF8ForJS(dev.vm.global, dev.relativePath(relative_path_buf, name));
+            const relative_path = try dev.relativePath(alloc, name);
+            defer alloc.free(relative_path);
+            const str = try bun.String.createUTF8ForJS(dev.vm.global, relative_path);
             router_type.server_file_string = .create(str, dev.vm.global);
             break :str str;
         },
@@ -1398,20 +1399,17 @@ fn computeArgumentsForFrameworkRequest(
             const arr = try JSValue.createEmptyArray(global, n);
             route = dev.router.routePtr(framework_bundle.route_index);
             {
-                const relative_path_buf = bun.path_buffer_pool.get();
-                defer bun.path_buffer_pool.put(relative_path_buf);
-                var route_name = bun.String.cloneUTF8(dev.relativePath(relative_path_buf, keys[fromOpaqueFileId(.server, route.file_page.unwrap().?).get()]));
+                const relative_path = try dev.relativePath(alloc, keys[fromOpaqueFileId(.server, route.file_page.unwrap().?).get()]);
+                defer alloc.free(relative_path);
+                var route_name = bun.String.cloneUTF8(relative_path);
                 try arr.putIndex(global, 0, try route_name.transferToJS(global));
             }
             n = 1;
             while (true) {
                 if (route.file_layout.unwrap()) |layout| {
-                    const relative_path_buf = bun.path_buffer_pool.get();
-                    defer bun.path_buffer_pool.put(relative_path_buf);
-                    var layout_name = bun.String.cloneUTF8(dev.relativePath(
-                        relative_path_buf,
-                        keys[fromOpaqueFileId(.server, layout).get()],
-                    ));
+                    const relative_path = try dev.relativePath(alloc, keys[fromOpaqueFileId(.server, layout).get()]);
+                    defer alloc.free(relative_path);
+                    var layout_name = bun.String.cloneUTF8(relative_path);
                     try arr.putIndex(global, @intCast(n), try layout_name.transferToJS(global));
                     n += 1;
                 }
@@ -2197,10 +2195,11 @@ fn makeArrayForServerComponentsPatch(dev: *DevServer, global: *jsc.JSGlobalObjec
     if (items.len == 0) return .null;
     const arr = try jsc.JSArray.createEmpty(global, items.len);
     const names = dev.server_graph.bundled_files.keys();
+    const alloc = dev.allocator();
     for (items, 0..) |item, i| {
-        const relative_path_buf = bun.path_buffer_pool.get();
-        defer bun.path_buffer_pool.put(relative_path_buf);
-        const str = bun.String.cloneUTF8(dev.relativePath(relative_path_buf, names[item.get()]));
+        const relative_path = try dev.relativePath(alloc, names[item.get()]);
+        defer alloc.free(relative_path);
+        const str = bun.String.cloneUTF8(relative_path);
         defer str.deref();
         try arr.putIndex(global, @intCast(i), try str.toJS(global));
     }
@@ -2948,17 +2947,14 @@ pub fn finalizeBundle(
             ms_elapsed,
         });
 
-        // Intentionally creating a new scope here so we can limit the lifetime
-        // of the `relative_path_buf`
         {
-            const relative_path_buf = bun.path_buffer_pool.get();
-            defer bun.path_buffer_pool.put(relative_path_buf);
+            const alloc = dev.allocator();
 
             // Compute a file name to display
-            const file_name: ?[]const u8 = if (current_bundle.had_reload_event)
+            const file_name: ?[]u8 = if (current_bundle.had_reload_event)
                 if (bv2.graph.entry_points.items.len > 0)
-                    dev.relativePath(
-                        relative_path_buf,
+                    try dev.relativePath(
+                        alloc,
                         bv2.graph.input_files.items(.source)[bv2.graph.entry_points.items[0].get()].path.text,
                     )
                 else
@@ -2972,7 +2968,7 @@ pub fn finalizeBundle(
                 };
 
                 break :brk switch (dev.routeBundlePtr(route_bundle_index).data) {
-                    .html => |html| dev.relativePath(relative_path_buf, html.html_bundle.data.bundle.data.path),
+                    .html => |html| try dev.relativePath(alloc, html.html_bundle.data.bundle.data.path),
                     .framework => |fw| file_name: {
                         const route = dev.router.routePtr(fw.route_index);
                         const opaque_id = route.file_page.unwrap() orelse
@@ -2980,10 +2976,11 @@ pub fn finalizeBundle(
                             break :file_name null;
                         const server_index = fromOpaqueFileId(.server, opaque_id);
                         const abs_path = dev.server_graph.bundled_files.keys()[server_index.get()];
-                        break :file_name dev.relativePath(relative_path_buf, abs_path);
+                        break :file_name try dev.relativePath(alloc, abs_path);
                     },
                 };
             };
+            defer if (file_name) |name| alloc.free(name);
 
             const total_count = bv2.graph.entry_points.items.len;
             if (file_name) |name| {
@@ -3671,12 +3668,10 @@ pub fn dumpBundle(io: std.Io, dump_dir: std.Io.Dir, graph: bake.Graph, rel_path:
 
 pub noinline fn dumpBundleForChunk(dev: *DevServer, dump_dir: std.Io.Dir, side: bake.Side, key: []const u8, code: []const u8, wrap: bool, is_ssr_graph: bool) void {
     const cwd = dev.root;
-    var a: bun.PathBuffer = undefined;
-    var b: [bun.MAX_PATH_BYTES * 2]u8 = undefined;
-    const rel_path = bun.path.relativeBufZ(&a, cwd, key);
-    const size = std.mem.replacementSize(u8, rel_path, ".." ++ std.fs.path.sep_str, "_.._" ++ std.fs.path.sep_str);
-    _ = std.mem.replace(u8, rel_path, ".." ++ std.fs.path.sep_str, "_.._" ++ std.fs.path.sep_str, &b);
-    const rel_path_escaped = b[0..size];
+    const rel_path = bun.handleOom(std.fs.path.relative(bun.default_allocator, cwd, null, cwd, key));
+    defer bun.default_allocator.free(rel_path);
+    const rel_path_escaped = bun.handleOom(std.mem.replaceOwned(u8, bun.default_allocator, rel_path, ".." ++ std.fs.path.sep_str, "_.._" ++ std.fs.path.sep_str));
+    defer bun.default_allocator.free(rel_path_escaped);
     dumpBundle(dev.vm.io, dump_dir, switch (side) {
         .client => .client,
         .server => if (is_ssr_graph) .ssr else .server,
@@ -3804,9 +3799,8 @@ pub fn writeVisualizerMessage(dev: *DevServer, payload: *std.array_list.Managed(
             0..,
         ) |k, v, i| {
             const file = v.unpack();
-            const relative_path_buf = bun.path_buffer_pool.get();
-            defer bun.path_buffer_pool.put(relative_path_buf);
-            const normalized_key = dev.relativePath(relative_path_buf, k);
+            const normalized_key = try dev.relativePath(dev.allocator(), k);
+            defer dev.allocator().free(normalized_key);
             try w.writeInt(u32, @intCast(normalized_key.len), .little);
             if (k.len == 0) continue;
             try w.writeAll(normalized_key);
@@ -4216,11 +4210,9 @@ pub fn onRouterCollisionError(dev: *DevServer, rel_path: []const u8, other_id: O
         },
     });
     Output.prettyErrorln("  - <blue>{s}<r>", .{rel_path});
-    const relative_path_buf = bun.path_buffer_pool.get();
-    defer bun.path_buffer_pool.put(relative_path_buf);
-    Output.prettyErrorln("  - <blue>{s}<r>", .{
-        dev.relativePath(relative_path_buf, dev.server_graph.bundled_files.keys()[fromOpaqueFileId(.server, other_id).get()]),
-    });
+    const other_path = try dev.relativePath(dev.allocator(), dev.server_graph.bundled_files.keys()[fromOpaqueFileId(.server, other_id).get()]);
+    defer dev.allocator().free(other_path);
+    Output.prettyErrorln("  - <blue>{s}<r>", .{other_path});
     Output.flush();
 }
 
@@ -4244,27 +4236,13 @@ fn fromOpaqueFileId(comptime side: bake.Side, id: OpaqueFileId) IncrementalGraph
     return IncrementalGraph(side).FileIndex.init(@intCast(id.get()));
 }
 
-/// Returns posix style path, suitible for URLs and reproducible hashes.
+/// Returns a POSIX-style path suitable for URLs and reproducible hashes.
 /// Calculate the relative path from the dev server root.
-/// The caller must provide a PathBuffer from the pool.
-pub fn relativePath(dev: *DevServer, relative_path_buf: *bun.PathBuffer, path: []const u8) []const u8 {
-    bun.assert(dev.root[dev.root.len - 1] != '/');
-
-    if (!std.fs.path.isAbsolute(path)) {
-        return path;
-    }
-
-    if (path.len >= dev.root.len + 1 and
-        path[dev.root.len] == '/' and
-        bun.strings.startsWith(path, dev.root))
-    {
-        return path[dev.root.len + 1 ..];
-    }
-
-    const rel = bun.path.relativePlatformBuf(relative_path_buf, dev.root, path, .auto, true);
-    // @constCast: `rel` is owned by a buffer on `dev`, which is mutable
-    bun.path.platformToPosixInPlace(u8, @constCast(rel));
-    return rel;
+/// The caller owns the returned memory.
+pub fn relativePath(dev: *DevServer, alloc: Allocator, path: []const u8) bun.OOM![]u8 {
+    const relative_path = try std.fs.path.relative(alloc, dev.root, null, dev.root, path);
+    bun.path.platformToPosixInPlace(u8, relative_path);
+    return relative_path;
 }
 
 /// Either of two conditions make this true:

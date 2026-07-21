@@ -27,7 +27,9 @@ pub const CssModule = struct {
                     if (project_root) |root| {
                         if (bun.path.Platform.auto.isAbsolute(root)) {
                             alloced = true;
-                            break :source bun.handleOom(allocator.dupe(u8, bun.path.relative(root, path)));
+                            const relative_path = bun.handleOom(std.fs.path.relative(allocator, root, null, root, path));
+                            bun.path.platformToPosixInPlace(u8, relative_path);
+                            break :source relative_path;
                         }
                     }
                     break :source path;

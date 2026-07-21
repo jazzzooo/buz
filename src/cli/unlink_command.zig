@@ -91,7 +91,6 @@ fn unlink(ctx: Command.Context) !void {
         if (package.bin.tag != .none) {
             var link_target_buf: bun.PathBuffer = undefined;
             var link_dest_buf: bun.PathBuffer = undefined;
-            var link_rel_buf: bun.PathBuffer = undefined;
 
             var node_modules_path = bun.AbsPath(.{}).initFdPath(.fromStdDir(node_modules)) catch |err| {
                 if (manager.options.log_level != .silent) {
@@ -114,7 +113,6 @@ fn unlink(ctx: Command.Context) !void {
                 .seen = null,
                 .abs_target_buf = &link_target_buf,
                 .abs_dest_buf = &link_dest_buf,
-                .rel_buf = &link_rel_buf,
             };
             bin_linker.unlink(true);
         }

@@ -3752,7 +3752,9 @@ pub noinline fn printGithubAnnotation(exception: *ZigException) void {
         if (!frame.position.isInvalid()) {
             const source_url = frame.source_url.toUTF8(allocator);
             defer source_url.deinit();
-            const file = bun.path.relative(dir, source_url.slice());
+            const file = bun.handleOom(std.fs.path.relative(allocator, dir, null, dir, source_url.slice()));
+            defer allocator.free(file);
+            bun.path.platformToPosixInPlace(u8, file);
             writer.print("\n::error file={s},line={d},col={d},title=", .{
                 file,
                 frame.position.line.oneBased(),
@@ -3814,7 +3816,9 @@ pub noinline fn printGithubAnnotation(exception: *ZigException) void {
             const frame = frames[@as(usize, @intCast(i))];
             const source_url = frame.source_url.toUTF8(allocator);
             defer source_url.deinit();
-            const file = bun.path.relative(dir, source_url.slice());
+            const file = bun.handleOom(std.fs.path.relative(allocator, dir, null, dir, source_url.slice()));
+            defer allocator.free(file);
+            bun.path.platformToPosixInPlace(u8, file);
             const func = frame.function_name.toUTF8(allocator);
 
             if (file.len == 0 and func.len == 0) continue;

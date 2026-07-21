@@ -53,10 +53,6 @@ inline fn @"is .. with type"(comptime T: type, slice: []const T) bool {
     return slice.len >= 2 and slice[0] == '.' and slice[1] == '.';
 }
 
-inline fn @"is ../"(slice: []const u8) bool {
-    return strings.hasPrefixComptime(slice, "../");
-}
-
 const ParentEqual = enum {
     parent,
     equal,
@@ -78,97 +74,62 @@ pub fn isParentOrEqual(parent_: []const u8, child: []const u8) ParentEqual {
     return .unrelated;
 }
 
-pub fn getIfExistsLongestCommonPathGeneric(input: []const []const u8, comptime platform: Platform) ?[]const u8 {
+fn getIfExistsLongestCommonPathGeneric(input: []const []const u8, comptime platform: Platform) ?[]const u8 {
     const separator = comptime platform.separator();
-
     const nqlAtIndexFn = switch (platform) {
         else => nqlAtIndex,
         .windows => nqlAtIndexCaseInsensitive,
     };
 
     var min_length: usize = std.math.maxInt(usize);
-    for (input) |str| {
-        min_length = @min(str.len, min_length);
-    }
+    for (input) |str| min_length = @min(str.len, min_length);
 
     var index: usize = 0;
     var last_common_separator: ?usize = null;
-
-    // try to use an unrolled version of this loop
     switch (input.len) {
-        0 => {
-            return "";
-        },
-        1 => {
-            return input[0];
-        },
-        inline 2, 3, 4, 5, 6, 7, 8 => |N| {
+        0 => return "",
+        1 => return input[0],
+        inline 2, 3, 4, 5, 6, 7, 8 => |n| {
             while (index < min_length) : (index += 1) {
-                if (nqlAtIndexFn(comptime N, index, input)) {
+                if (nqlAtIndexFn(comptime n, index, input)) {
                     if (last_common_separator == null) return null;
                     break;
                 }
-                if (platform.isSeparator(input[0][index])) {
-                    last_common_separator = index;
-                }
+                if (platform.isSeparator(input[0][index])) last_common_separator = index;
             }
         },
         else => {
             var string_index: usize = 1;
             while (string_index < input.len) : (string_index += 1) {
                 while (index < min_length) : (index += 1) {
-                    if (platform == .windows) {
-                        if (std.ascii.toLower(input[0][index]) != std.ascii.toLower(input[string_index][index])) {
-                            if (last_common_separator == null) return null;
-                            break;
-                        }
-                    } else {
-                        if (input[0][index] != input[string_index][index]) {
-                            if (last_common_separator == null) return null;
-                            break;
-                        }
+                    const differs = if (platform == .windows)
+                        std.ascii.toLower(input[0][index]) != std.ascii.toLower(input[string_index][index])
+                    else
+                        input[0][index] != input[string_index][index];
+                    if (differs) {
+                        if (last_common_separator == null) return null;
+                        break;
                     }
                 }
                 if (index == min_length) index -= 1;
-                if (platform.isSeparator(input[0][index])) {
-                    last_common_separator = index;
-                }
+                if (platform.isSeparator(input[0][index])) last_common_separator = index;
             }
         },
     }
 
-    if (index == 0) {
-        return &([_]u8{separator});
-    }
+    if (index == 0) return &([_]u8{separator});
+    if (last_common_separator == null) return &([_]u8{'.'});
 
-    if (last_common_separator == null) {
-        return &([_]u8{'.'});
-    }
-
-    // The above won't work for a case like this:
-    // /app/public/index.js
-    // /app/public
-    // It will return:
-    // /app/
-    // It should return:
-    // /app/public/
-    // To detect /app/public is actually a folder, we do one more loop through the strings
-    // and say, "do one of you have a path separator after what we thought was the end?"
     for (input) |str| {
-        if (str.len > index) {
-            if (platform.isSeparator(str[index])) {
-                return str[0 .. index + 1];
-            }
-        }
+        if (str.len > index and platform.isSeparator(str[index])) return str[0 .. index + 1];
     }
-
     return input[0][0 .. last_common_separator.? + 1];
 }
 
 // TODO: is it faster to determine longest_common_separator in the while loop
 // or as an extra step at the end?
 // only boether to check if this function appears in benchmarking
-pub fn longestCommonPathGeneric(input: []const []const u8, comptime platform: Platform) []const u8 {
+fn longestCommonPathGeneric(input: []const []const u8, comptime platform: Platform) []const u8 {
     const separator = comptime platform.separator();
 
     const nqlAtIndexFn = switch (platform) {
@@ -285,248 +246,6 @@ pub fn longestCommonPath(input: []const []const u8) []const u8 {
 
 pub fn getIfExistsLongestCommonPath(input: []const []const u8) ?[]const u8 {
     return getIfExistsLongestCommonPathGeneric(input, .loose);
-}
-
-const relative_bufs = bun.ThreadlocalBuffers(struct {
-    relative_to_common_path_buf: bun.PathBuffer = undefined,
-    relative_from_buf: bun.PathBuffer = undefined,
-    relative_to_buf: bun.PathBuffer = undefined,
-});
-
-pub inline fn relative_to_common_path_buf() *bun.PathBuffer {
-    return &relative_bufs.get().relative_to_common_path_buf;
-}
-
-/// Find a relative path from a common path
-// Loosely based on Node.js' implementation of path.relative
-// https://github.com/nodejs/node/blob/9a7cbe25de88d87429a69050a1a1971234558d97/lib/path.js#L1250-L1259
-pub fn relativeToCommonPath(
-    common_path_: []const u8,
-    normalized_from_: []const u8,
-    normalized_to_: []const u8,
-    buf: []u8,
-    comptime always_copy: bool,
-    comptime platform: Platform,
-) []const u8 {
-    var normalized_from = normalized_from_;
-    var normalized_to = normalized_to_;
-    const win_root_len = if (platform == .windows) k: {
-        const from_root = std.fs.path.parsePathWindows(u8, normalized_from_).root;
-        const to_root = std.fs.path.parsePathWindows(u8, normalized_to_).root;
-
-        if (common_path_.len == 0) {
-            // the only case path.relative can return not a relative string
-            if (!strings.eqlCaseInsensitiveASCIIICheckLength(from_root, to_root)) {
-                if (normalized_to_.len > to_root.len and normalized_to_[normalized_to_.len - 1] == '\\') {
-                    if (always_copy) {
-                        bun.copy(u8, buf, normalized_to_[0 .. normalized_to_.len - 1]);
-                        return buf[0 .. normalized_to_.len - 1];
-                    } else {
-                        return normalized_to_[0 .. normalized_to_.len - 1];
-                    }
-                } else {
-                    if (always_copy) {
-                        bun.copy(u8, buf, normalized_to_);
-                        return buf[0..normalized_to_.len];
-                    } else {
-                        return normalized_to_;
-                    }
-                }
-            }
-        }
-
-        normalized_from = normalized_from_[from_root.len..];
-        normalized_to = normalized_to_[to_root.len..];
-
-        break :k from_root.len;
-    } else null;
-
-    const separator = comptime platform.separator();
-
-    const common_path = if (platform == .windows)
-        common_path_[win_root_len..]
-    else if (std.fs.path.isAbsolutePosix(common_path_))
-        common_path_[1..]
-    else
-        common_path_;
-
-    const shortest = @min(normalized_from.len, normalized_to.len);
-
-    if (shortest == common_path.len) {
-        if (normalized_to.len >= normalized_from.len) {
-            if (common_path.len == 0) {
-                if (platform == .windows and
-                    normalized_to.len > 3 and
-                    normalized_to[normalized_to.len - 1] == separator)
-                {
-                    normalized_to.len -= 1;
-                }
-
-                // We get here if `from` is the root
-                // For example: from='/'; to='/foo'
-                if (always_copy) {
-                    bun.copy(u8, buf, normalized_to);
-                    return buf[0..normalized_to.len];
-                } else {
-                    return normalized_to;
-                }
-            }
-
-            if (normalized_to[common_path.len - 1] == separator) {
-                const slice = normalized_to[common_path.len..];
-
-                const without_trailing_slash = if (platform == .windows and
-                    slice.len > 3 and
-                    slice[slice.len - 1] == separator)
-                    slice[0 .. slice.len - 1]
-                else
-                    slice;
-
-                if (always_copy) {
-                    // We get here if `from` is the exact base path for `to`.
-                    // For example: from='/foo/bar'; to='/foo/bar/baz'
-                    bun.copy(u8, buf, without_trailing_slash);
-                    return buf[0..without_trailing_slash.len];
-                } else {
-                    return without_trailing_slash;
-                }
-            }
-        }
-    }
-
-    const last_common_separator = strings.lastIndexOfChar(
-        if (platform == .windows) common_path else common_path_,
-        separator,
-    ) orelse 0;
-
-    // Generate the relative path based on the path difference between `to`
-    // and `from`.
-
-    var out_slice: []u8 = buf[0..0];
-
-    if (normalized_from.len > 0) {
-        var i: usize = @as(usize, @intCast(@intFromBool(platform.isSeparator(normalized_from[0])))) + 1 + last_common_separator;
-
-        while (i <= normalized_from.len) : (i += 1) {
-            if (i == normalized_from.len or (normalized_from[i] == separator and i + 1 < normalized_from.len)) {
-                if (out_slice.len == 0) {
-                    buf[0..2].* = "..".*;
-                    out_slice.len = 2;
-                } else {
-                    buf[out_slice.len..][0..3].* = (&[_]u8{separator} ++ "..").*;
-                    out_slice.len += 3;
-                }
-            }
-        }
-    }
-
-    if (normalized_to.len > last_common_separator + 1) {
-        var tail = normalized_to[last_common_separator..];
-        if (normalized_from.len > 0 and (last_common_separator == normalized_from.len or (last_common_separator == normalized_from.len - 1))) {
-            if (platform.isSeparator(tail[0])) {
-                tail = tail[1..];
-            }
-        }
-
-        // avoid making non-absolute paths absolute
-        const insert_leading_slash = !platform.isSeparator(tail[0]) and
-            out_slice.len > 0 and !platform.isSeparator(out_slice[out_slice.len - 1]);
-
-        if (insert_leading_slash) {
-            buf[out_slice.len] = separator;
-            out_slice.len += 1;
-        }
-
-        // Lastly, append the rest of the destination (`to`) path that comes after
-        // the common path parts.
-        bun.copy(u8, buf[out_slice.len..], tail);
-        out_slice.len += tail.len;
-    }
-
-    if (out_slice.len > 3 and out_slice[out_slice.len - 1] == separator) {
-        out_slice.len -= 1;
-    }
-
-    return out_slice;
-}
-
-pub fn relativeNormalizedBuf(buf: []u8, from: []const u8, to: []const u8, comptime platform: Platform, comptime always_copy: bool) []const u8 {
-    if ((if (platform == .windows)
-        strings.eqlCaseInsensitiveASCII(from, to, true)
-    else
-        from.len == to.len and strings.eqlLong(from, to, true)))
-    {
-        return "";
-    }
-
-    const two = [_][]const u8{ from, to };
-    const common_path = longestCommonPathGeneric(&two, platform);
-
-    return relativeToCommonPath(common_path, from, to, buf, always_copy, platform);
-}
-
-pub fn relativeNormalized(from: []const u8, to: []const u8, comptime platform: Platform, comptime always_copy: bool) []const u8 {
-    return relativeNormalizedBuf(relative_to_common_path_buf(), from, to, platform, always_copy);
-}
-
-pub fn relative(from: []const u8, to: []const u8) []const u8 {
-    return relativePlatform(from, to, .auto, false);
-}
-
-pub fn relativeBufZ(buf: []u8, from: []const u8, to: []const u8) [:0]const u8 {
-    const rel = relativePlatformBuf(buf, from, to, .auto, true);
-    buf[rel.len] = 0;
-    return buf[0..rel.len :0];
-}
-
-pub fn relativePlatformBuf(buf: []u8, from: []const u8, to: []const u8, comptime platform: Platform, comptime always_copy: bool) []const u8 {
-    const relative_from_buf = &relative_bufs.get().relative_from_buf;
-    const relative_to_buf = &relative_bufs.get().relative_to_buf;
-    const normalized_from = if (platform.isAbsolute(from)) brk: {
-        if (platform == .loose and bun.Environment.isWindows) {
-            // we want to invoke the windows resolution behavior but end up with a
-            // string with forward slashes.
-            const normalized = normalizeStringBuf(from, relative_from_buf[1..], true, .windows, true);
-            platformToPosixInPlace(u8, normalized);
-            break :brk normalized;
-        }
-        const path = normalizeStringBuf(from, relative_from_buf[1..], true, platform, true);
-        if (platform == .windows) break :brk path;
-        relative_from_buf[0] = platform.separator();
-        break :brk relative_from_buf[0 .. path.len + 1];
-    } else joinAbsStringBuf(
-        Fs.FileSystem.instance.top_level_dir,
-        relative_from_buf,
-        &[_][]const u8{
-            normalizeStringBuf(from, relative_from_buf[1..], true, platform, true),
-        },
-        platform,
-    );
-
-    const normalized_to = if (platform.isAbsolute(to)) brk: {
-        if (platform == .loose and bun.Environment.isWindows) {
-            const normalized = normalizeStringBuf(to, relative_to_buf[1..], true, .windows, true);
-            platformToPosixInPlace(u8, normalized);
-            break :brk normalized;
-        }
-        const path = normalizeStringBuf(to, relative_to_buf[1..], true, platform, true);
-        if (platform == .windows) break :brk path;
-        relative_to_buf[0] = platform.separator();
-        break :brk relative_to_buf[0 .. path.len + 1];
-    } else joinAbsStringBuf(
-        Fs.FileSystem.instance.top_level_dir,
-        relative_to_buf,
-        &[_][]const u8{
-            normalizeStringBuf(to, relative_to_buf[1..], true, platform, true),
-        },
-        platform,
-    );
-
-    return relativeNormalizedBuf(buf, normalized_from, normalized_to, platform, always_copy);
-}
-
-pub fn relativePlatform(from: []const u8, to: []const u8, comptime platform: Platform, comptime always_copy: bool) []const u8 {
-    return relativePlatformBuf(relative_to_common_path_buf(), from, to, platform, always_copy);
 }
 
 fn windowsVolume(comptime T: type, path: []const T) []const T {
@@ -1721,7 +1440,6 @@ pub fn posixToPlatformInPlace(comptime T: type, path_buffer: []T) void {
     }
 }
 
-const Fs = @import("../resolver/fs.zig");
 const std = @import("std");
 
 const bun = @import("bun");

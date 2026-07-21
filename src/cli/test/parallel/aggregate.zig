@@ -42,7 +42,8 @@ pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *c
         var body_writer_state = bun.UnmanagedWriter.init(&body, bun.default_allocator);
         const w = body_writer_state.writer();
         for (coord.crashed_files.items) |idx| {
-            const rel = coord.relPath(idx);
+            const rel = bun.handleOom(coord.relPath(bun.default_allocator, idx));
+            defer bun.default_allocator.free(rel);
             w.writeAll("  <testsuite name=\"") catch bun.outOfMemory();
             test_command.escapeXml(rel, w) catch bun.outOfMemory();
             w.writeAll("\" tests=\"1\" assertions=\"0\" failures=\"1\" skipped=\"0\" time=\"0\">\n    <testcase name=\"(worker crashed)\" classname=\"") catch bun.outOfMemory();

@@ -290,8 +290,6 @@ pub const Chunk = struct {
         ) bun.OOM!CodeResult {
             const additional_files = graph.input_files.items(.additional_files);
             const unique_key_for_additional_files = graph.input_files.items(.unique_key_for_additional_file);
-            const relative_platform_buf = bun.path_buffer_pool.get();
-            defer bun.path_buffer_pool.put(relative_platform_buf);
             switch (this.*) {
                 .pieces => |*pieces| {
                     const entry_point_chunks_for_scb = linker_graph.files.items(.entry_point_chunk_index);
@@ -368,13 +366,12 @@ pub const Chunk = struct {
                                     .none => unreachable,
                                 };
 
-                                const cheap_normalizer = cheapPrefixNormalizer(
-                                    import_prefix,
-                                    if (from_chunk_dir.len == 0 or force_absolute_path)
-                                        file_path
-                                    else
-                                        bun.path.relativePlatformBuf(relative_platform_buf, from_chunk_dir, file_path, .posix, false),
-                                );
+                                const relative_file_path = if (from_chunk_dir.len == 0 or force_absolute_path)
+                                    null
+                                else
+                                    bun.handleOom(std.fs.path.relativePosix(bun.default_allocator, "/", from_chunk_dir, file_path));
+                                defer if (relative_file_path) |path| bun.default_allocator.free(path);
+                                const cheap_normalizer = cheapPrefixNormalizer(import_prefix, relative_file_path orelse file_path);
                                 count += cheap_normalizer[0].len + cheap_normalizer[1].len;
                             },
                             .none => {},
@@ -491,13 +488,12 @@ pub const Chunk = struct {
 
                                 // normalize windows paths to '/'
                                 bun.path.platformToPosixInPlace(u8, @constCast(file_path));
-                                const cheap_normalizer = cheapPrefixNormalizer(
-                                    import_prefix,
-                                    if (from_chunk_dir.len == 0 or force_absolute_path)
-                                        file_path
-                                    else
-                                        bun.path.relativePlatformBuf(relative_platform_buf, from_chunk_dir, file_path, .posix, false),
-                                );
+                                const relative_file_path = if (from_chunk_dir.len == 0 or force_absolute_path)
+                                    null
+                                else
+                                    bun.handleOom(std.fs.path.relativePosix(bun.default_allocator, "/", from_chunk_dir, file_path));
+                                defer if (relative_file_path) |path| bun.default_allocator.free(path);
+                                const cheap_normalizer = cheapPrefixNormalizer(import_prefix, relative_file_path orelse file_path);
 
                                 if (cheap_normalizer[0].len > 0) {
                                     @memcpy(remain[0..cheap_normalizer[0].len], cheap_normalizer[0]);

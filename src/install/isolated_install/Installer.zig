@@ -1005,7 +1005,15 @@ pub const Installer = struct {
                             defer dest_save.restore();
 
                             dest.undo(1);
-                            break :target dest.relative(&dep_store_path);
+                            const relative_path = bun.handleOom(std.fs.path.relative(
+                                installer.manager.allocator,
+                                bun.fs.FileSystem.instance.top_level_dir,
+                                null,
+                                dest.slice(),
+                                dep_store_path.slice(),
+                            ));
+                            defer installer.manager.allocator.free(relative_path);
+                            break :target bun.AutoRelPath.from(relative_path);
                         };
                         defer target.deinit();
 
@@ -1216,8 +1224,6 @@ pub const Installer = struct {
                     defer bun.path_buffer_pool.put(abs_target_buf);
                     const abs_dest_buf = bun.path_buffer_pool.get();
                     defer bun.path_buffer_pool.put(abs_dest_buf);
-                    const rel_buf = bun.path_buffer_pool.get();
-                    defer bun.path_buffer_pool.put(rel_buf);
 
                     var seen: bun.StringHashMap(void) = .init(bun.default_allocator);
                     defer seen.deinit();
@@ -1261,7 +1267,6 @@ pub const Installer = struct {
                         .node_modules_path = &node_modules_path,
                         .abs_target_buf = abs_target_buf,
                         .abs_dest_buf = abs_dest_buf,
-                        .rel_buf = rel_buf,
                     };
 
                     bin_linker.link(false);
@@ -1590,8 +1595,6 @@ pub const Installer = struct {
         defer bun.path_buffer_pool.put(link_target_buf);
         const link_dest_buf = bun.path_buffer_pool.get();
         defer bun.path_buffer_pool.put(link_dest_buf);
-        const link_rel_buf = bun.path_buffer_pool.get();
-        defer bun.path_buffer_pool.put(link_rel_buf);
 
         var seen: bun.StringHashMap(void) = .init(bun.default_allocator);
         defer seen.deinit();
@@ -1648,7 +1651,6 @@ pub const Installer = struct {
                 .target_package_name = if (target_node_modules_path != null) target_package_name else package_name,
                 .abs_target_buf = link_target_buf,
                 .abs_dest_buf = link_dest_buf,
-                .rel_buf = link_rel_buf,
             };
 
             bin_linker.link(false);

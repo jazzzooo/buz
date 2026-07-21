@@ -163,9 +163,8 @@ pub fn runWithBody(ctx: *ErrorReportRequest, body: []const u8, r: AnyResponse) !
             if (index >= 1 and (index - 1) < result.file_paths.len) {
                 const abs_path = result.file_paths[@intCast(index - 1)];
                 frame.source_url = .init(abs_path);
-                const relative_path_buf = bun.path_buffer_pool.get();
-                defer bun.path_buffer_pool.put(relative_path_buf);
-                const rel_path = ctx.dev.relativePath(relative_path_buf, abs_path);
+                const rel_path = try ctx.dev.relativePath(temp_alloc, abs_path);
+                defer temp_alloc.free(rel_path);
                 if (bun.strings.eql(frame.function_name.value.ZigString.slice(), rel_path)) {
                     frame.function_name = .empty;
                 }
@@ -258,9 +257,8 @@ pub fn runWithBody(ctx: *ErrorReportRequest, body: []const u8, r: AnyResponse) !
 
         const src_to_write = frame.source_url.value.ZigString.slice();
         if (bun.strings.hasPrefixComptime(src_to_write, "/")) {
-            const relative_path_buf = bun.path_buffer_pool.get();
-            defer bun.path_buffer_pool.put(relative_path_buf);
-            const file = ctx.dev.relativePath(relative_path_buf, src_to_write);
+            const file = try ctx.dev.relativePath(ctx.dev.allocator(), src_to_write);
+            defer ctx.dev.allocator().free(file);
             try w.writeInt(u32, @intCast(file.len), .little);
             try w.writeAll(file);
         } else {

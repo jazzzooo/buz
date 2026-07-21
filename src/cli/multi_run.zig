@@ -611,7 +611,11 @@ pub fn run(ctx: Command.Context) !noreturn {
                 pkgjson.name
             else
                 // Fallback: use relative path from workspace root
-                try ctx.allocator.dupe(u8, bun.path.relativePlatform(resolve_root, path, .posix, false));
+                brk: {
+                    const relative_path = try std.fs.path.relative(ctx.allocator, resolve_root, null, resolve_root, path);
+                    bun.path.platformToPosixInPlace(u8, relative_path);
+                    break :brk relative_path;
+                };
 
             try matched_packages.append(.{
                 .name = pkg_name,

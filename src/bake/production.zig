@@ -507,8 +507,16 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
             break :brk raw;
         } orelse {
             Output.errGeneric("Framework does not support static site generation", .{});
+            const relative_path = bun.handleOom(std.fs.path.relative(
+                bun.default_allocator,
+                cwd,
+                null,
+                cwd,
+                entry_points.files.keys()[router_type.server_file.get()].absPath(),
+            ));
+            defer bun.default_allocator.free(relative_path);
             Output.note("The file {f} is missing the \"prerender\" export, which defines how to generate static files.", .{
-                bun.fmt.quote(bun.path.relative(cwd, entry_points.files.keys()[router_type.server_file.get()].absPath())),
+                bun.fmt.quote(relative_path),
             });
             bun.Global.crash();
         };
@@ -523,8 +531,16 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
                 break :brk raw;
             } orelse {
                 Output.errGeneric("Framework does not support static site generation", .{});
+                const relative_path = bun.handleOom(std.fs.path.relative(
+                    bun.default_allocator,
+                    cwd,
+                    null,
+                    cwd,
+                    entry_points.files.keys()[router_type.server_file.get()].absPath(),
+                ));
+                defer bun.default_allocator.free(relative_path);
                 Output.note("The file {f} is missing the \"getParams\" export, which defines how to generate static files.", .{
-                    bun.fmt.quote(bun.path.relative(cwd, entry_points.files.keys()[router_type.server_file.get()].absPath())),
+                    bun.fmt.quote(relative_path),
                 });
                 bun.Global.crash();
             }
@@ -664,7 +680,15 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         defer pattern_string.deref();
         try route_patterns.putIndex(global, @intCast(nav_index), try pattern_string.toJS(global));
 
-        var src_path = bun.String.cloneUTF8(bun.path.relative(cwd, pt.inputFile(main_file_route_index).absPath()));
+        const relative_src_path = bun.handleOom(std.fs.path.relative(
+            bun.default_allocator,
+            cwd,
+            null,
+            cwd,
+            pt.inputFile(main_file_route_index).absPath(),
+        ));
+        defer bun.default_allocator.free(relative_src_path);
+        var src_path = bun.String.cloneUTF8(relative_src_path);
         try route_source_files.putIndex(global, @intCast(nav_index), try src_path.transferToJS(global));
 
         try route_nested_files.putIndex(global, @intCast(nav_index), file_list);
@@ -908,9 +932,15 @@ pub const EntryPointMap = struct {
             },
         });
         Output.prettyErrorln("  - <blue>{s}<r>", .{rel_path});
-        Output.prettyErrorln("  - <blue>{s}<r>", .{
-            bun.path.relative(dev.root, dev.files.keys()[other_id.get()].absPath()),
-        });
+        const other_path = try std.fs.path.relative(
+            dev.allocator,
+            dev.root,
+            null,
+            dev.root,
+            dev.files.keys()[other_id.get()].absPath(),
+        );
+        defer dev.allocator.free(other_path);
+        Output.prettyErrorln("  - <blue>{s}<r>", .{other_path});
         Output.flush();
     }
 };

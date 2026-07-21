@@ -400,7 +400,16 @@ pub const Transpiler = struct {
             file_path = client_entry_point.source.path;
         }
 
-        file_path.pretty = Linker.relative_paths_list.append(string, transpiler.fs.relativeTo(file_path.text)) catch unreachable;
+        const relative_path = bun.handleOom(std.fs.path.relative(
+            bun.default_allocator,
+            transpiler.fs.top_level_dir,
+            null,
+            transpiler.fs.top_level_dir,
+            file_path.text,
+        ));
+        defer bun.default_allocator.free(relative_path);
+        bun.path.platformToPosixInPlace(u8, relative_path);
+        file_path.pretty = Linker.relative_paths_list.append(string, relative_path) catch unreachable;
 
         var output_file = options.OutputFile{
             .src_path = file_path,
@@ -1229,7 +1238,15 @@ pub const Transpiler = struct {
         std.Io.Dir.accessAbsolute(transpiler.io, entry, .{}) catch
             return _entry;
 
-        entry = transpiler.fs.relativeTo(entry);
+        const relative_entry = bun.handleOom(std.fs.path.relative(
+            transpiler.allocator,
+            transpiler.fs.top_level_dir,
+            null,
+            transpiler.fs.top_level_dir,
+            entry,
+        ));
+        bun.path.platformToPosixInPlace(u8, relative_entry);
+        entry = relative_entry;
 
         if (!strings.startsWith(entry, "./")) {
             // Entry point paths without a leading "./" are interpreted as package
@@ -1248,6 +1265,7 @@ pub const Transpiler = struct {
             __entry[0] = '.';
             __entry[1] = '/';
             bun.copy(u8, __entry[2..__entry.len], entry);
+            transpiler.allocator.free(relative_entry);
             entry = __entry;
         }
 

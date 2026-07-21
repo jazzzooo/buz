@@ -419,8 +419,17 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
                             );
                         }
 
-                        if (this.verbose)
-                            debug("File changed: {s}", .{fs.relativeTo(file_path)});
+                        if (this.verbose) {
+                            const relative_path = bun.handleOom(std.fs.path.relative(
+                                bun.default_allocator,
+                                fs.top_level_dir,
+                                null,
+                                fs.top_level_dir,
+                                file_path,
+                            ));
+                            defer bun.default_allocator.free(relative_path);
+                            debug("File changed: {s}", .{relative_path});
+                        }
 
                         if (event.op.write or event.op.delete or event.op.rename) {
                             recordChangedPath(file_path);
@@ -569,14 +578,31 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
                                     if (last_file_hash == file_hash) continue;
                                     last_file_hash = file_hash;
 
-                                    if (this.verbose)
-                                        debug("File change: {s}", .{fs.relativeTo(abs_path)});
+                                    if (this.verbose) {
+                                        const relative_path = bun.handleOom(std.fs.path.relative(
+                                            bun.default_allocator,
+                                            fs.top_level_dir,
+                                            null,
+                                            fs.top_level_dir,
+                                            abs_path,
+                                        ));
+                                        defer bun.default_allocator.free(relative_path);
+                                        debug("File change: {s}", .{relative_path});
+                                    }
                                 }
                             }
                         }
 
                         if (this.verbose) {
-                            debug("Dir change: {s} (affecting {d})", .{ fs.relativeTo(file_path), affected.len });
+                            const relative_path = bun.handleOom(std.fs.path.relative(
+                                bun.default_allocator,
+                                fs.top_level_dir,
+                                null,
+                                fs.top_level_dir,
+                                file_path,
+                            ));
+                            defer bun.default_allocator.free(relative_path);
+                            debug("Dir change: {s} (affecting {d})", .{ relative_path, affected.len });
                         }
                     },
                 }

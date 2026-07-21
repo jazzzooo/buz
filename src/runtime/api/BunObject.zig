@@ -715,10 +715,17 @@ pub fn getPublicPathWithAssetPrefix(
     writer: *std.Io.Writer,
     comptime platform: bun.path.Platform,
 ) void {
-    const relative_path = if (strings.hasPrefix(to, dir))
-        strings.withoutTrailingSlash(to[dir.len..])
-    else
-        VirtualMachine.get().transpiler.fs.relativePlatform(dir, to, platform);
+    const relative_path_owned = if (strings.hasPrefix(to, dir)) null else brk: {
+        const relative_path = bun.handleOom(switch (platform) {
+            .posix => std.fs.path.relativePosix(bun.default_allocator, "/", dir, to),
+            .windows, .nt => std.fs.path.relativeWindows(bun.default_allocator, dir, null, dir, to),
+            .loose => std.fs.path.relative(bun.default_allocator, dir, null, dir, to),
+        });
+        if (platform == .loose) bun.path.platformToPosixInPlace(u8, relative_path);
+        break :brk relative_path;
+    };
+    defer if (relative_path_owned) |path| bun.default_allocator.free(path);
+    const relative_path = relative_path_owned orelse strings.withoutTrailingSlash(to[dir.len..]);
     if (origin.isAbsolute()) {
         if (strings.hasPrefix(relative_path, "..") or strings.hasPrefix(relative_path, "./")) {
             writer.writeAll(origin.origin) catch return;

@@ -1523,7 +1523,9 @@ pub const LinkerContext = struct {
                     switch (additional_files[0]) {
                         .output_file => |output_file_id| {
                             const path = c.parse_graph.additional_output_files.items[output_file_id].dest_path;
-                            hash.write(bun.path.relativePlatform(from_chunk_dir, path, .posix, false));
+                            const relative_path = bun.handleOom(std.fs.path.relativePosix(bun.default_allocator, "/", from_chunk_dir, path));
+                            defer bun.default_allocator.free(relative_path);
+                            hash.write(relative_path);
                         },
                         .source_index => {},
                     }

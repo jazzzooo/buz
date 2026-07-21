@@ -15,7 +15,8 @@ pub const FolderResolution = union(Tag) {
             const str_to_use = this.manager.lockfile.workspace_paths.getPtr(
                 @truncate(String.Builder.stringHash(this.manager.lockfile.str(&this.version.value.workspace))),
             ) orelse &this.version.value.workspace;
-            var paths = normalizePackageJSONPath(.{ .relative = .workspace }, joined[2..], this.manager.lockfile.str(str_to_use));
+            var paths = normalizePackageJSONPath(.{ .relative = .workspace }, joined[2..], this.manager.lockfile.str(str_to_use), this.manager.allocator);
+            defer this.manager.allocator.free(paths.rel);
 
             if (!strings.startsWithChar(paths.rel, '.') and !strings.startsWithChar(paths.rel, std.fs.path.sep)) {
                 joined[0..2].* = ("." ++ std.fs.path.sep_str).*;
@@ -93,7 +94,12 @@ pub const FolderResolution = union(Tag) {
         abs: stringZ,
         rel: string,
     };
-    fn normalizePackageJSONPath(global_or_relative: GlobalOrRelative, joined: *bun.PathBuffer, non_normalized_path: string) Paths {
+    fn normalizePackageJSONPath(
+        global_or_relative: GlobalOrRelative,
+        joined: *bun.PathBuffer,
+        non_normalized_path: string,
+        allocator: std.mem.Allocator,
+    ) Paths {
         var abs: string = "";
         var rel: string = "";
         // We consider it valid if there is a package.json in the folder
@@ -111,7 +117,13 @@ pub const FolderResolution = union(Tag) {
             tempcat[normalized.len..][0.."/package.json".len].* = (std.fs.path.sep_str ++ "package.json").*;
             var parts = [_]string{ FileSystem.instance.top_level_dir, tempcat[0 .. normalized.len + "/package.json".len] };
             abs = FileSystem.instance.absBuf(&parts, joined);
-            rel = FileSystem.instance.relative(FileSystem.instance.top_level_dir, abs[0 .. abs.len - "/package.json".len]);
+            rel = bun.handleOom(std.fs.path.relative(
+                allocator,
+                FileSystem.instance.top_level_dir,
+                null,
+                FileSystem.instance.top_level_dir,
+                abs[0 .. abs.len - "/package.json".len],
+            ));
         } else {
             var remain: []u8 = joined[0..];
             switch (global_or_relative) {
@@ -137,7 +149,13 @@ pub const FolderResolution = union(Tag) {
             remain = remain[normalized.len + "/package.json".len ..];
             abs = joined[0 .. joined.len - remain.len];
             // We store the folder name without package.json
-            rel = FileSystem.instance.relative(FileSystem.instance.top_level_dir, abs[0 .. abs.len - "/package.json".len]);
+            rel = bun.handleOom(std.fs.path.relative(
+                allocator,
+                FileSystem.instance.top_level_dir,
+                null,
+                FileSystem.instance.top_level_dir,
+                abs[0 .. abs.len - "/package.json".len],
+            ));
         }
         joined[abs.len] = 0;
 
@@ -241,7 +259,8 @@ pub const FolderResolution = union(Tag) {
 
     pub fn getOrPut(global_or_relative: GlobalOrRelative, version: Dependency.Version, non_normalized_path: string, manager: *PackageManager) FolderResolution {
         var joined: bun.PathBuffer = undefined;
-        const paths = normalizePackageJSONPath(global_or_relative, &joined, non_normalized_path);
+        const paths = normalizePackageJSONPath(global_or_relative, &joined, non_normalized_path, manager.allocator);
+        defer manager.allocator.free(paths.rel);
         const abs = paths.abs;
         const rel = paths.rel;
 

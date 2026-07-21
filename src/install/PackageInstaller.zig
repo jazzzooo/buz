@@ -234,8 +234,7 @@ pub const PackageInstaller = struct {
 
             var link_target_buf: bun.PathBuffer = undefined;
             var link_dest_buf: bun.PathBuffer = undefined;
-            var link_rel_buf: bun.PathBuffer = undefined;
-            this.linkTreeBins(tree, tree_id, &link_target_buf, &link_dest_buf, &link_rel_buf, log_level);
+            this.linkTreeBins(tree, tree_id, &link_target_buf, &link_dest_buf, log_level);
         }
 
         if (comptime should_install_packages) {
@@ -251,7 +250,6 @@ pub const PackageInstaller = struct {
         tree_id: TreeContext.Id,
         link_target_buf: []u8,
         link_dest_buf: []u8,
-        link_rel_buf: []u8,
         log_level: Options.LogLevel,
     ) void {
         const lockfile = this.lockfile;
@@ -341,7 +339,6 @@ pub const PackageInstaller = struct {
                     .target_node_modules_path = if (target_node_modules_path_opt) |*path| path else &node_modules_path,
                     .abs_target_buf = link_target_buf,
                     .abs_dest_buf = link_dest_buf,
-                    .rel_buf = link_rel_buf,
                 };
 
                 bin_linker.link(global);
@@ -385,7 +382,6 @@ pub const PackageInstaller = struct {
 
         var link_target_buf: bun.PathBuffer = undefined;
         var link_dest_buf: bun.PathBuffer = undefined;
-        var link_rel_buf: bun.PathBuffer = undefined;
         const lockfile = this.lockfile;
 
         for (this.trees, 0..) |*tree, tree_id| {
@@ -402,7 +398,7 @@ pub const PackageInstaller = struct {
 
                 bun.handleOom(this.node_modules.path.appendSlice(rel_path));
 
-                this.linkTreeBins(tree, @intCast(tree_id), &link_target_buf, &link_dest_buf, &link_rel_buf, log_level);
+                this.linkTreeBins(tree, @intCast(tree_id), &link_target_buf, &link_dest_buf, log_level);
             }
         }
     }

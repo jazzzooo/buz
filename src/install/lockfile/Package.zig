@@ -1074,7 +1074,10 @@ pub fn Package(comptime SemverIntType: type) type {
 
             switch (dependency_version.tag) {
                 .folder => {
-                    const relative = Path.relative(
+                    const relative = try std.fs.path.relative(
+                        allocator,
+                        FileSystem.instance.top_level_dir,
+                        null,
                         FileSystem.instance.top_level_dir,
                         Path.joinAbsString(
                             FileSystem.instance.top_level_dir,
@@ -1085,6 +1088,7 @@ pub fn Package(comptime SemverIntType: type) type {
                             .auto,
                         ),
                     );
+                    defer allocator.free(relative);
                     // if relative is empty, we are linking the package to itself
                     dependency_version.value.folder = string_builder.append(String, if (relative.len == 0) "." else relative);
                 },
@@ -1157,9 +1161,12 @@ pub fn Package(comptime SemverIntType: type) type {
                         dependency_version.value.workspace = path;
                     } else {
                         const workspace = dependency_version.value.workspace.slice(buf);
-                        const path = string_builder.append(String, if (strings.eqlComptime(workspace, "*")) "*" else brk: {
+                        const path = if (strings.eqlComptime(workspace, "*")) string_builder.append(String, "*") else brk: {
                             var buf2: bun.PathBuffer = undefined;
-                            const rel = Path.relativePlatform(
+                            const rel = bun.handleOom(std.fs.path.relative(
+                                allocator,
+                                FileSystem.instance.top_level_dir,
+                                null,
                                 FileSystem.instance.top_level_dir,
                                 Path.joinAbsStringBuf(
                                     FileSystem.instance.top_level_dir,
@@ -1170,14 +1177,11 @@ pub fn Package(comptime SemverIntType: type) type {
                                     },
                                     .auto,
                                 ),
-                                .auto,
-                                false,
-                            );
-                            if (comptime Environment.isWindows) {
-                                bun.path.dangerouslyConvertPathToPosixInPlace(u8, Path.relative_to_common_path_buf()[0..rel.len]);
-                            }
-                            break :brk rel;
-                        });
+                            ));
+                            defer allocator.free(rel);
+                            bun.path.platformToPosixInPlace(u8, rel);
+                            break :brk string_builder.append(String, rel);
+                        };
                         if (comptime Environment.allow_assert) {
                             assert(path.len() > 0);
                             assert(!std.fs.path.isAbsolute(path.slice(buf)));

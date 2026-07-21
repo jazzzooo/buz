@@ -255,9 +255,13 @@ pub fn writeToDisk(f: OutputFile, io: std.Io, root_dir: std.Io.Dir, root_dir_pat
             // already written to disk
         },
         .buffer => |value| {
-            var rel_path = f.dest_path;
-            if (f.dest_path.len > root_dir_path.len) {
-                rel_path = resolve_path.relative(root_dir_path, f.dest_path);
+            const rel_path_owned = if (f.dest_path.len > root_dir_path.len)
+                try std.fs.path.relative(bun.default_allocator, bun.fs.FileSystem.instance.top_level_dir, null, root_dir_path, f.dest_path)
+            else
+                null;
+            defer if (rel_path_owned) |path| bun.default_allocator.free(path);
+            const rel_path = rel_path_owned orelse f.dest_path;
+            if (rel_path_owned != null) {
                 if (std.fs.path.dirname(rel_path)) |parent| {
                     if (parent.len > root_dir_path.len) {
                         try root_dir.createDirPath(io, parent);

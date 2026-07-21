@@ -282,32 +282,31 @@ pub const Linker = struct {
                 }
 
                 if (strings.eqlComptime(namespace, "bun") or strings.eqlComptime(namespace, "file") or namespace.len == 0) {
-                    const relative_name = linker.fs.relative(source_dir, source_path);
+                    const relative_name = try std.fs.path.relative(linker.allocator, linker.fs.top_level_dir, null, source_dir, source_path);
+                    bun.path.platformToPosixInPlace(u8, relative_name);
                     return Fs.Path.initWithPretty(source_path, relative_name);
                 } else {
                     return Fs.Path.initWithNamespace(source_path, namespace);
                 }
             },
             .relative => {
-                var relative_name = linker.fs.relative(source_dir, source_path);
-
-                var pretty: string = undefined;
+                const relative_name_owned = try std.fs.path.relative(linker.allocator, linker.fs.top_level_dir, null, source_dir, source_path);
+                errdefer linker.allocator.free(relative_name_owned);
+                bun.path.platformToPosixInPlace(u8, relative_name_owned);
                 if (use_hashed_name) {
                     const basepath = Fs.Path.init(source_path);
                     const hashed_path = try linker.getHashedFilename(basepath, null);
-                    pretty = try std.fmt.allocPrint(linker.allocator, "{s}{s}", .{ hashed_path, std.fs.path.extension(source_path) });
-                    relative_name = try linker.allocator.dupe(u8, relative_name);
-                } else {
-                    if (relative_name.len > 1 and !(relative_name[0] == std.fs.path.sep or relative_name[0] == '.')) {
-                        pretty = try strings.concat(linker.allocator, &.{ "./", relative_name });
-                    } else {
-                        pretty = try linker.allocator.dupe(u8, relative_name);
-                    }
-
-                    relative_name = pretty;
+                    const hashed_name = try std.fmt.allocPrint(linker.allocator, "{s}{s}", .{ hashed_path, std.fs.path.extension(source_path) });
+                    return Fs.Path.initWithPretty(hashed_name, relative_name_owned);
                 }
 
-                return Fs.Path.initWithPretty(pretty, relative_name);
+                if (relative_name_owned.len > 1 and relative_name_owned[0] != '/' and relative_name_owned[0] != '.') {
+                    const relative_name = try strings.concat(linker.allocator, &.{ "./", relative_name_owned });
+                    linker.allocator.free(relative_name_owned);
+                    return Fs.Path.initWithPretty(relative_name, relative_name);
+                }
+
+                return Fs.Path.initWithPretty(relative_name_owned, relative_name_owned);
             },
 
             .absolute_url => {
@@ -332,7 +331,16 @@ pub const Linker = struct {
                         }
                     }
 
-                    var base = linker.fs.relativeTo(source_path);
+                    const relative_base = try std.fs.path.relative(
+                        linker.allocator,
+                        linker.fs.top_level_dir,
+                        null,
+                        linker.fs.top_level_dir,
+                        source_path,
+                    );
+                    defer linker.allocator.free(relative_base);
+                    bun.path.platformToPosixInPlace(u8, relative_base);
+                    var base: []const u8 = relative_base;
                     const base_extension = std.fs.path.extension(base);
                     base = base[0 .. base.len - base_extension.len];
 

@@ -910,18 +910,6 @@ pub fn Path(comptime opts: Options) type {
             }
         }
 
-        pub fn relative(this: *const @This(), to: anytype) RelPath(opts) {
-            switch (comptime opts.buf_type) {
-                .pool => {
-                    var output: RelPath(opts) = .init();
-                    const rel = bun.path.relativeBufZ(output._buf.pooled, this.slice(), to.slice());
-                    const trimmed = trimInput(.rel, rel);
-                    output._buf.len = trimmed.len;
-                    return output;
-                },
-            }
-        }
-
         pub fn undo(this: *@This(), n_components: usize) void {
             const min_len = switch (comptime opts.kind) {
                 .abs => rootLen(this.slice()) orelse 0,

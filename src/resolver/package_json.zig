@@ -38,7 +38,8 @@ pub const PackageJSON = struct {
             const project_dir = strings.withoutTrailingSlashWindowsPath(fs.FileSystem.instance.top_level_dir);
             switch (bun.path.isParentOrEqual(project_dir, package_dir)) {
                 .parent => {
-                    const relative_dir = bun.path.relativePlatform(project_dir, package_dir, .auto, false);
+                    const relative_dir = try std.fs.path.relative(allocator, project_dir, null, project_dir, package_dir);
+                    defer allocator.free(relative_dir);
                     return std.fmt.allocPrint(allocator, ".{c}{s}{c}", .{ std.fs.path.sep, relative_dir, std.fs.path.sep });
                 },
                 .equal => return allocator.dupe(u8, "." ++ std.fs.path.sep_str),

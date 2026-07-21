@@ -1043,18 +1043,17 @@ fn scanInner(
                         } else continue :outer;
                     }
 
-                    var rel_path_buf: bun.PathBuffer = undefined;
-                    var full_rel_path = bun.path.relativeNormalizedBuf(
-                        rel_path_buf[1..],
+                    const absolute_path = fs.abs(&.{ file.dir, file.base() });
+                    const full_rel_path = try std.fs.path.relative(
+                        arena_state.allocator(),
                         fr.root,
-                        fs.abs(&.{ file.dir, file.base() }),
-                        .auto,
-                        true,
+                        null,
+                        fr.root,
+                        absolute_path,
                     );
-                    rel_path_buf[0] = '/';
-                    bun.path.platformToPosixInPlace(u8, rel_path_buf[0..full_rel_path.len]);
+                    bun.path.platformToPosixInPlace(u8, full_rel_path);
                     const rel_path = if (t.abs_root.len == fr.root.len)
-                        rel_path_buf[0 .. full_rel_path.len + 1]
+                        try std.fmt.allocPrint(arena_state.allocator(), "/{s}", .{full_rel_path})
                     else
                         full_rel_path[t.abs_root.len - fr.root.len - 1 ..];
                     var log = TinyLog.empty;

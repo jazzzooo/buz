@@ -67,9 +67,9 @@ pub fn genericPathWithPrettyInitialized(path: Fs.Path, target: options.Target, t
     // the "node" namespace is also put through this code path so that the
     // "node:" prefix is not emitted.
     if (path.isFile() or is_node) {
-        const buf2 = if (target == .bake_server_components_ssr) bun.path_buffer_pool.get() else buf;
-        defer if (target == .bake_server_components_ssr) bun.path_buffer_pool.put(buf2);
-        const rel = bun.path.relativePlatformBuf(buf2, top_level_dir, path.text, .loose, false);
+        const rel = try std.fs.path.relative(bun.default_allocator, top_level_dir, null, top_level_dir, path.text);
+        defer bun.default_allocator.free(rel);
+        bun.path.platformToPosixInPlace(u8, rel);
         var path_clone = path;
         // stack-allocated temporary is not leaked because dupeAlloc on the path will
         // move .pretty into the heap. that function also fixes some slash issues.
@@ -699,17 +699,11 @@ pub const BundleV2 = struct {
             return;
         }
 
-        if (path.pretty.ptr == path.text.ptr) {
-            // TODO: outbase
-            const rel = bun.path.relativePlatform(transpiler.fs.top_level_dir, path.text, .loose, false);
-            path.pretty = bun.handleOom(this.allocator().dupe(u8, rel));
-        }
-        path.assertPrettyIsValid();
-
         path.assertFilePathIsAbsolute();
         const entry = bun.handleOom(this.pathToSourceIndexMap(target).getOrPut(this.allocator(), path.text));
         if (!entry.found_existing) {
             path.* = bun.handleOom(this.pathWithPrettyInitialized(path.*, target));
+            path.assertPrettyIsValid();
             entry.key_ptr.* = path.text;
             const loader: Loader = brk: {
                 const record: *ImportRecord = &this.graph.ast.items(.import_records)[import_record.importer_source_index].slice()[import_record.import_record_index];
@@ -1790,7 +1784,15 @@ pub const BundleV2 = struct {
 
                     const output_path = brk: {
                         // TODO: outbase
-                        const relative_path = bun.path.relativePlatform(this.transpiler.options.root_dir, source.path.text, .loose, false);
+                        const relative_path = bun.handleOom(std.fs.path.relative(
+                            bun.default_allocator,
+                            this.transpiler.options.root_dir,
+                            null,
+                            this.transpiler.options.root_dir,
+                            source.path.text,
+                        ));
+                        defer bun.default_allocator.free(relative_path);
+                        bun.path.platformToPosixInPlace(u8, relative_path);
                         const filename = std.fs.path.basename(relative_path);
                         template.placeholder.name = std.fs.path.stem(filename);
                         template.placeholder.dir = std.fs.path.dirname(relative_path) orelse "";
@@ -3279,7 +3281,6 @@ pub const BundleV2 = struct {
                 import_record.source_index = Index.invalid;
 
                 if (dev_server.isFileCached(path.text, bake_graph)) |entry| {
-                    const rel = bun.path.relativePlatform(this.transpiler.fs.top_level_dir, path.text, .loose, false);
                     if (loader == .html and entry.kind == .asset) {
                         // Overload `path.text` to point to the final URL
                         // This information cannot be queried while printing because a lock wouldn't get held.
@@ -3292,8 +3293,6 @@ pub const BundleV2 = struct {
                         }) catch |err| bun.handleOom(err);
                         import_record.path.is_disabled = false;
                     } else {
-                        import_record.path.text = path.text;
-                        import_record.path.pretty = rel;
                         import_record.path = bun.handleOom(this.pathWithPrettyInitialized(path.*, target));
                         if (loader == .html or entry.kind == .css) {
                             import_record.path.is_disabled = true;

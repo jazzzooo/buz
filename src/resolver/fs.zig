@@ -437,36 +437,6 @@ pub const FileSystem = struct {
         });
     }
 
-    pub fn relative(_: *@This(), from: string, to: string) string {
-        return @call(bun.callmod_inline, path_handler.relative, .{
-            from,
-            to,
-        });
-    }
-
-    pub fn relativePlatform(_: *@This(), from: string, to: string, comptime platform: path_handler.Platform) string {
-        return @call(bun.callmod_inline, path_handler.relativePlatform, .{
-            from,
-            to,
-            platform,
-            false,
-        });
-    }
-
-    pub fn relativeTo(f: *@This(), to: string) string {
-        return @call(bun.callmod_inline, path_handler.relative, .{
-            f.top_level_dir,
-            to,
-        });
-    }
-
-    pub fn relativeFrom(f: *@This(), from: string) string {
-        return @call(bun.callmod_inline, path_handler.relative, .{
-            from,
-            f.top_level_dir,
-        });
-    }
-
     pub fn absAlloc(f: *@This(), allocator: std.mem.Allocator, parts: anytype) !string {
         const joined = path_handler.joinAbsString(
             f.top_level_dir,

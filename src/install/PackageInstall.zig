@@ -1157,29 +1157,30 @@ pub const PackageInstall = struct {
                     task: jsc.WorkPoolTask = .{ .callback = &run },
 
                     pub fn run(task: *jsc.WorkPoolTask) void {
-                        var unintall_task: *@This() = @fieldParentPtr("task", task);
+                        const uninstall_task: *@This() = @fieldParentPtr("task", task);
+                        const manager = uninstall_task.manager;
                         var debug_timer = bun.Output.DebugTimer.start();
                         defer {
-                            unintall_task.manager.decrementPendingTasks();
-                            unintall_task.manager.wake();
+                            uninstall_task.deinit();
+                            manager.decrementPendingTasks();
+                            manager.wake();
                         }
 
-                        defer unintall_task.deinit();
-                        const dirname = std.fs.path.dirname(unintall_task.absolute_path) orelse {
-                            Output.debugWarn("Unexpectedly failed to get dirname of {s}", .{unintall_task.absolute_path});
+                        const dirname = std.fs.path.dirname(uninstall_task.absolute_path) orelse {
+                            Output.debugWarn("Unexpectedly failed to get dirname of {s}", .{uninstall_task.absolute_path});
                             return;
                         };
-                        const basename = std.fs.path.basename(unintall_task.absolute_path);
+                        const basename = std.fs.path.basename(uninstall_task.absolute_path);
 
                         var dir = bun.openDirA(std.Io.Dir.cwd(), dirname) catch |err| {
                             if (comptime Environment.isDebug or Environment.enable_asan) {
-                                Output.debugWarn("Failed to delete {s}: {s}", .{ unintall_task.absolute_path, @errorName(err) });
+                                Output.debugWarn("Failed to delete {s}: {s}", .{ uninstall_task.absolute_path, @errorName(err) });
                             }
                             return;
                         };
                         defer bun.FD.fromStdDir(dir).close();
 
-                        dir.deleteTree(unintall_task.manager.io, basename) catch |err| {
+                        dir.deleteTree(manager.io, basename) catch |err| {
                             if (comptime Environment.isDebug or Environment.enable_asan) {
                                 Output.debugWarn("Failed to delete {s} in {s}: {s}", .{ basename, dirname, @errorName(err) });
                             }
@@ -1343,7 +1344,14 @@ pub const PackageInstall = struct {
 
             const dest_dir_path = bun.getFdPath(.fromStdDir(dest_dir), &dest_buf) catch |err| return Result.fail(err, .linking_dependency, @errorReturnTrace());
 
-            const target = Path.relative(dest_dir_path, to_path);
+            const target = bun.handleOom(std.fs.path.relative(
+                this.manager.allocator,
+                FileSystem.instance.top_level_dir,
+                null,
+                dest_dir_path,
+                to_path,
+            ));
+            defer this.manager.allocator.free(target);
             dest_dir.symLink(this.manager.io, target, dest, .{}) catch |err| return Result.fail(err, .linking_dependency, null);
         }
 
