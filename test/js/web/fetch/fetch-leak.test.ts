@@ -513,8 +513,7 @@ test.concurrent(
     // for the small per-call leak to show in RSS.
     const script = /* js */ `
     const pad = Buffer.alloc(900, "a").toString();
-    // Windows strips the leading "/" then asserts is_absolute_windows() in
-    // PosixToWinNormalizer under debug_assertions, which needs a drive letter.
+    // Windows file URLs need a drive letter.
     const prefix = process.platform === "win32" ? "file:///C:/" : "file:///";
     async function hit(i) {
       // Fresh path per iteration so each leaked ref pins a distinct impl.

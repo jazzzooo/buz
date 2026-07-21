@@ -1583,12 +1583,11 @@ pub const RunCommand = struct {
         {
             const file = bun.FD.fromStdFile((brk: {
                 if (std.fs.path.isAbsolute(script_name_to_search)) {
-                    var win_resolver = resolve_path.PosixToWinNormalizer{};
-                    var resolved = win_resolver.resolveCWD(script_name_to_search) catch @panic("Could not resolve path");
-                    if (comptime Environment.isWindows) {
-                        var fba = std.heap.FixedBufferAllocator.init(&script_name_buf);
-                        resolved = std.fs.path.resolveWindows(fba.allocator(), &.{resolved}) catch @panic("Could not normalize path");
-                    }
+                    const resolved = if (comptime Environment.isWindows) resolved: {
+                        var cwd_buf: bun.PathBuffer = undefined;
+                        const cwd = bun.getcwd(&cwd_buf) catch @panic("Could not resolve path");
+                        break :resolved resolve_path.joinAbsStringBuf(cwd, &script_name_buf, &.{script_name_to_search}, .windows);
+                    } else script_name_to_search;
                     break :brk bun.openFile(
                         resolved,
                         .{ .mode = .read_only },
@@ -1964,26 +1963,9 @@ pub const RunCommand = struct {
             Global.exit(1);
         }
 
-        // TODO(@paperclover): merge windows branch
-        // var win_resolver = resolve_path.PosixToWinNormalizer{};
-
         const filename = ctx.positionals[0];
-
-        const normalized_filename = if (std.fs.path.isAbsolute(filename))
-            // TODO(@paperclover): merge windows branch
-            // try win_resolver.resolveCWD("/dev/bun/test/etc.js");
-            filename
-        else brk: {
-            const cwd = try bun.getcwd(&path_buf);
-            path_buf[cwd.len] = std.fs.path.sep;
-            var parts = [_]string{filename};
-            break :brk resolve_path.joinAbsStringBuf(
-                path_buf[0 .. cwd.len + 1],
-                &path_buf2,
-                &parts,
-                .auto,
-            );
-        };
+        const cwd = try bun.getcwd(&path_buf);
+        const normalized_filename = resolve_path.joinAbsStringBuf(cwd, &path_buf2, &.{filename}, .auto);
 
         Run.boot(ctx, normalized_filename, null) catch |err| {
             ctx.log.print(Output.errorWriter()) catch {};

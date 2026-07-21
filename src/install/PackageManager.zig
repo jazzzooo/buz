@@ -523,8 +523,11 @@ var ensureTempNodeGypScriptOnce = bun.once(struct {
 fn httpThreadOnInitError(err: HTTP.InitError, opts: HTTP.HTTPThread.InitOpts) noreturn {
     switch (err) {
         error.LoadCAFile => {
-            var normalizer: bun.path.PosixToWinNormalizer = .{};
-            const normalized = normalizer.resolveZ(FileSystem.instance.top_level_dir, opts.abs_ca_file_name);
+            var path_buf: if (Environment.isWindows) bun.PathBuffer else void = undefined;
+            const normalized = if (comptime Environment.isWindows)
+                bun.path.joinAbsStringBufZ(FileSystem.instance.top_level_dir, &path_buf, &.{opts.abs_ca_file_name}, .windows)
+            else
+                opts.abs_ca_file_name;
             if (!bun.sys.existsZ(normalized)) {
                 Output.err("HTTPThread", "could not find CA file: '{s}'", .{opts.abs_ca_file_name});
             } else {

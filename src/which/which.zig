@@ -108,9 +108,9 @@ fn searchBin(buf: *bun.WPathBuffer, path_size: usize, check_windows_extensions: 
 }
 
 /// Check if bin file exists in this path (internally used by whichWin)
-fn searchBinInPath(buf: *bun.WPathBuffer, path_buf: *bun.PathBuffer, path: []const u8, bin: []const u8, check_windows_extensions: bool) ?[:0]u16 {
+fn searchBinInPath(buf: *bun.WPathBuffer, path_buf: *bun.PathBuffer, cwd: []const u8, path: []const u8, bin: []const u8, check_windows_extensions: bool) ?[:0]u16 {
     if (path.len == 0) return null;
-    const segment = if (std.fs.path.isAbsolute(path)) (PosixToWinNormalizer.resolveCWDWithExternalBuf(path_buf, path) catch return null) else path;
+    const segment = if (std.fs.path.isAbsolute(path)) bun.path.joinAbsStringBufChecked(cwd, path_buf, &.{path}, .windows) orelse return null else path;
     const segment_utf16 = bun.strings.convertUTF8toUTF16InBuffer(buf, bun.strings.withoutTrailingSlash(segment));
 
     buf[segment_utf16.len] = std.fs.path.sep;
@@ -134,7 +134,7 @@ pub fn whichWin(buf: *bun.WPathBuffer, path: []const u8, cwd: []const u8, bin: [
 
     // handle absolute paths
     if (std.fs.path.isAbsolute(bin)) {
-        const normalized_bin = PosixToWinNormalizer.resolveCWDWithExternalBuf(path_buf, bin) catch return null;
+        const normalized_bin = bun.path.joinAbsStringBufChecked(cwd, path_buf, &.{bin}, .windows) orelse return null;
         const bin_utf16 = bun.strings.convertUTF8toUTF16InBuffer(buf, normalized_bin);
         buf[bin_utf16.len] = 0;
         return searchBin(buf, bin_utf16.len, check_windows_extensions);
@@ -145,6 +145,7 @@ pub fn whichWin(buf: *bun.WPathBuffer, path: []const u8, cwd: []const u8, bin: [
         if (searchBinInPath(
             buf,
             path_buf,
+            cwd,
             cwd,
             bun.strings.withoutPrefixComptime(bin, "./"),
             check_windows_extensions,
@@ -159,7 +160,7 @@ pub fn whichWin(buf: *bun.WPathBuffer, path: []const u8, cwd: []const u8, bin: [
     // iterate over system path delimiter
     var path_iter = std.mem.tokenizeScalar(u8, path, ';');
     while (path_iter.next()) |segment_part| {
-        if (searchBinInPath(buf, path_buf, segment_part, bin, check_windows_extensions)) |bin_path| {
+        if (searchBinInPath(buf, path_buf, cwd, segment_part, bin, check_windows_extensions)) |bin_path| {
             return bin_path;
         }
     }
@@ -169,4 +170,3 @@ pub fn whichWin(buf: *bun.WPathBuffer, path: []const u8, cwd: []const u8, bin: [
 
 const bun = @import("bun");
 const std = @import("std");
-const PosixToWinNormalizer = bun.path.PosixToWinNormalizer;

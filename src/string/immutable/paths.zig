@@ -1,41 +1,3 @@
-/// Checks if a path is missing a windows drive letter. For windows APIs,
-/// this is used for an assertion, and PosixToWinNormalizer can help make
-/// an absolute path contain a drive letter.
-pub fn isWindowsAbsolutePathMissingDriveLetter(comptime T: type, chars: []const T) bool {
-    bun.unsafeAssert(bun.path.Platform.windows.isAbsoluteT(T, chars));
-    bun.unsafeAssert(chars.len > 0);
-
-    // 'C:\hello' -> false
-    // This is the most common situation, so we check it first
-    if (!(chars[0] == '/' or chars[0] == '\\')) {
-        bun.unsafeAssert(chars.len > 2);
-        bun.unsafeAssert(chars[1] == ':');
-        return false;
-    }
-
-    if (chars.len > 4) {
-        // '\??\hello' -> false (has the NT object prefix)
-        if (chars[1] == '?' and
-            chars[2] == '?' and
-            (chars[3] == '/' or chars[3] == '\\'))
-            return false;
-        // '\\?\hello' -> false (has the other NT object prefix)
-        // '\\.\hello' -> false (has the NT device prefix)
-        if ((chars[1] == '/' or chars[1] == '\\') and
-            (chars[2] == '?' or chars[2] == '.') and
-            (chars[3] == '/' or chars[3] == '\\'))
-            return false;
-    }
-
-    // A path starting with `/` can be a UNC path with forward slashes,
-    // or actually just a posix path.
-    //
-    // '\\Server\Share' -> false (unc)
-    // '\\Server\\Share' -> true (not unc because extra slashes)
-    // '\Server\Share' -> true (posix path)
-    return std.fs.path.parsePathWindows(T, chars).root.len == 1;
-}
-
 pub fn fromWPath(buf: []u8, utf16: []const u16) [:0]const u8 {
     bun.unsafeAssert(buf.len > 0);
     const to_copy = trimPrefixComptime(u16, utf16, bun.windows.long_path_prefix);
@@ -386,10 +348,6 @@ pub fn withoutTrailingSlashWindowsPath(input: string) []const u8 {
     })) {
         path.len -= 1;
     }
-
-    if (Environment.isDebug)
-        bun.debugAssert(!std.fs.path.isAbsolute(path) or
-            !isWindowsAbsolutePathMissingDriveLetter(u8, path));
 
     return path;
 }

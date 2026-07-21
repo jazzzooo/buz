@@ -841,7 +841,7 @@ pub const Resolver = struct {
         // It's always relative to the current working directory of the project root.
         //
         // ...unless you pass a relative path that exists in the standalone module graph executable.
-        var source_dir_resolver: bun.path.PosixToWinNormalizer = .{};
+        var source_dir_buf: if (Environment.isWindows) bun.PathBuffer else void = undefined;
         const source_dir_normalized = brk: {
             if (r.standalone_module_graph) |graph| {
                 if (bun.StandaloneModuleGraph.isBunStandaloneFilePath(import_path)) {
@@ -912,7 +912,12 @@ pub const Resolver = struct {
                 break :brk Fs.FileSystem.instance.top_level_dir;
             }
 
-            break :brk source_dir_resolver.resolveCWD(source_dir) catch @panic("Failed to query CWD");
+            if (comptime Environment.isWindows) {
+                var cwd_buf: bun.PathBuffer = undefined;
+                const cwd = bun.getcwd(&cwd_buf) catch @panic("Failed to query CWD");
+                break :brk bun.path.joinAbsStringBufChecked(cwd, &source_dir_buf, &.{source_dir}, .windows) orelse return .{ .not_found = {} };
+            }
+            break :brk source_dir;
         };
 
         // r.mutex.lock();
@@ -1237,8 +1242,12 @@ pub const Resolver = struct {
             }
 
             // Run node's resolution rules (e.g. adding ".js")
-            var normalizer = ResolvePath.PosixToWinNormalizer{};
-            if (r.loadAsFileOrDirectory(normalizer.resolve(source_dir, import_path), kind)) |entry| {
+            var import_path_buf: if (Environment.isWindows) bun.PathBuffer else void = undefined;
+            const normalized_import_path = if (comptime Environment.isWindows)
+                bun.path.joinAbsStringBufChecked(source_dir, &import_path_buf, &.{import_path}, .windows) orelse return .{ .not_found = {} }
+            else
+                import_path;
+            if (r.loadAsFileOrDirectory(normalized_import_path, kind)) |entry| {
                 return .{
                     .success = Result{
                         .dirname_fd = entry.dirname_fd,

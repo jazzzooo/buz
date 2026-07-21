@@ -591,19 +591,22 @@ pub const PathLike = union(enum) {
 
         if (Environment.isWindows) {
             if (std.fs.path.isAbsolute(sliced)) {
-                if (std.fs.path.parsePathWindows(u8, sliced).kind == .drive_absolute) {
+                const parsed = std.fs.path.parsePathWindows(u8, sliced);
+                if (parsed.kind == .drive_absolute) {
                     // Add the long path syntax. This affects most of node:fs
                     // Normalize the path directly into buf without an intermediate
-                    // buffer. The input (sliced) already has a drive letter, so
-                    // resolveCWDWithExternalBufZ would just memcpy it, making the
-                    // temporary allocation unnecessary.
+                    // buffer.
                     buf[0..4].* = bun.windows.long_path_prefix_u8;
                     var fba = std.heap.FixedBufferAllocator.init(buf[4 .. buf.len - 1]);
                     const normalized = std.fs.path.resolveWindows(fba.allocator(), &.{sliced}) catch @panic("normalized path exceeds buffer");
                     buf[4 + normalized.len] = 0;
                     return buf[0 .. 4 + normalized.len :0];
                 }
-                return path_handler.PosixToWinNormalizer.resolveCWDWithExternalBufZ(buf, sliced) catch @panic("Error while resolving path.");
+                if (parsed.kind == .rooted) {
+                    var cwd_buf: bun.PathBuffer = undefined;
+                    const cwd = bun.getcwd(&cwd_buf) catch @panic("Error while resolving path.");
+                    return bun.path.joinAbsStringBufZ(cwd, buf, &.{sliced}, .windows);
+                }
             }
         }
 
@@ -660,12 +663,12 @@ pub const PathLike = union(enum) {
             if (s.len >= 4 and windows_path.isSep(u8, s[0]) and windows_path.isSep(u8, s[1]) and (s[2] == '.' or s[2] == '?') and windows_path.isSep(u8, s[3])) {
                 return strings.toKernel32Path(@alignCast(std.mem.bytesAsSlice(u16, buf)), s);
             }
-            var normal_fba = std.heap.FixedBufferAllocator.init(b);
-            if (s.len > 0 and windows_path.isSep(u8, s[0])) {
-                const resolve = path_handler.PosixToWinNormalizer.resolveCWDWithExternalBuf(buf, s) catch @panic("Error while resolving path.");
-                const normal = std.fs.path.resolveWindows(normal_fba.allocator(), &.{resolve}) catch @panic("normalized path exceeds buffer");
+            if (std.fs.path.parsePathWindows(u8, s).kind == .rooted) {
+                const cwd = bun.getcwd(buf) catch @panic("Error while resolving path.");
+                const normal = bun.path.joinAbsStringBuf(cwd, b, &.{s}, .windows);
                 return strings.toKernel32Path(@alignCast(std.mem.bytesAsSlice(u16, buf)), normal);
             }
+            var normal_fba = std.heap.FixedBufferAllocator.init(b);
             const normal = std.fs.path.resolveWindows(normal_fba.allocator(), &.{s}) catch @panic("normalized path exceeds buffer");
             return strings.toKernel32Path(@alignCast(std.mem.bytesAsSlice(u16, buf)), normal);
         }
@@ -1241,7 +1244,6 @@ const Environment = bun.Environment;
 const JSError = bun.JSError;
 const Mode = bun.Mode;
 const jsc = bun.jsc;
-const path_handler = bun.path;
 const strings = bun.strings;
 const windows = bun.windows;
 const ArgumentsSlice = jsc.CallFrame.ArgumentsSlice;

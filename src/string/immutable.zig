@@ -2238,7 +2238,6 @@ pub const addLongPathPrefix = paths_.addLongPathPrefix;
 pub const charIsAnySlash = paths_.charIsAnySlash;
 pub const cloneNormalizingSeparators = paths_.cloneNormalizingSeparators;
 pub const fromWPath = paths_.fromWPath;
-pub const isWindowsAbsolutePathMissingDriveLetter = paths_.isWindowsAbsolutePathMissingDriveLetter;
 pub const normalizeSlashesOnly = paths_.normalizeSlashesOnly;
 pub const normalizeSlashesOnlyT = paths_.normalizeSlashesOnlyT;
 pub const pathContainsNodeModulesFolder = paths_.pathContainsNodeModulesFolder;

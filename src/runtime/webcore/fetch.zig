@@ -1041,13 +1041,14 @@ fn fetchImpl(
             const temp_file_path = brk: {
                 if (std.fs.path.isAbsolute(url_path_decoded)) {
                     if (Environment.isWindows) {
-                        // pathname will start with / if is a absolute path on windows, so we remove before normalizing it
-                        if (url_path_decoded[0] == '/') {
+                        if (url_path_decoded[0] == '/' and std.fs.path.parsePathWindows(u8, url_path_decoded[1..]).kind == .drive_absolute) {
                             url_path_decoded = url_path_decoded[1..];
                         }
-                        break :brk PosixToWinNormalizer.resolveCWDWithExternalBufZ(&path_buf, url_path_decoded) catch |err| {
+                        var cwd_buf: bun.PathBuffer = undefined;
+                        const cwd = bun.getcwd(&cwd_buf) catch |err| {
                             return globalThis.throwError(err, "Failed to resolve file url");
                         };
+                        break :brk bun.path.joinAbsStringBuf(cwd, &path_buf, &.{url_path_decoded}, .windows);
                     }
                     break :brk url_path_decoded;
                 }
@@ -1067,11 +1068,6 @@ fn fetchImpl(
                     },
                     .auto,
                 );
-                if (Environment.isWindows) {
-                    break :brk PosixToWinNormalizer.resolveCWDWithExternalBufZ(&path_buf2, fullpath) catch |err| {
-                        return globalThis.throwError(err, "Failed to resolve file url");
-                    };
-                }
                 break :brk fullpath;
             };
 
@@ -1502,7 +1498,6 @@ const Output = bun.Output;
 const picohttp = bun.picohttp;
 const s3 = bun.S3;
 const FetchHeaders = bun.webcore.FetchHeaders;
-const PosixToWinNormalizer = bun.path.PosixToWinNormalizer;
 const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
 
 const http = bun.http;
