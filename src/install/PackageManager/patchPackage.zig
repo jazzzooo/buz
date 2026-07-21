@@ -102,7 +102,7 @@ pub fn doPatchCommit(
             initializeStore();
             const json = JSON.parsePackageJSONUTF8(package_json_source, manager.log, manager.allocator) catch |err| {
                 manager.log.print(Output.errorWriter()) catch {};
-                Output.prettyErrorln("<r><red>{s}<r> parsing package.json in <b>\"{s}\"<r>", .{ @errorName(err), package_json_source.path.prettyDir() });
+                Output.prettyErrorln("<r><red>{s}<r> parsing package.json in <b>\"{s}\"<r>", .{ @errorName(err), std.fs.path.dirname(package_json_source.path.pretty) orelse "." });
                 Global.crash();
             };
 
@@ -592,7 +592,7 @@ pub fn preparePatch(manager: *PackageManager) !void {
             initializeStore();
             const json = JSON.parsePackageJSONUTF8(package_json_source, manager.log, manager.allocator) catch |err| {
                 manager.log.print(Output.errorWriter()) catch {};
-                Output.prettyErrorln("<r><red>{s}<r> parsing package.json in <b>\"{s}\"<r>", .{ @errorName(err), package_json_source.path.prettyDir() });
+                Output.prettyErrorln("<r><red>{s}<r> parsing package.json in <b>\"{s}\"<r>", .{ @errorName(err), std.fs.path.dirname(package_json_source.path.pretty) orelse "." });
                 Global.crash();
             };
 

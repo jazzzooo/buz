@@ -105,7 +105,9 @@ fn insert(
     if (store.dependencies_free_list.items.len == 0)
         try store.dependencies.ensureUnusedCapacity(dev.allocator(), 1);
 
-    const gop = try store.watches.getOrPut(dev.allocator(), bun.strings.withoutTrailingSlashWindowsPath(dir_name_to_watch));
+    const normalized_dir = bun.strings.withoutTrailingSlashWindowsPath(dir_name_to_watch);
+    const gop = try store.watches.getOrPut(dev.allocator(), normalized_dir);
+    errdefer if (!gop.found_existing) store.watches.swapRemoveAt(gop.index);
     const specifier_cloned = if (specifier[0] == '.' or std.fs.path.isAbsolute(specifier))
         try dev.allocator().dupe(u8, specifier)
     else
@@ -122,10 +124,8 @@ fn insert(
 
         return;
     }
-    errdefer store.watches.swapRemoveAt(gop.index);
-
     // Try to use an existing open directory handle
-    const cache_fd = if (dev.server_transpiler.resolver.readDirInfo(dir_name_to_watch) catch null) |cache|
+    const cache_fd = if (dev.server_transpiler.resolver.readDirInfo(normalized_dir) catch null) |cache|
         cache.getFileDescriptor().unwrapValid()
     else
         null;
@@ -133,7 +133,7 @@ fn insert(
     const fd, const owned_fd = if (Watcher.requires_file_descriptors) if (cache_fd) |fd|
         .{ fd, false }
     else switch (bun.sys.open(
-        &(std.posix.toPosixPath(dir_name_to_watch) catch |err| switch (err) {
+        &(std.posix.toPosixPath(normalized_dir) catch |err| switch (err) {
             error.NameTooLong => return error.Ignore, // wouldn't be able to open, ignore
         }),
         bun.O.DIRECTORY | Watcher.watch_open_flags,
@@ -165,12 +165,12 @@ fn insert(
             if (owned_fd) "from dir cache" else "owned fd",
         });
 
-    const dir_name = try dev.allocator().dupe(u8, dir_name_to_watch);
+    const dir_name = try dev.allocator().dupe(u8, normalized_dir);
     errdefer dev.allocator().free(dir_name);
 
-    gop.key_ptr.* = bun.strings.withoutTrailingSlashWindowsPath(dir_name);
+    gop.key_ptr.* = dir_name;
 
-    const watch_index = switch (dev.bun_watcher.addDirectory(fd, dir_name, bun.Watcher.getHash(dir_name), false)) {
+    const watch_index = switch (dev.bun_watcher.addDirectory(fd, dir_name, false)) {
         .err => return error.Ignore,
         .result => |id| id,
     };
@@ -179,12 +179,12 @@ fn insert(
         .source_file_path = file_path,
         .specifier = specifier_cloned,
     });
-    store.watches.putAssumeCapacity(dir_name, .{
+    gop.value_ptr.* = .{
         .dir = fd,
         .dir_fd_owned = owned_fd,
         .first_dep = dep,
         .watch_index = watch_index,
-    });
+    };
 }
 
 /// Caller must detach the dependency from the linked list it is in.

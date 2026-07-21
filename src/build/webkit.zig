@@ -70,7 +70,7 @@ pub fn addStep(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimi
     const keyword_lookup_h = toolStdout(b, &.{ "python3", "-B" }, "KeywordLookupGenerator.py", "parser/Keywords.table", "KeywordLookup.h");
     var luts: std.ArrayList(Named) = .empty;
     for (cmakeList(arena, cmake, "JavaScriptCore_OBJECT_LUT_SOURCES")) |src| {
-        const stem = std.fs.path.stem(src);
+        const stem = std.fs.path.stem(std.fs.path.basename(src));
         const name = b.fmt("{s}.lut.h", .{stem});
         luts.append(arena, .{ .name = name, .file = toolStdout(b, &.{"perl"}, "create_hash_table", src, name) }) catch @panic("OOM");
     }

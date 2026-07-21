@@ -133,8 +133,7 @@ pub const AstBuilder = struct {
 
         const record = try p.addImportRecord(path, .stmt);
 
-        var path_name = bun.fs.PathName.init(path);
-        const name = try strings.append(p.allocator, "import_", try path_name.nonUniqueNameString(p.allocator));
+        const name = try strings.append(p.allocator, "import_", try bun.fs.nonUniqueNameString(path, p.allocator));
         const namespace_ref = try p.newSymbol(.other, name);
 
         const clauses = try p.allocator.alloc(js_ast.ClauseItem, identifiers_to_import.len);

@@ -74,7 +74,7 @@ pub export fn Bun__getDefaultLoader(global: *JSGlobalObject, str: *const bun.Str
     var jsc_vm = global.bunVM();
     const filename = str.toUTF8(jsc_vm.allocator);
     defer filename.deinit();
-    const loader = jsc_vm.transpiler.options.loader(Fs.PathName.init(filename.slice()).ext).toAPI();
+    const loader = jsc_vm.transpiler.options.loader(std.fs.path.extension(filename.slice())).toAPI();
     if (loader == .file) {
         return api.Loader.js;
     }
@@ -450,7 +450,8 @@ pub fn transpileSourceCode(
                         if (entry.metadata.module_type == .cjs and source.path.isFile()) {
                             const actual_package_json: *PackageJSON = package_json orelse brk2: {
                                 // this should already be cached virtually always so it's fine to do this
-                                const dir_info = (jsc_vm.transpiler.resolver.readDirInfo(source.path.name.dir) catch null) orelse
+                                const source_dir = std.fs.path.dirname(source.path.text) orelse break :brk .javascript;
+                                const dir_info = (jsc_vm.transpiler.resolver.readDirInfo(source_dir) catch null) orelse
                                     break :brk .javascript;
 
                                 break :brk2 dir_info.package_json orelse dir_info.enclosing_package_json;
@@ -939,8 +940,9 @@ pub export fn Bun__transpileFile(
         }
     }
 
+    const path_extension = std.fs.path.extension(lr.path.text);
     const module_type: options.ModuleType = brk: {
-        const ext = lr.path.name.ext;
+        const ext = path_extension;
         // regular expression /.[cm][jt]s$/
         if (ext.len == ".cjs".len) {
             if (strings.eqlComptimeIgnoreLen(ext, ".cjs"))
@@ -1036,7 +1038,7 @@ pub export fn Bun__transpileFile(
     const synchronous_loader: options.Loader = lr.loader orelse loader: {
         if (jsc_vm.has_loaded or jsc_vm.is_in_preload) {
             // Extensionless files in this context are treated as the JS loader
-            if (lr.path.name.ext.len == 0) {
+            if (path_extension.len == 0) {
                 break :loader .tsx;
             }
 
@@ -1260,7 +1262,7 @@ export fn Bun__transpileVirtualModule(
     const loader = if (loader_ != ._none)
         options.Loader.fromAPI(loader_)
     else
-        jsc_vm.transpiler.options.loaders.get(path.name.ext) orelse brk: {
+        jsc_vm.transpiler.options.loaders.get(std.fs.path.extension(path.text)) orelse brk: {
             if (strings.eqlLong(specifier, jsc_vm.main, true)) {
                 break :brk options.Loader.js;
             }

@@ -34,13 +34,15 @@ pub const PackageJSON = struct {
         if (strings.indexOf(this.source.path.text, node_modules_path)) |_| {
             return this.name;
         } else {
-            const parent = this.source.path.name.dirWithTrailingSlash();
-            if (strings.indexOf(parent, fs.FileSystem.instance.top_level_dir)) |i| {
-                const relative_dir = parent[i + fs.FileSystem.instance.top_level_dir.len ..];
-                var out_dir = try allocator.alloc(u8, relative_dir.len + 2);
-                bun.copy(u8, out_dir[2..], relative_dir);
-                out_dir[0..2].* = ("." ++ std.fs.path.sep_str).*;
-                return out_dir;
+            const package_dir = std.fs.path.dirname(this.source.path.text) orelse return this.name;
+            const project_dir = strings.withoutTrailingSlashWindowsPath(fs.FileSystem.instance.top_level_dir);
+            switch (bun.path.isParentOrEqual(project_dir, package_dir)) {
+                .parent => {
+                    const relative_dir = bun.path.relativePlatform(project_dir, package_dir, .auto, false);
+                    return std.fmt.allocPrint(allocator, ".{c}{s}{c}", .{ std.fs.path.sep, relative_dir, std.fs.path.sep });
+                },
+                .equal => return allocator.dupe(u8, "." ++ std.fs.path.sep_str),
+                .unrelated => {},
             }
 
             return this.name;
@@ -639,6 +641,7 @@ pub const PackageJSON = struct {
 
         var json_source = logger.Source.initPathString(key_path.text, entry.contents);
         json_source.path.pretty = json_source.path.text;
+        const package_dir = std.fs.path.dirname(json_source.path.text) orelse input_path;
 
         const json: js_ast.Expr = (r.caches.json.parsePackageJSON(r.log, &json_source, allocator, true) catch |err| {
             if (Environment.isDebug) {
@@ -836,7 +839,7 @@ pub const PackageJSON = struct {
 
                                 // Store the pattern relative to the package directory
                                 var joined = [_]string{
-                                    json_source.path.name.dirWithTrailingSlash(),
+                                    package_dir,
                                     name,
                                 };
 
@@ -865,7 +868,7 @@ pub const PackageJSON = struct {
 
                                 // Store the pattern relative to the package directory
                                 var joined = [_]string{
-                                    json_source.path.name.dirWithTrailingSlash(),
+                                    package_dir,
                                     name,
                                 };
 
@@ -882,7 +885,7 @@ pub const PackageJSON = struct {
                         while (array.next()) |item| {
                             if (item.asString(allocator)) |name| {
                                 var joined = [_]string{
-                                    json_source.path.name.dirWithTrailingSlash(),
+                                    package_dir,
                                     name,
                                 };
 

@@ -108,6 +108,7 @@ pub fn processNamesArray(
     if (arr.items.len == 0) return 0;
 
     const orig_msgs_len = log.msgs.items.len;
+    const source_dir = std.fs.path.dirname(source.path.text) orelse bun.fs.FileSystem.instance.top_level_dir;
 
     var workspace_globs = std.array_list.Managed(string).init(allocator);
     defer workspace_globs.deinit();
@@ -135,14 +136,14 @@ pub fn processNamesArray(
         }
 
         const abs_package_json_path: stringZ = Path.joinAbsStringBufZ(
-            source.path.name.dir,
+            source_dir,
             filepath_buf,
             &.{ input_path, "package.json" },
             .auto,
         );
 
         // skip root package.json
-        if (strings.eqlLong(std.fs.path.dirname(abs_package_json_path) orelse "", source.path.name.dir, true)) continue;
+        if (strings.eqlLong(std.fs.path.dirname(abs_package_json_path) orelse "", source_dir, true)) continue;
 
         const workspace_entry = processWorkspaceName(
             allocator,
@@ -186,7 +187,7 @@ pub fn processNamesArray(
         if (workspace_entry.name.len == 0) continue;
 
         const rel_input_path = Path.relativePlatform(
-            source.path.name.dir,
+            source_dir,
             strings.withoutSuffixComptime(abs_package_json_path, std.fs.path.sep_str ++ "package.json"),
             .auto,
             true,
@@ -223,8 +224,7 @@ pub fn processNamesArray(
             };
 
             var walker: GlobWalker = .{};
-            const cwd = std.fs.path.dirname(source.path.text) orelse bun.fs.FileSystem.instance.top_level_dir;
-            if ((try walker.initWithCwd(&arena, glob_pattern, cwd, false, false, false, false, true)).asErr()) |e| {
+            if ((try walker.initWithCwd(&arena, glob_pattern, source_dir, false, false, false, false, true)).asErr()) |e| {
                 log.addErrorFmt(
                     source,
                     loc,
@@ -294,7 +294,7 @@ pub fn processNamesArray(
                 debug("matched path: {s}, dirname: {s}\n", .{ matched_path, entry_dir });
 
                 const abs_package_json_path = Path.joinAbsStringBufZ(
-                    cwd,
+                    source_dir,
                     filepath_buf,
                     &.{ entry_dir, "package.json" },
                     .auto,
@@ -338,7 +338,7 @@ pub fn processNamesArray(
                 if (workspace_entry.name.len == 0) continue;
 
                 const workspace_path: string = Path.relativePlatform(
-                    source.path.name.dir,
+                    source_dir,
                     abs_workspace_dir_path,
                     .auto,
                     true,

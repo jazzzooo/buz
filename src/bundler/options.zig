@@ -1017,12 +1017,12 @@ pub fn getLoaderAndVirtualSource(
 
     const is_main = strings.eqlLong(specifier, jsc_vm.main, true);
 
-    const dir = path.name.dir;
+    const dir = std.fs.path.dirname(path.text);
     // NOTE: we cannot trust `path.isFile()` since it's not always correct
     // NOTE: assume we may need a package.json when no loader is specified
     const is_js_like = if (loader) |l| l.isJSLike() else true;
-    const package_json: ?*const PackageJSON = if (is_js_like and std.fs.path.isAbsolute(dir))
-        if (jsc_vm.transpiler.resolver.readDirInfo(dir) catch null) |dir_info|
+    const package_json: ?*const PackageJSON = if (is_js_like and dir != null and std.fs.path.isAbsolute(dir.?))
+        if (jsc_vm.transpiler.resolver.readDirInfo(dir.?) catch null) |dir_info|
             dir_info.package_json orelse dir_info.enclosing_package_json
         else
             null
@@ -2153,7 +2153,7 @@ pub const TransformOptions = struct {
         define.putAssumeCapacity("process.env.NODE_ENV", "development");
 
         var loader = Loader.file;
-        if (defaultLoaders.get(entryPoint.path.name.ext)) |defaultLoader| {
+        if (defaultLoaders.get(std.fs.path.extension(entryPoint.path.text))) |defaultLoader| {
             loader = defaultLoader;
         }
         assert(code.len > 0);
@@ -2162,7 +2162,7 @@ pub const TransformOptions = struct {
             .entry_point = entryPoint,
             .define = define,
             .loader = loader,
-            .resolve_dir = entryPoint.path.name.dir,
+            .resolve_dir = std.fs.path.dirname(entryPoint.path.text) orelse ".",
             .main_fields = Target.DefaultMainFields.get(Target.browser),
             .jsx = if (Loader.isJSX(loader)) JSX.Pragma{} else null,
         };

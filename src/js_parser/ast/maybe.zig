@@ -298,7 +298,7 @@ pub fn AstMaybe(
                         } else if (p.options.bundle and strings.eqlComptime(name, "filename") and identifier_opts.assign_target == .none) {
                             // inline module.filename
                             p.ignoreUsage(p.module_ref);
-                            return p.newExpr(E.String.init(p.source.path.name.filename), name_loc);
+                            return p.newExpr(E.String.init(std.fs.path.basename(p.source.path.text)), name_loc);
                         } else if (p.options.bundle and strings.eqlComptime(name, "path") and identifier_opts.assign_target == .none) {
                             // inline module.path
                             p.ignoreUsage(p.module_ref);
@@ -414,10 +414,10 @@ pub fn AstMaybe(
                     if (p.options.framework != null or (p.options.bundle and p.options.output_format == .cjs)) {
                         if (strings.eqlComptime(name, "dir") or strings.eqlComptime(name, "dirname")) {
                             // Inline import.meta.dir
-                            return p.newExpr(E.String.init(p.source.path.name.dir), name_loc);
+                            return p.newExpr(E.String.init(std.fs.path.dirname(p.source.path.text) orelse "."), name_loc);
                         } else if (strings.eqlComptime(name, "file")) {
                             // Inline import.meta.file (filename only)
-                            return p.newExpr(E.String.init(p.source.path.name.filename), name_loc);
+                            return p.newExpr(E.String.init(std.fs.path.basename(p.source.path.text)), name_loc);
                         } else if (strings.eqlComptime(name, "path")) {
                             // Inline import.meta.path (full path)
                             return p.newExpr(E.String.init(p.source.path.text), name_loc);

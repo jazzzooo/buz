@@ -981,7 +981,7 @@ pub const RunCommand = struct {
             if (root_dir_info.package_json == null) {
                 // no trailing slash
 
-                package_json_dir = strings.withoutTrailingSlash(package_json.source.path.name.dir);
+                package_json_dir = std.fs.path.dirname(package_json.source.path.text) orelse "";
             }
         }
 
@@ -1226,7 +1226,7 @@ pub const RunCommand = struct {
                 var display_name = pkg.name;
 
                 if (display_name.len == 0) {
-                    display_name = std.fs.path.basename(pkg.source.path.name.dir);
+                    display_name = std.fs.path.basename(std.fs.path.dirname(pkg.source.path.text) orelse "");
                 }
 
                 var iterator = scripts.iterator();
@@ -1837,8 +1837,9 @@ pub const RunCommand = struct {
         if (resolution) |resolved| {
             var resolved_mutable = resolved;
             const path = resolved_mutable.path().?;
-            const loader: bun.options.Loader = this_transpiler.options.loaders.get(path.name.ext) orelse
-                bun.options.defaultLoaders.get(path.name.ext) orelse .tsx;
+            const extension = std.fs.path.extension(path.text);
+            const loader: bun.options.Loader = this_transpiler.options.loaders.get(extension) orelse
+                bun.options.defaultLoaders.get(extension) orelse .tsx;
             if (loader.canBeRunByBun() or loader == .html or loader == .md) {
                 log("Resolved to: `{s}`", .{path.text});
                 return _bootAndHandleError(ctx, path.text, loader);

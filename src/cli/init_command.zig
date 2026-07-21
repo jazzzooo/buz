@@ -412,7 +412,7 @@ pub const InitCommand = struct {
         }
 
         var fs = try Fs.FileSystem.init(null);
-        const pathname = Fs.PathName.init(fs.topLevelDirWithoutTrailingSlash());
+        const project_dirname = std.fs.path.basename(fs.topLevelDirWithoutTrailingSlash());
         const destination_dir = std.Io.Dir.cwd();
 
         var fields = PackageJSONFields{};
@@ -443,7 +443,7 @@ pub const InitCommand = struct {
         }
 
         fields.name = brk: {
-            if (normalizePackageName(alloc, if (pathname.filename.len > 0) pathname.filename else "")) |name| {
+            if (normalizePackageName(alloc, project_dirname)) |name| {
                 if (name.len > 0) {
                     break :brk name;
                 }

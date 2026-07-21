@@ -104,7 +104,7 @@ pub const Linker = struct {
         comptime ignore_runtime: bool,
         comptime is_bun: bool,
     ) !void {
-        const source_dir = file_path.sourceDir();
+        const source_dir = std.fs.path.dirname(file_path.text) orelse ".";
         var externals = std.array_list.Managed(u32).init(linker.allocator);
         var had_resolve_errors = false;
 
@@ -293,16 +293,9 @@ pub const Linker = struct {
 
                 var pretty: string = undefined;
                 if (use_hashed_name) {
-                    var basepath = Fs.Path.init(source_path);
-                    const basename = try linker.getHashedFilename(basepath, null);
-                    const dir = basepath.name.dirWithTrailingSlash();
-                    var _pretty = try linker.allocator.alloc(u8, dir.len + basename.len + basepath.name.ext.len);
-                    bun.copy(u8, _pretty, dir);
-                    var remaining_pretty = _pretty[dir.len..];
-                    bun.copy(u8, remaining_pretty, basename);
-                    remaining_pretty = remaining_pretty[basename.len..];
-                    bun.copy(u8, remaining_pretty, basepath.name.ext);
-                    pretty = _pretty;
+                    const basepath = Fs.Path.init(source_path);
+                    const hashed_path = try linker.getHashedFilename(basepath, null);
+                    pretty = try std.fmt.allocPrint(linker.allocator, "{s}{s}", .{ hashed_path, std.fs.path.extension(source_path) });
                     relative_name = try linker.allocator.dupe(u8, relative_name);
                 } else {
                     if (relative_name.len > 1 and !(relative_name[0] == std.fs.path.sep or relative_name[0] == '.')) {
@@ -331,18 +324,17 @@ pub const Linker = struct {
                         },
                     ));
                 } else {
-                    var absolute_pathname = Fs.PathName.init(source_path);
+                    var output_extension = std.fs.path.extension(source_path);
 
                     if (!linker.options.preserve_extensions) {
-                        if (linker.options.out_extensions.get(absolute_pathname.ext)) |ext| {
-                            absolute_pathname.ext = ext;
+                        if (linker.options.out_extensions.get(output_extension)) |ext| {
+                            output_extension = ext;
                         }
                     }
 
                     var base = linker.fs.relativeTo(source_path);
-                    if (strings.lastIndexOfChar(base, '.')) |dot| {
-                        base = base[0..dot];
-                    }
+                    const base_extension = std.fs.path.extension(base);
+                    base = base[0 .. base.len - base_extension.len];
 
                     const dirname = std.fs.path.dirname(base) orelse "";
 
@@ -359,7 +351,7 @@ pub const Linker = struct {
                         "",
                         dirname,
                         basename,
-                        absolute_pathname.ext,
+                        output_extension,
                         source_path,
                     ));
                 }

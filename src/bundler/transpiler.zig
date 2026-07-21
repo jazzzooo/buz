@@ -394,7 +394,7 @@ pub const Transpiler = struct {
         var file_path = (resolve_result.pathConst() orelse return null).*;
 
         // Step 1. Parse & scan
-        const loader = transpiler.options.loader(file_path.name.ext);
+        const loader = transpiler.options.loader(std.fs.path.extension(file_path.text));
 
         if (client_entry_point_) |client_entry_point| {
             file_path = client_entry_point.source.path;
@@ -541,9 +541,10 @@ pub const Transpiler = struct {
 
             .html, .bunsh, .sqlite_embedded, .sqlite, .wasm, .file, .napi => {
                 const hashed_name = try transpiler.linker.getHashedFilename(file_path, null);
-                var pathname = try transpiler.allocator.alloc(u8, hashed_name.len + file_path.name.ext.len);
+                const extension = std.fs.path.extension(file_path.text);
+                var pathname = try transpiler.allocator.alloc(u8, hashed_name.len + extension.len);
                 bun.copy(u8, pathname, hashed_name);
-                bun.copy(u8, pathname[hashed_name.len..], file_path.name.ext);
+                bun.copy(u8, pathname[hashed_name.len..], extension);
 
                 output_file.value = .{
                     .copy = options.OutputFile.FileOperation{
@@ -1356,12 +1357,12 @@ pub const Transpiler = struct {
 
             if (comptime wrap_entry_point) {
                 const path = item.pathConst() orelse unreachable;
-                const loader = transpiler.options.loader(path.name.ext);
+                const loader = transpiler.options.loader(std.fs.path.extension(path.text));
 
                 if (item.import_kind == .entry_point and loader.supportsClientEntryPoint()) {
                     var client_entry_point = try transpiler.allocator.create(EntryPoints.ClientEntryPoint);
                     client_entry_point.* = EntryPoints.ClientEntryPoint{};
-                    try client_entry_point.generate(Transpiler, transpiler, path.name, transpiler.options.framework.?.client.path);
+                    try client_entry_point.generate(Transpiler, transpiler, path.text, transpiler.options.framework.?.client.path);
 
                     const entry_point_output_file = transpiler.buildWithResolveResultEager(
                         item,

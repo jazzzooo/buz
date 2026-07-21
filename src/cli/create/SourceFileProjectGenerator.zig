@@ -519,7 +519,7 @@ fn findReactComponentExport(bundler: *BundleV2) ?[]const u8 {
                 continue;
             }
 
-            const filename = source.path.name.nonUniqueNameStringBase();
+            const filename = bun.fs.nonUniqueNameStringBase(source.path.text);
             if (filename.len == 0) {
                 @branchHint(.unlikely);
                 continue;

@@ -102,7 +102,7 @@ pub const TSConfigJSON = struct {
     fn strReplacingTemplates(allocator: std.mem.Allocator, input: string, source: *const logger.Source) bun.OOM!string {
         var remaining = input;
         var string_builder = bun.StringBuilder{};
-        const configDir = source.path.sourceDir();
+        const configDir = std.fs.path.dirname(source.path.text) orelse ".";
 
         // There's only one template variable we support, so we can keep this simple for now.
         while (strings.indexOf(remaining, "${configDir}")) |index| {

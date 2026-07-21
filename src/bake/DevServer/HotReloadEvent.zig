@@ -85,9 +85,7 @@ pub fn processFileList(
     defer dev.graph_safety_lock.unlock();
 
     // First handle directories, because this may mutate `event.files`
-    if (dev.directory_watchers.watches.count() > 0) for (event.dirs.keys()) |changed_dir_with_slash| {
-        const changed_dir = bun.strings.withoutTrailingSlashWindowsPath(changed_dir_with_slash);
-
+    if (dev.directory_watchers.watches.count() > 0) for (event.dirs.keys()) |changed_dir| {
         // Bust resolution cache, but since Bun does not watch all
         // directories in a codebase, this only targets the following resolutions
         _ = dev.server_transpiler.resolver.bustDirCache(changed_dir);

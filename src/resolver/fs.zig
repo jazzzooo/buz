@@ -1517,221 +1517,30 @@ pub const FileSystem = struct {
 
 pub const PathContentsPair = struct { path: Path, contents: string };
 
-pub const NodeJSPathName = struct {
-    base: string,
-    dir: string,
-    /// includes the leading .
-    ext: string,
-    filename: string,
+pub fn nonUniqueNameStringBase(path: string) string {
+    const filename = std.fs.path.basename(path);
+    const filename_stem = std.fs.path.stem(filename);
 
-    pub fn init(_path: string, comptime isWindows: bool) NodeJSPathName {
-        const platform: path_handler.Platform = if (isWindows) .windows else .posix;
-
-        var path = _path;
-        var base = path;
-        // ext must be empty if not detected
-        var ext: string = "";
-        var dir = path;
-        var is_absolute = true;
-        var _i = platform.lastIndexOfSeparator(u8, path);
-        var first = true;
-        while (_i) |i| {
-            // Stop if we found a non-trailing slash
-            if (i + 1 != path.len and path.len >= i + 1) {
-                base = path[i + 1 ..];
-                dir = path[0..i];
-                is_absolute = false;
-                break;
-            }
-
-            // If the path starts with a slash and it's the only slash, it's absolute
-            if (i == 0 and first) {
-                base = path[1..];
-                dir = &([_]u8{});
-                break;
-            }
-
-            first = false;
-            // Ignore trailing slashes
-
-            path = path[0..i];
-
-            _i = platform.lastIndexOfSeparator(u8, path);
+    if (strings.eqlComptime(filename_stem, "index")) {
+        if (std.fs.path.dirname(path)) |dir| {
+            const parent_basename = std.fs.path.basename(dir);
+            const parent_stem = std.fs.path.stem(parent_basename);
+            if (parent_stem.len > 0) return parent_stem;
         }
-
-        // clean trailing slashs
-        if (base.len > 1 and platform.isSeparator(base[base.len - 1])) {
-            base = base[0 .. base.len - 1];
-        }
-
-        // filename is base without extension
-        var filename = base;
-
-        // if only one character ext = "" even if filename it's "."
-        if (filename.len > 1) {
-            // Strip off the extension
-            if (strings.lastIndexOfChar(filename, '.')) |dot| {
-                if (dot > 0) {
-                    filename = filename[0..dot];
-                    ext = base[dot..];
-                }
-            }
-        }
-
-        if (is_absolute) {
-            dir = &([_]u8{});
-        }
-
-        return NodeJSPathName{
-            .dir = dir,
-            .base = base,
-            .ext = ext,
-            .filename = filename,
-        };
-    }
-};
-
-pub const PathName = struct {
-    base: string,
-    dir: string,
-    /// includes the leading .
-    /// extensionless files report ""
-    ext: string,
-    filename: string,
-
-    pub fn findExtname(_path: string) string {
-        var start: usize = 0;
-        if (bun.path.Platform.auto.lastIndexOfSeparator(u8, _path)) |i| {
-            start = i + 1;
-        }
-        const base = _path[start..];
-        if (bun.strings.lastIndexOfChar(base, '.')) |dot| {
-            if (dot > 0) return base[dot..];
-        }
-        return "";
     }
 
-    pub fn extWithoutLeadingDot(self: *const PathName) string {
-        return if (self.ext.len > 0 and self.ext[0] == '.') self.ext[1..] else self.ext;
-    }
+    return filename_stem;
+}
 
-    pub fn nonUniqueNameStringBase(self: *const PathName) string {
-        // /bar/foo/index.js -> foo
-        if (self.dir.len > 0 and strings.eqlComptime(self.base, "index")) {
-            // "/index" -> "index"
-            return Fs.PathName.init(self.dir).base;
-        }
+pub fn fmtIdentifier(path: string) bun.fmt.FormatValidIdentifier {
+    return bun.fmt.fmtIdentifier(nonUniqueNameStringBase(path));
+}
 
-        if (comptime Environment.allow_assert) {
-            bun.assert(!strings.includes(self.base, "/"));
-        }
-
-        // /bar/foo.js -> foo
-        return self.base;
-    }
-
-    pub fn dirOrDot(this: *const PathName) string {
-        if (this.dir.len == 0) {
-            return ".";
-        }
-
-        return this.dir;
-    }
-
-    pub fn fmtIdentifier(self: *const PathName) bun.fmt.FormatValidIdentifier {
-        return bun.fmt.fmtIdentifier(self.nonUniqueNameStringBase());
-    }
-
-    // For readability, the names of certain automatically-generated symbols are
-    // derived from the file name. For example, instead of the CommonJS wrapper for
-    // a file being called something like "require273" it can be called something
-    // like "require_react" instead. This function generates the part of these
-    // identifiers that's specific to the file path. It can take both an absolute
-    // path (OS-specific) and a path in the source code (OS-independent).
-    //
-    // Note that these generated names do not at all relate to the correctness of
-    // the code as far as avoiding symbol name collisions. These names still go
-    // through the renaming logic that all other symbols go through to avoid name
-    // collisions.
-    pub fn nonUniqueNameString(self: *const PathName, allocator: std.mem.Allocator) !string {
-        return MutableString.ensureValidIdentifier(self.nonUniqueNameStringBase(), allocator);
-    }
-
-    pub inline fn dirWithTrailingSlash(this: *const PathName) string {
-        // The three strings basically always point to the same underlying ptr
-        // so if dir does not have a trailing slash, but is spaced one apart from the basename
-        // we can assume there is a trailing slash there
-        // so we extend the original slice's length by one
-        return if (this.dir.len == 0) "./" else this.dir.ptr[0 .. this.dir.len + @as(
-            usize,
-            @intCast(@intFromBool(
-                !std.fs.path.PathType.windows.isSep(u8, this.dir[this.dir.len - 1]) and (@intFromPtr(this.dir.ptr) + this.dir.len + 1) == @intFromPtr(this.base.ptr),
-            )),
-        )];
-    }
-
-    pub fn init(_path: string) PathName {
-        if (comptime Environment.isWindows and Environment.isDebug) {
-            // This path is likely incorrect. I think it may be *possible*
-            // but it is almost entirely certainly a bug.
-            bun.assert(!strings.startsWith(_path, "/:/"));
-            bun.assert(!strings.startsWith(_path, "\\:\\"));
-        }
-
-        var path = _path;
-        var base = path;
-        var ext: []const u8 = undefined;
-        var dir = path;
-        var is_absolute = true;
-        const has_disk_designator = path.len > 2 and path[1] == ':' and switch (path[0]) {
-            'a'...'z', 'A'...'Z' => true,
-            else => false,
-        } and std.fs.path.PathType.windows.isSep(u8, path[2]);
-        if (has_disk_designator) {
-            path = path[2..];
-        }
-
-        while (bun.path.Platform.auto.lastIndexOfSeparator(u8, path)) |i| {
-            // Stop if we found a non-trailing slash
-            if (i + 1 != path.len and path.len > i + 1) {
-                base = path[i + 1 ..];
-                dir = path[0..i];
-                is_absolute = false;
-                break;
-            }
-
-            // Ignore trailing slashes
-            path = path[0..i];
-        }
-
-        // Strip off the extension
-        if (strings.lastIndexOfChar(base, '.')) |dot| {
-            ext = base[dot..];
-            base = base[0..dot];
-        } else {
-            ext = "";
-        }
-
-        if (is_absolute) {
-            dir = &([_]u8{});
-        }
-
-        if (base.len > 1 and std.fs.path.PathType.windows.isSep(u8, base[base.len - 1])) {
-            base = base[0 .. base.len - 1];
-        }
-
-        if (!is_absolute and has_disk_designator) {
-            dir = _path[0 .. dir.len + 2];
-        }
-
-        return .{
-            .dir = dir,
-            .base = base,
-            .ext = ext,
-            .filename = if (dir.len > 0) _path[dir.len + 1 ..] else _path,
-        };
-    }
-};
+// Automatically-generated symbols use readable path-derived names, while the
+// renamer remains responsible for making those names unique.
+pub fn nonUniqueNameString(path: string, allocator: std.mem.Allocator) !string {
+    return MutableString.ensureValidIdentifier(nonUniqueNameStringBase(path), allocator);
+}
 
 threadlocal var normalize_buf: [1024]u8 = undefined;
 threadlocal var join_buf: [1024]u8 = undefined;
@@ -1745,8 +1554,6 @@ pub const Path = struct {
     /// usually an absolute path with native slashes or an empty string.
     text: string,
     namespace: string,
-    // TODO(@paperclover): investigate removing or simplifying this property (it's 64 bytes)
-    name: PathName,
     is_disabled: bool = false,
     is_symlink: bool = false,
 
@@ -1798,21 +1605,21 @@ pub const Path = struct {
             return bun.options.Loader.dataurl;
         }
 
-        const ext = this.name.ext;
+        const filename = std.fs.path.basename(this.text);
+        const ext = std.fs.path.extension(filename);
 
         const result = loaders.get(ext) orelse bun.options.Loader.fromString(ext);
         if (result == null or result == .json) {
-            const str = this.name.filename;
-            if (strings.eqlComptime(str, "package.json") or strings.eqlComptime(str, "bun.lock")) {
+            if (strings.eqlComptime(filename, "package.json") or strings.eqlComptime(filename, "bun.lock")) {
                 return .jsonc;
             }
 
-            if (strings.hasSuffixComptime(str, ".jsonc")) {
+            if (strings.hasSuffixComptime(filename, ".jsonc")) {
                 return .jsonc;
             }
 
-            if (strings.hasPrefixComptime(str, "tsconfig.") or strings.hasPrefixComptime(str, "jsconfig.")) {
-                if (strings.hasSuffixComptime(str, ".json")) {
+            if (strings.hasPrefixComptime(filename, "tsconfig.") or strings.hasPrefixComptime(filename, "jsconfig.")) {
+                if (strings.hasSuffixComptime(filename, ".json")) {
                     return .jsonc;
                 }
             }
@@ -1837,14 +1644,6 @@ pub const Path = struct {
         name: string,
         is_parent_package: bool = false,
     };
-
-    pub inline fn sourceDir(this: *const Path) string {
-        return this.name.dirWithTrailingSlash();
-    }
-
-    pub inline fn prettyDir(this: *const Path) string {
-        return this.name.dirWithTrailingSlash();
-    }
 
     /// The bundler will hash path.pretty, so it needs to be consistent across platforms.
     /// This assertion might be a bit too forceful though.
@@ -1951,7 +1750,6 @@ pub const Path = struct {
     pub fn setRealpath(this: *Path, to: string) void {
         const old_path = this.text;
         this.text = to;
-        this.name = PathName.init(to);
         this.pretty = old_path;
         this.is_symlink = true;
     }
@@ -1969,7 +1767,6 @@ pub const Path = struct {
             .pretty = text,
             .text = text,
             .namespace = "file",
-            .name = PathName.init(text),
         };
     }
 
@@ -1978,7 +1775,6 @@ pub const Path = struct {
             .pretty = pretty,
             .text = text,
             .namespace = "file",
-            .name = PathName.init(text),
         };
     }
 
@@ -1987,7 +1783,6 @@ pub const Path = struct {
             .pretty = text,
             .text = text,
             .namespace = namespace,
-            .name = PathName.init(text),
         };
     }
 
@@ -1997,26 +1792,16 @@ pub const Path = struct {
             .is_symlink = true,
             .text = text,
             .namespace = namespace,
-            .name = PathName.init(text),
-        };
-    }
-
-    pub inline fn initForKitBuiltIn(comptime namespace: string, comptime package: string) Path {
-        return comptime Path{
-            .pretty = namespace ++ ":" ++ package,
-            .is_symlink = true,
-            .text = "_bun/" ++ package,
-            .namespace = namespace,
-            .name = PathName.init(package),
         };
     }
 
     pub fn isNodeModule(this: *const Path) bool {
-        return strings.lastIndexOf(this.name.dir, std.fs.path.sep_str ++ "node_modules" ++ std.fs.path.sep_str) != null;
+        return strings.pathContainsNodeModulesFolder(this.text);
     }
 
     pub fn isJSXFile(this: *const Path) bool {
-        return strings.hasSuffixComptime(this.name.filename, ".jsx") or strings.hasSuffixComptime(this.name.filename, ".tsx");
+        const filename = std.fs.path.basename(this.text);
+        return strings.hasSuffixComptime(filename, ".jsx") or strings.hasSuffixComptime(filename, ".tsx");
     }
 
     pub fn keyForIncrementalGraph(path: *const Path) []const u8 {

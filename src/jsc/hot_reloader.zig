@@ -167,7 +167,6 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
         pub var clear_screen = false;
 
         const MainFile = struct {
-            /// Includes a trailing "/"
             dir: []const u8 = "",
             dir_hash: Watcher.HashType = 0,
 
@@ -193,10 +192,9 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
                     .is_waiting_for_dir_change = false,
                 };
 
-                if (std.fs.path.dirname(file)) |dir| {
-                    bun.assert(bun.isSliceInBuffer(dir, file));
-                    bun.assert(file.len > dir.len + 1);
-                    main.dir = file[0 .. dir.len + 1];
+                if (file.len > 0) {
+                    const dir = std.fs.path.dirname(file) orelse ".";
+                    main.dir = dir;
                     main.dir_hash = Watcher.getHash(main.dir);
                 }
 
@@ -408,9 +406,6 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
                 counts[event.index] = update_count;
                 const kind = kinds[event.index];
 
-                // so it's consistent with the rest
-                // if we use .extname we might run into an issue with whether or not the "." is included.
-                // const path = Fs.PathName.init(file_path);
                 const current_hash = hashes[event.index];
 
                 switch (kind) {
@@ -455,7 +450,7 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
                             // on windows we receive file events for all items affected by a directory change
                             // so we only need to clear the directory cache. all other effects will be handled
                             // by the file events
-                            _ = this.ctx.bustDirCache(strings.withoutTrailingSlashWindowsPath(file_path));
+                            _ = this.ctx.bustDirCache(file_path);
                             continue;
                         }
                         var affected_buf: [128][]const u8 = undefined;
@@ -494,7 +489,7 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
                                             const was_deleted = !bun.sys.exists(affected_path);
                                             if (!was_deleted) continue;
 
-                                            affected_buf[affected_i] = affected_path[file_path.len..];
+                                            affected_buf[affected_i] = std.fs.path.basename(affected_path);
                                             affected_i += 1;
                                             if (affected_i >= affected_buf.len) break;
                                         }
@@ -516,7 +511,7 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
                             }
                         }
 
-                        _ = this.ctx.bustDirCache(strings.withoutTrailingSlashWindowsPath(file_path));
+                        _ = this.ctx.bustDirCache(file_path);
 
                         if (entries_option) |dir_ent| {
                             var last_file_hash: Watcher.HashType = std.math.maxInt(Watcher.HashType);
@@ -528,7 +523,7 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
                                     bun.asByteSlice(changed_name_.?);
                                 if (changed_name.len == 0 or changed_name[0] == '~' or changed_name[0] == '.') continue;
 
-                                const loader = (this.ctx.getLoaders().get(Fs.PathName.findExtname(changed_name)) orelse .file);
+                                const loader = (this.ctx.getLoaders().get(std.fs.path.extension(changed_name)) orelse .file);
                                 var prev_entry_id: usize = std.math.maxInt(usize);
                                 if (loader != .file) {
                                     var path_string: bun.PathString = undefined;
@@ -564,12 +559,7 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
 
                                             break :brk path_string.slice();
                                         } else {
-                                            const file_path_without_trailing_slash = std.mem.trimEnd(u8, file_path, std.fs.path.sep_str);
-                                            @memcpy(_on_file_update_path_buf[0..file_path_without_trailing_slash.len], file_path_without_trailing_slash);
-                                            _on_file_update_path_buf[file_path_without_trailing_slash.len] = std.fs.path.sep;
-
-                                            @memcpy(_on_file_update_path_buf[file_path_without_trailing_slash.len..][0..changed_name.len], changed_name);
-                                            const path_slice = _on_file_update_path_buf[0 .. file_path_without_trailing_slash.len + changed_name.len + 1];
+                                            const path_slice = bun.path.joinAbsStringBuf(file_path, &_on_file_update_path_buf, &.{changed_name}, .auto);
                                             file_hash = Watcher.getHash(path_slice);
                                             break :brk path_slice;
                                         }

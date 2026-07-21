@@ -431,8 +431,9 @@ pub noinline fn computeChunks(
             }
         }
 
-        const pathname = Fs.PathName.init(output_paths[chunk.entry_point.entry_point_id].slice());
-        chunk.template.placeholder.name = pathname.base;
+        const output_path = output_paths[chunk.entry_point.entry_point_id].slice();
+        const output_filename = std.fs.path.basename(output_path);
+        chunk.template.placeholder.name = std.fs.path.stem(output_filename);
         chunk.template.placeholder.ext = chunk.content.ext();
 
         if (chunk.template.needs(.target)) {
@@ -449,7 +450,7 @@ pub noinline fn computeChunks(
 
         if (chunk.template.needs(.dir)) {
             // this if check is a specific fix for `bun build hi.ts --external '*'`, without leading `./`
-            const dir_path = if (pathname.dir.len > 0) pathname.dir else ".";
+            const dir_path = std.fs.path.dirname(output_path) orelse ".";
             var real_path_buf: bun.PathBuffer = undefined;
             const dir = dir: {
                 var dir = bun.sys.openatA(.cwd(), dir_path, bun.O.PATH | bun.O.DIRECTORY, 0).unwrap() catch {

@@ -236,8 +236,9 @@ pub const Parser = struct {
 
         const exports_kind: js_ast.ExportsKind = brk: {
             if (expr.data == .e_undefined) {
-                if (strings.eqlComptime(this.source.path.name.ext, ".cjs")) break :brk .cjs;
-                if (strings.eqlComptime(this.source.path.name.ext, ".mjs")) break :brk .esm;
+                const extension = std.fs.path.extension(this.source.path.text);
+                if (strings.eqlComptime(extension, ".cjs")) break :brk .cjs;
+                if (strings.eqlComptime(extension, ".mjs")) break :brk .esm;
             }
             break :brk .none;
         };
@@ -663,7 +664,7 @@ pub const Parser = struct {
                         .binding = p.b(B.Identifier{ .ref = p.dirname_ref }, logger.Loc.Empty),
                         .value = p.newExpr(
                             E.String{
-                                .data = p.source.path.name.dir,
+                                .data = std.fs.path.dirname(p.source.path.text) orelse ".",
                             },
                             logger.Loc.Empty,
                         ),

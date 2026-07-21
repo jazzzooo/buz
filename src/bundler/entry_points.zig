@@ -69,34 +69,22 @@ pub const ClientEntryPoint = struct {
     path_buffer: bun.PathBuffer = undefined,
     source: logger.Source = undefined,
 
-    pub fn isEntryPointPath(extname: string) bool {
-        return strings.startsWith("entry.", extname);
-    }
+    pub fn generateEntryPointPath(outbuffer: []u8, original_path: string) string {
+        const filename = std.fs.path.basename(original_path);
+        const extension = std.fs.path.extension(filename);
+        const stem = filename[0 .. filename.len - extension.len];
+        const generated_filename = std.fmt.bufPrint(&entry_path_filename_buf, "{s}.entry{s}", .{ stem, extension }) catch unreachable;
 
-    pub fn generateEntryPointPath(outbuffer: []u8, original_path: Fs.PathName) string {
-        var joined_base_and_dir_parts = [_]string{ original_path.dir, original_path.base };
-        var generated_path = Fs.FileSystem.instance.absBuf(&joined_base_and_dir_parts, outbuffer);
-
-        bun.copy(u8, outbuffer[generated_path.len..], ".entry");
-        generated_path = outbuffer[0 .. generated_path.len + ".entry".len];
-        bun.copy(u8, outbuffer[generated_path.len..], original_path.ext);
-        return outbuffer[0 .. generated_path.len + original_path.ext.len];
-    }
-
-    pub fn decodeEntryPointPath(outbuffer: []u8, original_path: Fs.PathName) string {
-        var joined_base_and_dir_parts = [_]string{ original_path.dir, original_path.base };
-        const generated_path = Fs.FileSystem.instance.absBuf(&joined_base_and_dir_parts, outbuffer);
-        var original_ext = original_path.ext;
-        if (strings.indexOf(original_path.ext, "entry")) |entry_i| {
-            original_ext = original_path.ext[entry_i + "entry".len ..];
+        if (std.fs.path.dirname(original_path)) |dir| {
+            return bun.path.joinStringBuf(outbuffer, &[_]string{ dir, generated_filename }, .auto);
         }
 
-        bun.copy(u8, outbuffer[generated_path.len..], original_ext);
-
-        return outbuffer[0 .. generated_path.len + original_ext.len];
+        return std.fmt.bufPrint(outbuffer, "{s}", .{generated_filename}) catch unreachable;
     }
 
-    pub fn generate(entry: *ClientEntryPoint, comptime TranspilerType: type, transpiler: *TranspilerType, original_path: Fs.PathName, client: string) !void {
+    threadlocal var entry_path_filename_buf: bun.PathBuffer = undefined;
+
+    pub fn generate(entry: *ClientEntryPoint, comptime TranspilerType: type, transpiler: *TranspilerType, original_path: string, client: string) !void {
 
         // This is *extremely* naive.
         // The basic idea here is this:
@@ -108,7 +96,6 @@ pub const ClientEntryPoint = struct {
         // We go through the steps of printing the code -- only to then parse/transpile it because
         // we want it to go through the linker and the rest of the transpilation process
 
-        const dir_to_use: string = original_path.dirWithTrailingSlash();
         const disable_css_imports = transpiler.options.framework.?.client_css_in_js != .auto_onimportcss;
 
         var code: string = undefined;
@@ -118,13 +105,12 @@ pub const ClientEntryPoint = struct {
                 &entry.code_buffer,
                 \\globalThis.Bun_disableCSSImports = true;
                 \\import boot from '{s}';
-                \\import * as EntryPoint from '{s}{s}';
+                \\import * as EntryPoint from '{s}';
                 \\boot(EntryPoint);
             ,
                 .{
                     client,
-                    dir_to_use,
-                    original_path.filename,
+                    original_path,
                 },
             );
         } else {
@@ -132,13 +118,12 @@ pub const ClientEntryPoint = struct {
                 &entry.code_buffer,
                 \\import boot from '{s}';
                 \\if ('setLoaded' in boot) boot.setLoaded(loaded);
-                \\import * as EntryPoint from '{s}{s}';
+                \\import * as EntryPoint from '{s}';
                 \\boot(EntryPoint);
             ,
                 .{
                     client,
-                    dir_to_use,
-                    original_path.filename,
+                    original_path,
                 },
             );
         }
@@ -283,17 +268,18 @@ pub const MacroEntryPoint = struct {
     pub fn generate(
         entry: *MacroEntryPoint,
         _: *Transpiler,
-        import_path: Fs.PathName,
+        import_path: string,
         function_name: string,
         macro_id: i32,
         macro_label_: string,
     ) !void {
-        const dir_to_use: string = if (import_path.dir.len == 0) "" else import_path.dirWithTrailingSlash();
         bun.copy(u8, &entry.code_buffer, macro_label_);
         const macro_label = entry.code_buffer[0..macro_label_.len];
+        const import_basename = std.fs.path.basename(import_path);
+        const import_stem = std.fs.path.stem(import_basename);
 
         const code = brk: {
-            if (strings.eqlComptime(import_path.base, "bun")) {
+            if (strings.eqlComptime(import_stem, "bun")) {
                 break :brk try std.fmt.bufPrint(
                     entry.code_buffer[macro_label.len..],
                     \\//Auto-generated file
@@ -324,30 +310,24 @@ pub const MacroEntryPoint = struct {
                 \\//Auto-generated file
                 \\var Macros;
                 \\try {{
-                \\  Macros = await import('{f}{f}');
+                \\  Macros = await import('{f}');
                 \\}} catch (err) {{
                 \\   console.error("Error importing macro");
                 \\   throw err;
                 \\}}
                 \\if (!('{s}' in Macros)) {{
-                \\  throw new Error("Macro '{s}' not found in '{f}{f}'");
+                \\  throw new Error("Macro '{s}' not found in '{f}'");
                 \\}}
                 \\
                 \\Bun.registerMacro({d}, Macros['{s}']);
             ,
                 .{
-                    bun.fmt.fmtPath(u8, dir_to_use, .{
-                        .escape_backslashes = true,
-                    }),
-                    bun.fmt.fmtPath(u8, import_path.filename, .{
+                    bun.fmt.fmtPath(u8, import_path, .{
                         .escape_backslashes = true,
                     }),
                     function_name,
                     function_name,
-                    bun.fmt.fmtPath(u8, dir_to_use, .{
-                        .escape_backslashes = true,
-                    }),
-                    bun.fmt.fmtPath(u8, import_path.filename, .{
+                    bun.fmt.fmtPath(u8, import_path, .{
                         .escape_backslashes = true,
                     }),
                     macro_id,
@@ -364,7 +344,6 @@ pub const MacroEntryPoint = struct {
 
 const string = []const u8;
 
-const Fs = @import("../resolver/fs.zig");
 const std = @import("std");
 
 const bun = @import("bun");

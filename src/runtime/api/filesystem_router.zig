@@ -633,7 +633,7 @@ pub const MatchedRoute = struct {
             jsc.API.Bun.getPublicPath(
                 Transpiler.ClientEntryPoint.generateEntryPointPath(
                     &entry_point_tempbuf,
-                    Fs.PathName.init(file_path),
+                    file_path,
                 ),
                 origin,
                 writer,

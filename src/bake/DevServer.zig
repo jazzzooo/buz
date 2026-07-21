@@ -4422,7 +4422,8 @@ pub fn putOrOverwriteAsset(
 ) !void {
     dev.graph_safety_lock.lock();
     defer dev.graph_safety_lock.unlock();
-    _ = try dev.assets.replacePath(path.text, contents, &.byExtension(path.name.extWithoutLeadingDot()), content_hash);
+    const extension = std.fs.path.extension(path.text);
+    _ = try dev.assets.replacePath(path.text, contents, &.byExtension(if (extension.len > 0) extension[1..] else extension), content_hash);
 }
 
 pub const Assets = @import("./DevServer/Assets.zig");

@@ -963,7 +963,7 @@ pub fn Package(comptime SemverIntType: type) type {
             initializeStore();
             const json = JSON.parsePackageJSONUTF8(source, log, allocator) catch |err| {
                 log.print(Output.errorWriter()) catch {};
-                Output.prettyErrorln("<r><red>{s}<r> parsing package.json in <b>\"{s}\"<r>", .{ @errorName(err), source.path.prettyDir() });
+                Output.prettyErrorln("<r><red>{s}<r> parsing package.json in <b>\"{s}\"<r>", .{ @errorName(err), std.fs.path.dirname(source.path.pretty) orelse "." });
                 Global.crash();
             };
 
@@ -998,6 +998,7 @@ pub fn Package(comptime SemverIntType: type) type {
             key_loc: logger.Loc,
             value_loc: logger.Loc,
         ) !?Dependency {
+            const source_dir = std.fs.path.dirname(source.path.text) orelse FileSystem.instance.top_level_dir;
             const external_version = brk: {
                 if (comptime Environment.isWindows) {
                     switch (tag orelse Dependency.Version.Tag.infer(version)) {
@@ -1078,7 +1079,7 @@ pub fn Package(comptime SemverIntType: type) type {
                         Path.joinAbsString(
                             FileSystem.instance.top_level_dir,
                             &[_]string{
-                                source.path.name.dir,
+                                source_dir,
                                 dependency_version.value.folder.slice(buf),
                             },
                             .auto,
@@ -1164,7 +1165,7 @@ pub fn Package(comptime SemverIntType: type) type {
                                     FileSystem.instance.top_level_dir,
                                     &buf2,
                                     &[_]string{
-                                        source.path.name.dir,
+                                        source_dir,
                                         workspace,
                                     },
                                     .auto,

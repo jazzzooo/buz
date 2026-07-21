@@ -724,7 +724,7 @@ pub fn init(
                             const child_path = if (std.fs.path.isAbsolute(path))
                                 child_cwd
                             else
-                                bun.path.relativeNormalized(json_source.path.name.dir, child_cwd, .auto, true);
+                                bun.path.relativeNormalized(std.fs.path.dirname(json_source.path.text) orelse parent, child_cwd, .auto, true);
 
                             const maybe_workspace_path = if (comptime Environment.isWindows) brk: {
                                 @memcpy(parent_path_buf[0..child_path.len], child_path);

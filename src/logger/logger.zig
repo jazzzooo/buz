@@ -1266,7 +1266,7 @@ pub const Source = struct {
     index: Index = Index.source(0),
 
     pub fn fmtIdentifier(this: *const Source) bun.fmt.FormatValidIdentifier {
-        return this.path.name.fmtIdentifier();
+        return fs.fmtIdentifier(this.path.text);
     }
 
     pub fn identifierName(this: *Source, allocator: std.mem.Allocator) !string {
@@ -1275,7 +1275,7 @@ pub const Source = struct {
         }
 
         bun.assert(this.path.text.len > 0);
-        const name = try this.path.name.nonUniqueNameString(allocator);
+        const name = try fs.nonUniqueNameString(this.path.text, allocator);
         this.identifier_name = name;
         return name;
     }

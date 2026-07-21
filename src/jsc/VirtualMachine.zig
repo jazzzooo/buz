@@ -1765,7 +1765,7 @@ fn _resolve(
     const normalized_specifier = normalizeSpecifierForResolution(specifier, &query_string);
     const source_to_use = if (!is_special_source)
         if (is_a_file_path)
-            Fs.PathName.init(source).dirWithTrailingSlash()
+            std.fs.path.dirname(source) orelse "."
         else
             source
     else
@@ -2604,7 +2604,7 @@ pub fn loadMacroEntryPoint(this: *VirtualMachine, entry_path: string, function_n
     if (!entry_point_entry.found_existing) {
         var macro_entry_pointer: *MacroEntryPoint = this.allocator.create(MacroEntryPoint) catch unreachable;
         entry_point_entry.value_ptr.* = macro_entry_pointer;
-        try macro_entry_pointer.generate(&this.transpiler, Fs.PathName.init(entry_path), function_name, hash, specifier);
+        try macro_entry_pointer.generate(&this.transpiler, entry_path, function_name, hash, specifier);
     }
     const entry_point = entry_point_entry.value_ptr.*;
 

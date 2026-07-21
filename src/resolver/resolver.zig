@@ -1037,7 +1037,10 @@ pub const Resolver = struct {
         var iter = result.path_pair.iter();
         var module_type = result.module_type;
         while (iter.next()) |path| {
-            var dir: *DirInfo = (r.readDirInfo(path.name.dir) catch continue) orelse continue;
+            const dirname = std.fs.path.dirname(path.text) orelse continue;
+            const basename = std.fs.path.basename(path.text);
+            const extension = std.fs.path.extension(basename);
+            var dir: *DirInfo = (r.readDirInfo(dirname) catch continue) orelse continue;
             var needs_side_effects = true;
             if (result.package_json) |existing| {
                 // if we don't have it here, they might put it in a sideEfffects
@@ -1079,12 +1082,12 @@ pub const Resolver = struct {
             // If you use mjs or mts, then you're using esm
             // If you use cjs or cts, then you're using cjs
             // This should win out over the module type from package.json
-            if (!kind.isFromCSS() and module_type == .unknown and path.name.ext.len == 4) {
-                module_type = ModuleTypeMap.getWithLength(path.name.ext, 4) orelse .unknown;
+            if (!kind.isFromCSS() and module_type == .unknown and extension.len == 4) {
+                module_type = ModuleTypeMap.getWithLength(extension, 4) orelse .unknown;
             }
 
             if (dir.getEntries(r.generation)) |entries| {
-                if (entries.get(path.name.filename)) |query| {
+                if (entries.get(basename)) |query| {
                     const symlink_path = query.entry.symlink(&r.fs.fs, r.store_fd);
                     if (symlink_path.len > 0) {
                         path.setRealpath(symlink_path);
@@ -1304,7 +1307,6 @@ pub const Resolver = struct {
                     // Valid node:* modules becomes {} in the output
                     result.path_pair.primary.namespace = "node";
                     result.path_pair.primary.text = import_path_without_node_prefix;
-                    result.path_pair.primary.name = Fs.PathName.init(import_path_without_node_prefix);
                     result.module_type = .cjs;
                     result.path_pair.primary.is_disabled = true;
                     result.flags.is_from_node_modules = true;
@@ -1319,7 +1321,6 @@ pub const Resolver = struct {
                 {
                     result.path_pair.primary.namespace = "node";
                     result.path_pair.primary.text = import_path_without_node_prefix;
-                    result.path_pair.primary.name = Fs.PathName.init(import_path_without_node_prefix);
                     result.module_type = .cjs;
                     result.path_pair.primary.is_disabled = true;
                     result.flags.is_from_node_modules = true;
@@ -1578,7 +1579,8 @@ pub const Resolver = struct {
                 }
 
                 if (res.package_json != null and r.care_about_browser_field) {
-                    var base_dir_info = res.dir_info orelse (r.readDirInfo(res.path_pair.primary.name.dir) catch null) orelse return .{ .success = result };
+                    const primary_dir = std.fs.path.dirname(res.path_pair.primary.text) orelse return .{ .success = result };
+                    var base_dir_info = res.dir_info orelse (r.readDirInfo(primary_dir) catch null) orelse return .{ .success = result };
                     if (base_dir_info.getEnclosingBrowserScope()) |browser_scope| {
                         if (r.checkBrowserMap(
                             browser_scope,
@@ -1626,7 +1628,8 @@ pub const Resolver = struct {
         r: *ThisResolver,
         result: *const Result,
     ) ?*const PackageJSON {
-        var dir_info = (r.dirInfoCached(result.path_pair.primary.name.dir) catch null) orelse return null;
+        const primary_dir = std.fs.path.dirname(result.path_pair.primary.text) orelse return null;
+        var dir_info = (r.dirInfoCached(primary_dir) catch null) orelse return null;
         while (true) {
             if (dir_info.package_json) |pkg| {
                 // if it doesn't have a name, assume it's something just for adjusting the main fields (react-bootstrap does this)
@@ -1675,16 +1678,18 @@ pub const Resolver = struct {
 
         // /foo/node_modules/@babel/standalone/index.js
         //                                    ^
-        const slice = absolute[0..end];
+        const slice = absolute[0 .. end - 1];
 
         // Try to avoid the hash table lookup whenever possible
         // That can cause filesystem lookups in parent directories and it requires a lock
         if (result.package_json) |pkg| {
-            if (strings.eql(slice, pkg.source.path.name.dirWithTrailingSlash())) {
-                return RootPathPair{
-                    .package_json = pkg,
-                    .base_path = slice,
-                };
+            if (std.fs.path.dirname(pkg.source.path.text)) |package_dir| {
+                if (strings.eql(slice, package_dir)) {
+                    return RootPathPair{
+                        .package_json = pkg,
+                        .base_path = slice,
+                    };
+                }
             }
         }
 
@@ -2641,7 +2646,7 @@ pub const Resolver = struct {
         const key_path = Fs.Path.init(r.fs.dirname_store.append(string, file) catch unreachable);
 
         const source = &logger.Source.initPathString(key_path.text, entry.contents);
-        const file_dir = source.path.sourceDir();
+        const file_dir = std.fs.path.dirname(source.path.text) orelse ".";
 
         var result = (try TSConfigJSON.parse(bun.default_allocator, r.log, source, &r.caches.json)) orelse return null;
 
@@ -3263,7 +3268,8 @@ pub const Resolver = struct {
             );
         }
 
-        if (r.handleESMResolution(esm_resolution, package_json.source.path.name.dir, kind, package_json, "")) |result| {
+        const package_dir = std.fs.path.dirname(package_json.source.path.text) orelse return .{ .not_found = {} };
+        if (r.handleESMResolution(esm_resolution, package_dir, kind, package_json, "")) |result| {
             return .{ .success = result };
         }
 

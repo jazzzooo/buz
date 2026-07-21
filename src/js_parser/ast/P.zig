@@ -712,8 +712,7 @@ pub fn NewParser_(
                         p.import_records.items[import_record_index].flags.handles_import_errors = handles_import_errors;
 
                         // Note that this symbol may be completely removed later.
-                        var path_name = fs.PathName.init(path.text);
-                        const name = bun.handleOom(path_name.nonUniqueNameString(p.allocator));
+                        const name = bun.handleOom(fs.nonUniqueNameString(path.text, p.allocator));
                         const namespace_ref = bun.handleOom(p.newSymbol(.other, name));
 
                         p.imports_to_convert_from_require.append(p.allocator, .{
@@ -1418,7 +1417,7 @@ pub fn NewParser_(
             if (comptime is_internal)
                 import_record.path.namespace = "runtime";
             import_record.flags.is_internal = is_internal;
-            const import_path_identifier = try import_record.path.name.nonUniqueNameString(allocator);
+            const import_path_identifier = try fs.nonUniqueNameString(import_record.path.text, allocator);
             var namespace_identifier = try allocator.alloc(u8, import_path_identifier.len + prefix.len);
             const clause_items = try allocator.alloc(js_ast.ClauseItem, imports.len);
             var stmts = try allocator.alloc(Stmt, 1 + if (additional_stmt != null) @as(usize, 1) else @as(usize, 0));
@@ -2795,8 +2794,7 @@ pub fn NewParser_(
 
                 // TODO: not sure how to handle macro remappings for namespace imports
             } else {
-                var path_name = fs.PathName.init(path.text);
-                const name = try strings.append(p.allocator, "import_", try path_name.nonUniqueNameString(p.allocator));
+                const name = try strings.append(p.allocator, "import_", try fs.nonUniqueNameString(path.text, p.allocator));
                 stmt.namespace_ref = try p.newSymbol(.other, name);
                 var scope: *Scope = p.current_scope;
                 try scope.generated.append(p.allocator, stmt.namespace_ref);
@@ -2985,7 +2983,7 @@ pub fn NewParser_(
         }
 
         pub fn createDefaultName(p: *P, loc: logger.Loc) !js_ast.LocRef {
-            const identifier = try std.fmt.allocPrint(p.allocator, "{s}_default", .{try p.source.path.name.nonUniqueNameString(p.allocator)});
+            const identifier = try std.fmt.allocPrint(p.allocator, "{s}_default", .{try fs.nonUniqueNameString(p.source.path.text, p.allocator)});
 
             const name = js_ast.LocRef{ .loc = loc, .ref = try p.newSymbol(Symbol.Kind.other, identifier) };
 

@@ -1,6 +1,6 @@
 pub const Snapshots = struct {
     const file_header = "// Bun Snapshot v1, https://bun.sh/docs/test/snapshots\n";
-    const snapshots_dir_name = "__snapshots__" ++ [_]u8{std.fs.path.sep};
+    const snapshots_dir_name = "__snapshots__";
     pub const ValuesHashMap = std.HashMap(usize, string, bun.IdentityContext(usize), std.hash_map.default_max_load_percentage);
 
     allocator: std.mem.Allocator,
@@ -41,6 +41,18 @@ pub const Snapshots = struct {
         id: TestRunner.File.ID,
         file: std.Io.File,
     };
+
+    fn snapshotFilePath(test_path: string, buf: *bun.PathBuffer) error{NameTooLong}![:0]const u8 {
+        const dir = std.fs.path.dirname(test_path) orelse ".";
+        const filename = std.fs.path.basename(test_path);
+        const path_without_extension = bun.path.joinStringBufChecked(buf, &.{ dir, snapshots_dir_name, filename }, .auto) orelse return error.NameTooLong;
+        const start = @intFromPtr(path_without_extension.ptr) - @intFromPtr(buf.ptr);
+        if (start + path_without_extension.len + ".snap".len >= buf.len) return error.NameTooLong;
+        @memcpy(buf[start + path_without_extension.len ..][0..".snap".len], ".snap");
+        const len = path_without_extension.len + ".snap".len;
+        buf[start + len] = 0;
+        return buf[start..][0..len :0];
+    }
 
     /// Reset per-run snapshot counters to 0. Keys stay owned by the map until
     /// `writeSnapshotFile` tears them down on file switch.
@@ -131,21 +143,8 @@ pub const Snapshots = struct {
         var temp_log = logger.Log.init(this.allocator);
 
         const test_file = Jest.runner.?.files.get(file.id);
-        const test_filename = test_file.source.path.name.filename;
-        const dir_path = test_file.source.path.name.dirWithTrailingSlash();
-
         var snapshot_file_path_buf: bun.PathBuffer = undefined;
-        var remain: []u8 = snapshot_file_path_buf[0..bun.MAX_PATH_BYTES];
-        bun.copy(u8, remain, dir_path);
-        remain = remain[dir_path.len..];
-        bun.copy(u8, remain, snapshots_dir_name);
-        remain = remain[snapshots_dir_name.len..];
-        bun.copy(u8, remain, test_filename);
-        remain = remain[test_filename.len..];
-        bun.copy(u8, remain, ".snap");
-        remain = remain[".snap".len..];
-        remain[0] = 0;
-        const snapshot_file_path = snapshot_file_path_buf[0 .. snapshot_file_path_buf.len - remain.len :0];
+        const snapshot_file_path = try snapshotFilePath(test_file.source.path.text, &snapshot_file_path_buf);
 
         const source = &logger.Source.initPathString(snapshot_file_path, this.file_buf.items);
 
@@ -495,19 +494,12 @@ pub const Snapshots = struct {
             try this.writeSnapshotFile();
 
             const test_file = Jest.runner.?.files.get(file_id);
-            const test_filename = test_file.source.path.name.filename;
-            const dir_path = test_file.source.path.name.dirWithTrailingSlash();
+            const dir_path = std.fs.path.dirname(test_file.source.path.text) orelse ".";
 
             var snapshot_file_path_buf: bun.PathBuffer = undefined;
-            var remain: []u8 = snapshot_file_path_buf[0..bun.MAX_PATH_BYTES];
-            bun.copy(u8, remain, dir_path);
-            remain = remain[dir_path.len..];
-            bun.copy(u8, remain, snapshots_dir_name);
-            remain = remain[snapshots_dir_name.len..];
 
             if (this.snapshot_dir_path == null or !strings.eqlLong(dir_path, this.snapshot_dir_path.?, true)) {
-                remain[0] = 0;
-                const snapshot_dir_path = snapshot_file_path_buf[0 .. snapshot_file_path_buf.len - remain.len :0];
+                const snapshot_dir_path = bun.path.joinStringBufZ(&snapshot_file_path_buf, &[_]string{ dir_path, snapshots_dir_name }, .auto);
                 switch (bun.sys.mkdir(snapshot_dir_path, 0o777)) {
                     .result => this.snapshot_dir_path = dir_path,
                     .err => |err| {
@@ -519,12 +511,7 @@ pub const Snapshots = struct {
                 }
             }
 
-            bun.copy(u8, remain, test_filename);
-            remain = remain[test_filename.len..];
-            bun.copy(u8, remain, ".snap");
-            remain = remain[".snap".len..];
-            remain[0] = 0;
-            const snapshot_file_path = snapshot_file_path_buf[0 .. snapshot_file_path_buf.len - remain.len :0];
+            const snapshot_file_path = try snapshotFilePath(test_file.source.path.text, &snapshot_file_path_buf);
 
             var flags: i32 = bun.O.CREAT | bun.O.RDWR;
             if (this.update_snapshots) flags |= bun.O.TRUNC;

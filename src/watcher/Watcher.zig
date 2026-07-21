@@ -458,7 +458,7 @@ fn appendDirectoryAssumeCapacity(
     else
         file_path;
 
-    const parent_hash = getHash(bun.fs.PathName.init(file_path_).dirWithTrailingSlash());
+    const parent_hash = if (std.fs.path.dirname(file_path_)) |parent| getHash(parent) else 0;
 
     const watchlist_id = this.watchlist.len;
 
@@ -550,9 +550,7 @@ pub fn appendFileMaybeLock(
     if (comptime lock) this.mutex.lock();
     defer if (comptime lock) this.mutex.unlock();
     bun.assert(file_path.len > 1);
-    const pathname = bun.fs.PathName.init(file_path);
-
-    const parent_dir = pathname.dirWithTrailingSlash();
+    const parent_dir = std.fs.path.dirname(file_path) orelse ".";
     const parent_dir_hash: HashType = getHash(parent_dir);
 
     var parent_watch_item: ?WatchItemIndex = null;
@@ -610,7 +608,8 @@ pub fn appendFileMaybeLock(
 }
 
 inline fn isEligibleDirectory(this: *Watcher, dir: string) bool {
-    return strings.contains(dir, this.fs.top_level_dir) and !strings.contains(dir, "node_modules");
+    return bun.path.isParentOrEqual(this.fs.top_level_dir, dir) != .unrelated and
+        !strings.pathContainsNodeModulesFolder(dir);
 }
 
 pub fn appendFile(
@@ -630,19 +629,20 @@ pub fn addDirectory(
     this: *Watcher,
     fd: bun.FD,
     file_path: string,
-    hash: HashType,
     comptime clone_file_path: bool,
 ) bun.sys.Maybe(WatchItemIndex) {
     this.mutex.lock();
     defer this.mutex.unlock();
 
+    const directory = strings.withoutTrailingSlashWindowsPath(file_path);
+    const hash = getHash(directory);
     if (this.indexOf(hash)) |idx| {
         return .{ .result = @truncate(idx) };
     }
 
     bun.handleOom(this.watchlist.ensureUnusedCapacity(this.allocator, 1));
 
-    return this.appendDirectoryAssumeCapacity(fd, file_path, hash, clone_file_path);
+    return this.appendDirectoryAssumeCapacity(fd, directory, hash, clone_file_path);
 }
 
 /// Lazily watch a file by path (slow path).
@@ -787,8 +787,10 @@ pub fn onMaybeWatchDirectory(watch: *Watcher, file_path: string, dir_fd: bun.FD)
     // We don't want to watch:
     // - Directories outside the root directory
     // - Directories inside node_modules
-    if (std.mem.indexOf(u8, file_path, "node_modules") == null and std.mem.indexOf(u8, file_path, watch.fs.top_level_dir) != null) {
-        _ = watch.addDirectory(dir_fd, file_path, getHash(file_path), false);
+    if (bun.path.isParentOrEqual(watch.fs.top_level_dir, file_path) != .unrelated and
+        !strings.pathContainsNodeModulesFolder(file_path))
+    {
+        _ = watch.addDirectory(dir_fd, file_path, false);
     }
 }
 

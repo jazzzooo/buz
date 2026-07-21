@@ -307,7 +307,7 @@ pub fn ParseStmt(
                         // "export * from 'path'"
                         try p.lexer.expectContextualKeyword("from");
                         path = try p.parsePath();
-                        const name = try fs.PathName.init(path.text).nonUniqueNameString(p.allocator);
+                        const name = try fs.nonUniqueNameString(path.text, p.allocator);
                         namespace_ref = try p.storeNameInRef(name);
                     }
 
@@ -368,13 +368,12 @@ pub fn ParseStmt(
                         }
 
                         const import_record_index = p.addImportRecord(.stmt, parsedPath.loc, parsedPath.text);
-                        const path_name = fs.PathName.init(parsedPath.text);
                         const namespace_ref = p.storeNameInRef(
                             std.fmt.allocPrint(
                                 p.allocator,
                                 "import_{f}",
                                 .{
-                                    path_name.fmtIdentifier(),
+                                    fs.fmtIdentifier(parsedPath.text),
                                 },
                             ) catch |err| bun.handleOom(err),
                         ) catch |err| bun.handleOom(err);

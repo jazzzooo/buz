@@ -64,19 +64,17 @@ const ParentEqual = enum {
 };
 
 pub fn isParentOrEqual(parent_: []const u8, child: []const u8) ParentEqual {
-    var parent = parent_;
-    while (parent.len > 0 and std.fs.path.PathType.windows.isSep(u8, parent[parent.len - 1])) {
-        parent = parent[0 .. parent.len - 1];
-    }
-
-    const contains = if (comptime !bun.Environment.isLinux)
-        strings.containsCaseInsensitiveASCII
+    const parent = strings.withoutTrailingSlashWindowsPath(parent_);
+    const normalized_child = strings.withoutTrailingSlashWindowsPath(child);
+    const startsWith = if (comptime !bun.Environment.isLinux)
+        strings.startsWithCaseInsensitiveAscii
     else
-        strings.contains;
-    if (!contains(child, parent)) return .unrelated;
+        strings.startsWith;
+    if (!startsWith(normalized_child, parent)) return .unrelated;
 
-    if (child.len == parent.len) return .equal;
-    if (child.len > parent.len and std.fs.path.PathType.windows.isSep(u8, child[parent.len])) return .parent;
+    if (normalized_child.len == parent.len) return .equal;
+    if (parent.len > 0 and std.fs.path.PathType.windows.isSep(u8, parent[parent.len - 1])) return .parent;
+    if (std.fs.path.PathType.windows.isSep(u8, normalized_child[parent.len])) return .parent;
     return .unrelated;
 }
 

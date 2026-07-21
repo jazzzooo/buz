@@ -414,7 +414,7 @@ pub fn VisitExpr(
                                 // We must visit it to convert inline_identifiers and record usage
                                 const macro_result = (p.options.macro_context.call(
                                     record.path.text,
-                                    p.source.path.sourceDir(),
+                                    std.fs.path.dirname(p.source.path.text) orelse ".",
                                     p.log,
                                     p.source,
                                     record.range,
@@ -1442,7 +1442,7 @@ pub fn VisitExpr(
                         p.macro_call_count += 1;
                         const macro_result = p.options.macro_context.call(
                             record.path.text,
-                            p.source.path.sourceDir(),
+                            std.fs.path.dirname(p.source.path.text) orelse ".",
                             p.log,
                             p.source,
                             record.range,

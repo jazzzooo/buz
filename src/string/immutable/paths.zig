@@ -338,7 +338,11 @@ pub fn cloneNormalizingSeparators(
 }
 
 pub fn pathContainsNodeModulesFolder(path: []const u8) bool {
-    return strings.contains(path, comptime std.fs.path.sep_str ++ "node_modules" ++ std.fs.path.sep_str);
+    var components = std.fs.path.componentIterator(path);
+    while (components.next()) |component| {
+        if (strings.eqlComptime(component.name, "node_modules")) return true;
+    }
+    return false;
 }
 
 pub fn charIsAnySlash(char: u8) callconv(bun.callconv_inline) bool {
@@ -373,7 +377,7 @@ pub fn withoutTrailingSlashWindowsPath(input: string) []const u8 {
     if (Environment.isPosix or input.len < 3 or input[1] != ':')
         return withoutTrailingSlash(input);
 
-    const root_len = std.fs.path.parsePathWindows(u8, input).root.len + 1;
+    const root_len = std.fs.path.parsePathWindows(u8, input).root.len;
 
     var path = input;
     while (path.len > root_len and (switch (path[path.len - 1]) {

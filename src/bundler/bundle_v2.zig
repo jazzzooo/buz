@@ -550,7 +550,7 @@ pub const BundleV2 = struct {
         target: options.Target,
     ) void {
         const transpiler = this.transpilerForTarget(target);
-        const source_dir = Fs.PathName.init(import_record.source_file).dirWithTrailingSlash();
+        const source_dir = std.fs.path.dirname(import_record.source_file) orelse ".";
 
         // Check the FileMap first for in-memory files
         if (this.file_map) |file_map| {
@@ -1789,14 +1789,12 @@ pub const BundleV2 = struct {
                     const source = &sources[index];
 
                     const output_path = brk: {
-                        var pathname = source.path.name;
-
                         // TODO: outbase
-                        pathname = Fs.PathName.init(bun.path.relativePlatform(this.transpiler.options.root_dir, source.path.text, .loose, false));
-
-                        template.placeholder.name = pathname.base;
-                        template.placeholder.dir = pathname.dir;
-                        template.placeholder.ext = pathname.ext;
+                        const relative_path = bun.path.relativePlatform(this.transpiler.options.root_dir, source.path.text, .loose, false);
+                        const filename = std.fs.path.basename(relative_path);
+                        template.placeholder.name = std.fs.path.stem(filename);
+                        template.placeholder.dir = std.fs.path.dirname(relative_path) orelse "";
+                        template.placeholder.ext = std.fs.path.extension(filename);
                         if (template.placeholder.ext.len > 0 and template.placeholder.ext[0] == '.')
                             template.placeholder.ext = template.placeholder.ext[1..];
 
@@ -2905,7 +2903,7 @@ pub const BundleV2 = struct {
     pub fn resolveImportRecords(this: *BundleV2, ctx: ResolveImportRecordCtx) ResolveImportRecordResult {
         const source = ctx.source;
         const loader = ctx.loader;
-        const source_dir = source.path.sourceDir();
+        const source_dir = std.fs.path.dirname(source.path.text) orelse ".";
         var estimated_resolve_queue_count: usize = 0;
         for (ctx.import_records.slice()) |*import_record| {
             if (import_record.flags.is_internal) {

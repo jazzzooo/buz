@@ -229,7 +229,7 @@ pub const Pattern = struct {
                     writefn(closure, s, false);
                 },
                 .name => {
-                    const stem = std.fs.path.stem(path);
+                    const stem = std.fs.path.stem(std.fs.path.basename(path));
                     if (std.mem.indexOf(u8, stem, ".")) |_| {
                         writefn(closure, stem, true);
                     } else {
