@@ -1274,11 +1274,11 @@ pub fn installIsolatedPackages(
                 // 2. for each entry in 'node_modules' rename into 'node_modules/.old_modules-{hex}'
                 // 3. for each workspace 'node_modules' rename into 'node_modules/.old_modules-{hex}/old_{basename}_modules'
 
-                var rename_path: bun.AutoRelPath = .init();
+                var rename_path: bun.RelPath(.{}) = .init();
                 defer rename_path.deinit();
 
                 {
-                    var mkdir_path: bun.RelPath(.{ .sep = .auto, .unit = .u16 }) = .from("node_modules");
+                    var mkdir_path: bun.RelPath(.{ .unit = .u16 }) = .from("node_modules");
                     defer mkdir_path.deinit();
 
                     mkdir_path.appendFmt(".old_modules-{s}", .{&std.fmt.bytesToHex(std.mem.asBytes(&bun.fastRandom()), .lower)});
@@ -1294,7 +1294,7 @@ pub fn installIsolatedPackages(
                     break :is_new_bun_modules true;
                 };
 
-                var entry_path: bun.AutoRelPath = .from("node_modules");
+                var entry_path: bun.RelPath(.{}) = .from("node_modules");
                 defer entry_path.deinit();
 
                 // 2
@@ -1319,7 +1319,7 @@ pub fn installIsolatedPackages(
 
                 // 3
                 for (lockfile.workspace_paths.values()) |workspace_path| {
-                    var workspace_node_modules: bun.AutoRelPath = .from(workspace_path.slice(lockfile.buffers.string_bytes.items));
+                    var workspace_node_modules: bun.RelPath(.{}) = .from(workspace_path.slice(lockfile.buffers.string_bytes.items));
                     defer workspace_node_modules.deinit();
 
                     const basename = workspace_node_modules.basename();
@@ -1360,7 +1360,7 @@ pub fn installIsolatedPackages(
                     Global.exit(1);
                 };
 
-                var rename_path: bun.AutoRelPath = .from("node_modules");
+                var rename_path: bun.RelPath(.{}) = .from("node_modules");
                 defer rename_path.deinit();
 
                 rename_path.appendFmt(".old_modules-{s}", .{&std.fmt.bytesToHex(std.mem.asBytes(&bun.fastRandom()), .lower)});
@@ -1372,7 +1372,7 @@ pub fn installIsolatedPackages(
 
                 rename_path.append(".cache");
 
-                var cache_path: bun.AutoRelPath = .from("node_modules");
+                var cache_path: bun.RelPath(.{}) = .from("node_modules");
                 defer cache_path.deinit();
 
                 cache_path.append(".cache");
@@ -1385,7 +1385,7 @@ pub fn installIsolatedPackages(
 
                 // 5
                 for (lockfile.workspace_paths.values()) |workspace_path| {
-                    var workspace_node_modules: bun.AutoRelPath = .from(workspace_path.slice(lockfile.buffers.string_bytes.items));
+                    var workspace_node_modules: bun.RelPath(.{}) = .from(workspace_path.slice(lockfile.buffers.string_bytes.items));
                     defer workspace_node_modules.deinit();
 
                     const basename = workspace_node_modules.basename();
@@ -1573,7 +1573,7 @@ pub fn installIsolatedPackages(
                     // needs-install so `link_package` detaches and rebuilds.
                     const has_stale_gvs_link = !uses_global_store and stale: {
                         if (installer.global_store_path == null) break :stale false;
-                        var local: bun.Path(.{ .sep = .auto }) = .initTopLevelDir();
+                        var local: bun.Path(.{}) = .initTopLevelDir();
                         defer local.deinit();
                         installer.appendLocalStoreEntryPath(&local, entry_id);
                         if (comptime bun.Environment.isWindows) {
@@ -1651,7 +1651,7 @@ pub fn installIsolatedPackages(
                         continue;
                     }
 
-                    var pkg_cache_dir_subpath: bun.RelPath(.{ .sep = .auto }) = .from(switch (pkg_res_tag) {
+                    var pkg_cache_dir_subpath: bun.RelPath(.{}) = .from(switch (pkg_res_tag) {
                         .npm => manager.cachedNPMPackageFolderName(pkg_name.slice(string_buf), pkg_res.value.npm.version, patch_info.contentsHash()),
                         .git => manager.cachedGitFolderName(&pkg_res.value.git, patch_info.contentsHash()),
                         .github => manager.cachedGitHubFolderName(&pkg_res.value.github, patch_info.contentsHash()),

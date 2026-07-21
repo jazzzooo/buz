@@ -3,8 +3,8 @@ const FileCloner = @This();
 // macOS clonefileat only
 
 cache_dir: FD,
-cache_dir_subpath: bun.AutoRelPath,
-dest_subpath: bun.Path(.{ .sep = .auto, .unit = .os }),
+cache_dir_subpath: bun.RelPath(.{}),
+dest_subpath: bun.Path(.{ .unit = .os }),
 io: std.Io,
 
 fn clonefileat(this: *FileCloner) sys.Maybe(void) {

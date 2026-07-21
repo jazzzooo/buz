@@ -290,7 +290,6 @@ pub const OSPathBuffer = paths.OSPathBuffer;
 pub const Path = paths.Path;
 pub const AbsPath = paths.AbsPath;
 pub const RelPath = paths.RelPath;
-pub const AutoRelPath = paths.AutoRelPath;
 pub const EnvPath = paths.EnvPath;
 pub const path_buffer_pool = paths.path_buffer_pool;
 pub const w_path_buffer_pool = paths.w_path_buffer_pool;

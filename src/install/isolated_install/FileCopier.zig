@@ -1,14 +1,14 @@
 pub const FileCopier = struct {
     io: std.Io,
-    src_path: bun.AbsPath(.{ .sep = .auto, .unit = .os }),
-    dest_subpath: bun.Path(.{ .sep = .auto, .unit = .os }),
+    src_path: bun.AbsPath(.{ .unit = .os }),
+    dest_subpath: bun.Path(.{ .unit = .os }),
     walker: Walker,
 
     pub fn init(
         io: std.Io,
         src_dir: FD,
-        src_path: bun.AbsPath(.{ .sep = .auto, .unit = .os }),
-        dest_subpath: bun.Path(.{ .sep = .auto, .unit = .os }),
+        src_path: bun.AbsPath(.{ .unit = .os }),
+        dest_subpath: bun.Path(.{ .unit = .os }),
         skip_dirnames: []const bun.OSPathSlice,
     ) OOM!FileCopier {
         return .{

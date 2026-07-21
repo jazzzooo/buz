@@ -789,7 +789,7 @@ fn detachModuleFolderFromSharedStore(io: std.Io, module_folder: []const u8) void
         break :native slice;
     } else module_folder;
 
-    var path: bun.Path(.{ .sep = .auto }) = .from(native);
+    var path: bun.Path(.{}) = .from(native);
     defer path.deinit();
     var components: usize = 1;
     for (native) |c| {
@@ -842,15 +842,15 @@ fn overwritePackageInNodeModulesFolder(
 ) !void {
     FD.cwd().deleteTree(io, node_modules_folder_path) catch {};
 
-    var dest_subpath: bun.Path(.{ .sep = .auto, .unit = .os }) = .from(node_modules_folder_path);
+    var dest_subpath: bun.Path(.{ .unit = .os }) = .from(node_modules_folder_path);
     defer dest_subpath.deinit();
 
-    const src_path: bun.AbsPath(.{ .sep = .auto, .unit = .os }) = src_path: {
+    const src_path: bun.AbsPath(.{ .unit = .os }) = src_path: {
         if (comptime Environment.isWindows) {
             var path_buf: bun.WPathBuffer = undefined;
             const abs_path = try bun.getFdPathW(.fromStdDir(cache_dir), &path_buf);
 
-            var src_path: bun.AbsPath(.{ .sep = .auto, .unit = .os }) = .from(abs_path);
+            var src_path: bun.AbsPath(.{ .unit = .os }) = .from(abs_path);
             src_path.append(cache_dir_subpath);
 
             break :src_path src_path;

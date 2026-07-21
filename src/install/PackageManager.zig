@@ -876,9 +876,13 @@ pub fn init(
 
     {
         // make sure folder packages can find the root package without creating a new one
-        var normalized: bun.AbsPath(.{ .sep = .posix }) = .from(root_package_json_path);
-        defer normalized.deinit();
-        try manager.folders.put(manager.allocator, FolderResolution.hash(normalized.slice()), .{ .package_id = 0 });
+        var normalized_buf: if (Environment.isWindows) bun.PathBuffer else void = undefined;
+        const normalized = if (comptime Environment.isWindows) normalized: {
+            @memcpy(normalized_buf[0..root_package_json_path.len], root_package_json_path);
+            bun.path.dangerouslyConvertPathToPosixInPlace(u8, normalized_buf[0..root_package_json_path.len]);
+            break :normalized normalized_buf[0..root_package_json_path.len];
+        } else root_package_json_path;
+        try manager.folders.put(manager.allocator, FolderResolution.hash(normalized), .{ .package_id = 0 });
     }
 
     jsc.MiniEventLoop.global = &manager.event_loop.mini;

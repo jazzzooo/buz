@@ -2,15 +2,15 @@ const Hardlinker = @This();
 
 io: std.Io,
 src_dir: FD,
-src: bun.AbsPath(.{ .sep = .auto, .unit = .os }),
-dest: bun.Path(.{ .sep = .auto, .unit = .os }),
+src: bun.AbsPath(.{ .unit = .os }),
+dest: bun.Path(.{ .unit = .os }),
 walker: Walker,
 
 pub fn init(
     io: std.Io,
     folder_dir: FD,
-    src: bun.AbsPath(.{ .sep = .auto, .unit = .os }),
-    dest: bun.Path(.{ .sep = .auto, .unit = .os }),
+    src: bun.AbsPath(.{ .unit = .os }),
+    dest: bun.Path(.{ .unit = .os }),
     skip_dirnames: []const bun.OSPathSlice,
 ) OOM!Hardlinker {
     return .{
@@ -77,7 +77,7 @@ pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
                     const destfile_path_buf = bun.w_path_buffer_pool.get();
                     defer bun.w_path_buffer_pool.put(destfile_path_buf);
                     const dest_is_absolute = this.dest.len() > 0 and bun.path.Platform.windows.isAbsoluteT(u16, this.dest.slice());
-                    var dest_abs: bun.AbsPath(.{ .sep = .auto, .unit = .os }) = .fromLongPath(dest_cwd);
+                    var dest_abs: bun.AbsPath(.{ .unit = .os }) = .fromLongPath(dest_cwd);
                     defer dest_abs.deinit();
                     if (!dest_is_absolute) dest_abs.append(this.dest.slice());
                     const dest_path = if (dest_is_absolute)

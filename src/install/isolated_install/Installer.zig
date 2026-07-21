@@ -235,7 +235,7 @@ pub const Installer = struct {
         // doesn't leak in the cache (it would never be reused — the suffix is
         // random — but it's wasted disk).
         if (this.entryUsesGlobalStore(entry_id)) {
-            var staging: bun.AbsPath(.{ .sep = .auto }) = .init();
+            var staging: bun.AbsPath(.{}) = .init();
             defer staging.deinit();
             this.appendGlobalStoreEntryPath(&staging, entry_id, .staging);
             FD.cwd().deleteTree(this.manager.io, staging.slice()) catch {};
@@ -260,7 +260,7 @@ pub const Installer = struct {
             .remote_tarball,
             .folder,
             => {
-                var store_path: bun.RelPath(.{ .sep = .auto }) = .init();
+                var store_path: bun.RelPath(.{}) = .init();
                 defer store_path.deinit();
 
                 store_path.appendFmt("node_modules/{f}", .{
@@ -557,7 +557,7 @@ pub const Installer = struct {
                 inline .link_package => |current_step| {
                     const string_buf = lockfile.buffers.string_bytes.items;
 
-                    var pkg_cache_dir_subpath: bun.AutoRelPath = .from(switch (pkg_res.tag) {
+                    var pkg_cache_dir_subpath: bun.RelPath(.{}) = .from(switch (pkg_res.tag) {
                         else => |tag| pkg_cache_dir_subpath: {
                             const patch_info = try installer.packagePatchInfo(
                                 pkg_name,
@@ -602,10 +602,10 @@ pub const Installer = struct {
                                         pkg_res.value.folder.slice(string_buf),
                                     }));
                                     defer bun.default_allocator.free(resolved_src);
-                                    var src: bun.AbsPath(.{ .unit = .os, .sep = .auto }) = .fromLongPath(resolved_src);
+                                    var src: bun.AbsPath(.{ .unit = .os }) = .fromLongPath(resolved_src);
                                     defer src.deinit();
 
-                                    var dest: bun.Path(.{ .unit = .os, .sep = .auto }) = .init();
+                                    var dest: bun.Path(.{ .unit = .os }) = .init();
                                     defer dest.deinit();
 
                                     installer.appendStorePath(&dest, this.entry_id);
@@ -648,7 +648,7 @@ pub const Installer = struct {
                                 },
 
                                 .copyfile => {
-                                    var src_path: bun.AbsPath(.{ .sep = .auto, .unit = .os }) = .init();
+                                    var src_path: bun.AbsPath(.{ .unit = .os }) = .init();
                                     defer src_path.deinit();
 
                                     if (comptime Environment.isWindows) {
@@ -672,7 +672,7 @@ pub const Installer = struct {
                                         src_path.setLength(src_path_len);
                                     }
 
-                                    var dest: bun.Path(.{ .unit = .os, .sep = .auto }) = .init();
+                                    var dest: bun.Path(.{ .unit = .os }) = .init();
                                     defer dest.deinit();
                                     installer.appendStorePath(&dest, this.entry_id);
 
@@ -720,7 +720,7 @@ pub const Installer = struct {
                     const cache_dir, const cache_dir_path = manager.getCacheDirectoryAndAbsPath();
                     defer cache_dir_path.deinit();
 
-                    var dest_subpath: bun.Path(.{ .sep = .auto, .unit = .os }) = .init();
+                    var dest_subpath: bun.Path(.{ .unit = .os }) = .init();
                     defer dest_subpath.deinit();
                     installer.appendRealStorePath(&dest_subpath, this.entry_id, .staging);
 
@@ -740,7 +740,7 @@ pub const Installer = struct {
                         // directory, which dangles after the next
                         // `rm -rf node_modules`. Detach first so the build
                         // lands in a real project-local directory.
-                        var local: bun.Path(.{ .sep = .auto }) = .initTopLevelDir();
+                        var local: bun.Path(.{}) = .initTopLevelDir();
                         defer local.deinit();
                         installer.appendLocalStoreEntryPath(&local, this.entry_id);
                         const is_stale_link = if (comptime Environment.isWindows)
@@ -769,7 +769,7 @@ pub const Installer = struct {
                         // Clear any leftover staging directory from a crashed
                         // earlier run with the same suffix (vanishingly
                         // unlikely with a 64-bit random suffix, but cheap).
-                        var staging: bun.AbsPath(.{ .sep = .auto }) = .init();
+                        var staging: bun.AbsPath(.{}) = .init();
                         defer staging.deinit();
                         installer.appendGlobalStoreEntryPath(&staging, this.entry_id, .staging);
                         FD.cwd().deleteTree(installer.manager.io, staging.slice()) catch {};
@@ -846,7 +846,7 @@ pub const Installer = struct {
                                 },
                             };
 
-                            var src: bun.AbsPath(.{ .sep = .auto, .unit = .os }) = .fromLongPath(cache_dir_path.slice());
+                            var src: bun.AbsPath(.{ .unit = .os }) = .fromLongPath(cache_dir_path.slice());
                             defer src.deinit();
                             src.append(pkg_cache_dir_subpath.slice());
 
@@ -914,7 +914,7 @@ pub const Installer = struct {
                                 },
                             };
 
-                            var src_path: bun.AbsPath(.{ .sep = .auto, .unit = .os }) = .from(cache_dir_path.slice());
+                            var src_path: bun.AbsPath(.{ .unit = .os }) = .from(cache_dir_path.slice());
                             defer src_path.deinit();
                             src_path.append(pkg_cache_dir_subpath.slice());
 
@@ -961,7 +961,7 @@ pub const Installer = struct {
                     for (entry_dependencies[this.entry_id.get()].slice()) |dep| {
                         const dep_name = dependencies[dep.dep_id].name.slice(string_buf);
 
-                        var dest: bun.Path(.{ .sep = .auto }) = .initTopLevelDir();
+                        var dest: bun.Path(.{}) = .initTopLevelDir();
                         defer dest.deinit();
 
                         installer.appendRealStoreNodeModulesPath(&dest, this.entry_id, .staging);
@@ -977,7 +977,7 @@ pub const Installer = struct {
                             }
                         }
 
-                        var dep_store_path: bun.AbsPath(.{ .sep = .auto }) = .initTopLevelDir();
+                        var dep_store_path: bun.AbsPath(.{}) = .initTopLevelDir();
                         defer dep_store_path.deinit();
 
                         // When this entry lives in the global virtual store, its
@@ -1017,7 +1017,7 @@ pub const Installer = struct {
                                 dep_store_path.slice(),
                             ));
                             defer installer.manager.allocator.free(relative_path);
-                            break :target bun.AutoRelPath.from(relative_path);
+                            break :target bun.RelPath(.{}).from(relative_path);
                         };
                         defer target.deinit();
 
@@ -1139,7 +1139,7 @@ pub const Installer = struct {
                         break :brk .{ false, false };
                     };
 
-                    var pkg_cwd: bun.AbsPath(.{ .sep = .auto }) = .initTopLevelDir();
+                    var pkg_cwd: bun.AbsPath(.{}) = .initTopLevelDir();
                     defer pkg_cwd.deinit();
 
                     installer.appendStorePath(&pkg_cwd, this.entry_id);
@@ -1488,7 +1488,7 @@ pub const Installer = struct {
         const pkg_id = this.store.nodes.items(.pkg_id)[node_id.get()];
         const pkg_name = this.lockfile.packages.items(.name)[pkg_id];
 
-        var hidden_hoisted_node_modules: bun.Path(.{ .sep = .auto }) = .init();
+        var hidden_hoisted_node_modules: bun.Path(.{}) = .init();
         defer hidden_hoisted_node_modules.deinit();
 
         hidden_hoisted_node_modules.append(
@@ -1496,7 +1496,7 @@ pub const Installer = struct {
         );
         hidden_hoisted_node_modules.append(pkg_name.slice(string_buf));
 
-        var target: bun.RelPath(.{ .sep = .auto }) = .init();
+        var target: bun.RelPath(.{}) = .init();
         defer target.deinit();
 
         target.append("..");
@@ -1509,7 +1509,7 @@ pub const Installer = struct {
             pkg_name.slice(string_buf),
         });
 
-        var full_target: bun.AbsPath(.{ .sep = .auto }) = .initTopLevelDir();
+        var full_target: bun.AbsPath(.{}) = .initTopLevelDir();
         defer full_target.deinit();
 
         this.appendStorePath(&full_target, entry_id);
@@ -1719,10 +1719,10 @@ pub const Installer = struct {
     /// existing is the only completeness signal — no separate stamp file.
     pub fn commitGlobalStoreEntry(this: *const Installer, entry_id: Store.Entry.Id) sys.Maybe(void) {
         if (!this.entryUsesGlobalStore(entry_id)) return .success;
-        var staging: bun.AbsPath(.{ .sep = .auto }) = .init();
+        var staging: bun.AbsPath(.{}) = .init();
         defer staging.deinit();
         this.appendGlobalStoreEntryPath(&staging, entry_id, .staging);
-        var final: bun.AbsPath(.{ .sep = .auto }) = .init();
+        var final: bun.AbsPath(.{}) = .init();
         defer final.deinit();
         this.appendGlobalStoreEntryPath(&final, entry_id, .final);
 
@@ -1741,7 +1741,7 @@ pub const Installer = struct {
                 // concurrent install and is content-identical — keep it and
                 // discard ours.
                 if (this.manager.options.enable.force_install) {
-                    var old: bun.AbsPath(.{ .sep = .auto }) = .init();
+                    var old: bun.AbsPath(.{}) = .init();
                     defer old.deinit();
                     old.append(this.global_store_path.?);
                     old.appendFmt("{f}.old-{x}", .{
@@ -1799,11 +1799,11 @@ pub const Installer = struct {
     /// `<cache>/links/<storepath>-<hash>`. This is the only per-install
     /// filesystem write for a warm global-store hit.
     pub fn linkProjectToGlobalStore(this: *const Installer, entry_id: Store.Entry.Id) sys.Maybe(void) {
-        var dest: bun.Path(.{ .sep = .auto }) = .initTopLevelDir();
+        var dest: bun.Path(.{}) = .initTopLevelDir();
         defer dest.deinit();
         this.appendLocalStoreEntryPath(&dest, entry_id);
 
-        var target_abs: bun.AbsPath(.{ .sep = .auto }) = .init();
+        var target_abs: bun.AbsPath(.{}) = .init();
         defer target_abs.deinit();
         this.appendGlobalStoreEntryPath(&target_abs, entry_id, .final);
 

@@ -1,8 +1,8 @@
 pub const Symlinker = struct {
     io: std.Io,
-    dest: bun.Path(.{ .sep = .auto }),
-    target: bun.RelPath(.{ .sep = .auto }),
-    fallback_junction_target: bun.AbsPath(.{ .sep = .auto }),
+    dest: bun.Path(.{}),
+    target: bun.RelPath(.{}),
+    fallback_junction_target: bun.AbsPath(.{}),
 
     pub fn symlink(this: *const @This()) sys.Maybe(void) {
         if (comptime Environment.isWindows) {

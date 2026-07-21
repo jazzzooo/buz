@@ -1,5 +1,4 @@
 const Options = struct {
-    sep: PathSeparators = .any,
     kind: Kind = .any,
     unit: Unit = .u8,
 
@@ -15,20 +14,6 @@ const Options = struct {
 
         // not recommended, but useful when you don't know
         any,
-    };
-
-    const PathSeparators = enum {
-        any,
-        auto,
-        posix,
-
-        pub fn char(comptime sep: @This()) u8 {
-            return switch (sep) {
-                .any => @compileError("use the existing slash"),
-                .auto => std.fs.path.sep,
-                .posix => std.fs.path.sep_posix,
-            };
-        }
     };
 
     pub fn pathUnit(comptime opts: @This()) type {
@@ -54,51 +39,42 @@ const Options = struct {
 
             pub fn append(this: *@This(), characters: anytype, add_separator: bool) void {
                 if (add_separator) {
-                    switch (comptime opts.sep) {
-                        .any, .auto => this.pooled[this.len] = std.fs.path.sep,
-                        .posix => this.pooled[this.len] = std.fs.path.sep_posix,
-                    }
+                    this.pooled[this.len] = std.fs.path.sep;
                     this.len += 1;
                 }
 
                 if (opts.inputChildType(@TypeOf(characters)) == opts.pathUnit()) {
-                    switch (comptime opts.sep) {
-                        .any => {
-                            @memcpy(this.pooled[this.len..][0..characters.len], characters);
-                            this.len += characters.len;
-                        },
-                        .auto, .posix => {
-                            for (characters) |c| {
-                                switch (c) {
-                                    '/', '\\' => this.pooled[this.len] = opts.sep.char(),
-                                    else => this.pooled[this.len] = c,
-                                }
-                                this.len += 1;
+                    if (comptime Environment.isWindows) {
+                        for (characters) |c| {
+                            if (native_path_type.isSep(opts.pathUnit(), c)) {
+                                this.pooled[this.len] = std.fs.path.sep;
+                            } else {
+                                this.pooled[this.len] = c;
                             }
-                        },
+                            this.len += 1;
+                        }
+                    } else {
+                        @memcpy(this.pooled[this.len..][0..characters.len], characters);
+                        this.len += characters.len;
                     }
                 } else {
                     switch (opts.inputChildType(@TypeOf(characters))) {
                         u8 => {
                             const converted = bun.strings.convertUTF8toUTF16InBuffer(this.pooled[this.len..], characters);
-                            if (comptime opts.sep != .any) {
+                            if (comptime Environment.isWindows) {
                                 for (this.pooled[this.len..][0..converted.len], 0..) |c, off| {
-                                    switch (c) {
-                                        '/', '\\' => this.pooled[this.len + off] = opts.sep.char(),
-                                        else => {},
-                                    }
+                                    if (native_path_type.isSep(u16, c))
+                                        this.pooled[this.len + off] = std.fs.path.sep;
                                 }
                             }
                             this.len += converted.len;
                         },
                         u16 => {
                             const converted = bun.strings.convertUTF16toUTF8InBuffer(this.pooled[this.len..], characters) catch unreachable;
-                            if (comptime opts.sep != .any) {
+                            if (comptime Environment.isWindows) {
                                 for (this.pooled[this.len..][0..converted.len], 0..) |c, off| {
-                                    switch (c) {
-                                        '/', '\\' => this.pooled[this.len + off] = opts.sep.char(),
-                                        else => {},
-                                    }
+                                    if (native_path_type.isSep(u8, c))
+                                        this.pooled[this.len + off] = std.fs.path.sep;
                                 }
                             }
                             this.len += converted.len;
@@ -132,14 +108,9 @@ pub fn RelPath(comptime opts: Options) type {
     return Path(copy);
 }
 
-pub const AutoRelPath = Path(.{ .kind = .rel, .sep = .auto });
-
 pub fn Path(comptime opts: Options) type {
     return struct {
         _buf: opts.Buf(),
-
-        const native_path_type: std.fs.path.PathType = if (Environment.isWindows) .windows else .posix;
-        const path_type: std.fs.path.PathType = if (opts.sep == .posix) .posix else native_path_type;
 
         pub fn init() @This() {
             return .{
@@ -269,7 +240,7 @@ pub fn Path(comptime opts: Options) type {
         }
 
         pub fn dirname(this: *const @This()) ?[]const opts.pathUnit() {
-            var it = std.fs.path.ComponentIterator(path_type, opts.pathUnit()).init(this.slice());
+            var it = std.fs.path.ComponentIterator(native_path_type, opts.pathUnit()).init(this.slice());
             _ = it.last() orelse return null;
             const parent = it.previous() orelse return it.root();
             return parent.path;
@@ -330,60 +301,25 @@ pub fn Path(comptime opts: Options) type {
         };
 
         fn trimInput(kind: TrimInputKind, input: anytype) []const opts.inputChildType(@TypeOf(input)) {
-            var trimmed: []const opts.inputChildType(@TypeOf(input)) = input[0..];
-
-            if (comptime Environment.isWindows) {
-                switch (kind) {
-                    .abs => {
-                        const root_len = rootLen(input) orelse 0;
-                        while (trimmed.len > root_len and switch (trimmed[trimmed.len - 1]) {
-                            '/', '\\' => true,
-                            else => false,
-                        }) {
-                            trimmed = trimmed[0 .. trimmed.len - 1];
-                        }
-                    },
-                    .rel => {
-                        if (trimmed.len > 1 and trimmed[0] == '.') {
-                            const c = trimmed[1];
-                            if (c == '/' or c == '\\') {
-                                trimmed = trimmed[2..];
-                            }
-                        }
-                        while (trimmed.len > 0 and switch (trimmed[0]) {
-                            '/', '\\' => true,
-                            else => false,
-                        }) {
-                            trimmed = trimmed[1..];
-                        }
-                        while (trimmed.len > 0 and switch (trimmed[trimmed.len - 1]) {
-                            '/', '\\' => true,
-                            else => false,
-                        }) {
-                            trimmed = trimmed[0 .. trimmed.len - 1];
-                        }
-                    },
-                }
-
-                return trimmed;
-            }
+            const T = opts.inputChildType(@TypeOf(input));
+            var trimmed: []const T = input[0..];
 
             switch (kind) {
                 .abs => {
                     const root_len = rootLen(input) orelse 0;
-                    while (trimmed.len > root_len and trimmed[trimmed.len - 1] == '/') {
+                    while (trimmed.len > root_len and native_path_type.isSep(T, trimmed[trimmed.len - 1])) {
                         trimmed = trimmed[0 .. trimmed.len - 1];
                     }
                 },
                 .rel => {
-                    if (trimmed.len > 1 and trimmed[0] == '.' and trimmed[1] == '/') {
+                    if (trimmed.len > 1 and trimmed[0] == '.' and native_path_type.isSep(T, trimmed[1])) {
                         trimmed = trimmed[2..];
                     }
-                    while (trimmed.len > 0 and trimmed[0] == '/') {
+                    while (trimmed.len > 0 and native_path_type.isSep(T, trimmed[0])) {
                         trimmed = trimmed[1..];
                     }
 
-                    while (trimmed.len > 0 and trimmed[trimmed.len - 1] == '/') {
+                    while (trimmed.len > 0 and native_path_type.isSep(T, trimmed[trimmed.len - 1])) {
                         trimmed = trimmed[0 .. trimmed.len - 1];
                     }
                 },
@@ -406,13 +342,7 @@ pub fn Path(comptime opts: Options) type {
         }
 
         pub fn append(this: *@This(), input: anytype) void {
-            const needs_sep = this.len() > 0 and switch (comptime opts.sep) {
-                .any => switch (this.slice()[this.len() - 1]) {
-                    '/', '\\' => false,
-                    else => true,
-                },
-                else => this.slice()[this.len() - 1] != opts.sep.char(),
-            };
+            const needs_sep = this.len() > 0 and !native_path_type.isSep(opts.pathUnit(), this.slice()[this.len() - 1]);
 
             switch (comptime opts.kind) {
                 .abs => {
@@ -495,24 +425,18 @@ pub fn Path(comptime opts: Options) type {
                 },
             };
 
-            var i: usize = 0;
-            while (i < n_components) {
-                const slash = switch (comptime opts.sep) {
-                    .any => std.mem.lastIndexOfAny(opts.pathUnit(), this.slice(), &.{ std.fs.path.sep_posix, std.fs.path.sep_windows }),
-                    .auto => std.mem.lastIndexOfScalar(opts.pathUnit(), this.slice(), std.fs.path.sep),
-                    .posix => std.mem.lastIndexOfScalar(opts.pathUnit(), this.slice(), std.fs.path.sep_posix),
-                } orelse {
+            var it = std.fs.path.ComponentIterator(native_path_type, opts.pathUnit()).init(this.slice());
+            _ = it.last() orelse {
+                this._buf.setLength(min_len);
+                return;
+            };
+
+            for (0..n_components) |_| {
+                const parent = it.previous() orelse {
                     this._buf.setLength(min_len);
                     return;
                 };
-
-                if (slash < min_len) {
-                    this._buf.setLength(min_len);
-                    return;
-                }
-
-                this._buf.setLength(slash);
-                i += 1;
+                this._buf.setLength(parent.path.len);
             }
         }
 
@@ -538,3 +462,4 @@ const Environment = bun.Environment;
 const FD = bun.FD;
 const PathBuffer = bun.PathBuffer;
 const WPathBuffer = bun.WPathBuffer;
+const native_path_type: std.fs.path.PathType = if (Environment.isWindows) .windows else .posix;

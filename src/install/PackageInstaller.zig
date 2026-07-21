@@ -688,7 +688,7 @@ pub const PackageInstaller = struct {
         alias: string,
         package_id: PackageID,
         resolution_tag: Resolution.Tag,
-        folder_path: *bun.AbsPath(.{ .sep = .auto }),
+        folder_path: *bun.AbsPath(.{}),
         log_level: Options.LogLevel,
     ) usize {
         if (comptime Environment.allow_assert) {
@@ -1171,7 +1171,7 @@ pub const PackageInstaller = struct {
                     };
 
                     if (resolution.tag != .root and (resolution.tag == .workspace or is_trusted)) {
-                        var folder_path: bun.AbsPath(.{ .sep = .auto }) = .from(this.node_modules.path.items);
+                        var folder_path: bun.AbsPath(.{}) = .from(this.node_modules.path.items);
                         defer folder_path.deinit();
                         folder_path.append(alias.slice(this.lockfile.buffers.string_bytes.items));
 
@@ -1224,7 +1224,7 @@ pub const PackageInstaller = struct {
                         else => if (!is_trusted and this.metas[package_id].hasInstallScript()) {
                             // Check if the package actually has scripts. `hasInstallScript` can be false positive if a package is published with
                             // an auto binding.gyp rebuild script but binding.gyp is excluded from the published files.
-                            var folder_path: bun.AbsPath(.{ .sep = .auto }) = .from(this.node_modules.path.items);
+                            var folder_path: bun.AbsPath(.{}) = .from(this.node_modules.path.items);
                             defer folder_path.deinit();
                             folder_path.append(alias.slice(this.lockfile.buffers.string_bytes.items));
 
@@ -1365,7 +1365,7 @@ pub const PackageInstaller = struct {
             };
 
             if (resolution.tag != .root and is_trusted) {
-                var folder_path: bun.AbsPath(.{ .sep = .auto }) = .from(this.node_modules.path.items);
+                var folder_path: bun.AbsPath(.{}) = .from(this.node_modules.path.items);
                 defer folder_path.deinit();
                 folder_path.append(alias.slice(this.lockfile.buffers.string_bytes.items));
 
@@ -1429,7 +1429,7 @@ pub const PackageInstaller = struct {
         this: *PackageInstaller,
         folder_name: string,
         log_level: Options.LogLevel,
-        package_path: *bun.AbsPath(.{ .sep = .auto }),
+        package_path: *bun.AbsPath(.{}),
         package_id: PackageID,
         optional: bool,
         resolution: *const Resolution,
