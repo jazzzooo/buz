@@ -227,8 +227,6 @@ pub fn AbsPath(comptime opts: Options) type {
     return Path(copy);
 }
 
-pub const AutoAbsPath = Path(.{ .kind = .abs, .sep = .auto });
-
 pub fn RelPath(comptime opts: Options) type {
     var copy = opts;
     copy.kind = .rel;
@@ -496,17 +494,6 @@ pub fn Path(comptime opts: Options) type {
             switch (comptime opts.buf_type) {
                 .pool => {
                     return this._buf.len;
-                },
-            }
-        }
-
-        pub fn clone(this: *const @This()) @This() {
-            switch (comptime opts.buf_type) {
-                .pool => {
-                    var cloned = init();
-                    @memcpy(cloned._buf.pooled[0..this._buf.len], this._buf.pooled[0..this._buf.len]);
-                    cloned._buf.len = this._buf.len;
-                    return cloned;
                 },
             }
         }
@@ -793,43 +780,6 @@ pub fn Path(comptime opts: Options) type {
             };
 
             return this.append(input);
-        }
-
-        pub fn join(this: *@This(), parts: []const []const opts.pathUnit()) Result(void) {
-            switch (comptime opts.unit) {
-                .u8 => {},
-                .u16 => @compileError("unsupported unit type"),
-                .os => if (Environment.isWindows) @compileError("unsupported unit type"),
-            }
-
-            switch (comptime opts.kind) {
-                .abs => {},
-                .rel => @compileError("cannot join with relative path"),
-                .any => {
-                    bun.debugAssert(this.isAbsolute());
-                },
-            }
-
-            const cloned = this.clone();
-            defer cloned.deinit();
-
-            switch (comptime opts.buf_type) {
-                .pool => {
-                    const joined = bun.path.joinAbsStringBuf(
-                        cloned.slice(),
-                        this._buf.pooled,
-                        parts,
-                        switch (opts.sep) {
-                            .any, .auto => .auto,
-                            .posix => .posix,
-                            .windows => .windows,
-                        },
-                    );
-
-                    const trimmed = trimInput(.abs, joined);
-                    this._buf.len = trimmed.len;
-                },
-            }
         }
 
         pub fn undo(this: *@This(), n_components: usize) void {

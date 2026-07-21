@@ -1,6 +1,5 @@
 pub const Path = paths.Path;
 pub const AbsPath = paths.AbsPath;
-pub const AutoAbsPath = paths.AutoAbsPath;
 pub const RelPath = paths.RelPath;
 pub const AutoRelPath = paths.AutoRelPath;
 

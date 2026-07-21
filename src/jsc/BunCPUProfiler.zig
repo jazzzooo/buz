@@ -47,18 +47,15 @@ fn writeProfileToFile(io: std.Io, profile_string: bun.String, config: CPUProfile
     const profile_slice = profile_string.toUTF8(bun.default_allocator);
     defer profile_slice.deinit();
 
-    // Determine the output path using AutoAbsPath
-    var path_buf: bun.AutoAbsPath = .initTopLevelDir();
-    defer path_buf.deinit();
-
-    try buildOutputPath(&path_buf, config, is_md_format);
+    const output_path = try buildOutputPath(config, is_md_format);
+    defer bun.default_allocator.free(output_path);
 
     // Convert to OS-specific path (UTF-16 on Windows, UTF-8 elsewhere)
     var path_buf_os: bun.OSPathBuffer = undefined;
     const output_path_os: bun.OSPathSliceZ = if (bun.Environment.isWindows)
-        bun.strings.convertUTF8toUTF16InBufferZ(&path_buf_os, path_buf.sliceZ())
+        bun.strings.convertUTF8toUTF16InBufferZ(&path_buf_os, output_path)
     else
-        path_buf.sliceZ();
+        output_path;
 
     // Write the profile to disk using bun.sys.File.writeFile
     const result = bun.sys.File.writeFile(bun.FD.cwd(), output_path_os, profile_slice.slice());
@@ -82,7 +79,7 @@ fn writeProfileToFile(io: std.Io, profile_string: bun.String, config: CPUProfile
     }
 }
 
-fn buildOutputPath(path: *bun.AutoAbsPath, config: CPUProfilerConfig, is_md_format: bool) !void {
+fn buildOutputPath(config: CPUProfilerConfig, is_md_format: bool) ![:0]u8 {
     // Generate filename
     var filename_buf: bun.PathBuffer = undefined;
 
@@ -99,13 +96,18 @@ fn buildOutputPath(path: *bun.AutoAbsPath, config: CPUProfilerConfig, is_md_form
         }
     } else try generateDefaultFilename(&filename_buf, is_md_format);
 
-    // Append directory if specified
-    if (config.dir.len > 0) {
-        path.join(&.{config.dir});
-    }
+    const resolved = try std.fs.path.resolve(
+        bun.default_allocator,
+        if (config.dir.len > 0)
+            &.{ bun.fs.FileSystem.instance.top_level_dir, config.dir, filename }
+        else
+            &.{ bun.fs.FileSystem.instance.top_level_dir, filename },
+    );
+    errdefer bun.default_allocator.free(resolved);
 
-    // Append filename
-    path.append(filename);
+    const resolved_z = try bun.default_allocator.realloc(resolved, resolved.len + 1);
+    resolved_z[resolved.len] = 0;
+    return resolved_z[0..resolved.len :0];
 }
 
 fn generateDefaultFilename(buf: *bun.PathBuffer, md_format: bool) ![]const u8 {

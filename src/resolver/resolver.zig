@@ -3470,8 +3470,7 @@ pub const Resolver = struct {
                     )) |remap| {
                         // Is the path disabled?
                         if (remap.len == 0) {
-                            const paths = [_]string{ path, field_rel_path };
-                            const new_path = r.fs.absAlloc(r.allocator, &paths) catch unreachable;
+                            const new_path = std.fs.path.resolve(r.allocator, &.{ r.fs.top_level_dir, path, field_rel_path }) catch unreachable;
                             var _path = Path.init(new_path);
                             _path.is_disabled = true;
                             return MatchResult{

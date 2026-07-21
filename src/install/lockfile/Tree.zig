@@ -411,8 +411,8 @@ pub fn isFilteredDependencyOrWorkspace(
     var workspace_matched = workspace_filters.len == 0;
 
     for (workspace_filters) |filter| {
-        var filter_path: bun.AbsPath(.{ .sep = .posix }) = .initTopLevelDir();
-        defer filter_path.deinit();
+        var filter_path: ?[]u8 = null;
+        defer if (filter_path) |path| bun.default_allocator.free(path);
 
         const pattern, const name_or_path = switch (filter) {
             .all => {
@@ -428,9 +428,11 @@ pub fn isFilteredDependencyOrWorkspace(
                     return false;
                 }
 
-                filter_path.join(&.{res.value.workspace.slice(lockfile.buffers.string_bytes.items)});
+                var top_level_dir_buf: bun.PathBuffer = undefined;
+                const top_level_dir = bun.path.pathToPosixBuf(u8, bun.fs.FileSystem.instance.top_level_dir, &top_level_dir_buf);
+                filter_path = bun.handleOom(std.fs.path.resolvePosix(bun.default_allocator, &.{ top_level_dir, res.value.workspace.slice(lockfile.buffers.string_bytes.items) }));
 
-                break :path_pattern .{ path_pattern, filter_path.slice() };
+                break :path_pattern .{ path_pattern, filter_path.? };
             },
         };
 

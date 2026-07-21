@@ -23,18 +23,15 @@ pub fn generateAndWriteProfile(io: std.Io, vm: *jsc.VM, config: HeapProfilerConf
     const profile_slice = profile_string.toUTF8(bun.default_allocator);
     defer profile_slice.deinit();
 
-    // Determine the output path using AutoAbsPath
-    var path_buf: bun.AutoAbsPath = .initTopLevelDir();
-    defer path_buf.deinit();
-
-    try buildOutputPath(&path_buf, config);
+    const output_path = try buildOutputPath(config);
+    defer bun.default_allocator.free(output_path);
 
     // Convert to OS-specific path (UTF-16 on Windows, UTF-8 elsewhere)
     var path_buf_os: bun.OSPathBuffer = undefined;
     const output_path_os: bun.OSPathSliceZ = if (bun.Environment.isWindows)
-        bun.strings.convertUTF8toUTF16InBufferZ(&path_buf_os, path_buf.sliceZ())
+        bun.strings.convertUTF8toUTF16InBufferZ(&path_buf_os, output_path)
     else
-        path_buf.sliceZ();
+        output_path;
 
     // Write the profile to disk using bun.sys.File.writeFile
     const result = bun.sys.File.writeFile(bun.FD.cwd(), output_path_os, profile_slice.slice());
@@ -43,8 +40,7 @@ pub fn generateAndWriteProfile(io: std.Io, vm: *jsc.VM, config: HeapProfilerConf
         const errno = err.getErrno();
         if (errno == .NOENT or errno == .PERM or errno == .ACCES) {
             // Derive directory from the absolute output path
-            const abs_path = path_buf.slice();
-            const dir_path = std.fs.path.dirname(abs_path) orelse "";
+            const dir_path = std.fs.path.dirname(output_path) orelse "";
             if (dir_path.len > 0) {
                 bun.FD.cwd().makePath(io, u8, dir_path) catch {};
                 // Retry write
@@ -61,11 +57,11 @@ pub fn generateAndWriteProfile(io: std.Io, vm: *jsc.VM, config: HeapProfilerConf
     }
 
     // Print message to stderr to let user know where the profile was written
-    Output.prettyErrorln("Heap profile written to: {s}", .{path_buf.slice()});
+    Output.prettyErrorln("Heap profile written to: {s}", .{output_path});
     Output.flush();
 }
 
-fn buildOutputPath(path: *bun.AutoAbsPath, config: HeapProfilerConfig) !void {
+fn buildOutputPath(config: HeapProfilerConfig) ![:0]u8 {
     // Generate filename
     var filename_buf: bun.PathBuffer = undefined;
     const filename = if (config.name.len > 0)
@@ -73,13 +69,18 @@ fn buildOutputPath(path: *bun.AutoAbsPath, config: HeapProfilerConfig) !void {
     else
         try generateDefaultFilename(&filename_buf, config.text_format);
 
-    // Append directory if specified
-    if (config.dir.len > 0) {
-        path.append(config.dir);
-    }
+    const resolved = try std.fs.path.resolve(
+        bun.default_allocator,
+        if (config.dir.len > 0)
+            &.{ bun.fs.FileSystem.instance.top_level_dir, config.dir, filename }
+        else
+            &.{ bun.fs.FileSystem.instance.top_level_dir, filename },
+    );
+    errdefer bun.default_allocator.free(resolved);
 
-    // Append filename
-    path.append(filename);
+    const resolved_z = try bun.default_allocator.realloc(resolved, resolved.len + 1);
+    resolved_z[resolved.len] = 0;
+    return resolved_z[0..resolved.len :0];
 }
 
 fn generateDefaultFilename(buf: *bun.PathBuffer, text_format: bool) ![]const u8 {

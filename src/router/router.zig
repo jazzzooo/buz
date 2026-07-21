@@ -902,8 +902,7 @@ pub const Test = struct {
         const fs = try FileSystem.init(null);
         const top_level_dir = fs.top_level_dir;
 
-        var pages_parts = [_]string{ top_level_dir, "pages" };
-        const pages_dir = try Fs.FileSystem.instance.absAlloc(default_allocator, &pages_parts);
+        const pages_dir = try std.fs.path.resolve(default_allocator, &.{ top_level_dir, "pages" });
         // _ = try std.fs.makeDirAbsolute(
         //     pages_dir,
         // );
@@ -957,8 +956,7 @@ pub const Test = struct {
         const fs = try FileSystem.initWithForce(null, true);
         const top_level_dir = fs.top_level_dir;
 
-        var pages_parts = [_]string{ top_level_dir, "pages" };
-        const pages_dir = try Fs.FileSystem.instance.absAlloc(default_allocator, &pages_parts);
+        const pages_dir = try std.fs.path.resolve(default_allocator, &.{ top_level_dir, "pages" });
         // _ = try std.fs.makeDirAbsolute(
         //     pages_dir,
         // );

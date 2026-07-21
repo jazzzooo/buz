@@ -421,24 +421,6 @@ pub const FileSystem = struct {
         return @call(bun.callmod_inline, path_handler.normalizeStringBuf, .{ str, buf, false, bun.path.Platform.auto, false });
     }
 
-    pub fn absAlloc(f: *@This(), allocator: std.mem.Allocator, parts: anytype) !string {
-        const joined = path_handler.joinAbsString(
-            f.top_level_dir,
-            parts,
-            .auto,
-        );
-        return try allocator.dupe(u8, joined);
-    }
-
-    pub fn absAllocZ(f: *@This(), allocator: std.mem.Allocator, parts: anytype) ![*:0]const u8 {
-        const joined = path_handler.joinAbsString(
-            f.top_level_dir,
-            parts,
-            .auto,
-        );
-        return try allocator.dupeSentinel(u8, joined, 0);
-    }
-
     pub fn abs(f: *@This(), parts: anytype) string {
         return path_handler.joinAbsString(
             f.top_level_dir,

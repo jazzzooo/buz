@@ -289,7 +289,6 @@ pub const OSPathSlice = paths.OSPathSlice;
 pub const OSPathBuffer = paths.OSPathBuffer;
 pub const Path = paths.Path;
 pub const AbsPath = paths.AbsPath;
-pub const AutoAbsPath = paths.AutoAbsPath;
 pub const RelPath = paths.RelPath;
 pub const AutoRelPath = paths.AutoRelPath;
 pub const EnvPath = paths.EnvPath;

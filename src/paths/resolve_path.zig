@@ -693,32 +693,8 @@ pub fn joinAbsStringZ(_cwd: []const u8, parts: anytype, comptime platform: Platf
     );
 }
 
-/// Inline `MAX_PATH_BYTES * 2` stack buffer that heap-allocates when the
-/// requested size exceeds it. Keeps `_joinAbsStringBuf`'s scratch buffer safe
-/// for arbitrarily long inputs while preserving zero-alloc behaviour for the
-/// common case.
-const JoinScratch = struct {
-    buffer: [bun.MAX_PATH_BYTES * 2]u8 = undefined,
-    sfa: std.heap.BufferFirstAllocator = undefined,
-    alloc: std.mem.Allocator,
-    buf: []u8,
-
-    pub fn init(self: *JoinScratch, base: usize, parts: []const []const u8) []u8 {
-        self.sfa = .init(&self.buffer, bun.default_allocator);
-        self.alloc = self.sfa.allocator();
-        var total = base + 2;
-        for (parts) |p| total += p.len + 1;
-        self.buf = bun.handleOom(self.alloc.alloc(u8, total));
-        return self.buf;
-    }
-
-    pub fn deinit(self: *JoinScratch) void {
-        self.alloc.free(self.buf);
-    }
-};
-
 pub fn joinAbsStringBuf(cwd: []const u8, buf: []u8, _parts: anytype, comptime platform: Platform) []const u8 {
-    return _joinAbsStringBuf(false, []const u8, cwd, buf, _parts, platform);
+    return resolveBuf(cwd, buf, _parts, platform) orelse @panic("resolved path exceeds buffer");
 }
 
 /// Like `joinAbsStringBuf`, but returns null when the *normalized* result is
@@ -727,248 +703,45 @@ pub fn joinAbsStringBuf(cwd: []const u8, buf: []u8, _parts: anytype, comptime pl
 /// whose unnormalized length exceeds `buf.len` but normalizes down will still
 /// succeed.
 pub fn joinAbsStringBufChecked(cwd: []const u8, buf: []u8, parts: []const []const u8, comptime platform: Platform) ?[]const u8 {
-    comptime if (platform == .nt) @compileError("joinAbsStringBufChecked does not support .nt (the \\\\?\\ prefix is not accounted for in scratch sizing)");
-    var total = std.math.add(usize, cwd.len, 2) catch return null;
-    for (parts) |part| {
-        total = std.math.add(usize, total, part.len) catch return null;
-        total = std.math.add(usize, total, 1) catch return null;
-    }
-
-    if (total <= buf.len) {
-        return joinAbsStringBuf(cwd, buf, parts, platform);
-    }
-
-    const scratch = bun.handleOom(bun.default_allocator.alloc(u8, total));
-    defer bun.default_allocator.free(scratch);
-
-    const joined = joinAbsStringBuf(cwd, scratch, parts, platform);
-
-    if (joined.len > buf.len) return null;
-    bun.copy(u8, buf, joined);
-    return buf[0..joined.len];
+    return resolveBuf(cwd, buf, parts, platform);
 }
 
 pub fn joinAbsStringBufZ(cwd: []const u8, buf: []u8, _parts: anytype, comptime platform: Platform) [:0]const u8 {
-    return _joinAbsStringBuf(true, [:0]const u8, cwd, buf, _parts, platform);
+    if (buf.len == 0) @panic("resolved path exceeds buffer");
+    const resolved = resolveBuf(cwd, buf[0 .. buf.len - 1], _parts, platform) orelse @panic("resolved path exceeds buffer");
+    buf[resolved.len] = 0;
+    return buf[0..resolved.len :0];
 }
 
-fn _joinAbsStringBuf(comptime is_sentinel: bool, comptime ReturnType: type, _cwd: []const u8, buf: []u8, _parts: anytype, comptime platform: Platform) ReturnType {
-    if (platform == .windows) {
-        return _joinAbsStringBufWindows(is_sentinel, ReturnType, _cwd, buf, _parts);
-    }
-
-    if (platform == .nt) {
-        const end_path = _joinAbsStringBufWindows(is_sentinel, ReturnType, _cwd, buf[4..], _parts);
-        buf[0..4].* = "\\\\?\\".*;
-        if (comptime is_sentinel) {
-            buf[end_path.len + 4] = 0;
-            return buf[0 .. end_path.len + 4 :0];
-        }
-        return buf[0 .. end_path.len + 4];
-    }
-
-    var parts: []const []const u8 = _parts;
-    if (parts.len == 0) {
-        if (comptime is_sentinel) {
-            unreachable;
-        }
-        return _cwd;
-    }
-
-    if (platform == .posix and
-        parts.len == 1 and
-        parts[0].len == 1 and
-        parts[0][0] == std.fs.path.sep_posix)
-    {
-        return "/";
-    }
-
-    var out: usize = 0;
-    var cwd = if (bun.Environment.isWindows and _cwd.len >= 3 and _cwd[1] == ':')
-        _cwd[2..]
-    else
-        _cwd;
-
-    {
-        var part_i: u16 = 0;
-        var part_len: u16 = @as(u16, @truncate(parts.len));
-
-        while (part_i < part_len) {
-            if (platform.isAbsolute(parts[part_i])) {
-                cwd = parts[part_i];
-                parts = parts[part_i + 1 ..];
-
-                part_len = @as(u16, @truncate(parts.len));
-                part_i = 0;
-                continue;
-            }
-            part_i += 1;
-        }
-    }
-
-    var scratch: JoinScratch = undefined;
-    const temp_buf = scratch.init(cwd.len, parts);
-    defer scratch.deinit();
-
-    bun.copy(u8, temp_buf, cwd);
-    out = cwd.len;
-
-    for (parts) |_part| {
-        if (_part.len == 0) {
-            continue;
-        }
-
-        const part = _part;
-
-        if (out > 0 and temp_buf[out - 1] != platform.separator()) {
-            temp_buf[out] = platform.separator();
-            out += 1;
-        }
-
-        bun.copy(u8, temp_buf[out..], part);
-        out += part.len;
-    }
-
-    const leading_separator: []const u8 = if (platform.leadingSeparatorIndex(temp_buf[0..out])) |i| brk: {
-        const outdir = temp_buf[0 .. i + 1];
-        break :brk outdir;
-    } else "/";
-
-    const result = normalizeStringBuf(
-        temp_buf[leading_separator.len..out],
-        buf[leading_separator.len..],
-        false,
-        platform,
-        true,
-    );
-
-    bun.copy(u8, buf, leading_separator);
-
-    if (comptime is_sentinel) {
-        buf.ptr[result.len + leading_separator.len] = 0;
-        return buf[0 .. result.len + leading_separator.len :0];
-    } else {
-        return buf[0 .. result.len + leading_separator.len];
-    }
-}
-
-fn _joinAbsStringBufWindows(
-    comptime is_sentinel: bool,
-    comptime ReturnType: type,
+fn resolveBuf(
     cwd: []const u8,
     buf: []u8,
-    parts: []const []const u8,
-) ReturnType {
-    assert(std.fs.path.isAbsoluteWindows(cwd));
+    _parts: anytype,
+    comptime platform: Platform,
+) ?[]u8 {
+    comptime if (platform == .nt) @compileError("NT path resolution is unsupported");
 
-    if (parts.len == 0) {
-        if (comptime is_sentinel) {
-            unreachable;
-        }
-        return cwd;
-    }
+    const parts: []const []const u8 = _parts;
+    var paths_buf: [8][]const u8 = undefined;
+    var paths_allocator: std.heap.BufferFirstAllocator = .init(@ptrCast(&paths_buf), bun.default_allocator);
+    const paths_alloc = paths_allocator.allocator();
+    const paths = bun.handleOom(paths_alloc.alloc([]const u8, parts.len + 1));
+    defer paths_alloc.free(paths);
+    paths[0] = cwd;
+    @memcpy(paths[1..], parts);
 
-    // path.resolve is a bit different on Windows, as there are multiple possible filesystem roots.
-    // When you resolve(`C:\hello`, `C:world`), the second arg is a drive letter relative path, so
-    // the result of such is `C:\hello\world`, but if you used D:world, you would switch roots and
-    // end up with `D:\world`. this root handling basically means a different algorithm.
-    //
-    // to complicate things, it seems node.js will first figure out what the last root is, then
-    // in a separate search, figure out the last absolute path.
-    //
-    // Given the case `resolve("/one", "D:two", "three", "F:four", "five")`
-    // Root is "F:", cwd is "/one", then join all paths that dont exist on other drives.
-    //
-    // Also, the special root "/" can match into anything, but we have to resolve it to a real
-    // root at some point. That is what the `root_of_part.len == 0` check is doing.
-    const root, const set_cwd, const n_start = base: {
-        const root = root: {
-            var n = parts.len;
-            while (n > 0) {
-                n -= 1;
-                const len = windowsVolume(u8, parts[n]).len;
-                if (len > 0) {
-                    break :root parts[n][0..len];
-                }
-            }
-            // use cwd
-            const len = windowsVolume(u8, cwd).len;
-            break :root cwd[0..len];
-        };
+    var output_allocator: std.heap.BufferFirstAllocator = .init(buf, bun.default_allocator);
+    const output_alloc = output_allocator.allocator();
+    const resolved = bun.handleOom(switch (platform) {
+        .posix => std.fs.path.resolvePosix(output_alloc, paths),
+        .windows => std.fs.path.resolveWindows(output_alloc, paths),
+        .nt => unreachable,
+    });
+    defer if (!output_allocator.fixed_buffer_allocator.ownsPtr(resolved.ptr)) output_alloc.free(resolved);
 
-        var n = parts.len;
-        while (n > 0) {
-            n -= 1;
-            if (std.fs.path.isAbsoluteWindows(parts[n])) {
-                const root_of_part = windowsVolume(u8, parts[n]);
-                if (root_of_part.len == 0 or strings.eql(root_of_part, root)) {
-                    break :base .{ root, parts[n][root_of_part.len..], n + 1 };
-                }
-            }
-        }
-        // use cwd only if the root matches
-        const cwd_root = windowsVolume(u8, cwd);
-        if (strings.eql(cwd_root, root)) {
-            break :base .{ root, cwd[cwd_root.len..], 0 };
-        } else {
-            break :base .{ root, "/", 0 };
-        }
-    };
-
-    if (set_cwd.len > 0)
-        assert(Platform.windows.isSeparator(set_cwd[0]));
-
-    var scratch: JoinScratch = undefined;
-    const temp_buf = scratch.init(root.len + set_cwd.len, parts[n_start..]);
-    defer scratch.deinit();
-
-    @memcpy(temp_buf[0..root.len], root);
-    @memcpy(temp_buf[root.len .. root.len + set_cwd.len], set_cwd);
-    var out: usize = root.len + set_cwd.len;
-
-    if (set_cwd.len == 0) {
-        // when cwd is `//server/share` without a suffix `/`, the path is considered absolute
-        temp_buf[out] = '\\';
-        out += 1;
-    }
-
-    for (parts[n_start..]) |part| {
-        if (part.len == 0) continue;
-
-        if (out > 0 and temp_buf[out - 1] != '\\') {
-            temp_buf[out] = '\\';
-            out += 1;
-        }
-
-        // skip over volume name
-        const volume = windowsVolume(u8, part);
-        if (volume.len > 0 and !strings.eqlLong(volume, root, true))
-            continue;
-
-        const part_without_vol = part[volume.len..];
-        @memcpy(temp_buf[out .. out + part_without_vol.len], part_without_vol);
-        out += part_without_vol.len;
-    }
-
-    // if (out > 0 and temp_buf[out - 1] != '\\') {
-    //     temp_buf[out] = '\\';
-    //     out += 1;
-    // }
-
-    const result = normalizeStringBuf(
-        temp_buf[0..out],
-        buf,
-        false,
-        .windows,
-        true,
-    );
-
-    if (comptime is_sentinel) {
-        buf.ptr[result.len] = 0;
-        return buf[0..result.len :0];
-    } else {
-        return buf[0..result.len];
-    }
+    if (resolved.len > buf.len) return null;
+    @memmove(buf[0..resolved.len], resolved);
+    return buf[0..resolved.len];
 }
 
 pub fn normalizeStringPosixT(
