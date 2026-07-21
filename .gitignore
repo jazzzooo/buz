@@ -76,7 +76,6 @@ failing-tests.txt
 github
 make-dev-stats.csv
 misctools/fetch
-misctools/machbench
 misctools/sha
 myscript.sh
 node_modules
