@@ -207,7 +207,7 @@ pub const BuildCommand = struct {
                     break :brk2 std.fs.path.dirname(this_transpiler.options.entry_points[0]) orelse ".";
                 }
 
-                break :brk2 resolve_path.getIfExistsLongestCommonPath(this_transpiler.options.entry_points) orelse ".";
+                break :brk2 resolve_path.commonDirectory(this_transpiler.options.entry_points) orelse ".";
             };
 
             var dir = bun.FD.fromStdDir(bun.openDirForPath(&(try std.posix.toPosixPath(path))) catch |err| {
@@ -480,7 +480,7 @@ pub const BuildCommand = struct {
                 dest.* = src.dest_path;
             }
 
-            const from_path = resolve_path.longestCommonPath(all_paths);
+            const from_path = resolve_path.commonPath(all_paths) orelse "";
 
             var size_padding: usize = 0;
 

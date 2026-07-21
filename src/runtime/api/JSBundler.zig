@@ -777,7 +777,7 @@ pub const JSBundler = struct {
                         break :brk ZigString.Slice.fromUTF8NeverFree(std.fs.path.dirname(entry_points[0]) orelse ".");
                     }
 
-                    break :brk ZigString.Slice.fromUTF8NeverFree(resolve_path.getIfExistsLongestCommonPath(entry_points) orelse ".");
+                    break :brk ZigString.Slice.fromUTF8NeverFree(resolve_path.commonDirectory(entry_points) orelse ".");
                 };
 
                 defer path.deinit();

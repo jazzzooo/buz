@@ -19,30 +19,6 @@ pub fn z(input: []const u8, output: *bun.PathBuffer) [:0]const u8 {
     return output[0..input.len :0];
 }
 
-inline fn nqlAtIndex(comptime string_count: comptime_int, index: usize, input: []const []const u8) bool {
-    comptime var string_index = 1;
-
-    inline while (string_index < string_count) : (string_index += 1) {
-        if (input[0][index] != input[string_index][index]) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-inline fn nqlAtIndexCaseInsensitive(comptime string_count: comptime_int, index: usize, input: []const []const u8) bool {
-    comptime var string_index = 1;
-
-    inline while (string_index < string_count) : (string_index += 1) {
-        if (std.ascii.toLower(input[0][index]) != std.ascii.toLower(input[string_index][index])) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 const ParentEqual = enum {
     parent,
     equal,
@@ -64,178 +40,87 @@ pub fn isParentOrEqual(parent_: []const u8, child: []const u8) ParentEqual {
     return .unrelated;
 }
 
-fn getIfExistsLongestCommonPathGeneric(input: []const []const u8, comptime platform: Platform) ?[]const u8 {
-    const separator = comptime platform.separator();
-    const nqlAtIndexFn = switch (platform) {
-        else => nqlAtIndex,
-        .windows => nqlAtIndexCaseInsensitive,
-    };
+const CommonPath = struct {
+    path: []const u8,
+    all_equal: bool,
+};
 
-    var min_length: usize = std.math.maxInt(usize);
-    for (input) |str| min_length = @min(str.len, min_length);
+fn windowsRootsEqual(a: []const u8, b: []const u8) bool {
+    const parsed_a = std.fs.path.parsePathWindows(u8, a);
+    const parsed_b = std.fs.path.parsePathWindows(u8, b);
+    if (parsed_a.kind != parsed_b.kind) return false;
 
-    var index: usize = 0;
-    var last_common_separator: ?usize = null;
-    switch (input.len) {
-        0 => return "",
-        1 => return input[0],
-        inline 2, 3, 4, 5, 6, 7, 8 => |n| {
-            while (index < min_length) : (index += 1) {
-                if (nqlAtIndexFn(comptime n, index, input)) {
-                    if (last_common_separator == null) return null;
-                    break;
-                }
-                if (platform.isSeparator(input[0][index])) last_common_separator = index;
-            }
-        },
-        else => {
-            var string_index: usize = 1;
-            while (string_index < input.len) : (string_index += 1) {
-                while (index < min_length) : (index += 1) {
-                    const differs = if (platform == .windows)
-                        std.ascii.toLower(input[0][index]) != std.ascii.toLower(input[string_index][index])
-                    else
-                        input[0][index] != input[string_index][index];
-                    if (differs) {
-                        if (last_common_separator == null) return null;
-                        break;
-                    }
-                }
-                if (index == min_length) index -= 1;
-                if (platform.isSeparator(input[0][index])) last_common_separator = index;
-            }
-        },
+    var a_components = std.mem.tokenizeAny(u8, parsed_a.root, "/\\");
+    var b_components = std.mem.tokenizeAny(u8, parsed_b.root, "/\\");
+    while (a_components.next()) |a_component| {
+        const b_component = b_components.next() orelse return false;
+        if (!std.os.windows.eqlIgnoreCaseWtf8(a_component, b_component)) return false;
     }
-
-    if (index == 0) return &([_]u8{separator});
-    if (last_common_separator == null) return &([_]u8{'.'});
-
-    for (input) |str| {
-        if (str.len > index and platform.isSeparator(str[index])) return str[0 .. index + 1];
-    }
-    return input[0][0 .. last_common_separator.? + 1];
+    return b_components.next() == null;
 }
 
-// TODO: is it faster to determine longest_common_separator in the while loop
-// or as an extra step at the end?
-// only boether to check if this function appears in benchmarking
-fn longestCommonPathGeneric(input: []const []const u8, comptime platform: Platform) []const u8 {
-    const separator = comptime platform.separator();
+fn rootsEqual(a: []const u8, b: []const u8) bool {
+    if (comptime bun.Environment.isWindows) return windowsRootsEqual(a, b);
 
-    const nqlAtIndexFn = switch (platform) {
-        else => nqlAtIndex,
-        .windows => nqlAtIndexCaseInsensitive,
-    };
-
-    var min_length: usize = std.math.maxInt(usize);
-    for (input) |str| {
-        min_length = @min(str.len, min_length);
-    }
-
-    var index: usize = 0;
-    var last_common_separator: usize = 0;
-
-    // try to use an unrolled version of this loop
-    switch (input.len) {
-        0 => {
-            return "";
-        },
-        1 => {
-            return input[0];
-        },
-        inline 2, 3, 4, 5, 6, 7, 8 => |n| {
-            // If volume IDs do not match on windows, we can't have a common path
-            if (platform == .windows) {
-                const first_root = std.fs.path.parsePathWindows(u8, input[0]).root;
-                comptime var i = 1;
-                inline while (i < n) : (i += 1) {
-                    const root = std.fs.path.parsePathWindows(u8, input[i]).root;
-                    if (!strings.eqlCaseInsensitiveASCIIICheckLength(first_root, root)) {
-                        return "";
-                    }
-                }
-            }
-
-            while (index < min_length) : (index += 1) {
-                if (nqlAtIndexFn(comptime n, index, input)) {
-                    break;
-                }
-                if (platform.isSeparator(input[0][index])) {
-                    last_common_separator = index;
-                }
-            }
-        },
-        else => {
-            // If volume IDs do not match on windows, we can't have a common path
-            if (platform == .windows) {
-                const first_root = std.fs.path.parsePathWindows(u8, input[0]).root;
-                var i: usize = 1;
-                while (i < input.len) : (i += 1) {
-                    const root = std.fs.path.parsePathWindows(u8, input[i]).root;
-                    if (!strings.eqlCaseInsensitiveASCIIICheckLength(first_root, root)) {
-                        return "";
-                    }
-                }
-            }
-
-            var string_index: usize = 1;
-            while (string_index < input.len) : (string_index += 1) {
-                while (index < min_length) : (index += 1) {
-                    if (platform == .windows) {
-                        if (std.ascii.toLower(input[0][index]) != std.ascii.toLower(input[string_index][index])) {
-                            break;
-                        }
-                    } else {
-                        if (input[0][index] != input[string_index][index]) {
-                            break;
-                        }
-                    }
-                }
-                if (index == min_length) index -= 1;
-                if (platform.isSeparator(input[0][index])) {
-                    last_common_separator = index;
-                }
-            }
-        },
-    }
-
-    if (index == 0) {
-        return &([_]u8{separator});
-    }
-
-    // The above won't work for a case like this:
-    // /app/public/index.js
-    // /app/public
-    // It will return:
-    // /app/
-    // It should return:
-    // /app/public/
-    // To detect /app/public is actually a folder, we do one more loop through the strings
-    // and say, "do one of you have a path separator after what we thought was the end?"
-    var idx = input.len; // Use this value as an invalid value.
-    for (input, 0..) |str, i| {
-        if (str.len > index) {
-            if (platform.isSeparator(str[index])) {
-                idx = i;
-            } else {
-                idx = input.len;
-                break;
-            }
-        }
-    }
-    if (idx != input.len) {
-        return input[idx][0 .. index + 1];
-    }
-
-    return input[0][0 .. last_common_separator + 1];
+    const a_root = std.fs.path.componentIterator(a).root();
+    const b_root = std.fs.path.componentIterator(b).root();
+    if (a_root) |root| return b_root != null and std.mem.eql(u8, root, b_root.?);
+    return b_root == null;
 }
 
-pub fn longestCommonPath(input: []const []const u8) []const u8 {
-    return longestCommonPathGeneric(input, Platform.auto);
+fn componentsEqual(a: []const u8, b: []const u8) bool {
+    if (comptime bun.Environment.isWindows) return std.os.windows.eqlIgnoreCaseWtf8(a, b);
+    return std.mem.eql(u8, a, b);
 }
 
-pub fn getIfExistsLongestCommonPath(input: []const []const u8) ?[]const u8 {
-    return getIfExistsLongestCommonPathGeneric(input, Platform.auto);
+fn commonPathInfo(input: []const []const u8) ?CommonPath {
+    if (input.len == 0) return null;
+    if (input.len == 1) return .{ .path = input[0], .all_equal = true };
+
+    const first = input[0];
+    var first_components = std.fs.path.componentIterator(first);
+    var common_component_count: usize = 0;
+    while (first_components.next()) |_| common_component_count += 1;
+
+    var all_equal = true;
+    for (input[1..]) |path| {
+        if (!rootsEqual(first, path)) return null;
+
+        var a_components = std.fs.path.componentIterator(first);
+        var b_components = std.fs.path.componentIterator(path);
+        var matched: usize = 0;
+        const equal = while (true) {
+            const a_component = a_components.next();
+            const b_component = b_components.next();
+            if (a_component == null or b_component == null) break a_component == null and b_component == null;
+            if (!componentsEqual(a_component.?.name, b_component.?.name)) break false;
+            matched += 1;
+        };
+
+        common_component_count = @min(common_component_count, matched);
+        all_equal = all_equal and equal;
+    }
+
+    if (all_equal) return .{ .path = first, .all_equal = true };
+
+    var components = std.fs.path.componentIterator(first);
+    if (common_component_count == 0) {
+        return if (components.root()) |root| .{ .path = root, .all_equal = false } else null;
+    }
+
+    var common = components.next().?;
+    for (1..common_component_count) |_| common = components.next().?;
+    return .{ .path = common.path, .all_equal = false };
+}
+
+pub fn commonPath(input: []const []const u8) ?[]const u8 {
+    return (commonPathInfo(input) orelse return null).path;
+}
+
+pub fn commonDirectory(input: []const []const u8) ?[]const u8 {
+    const common = commonPathInfo(input) orelse return null;
+    if (!common.all_equal or (common.path.len > 0 and std.fs.path.isSep(common.path[common.path.len - 1]))) return common.path;
+    return std.fs.path.dirname(common.path);
 }
 
 pub fn hasAnyIllegalChars(maybe_path: []const u8) bool {
