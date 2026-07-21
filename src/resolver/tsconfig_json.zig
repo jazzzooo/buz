@@ -99,10 +99,12 @@ pub const TSConfigJSON = struct {
     // "${configDir}" with "./" and then convert it to an absolute path sometimes.
     // We convert it to an absolute path during module resolution, so we shouldn't need to do that here.
     // https://github.com/microsoft/TypeScript/blob/ef802b1e4ddaf8d6e61d6005614dd796520448f8/src/compiler/commandLineParser.ts#L3243-L3245
-    fn strReplacingTemplates(allocator: std.mem.Allocator, input: string, source: *const logger.Source) bun.OOM!string {
+    fn parsePathString(allocator: std.mem.Allocator, input: string, source: *const logger.Source) bun.OOM!string {
         var remaining = input;
         var string_builder = bun.StringBuilder{};
         const configDir = std.fs.path.dirname(source.path.text) orelse ".";
+        const non_native_separator = if (std.fs.path.sep == '/') '\\' else '/';
+        const normalize_separators = std.mem.indexOfScalar(u8, input, non_native_separator) != null;
 
         // There's only one template variable we support, so we can keep this simple for now.
         while (strings.indexOf(remaining, "${configDir}")) |index| {
@@ -111,9 +113,13 @@ pub const TSConfigJSON = struct {
             remaining = remaining[index + "${configDir}".len ..];
         }
 
-        // If we didn't find any template variables, return the original string without allocating.
+        // If we didn't find any template variables or non-native path separators, return the original string without allocating.
         if (remaining.len == input.len) {
-            return input;
+            if (!normalize_separators) return input;
+
+            const normalized = try allocator.dupe(u8, input);
+            std.mem.replaceScalar(u8, normalized, non_native_separator, std.fs.path.sep);
+            return normalized;
         }
 
         string_builder.countZ(remaining);
@@ -129,7 +135,11 @@ pub const TSConfigJSON = struct {
         // The extra null-byte here is unnecessary. But it's kind of nice in the debugger sometimes.
         _ = string_builder.appendZ(remaining);
 
-        return string_builder.allocatedSlice()[0 .. string_builder.len - 1];
+        const result = string_builder.allocatedSlice()[0 .. string_builder.len - 1];
+        if (normalize_separators) {
+            std.mem.replaceScalar(u8, result, non_native_separator, std.fs.path.sep);
+        }
+        return result;
     }
 
     pub fn parse(
@@ -167,7 +177,7 @@ pub const TSConfigJSON = struct {
             // Parse "baseUrl"
             if (compiler_opts.expr.asProperty("baseUrl")) |base_url_prop| {
                 if ((base_url_prop.expr.asString(allocator))) |base_url| {
-                    result.base_url = strReplacingTemplates(allocator, base_url, source) catch return null;
+                    result.base_url = parsePathString(allocator, base_url, source) catch return null;
                     has_base_url = true;
                 }
             }
@@ -325,7 +335,7 @@ pub const TSConfigJSON = struct {
                                         var count: usize = 0;
                                         for (array) |expr| {
                                             if ((expr.asString(allocator))) |str_| {
-                                                const str = strReplacingTemplates(allocator, str_, source) catch return null;
+                                                const str = parsePathString(allocator, str_, source) catch return null;
                                                 errdefer allocator.free(str);
                                                 if (TSConfigJSON.isValidTSConfigPathPattern(
                                                     str,

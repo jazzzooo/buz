@@ -299,7 +299,7 @@ pub const Lookup = struct {
                 std.fs.path.dirname(base_filename) orelse "",
                 &buf,
                 &.{name},
-                .loose,
+                .auto,
             );
             switch (bun.sys.File.readFrom(
                 std.Io.Dir.cwd(),

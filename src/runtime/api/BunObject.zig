@@ -703,7 +703,7 @@ pub fn getPublicPath(to: string, origin: URL, writer: *std.Io.Writer) void {
         origin,
         "",
         writer,
-        .loose,
+        .auto,
     );
 }
 
@@ -719,13 +719,19 @@ pub fn getPublicPathWithAssetPrefix(
         const relative_path = bun.handleOom(switch (platform) {
             .posix => std.fs.path.relativePosix(bun.default_allocator, "/", dir, to),
             .windows, .nt => std.fs.path.relativeWindows(bun.default_allocator, dir, null, dir, to),
-            .loose => std.fs.path.relative(bun.default_allocator, dir, null, dir, to),
         });
-        if (platform == .loose) bun.path.platformToPosixInPlace(u8, relative_path);
         break :brk relative_path;
     };
     defer if (relative_path_owned) |path| bun.default_allocator.free(path);
-    const relative_path = relative_path_owned orelse strings.withoutTrailingSlash(to[dir.len..]);
+    const relative_path_native = relative_path_owned orelse strings.withoutTrailingSlash(to[dir.len..]);
+    var relative_path_buf: bun.PathBuffer = undefined;
+    const relative_path = switch (platform) {
+        .posix => relative_path_native,
+        .windows, .nt => if (relative_path_owned) |path| brk: {
+            std.mem.replaceScalar(u8, path, '\\', '/');
+            break :brk path;
+        } else bun.path.pathToPosixBuf(u8, relative_path_native, &relative_path_buf),
+    };
     if (origin.isAbsolute()) {
         if (strings.hasPrefix(relative_path, "..") or strings.hasPrefix(relative_path, "./")) {
             writer.writeAll(origin.origin) catch return;

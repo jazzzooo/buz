@@ -1974,13 +1974,13 @@ pub const RunCommand = struct {
             filename
         else brk: {
             const cwd = try bun.getcwd(&path_buf);
-            path_buf[cwd.len] = std.fs.path.sep_posix;
+            path_buf[cwd.len] = std.fs.path.sep;
             var parts = [_]string{filename};
             break :brk resolve_path.joinAbsStringBuf(
                 path_buf[0 .. cwd.len + 1],
                 &path_buf2,
                 &parts,
-                .loose,
+                .auto,
             );
         };
 

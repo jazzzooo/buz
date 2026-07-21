@@ -189,7 +189,7 @@ pub const URL = struct {
             bun.copy(u8, buf[buf_i..], part);
             buf_i += part.len;
         }
-        return resolve_path.normalizeStringBuf(buf[0..buf_i], out, false, .loose, false);
+        return resolve_path.normalizeStringBuf(buf[0..buf_i], out, false, .posix, false);
     }
 
     pub fn joinWrite(

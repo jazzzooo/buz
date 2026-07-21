@@ -884,7 +884,7 @@ fn resolveEntryPointSpecifier(
             var pathbuf: bun.PathBuffer = undefined;
             var base = str;
 
-            base = bun.path.joinAbsStringBuf(bun.StandaloneModuleGraph.base_public_path_with_default_suffix, &pathbuf, &.{str}, .loose);
+            base = bun.path.joinAbsStringBuf(bun.StandaloneModuleGraph.base_public_path_with_default_suffix, &pathbuf, &.{str}, .auto);
             const extname = std.fs.path.extension(base);
 
             // ./foo -> ./foo.js

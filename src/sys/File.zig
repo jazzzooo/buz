@@ -465,7 +465,7 @@ pub fn readFromUserInput(dir_fd: anytype, input_path: anytype, allocator: std.me
         bun.fs.FileSystem.instance.top_level_dir,
         &buf,
         &.{input_path},
-        .loose,
+        .auto,
     );
     return readFrom(dir_fd, normalized, allocator);
 }

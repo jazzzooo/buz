@@ -224,8 +224,8 @@ pub fn generateFiles(io: std.Io, allocator: std.mem.Allocator, entry_point: stri
     else
         null;
     defer if (normalized_name_owned) |name| allocator.free(name);
-    if (normalized_name_owned) |name| bun.path.platformToPosixInPlace(u8, name);
-    var normalized_name: []const u8 = normalized_name_owned orelse bun.path.normalizeBuf(entry_point, &normalized_buf, .loose);
+    var normalized_name = normalized_name_owned orelse bun.path.normalizeBuf(entry_point, &normalized_buf, .auto);
+    bun.path.platformToPosixInPlace(u8, normalized_name);
 
     if (extension.len > 0) {
         normalized_name = normalized_name[0 .. normalized_name.len - extension.len];

@@ -112,16 +112,21 @@ pub const JSBundler = struct {
                 const buf = bun.path_buffer_pool.get();
                 defer bun.path_buffer_pool.put(buf);
                 const parsed = std.fs.path.parsePathWindows(u8, normalized_source_file);
-                const effective_source_dir = switch (parsed.kind) {
-                    .drive_absolute, .unc_absolute, .root_local_device, .local_device => std.fs.path.dirnameWindows(normalized_source_file) orelse parsed.root,
-                    else => std.fs.path.dirnamePosix(normalized_source_file) orelse Fs.FileSystem.instance.top_level_dir,
+                const joined = switch (parsed.kind) {
+                    .drive_absolute, .unc_absolute, .root_local_device, .local_device => bun.path.joinAbsStringBuf(
+                        std.fs.path.dirnameWindows(normalized_source_file) orelse parsed.root,
+                        buf,
+                        &.{specifier},
+                        .windows,
+                    ),
+                    else => bun.path.joinAbsStringBuf(
+                        std.fs.path.dirnamePosix(normalized_source_file) orelse Fs.FileSystem.instance.top_level_dir,
+                        buf,
+                        &.{specifier},
+                        .posix,
+                    ),
                 };
-                // Use .loose to preserve Windows drive letters, then normalize in-place on Windows
-                const joined_len = bun.path.joinAbsStringBuf(effective_source_dir, buf, &.{specifier}, .loose).len;
-                if (bun.Environment.isWindows) {
-                    bun.path.platformToPosixInPlace(u8, buf[0..joined_len]);
-                }
-                const joined = buf[0..joined_len];
+                std.mem.replaceScalar(u8, buf[0..joined.len], '\\', '/');
                 // Must use getKey to return the map's owned key, not the temporary buffer
                 if (self.map.getKey(joined)) |key| {
                     return _resolver.Result{

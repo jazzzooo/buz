@@ -147,7 +147,7 @@ pub const FilterSet = struct {
             const is_path = filter_utf8.len > 0 and filter_utf8[0] == '.';
             if (is_path) {
                 const parts = [_]string{filter_utf8};
-                const filter_utf8_temp = try allocator.dupe(u8, bun.path.joinAbsStringBuf(cwd, &buf, &parts, .loose));
+                const filter_utf8_temp = try allocator.dupe(u8, bun.path.joinAbsStringBuf(cwd, &buf, &parts, .auto));
                 std.mem.replaceScalar(u8, filter_utf8_temp, '\\', '/');
                 filter_utf8 = filter_utf8_temp;
                 try list.append(.{

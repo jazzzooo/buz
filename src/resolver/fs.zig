@@ -425,7 +425,7 @@ pub const FileSystem = struct {
         const joined = path_handler.joinAbsString(
             f.top_level_dir,
             parts,
-            .loose,
+            .auto,
         );
         return try allocator.dupe(u8, joined);
     }
@@ -434,7 +434,7 @@ pub const FileSystem = struct {
         const joined = path_handler.joinAbsString(
             f.top_level_dir,
             parts,
-            .loose,
+            .auto,
         );
         return try allocator.dupeSentinel(u8, joined, 0);
     }
@@ -443,23 +443,23 @@ pub const FileSystem = struct {
         return path_handler.joinAbsString(
             f.top_level_dir,
             parts,
-            .loose,
+            .auto,
         );
     }
 
     pub fn absBuf(f: *@This(), parts: anytype, buf: []u8) string {
-        return path_handler.joinAbsStringBuf(f.top_level_dir, buf, parts, .loose);
+        return path_handler.joinAbsStringBuf(f.top_level_dir, buf, parts, .auto);
     }
 
     /// Like `absBuf`, but returns null when the joined path (after `..`/`.`
     /// normalization) would overflow `buf`. Use when `parts` may contain
     /// user-controlled input of arbitrary length.
     pub fn absBufChecked(f: *@This(), parts: []const string, buf: []u8) ?string {
-        return path_handler.joinAbsStringBufChecked(f.top_level_dir, buf, parts, .loose);
+        return path_handler.joinAbsStringBufChecked(f.top_level_dir, buf, parts, .auto);
     }
 
     pub fn absBufZ(f: *@This(), parts: anytype, buf: []u8) stringZ {
-        return path_handler.joinAbsStringBufZ(f.top_level_dir, buf, parts, .loose);
+        return path_handler.joinAbsStringBufZ(f.top_level_dir, buf, parts, .auto);
     }
 
     pub fn printLimits() void {
@@ -515,7 +515,7 @@ pub const FileSystem = struct {
                     if (bun.env_var.HOME.get()) |profile| {
                         var buf: bun.PathBuffer = undefined;
                         var parts = [_]string{"AppData\\Local\\Temp"};
-                        const out = bun.path.joinAbsStringBuf(profile, &buf, &parts, .loose);
+                        const out = bun.path.joinAbsStringBuf(profile, &buf, &parts, .windows);
                         return bun.handleOom(bun.default_allocator.dupe(u8, out));
                     }
 

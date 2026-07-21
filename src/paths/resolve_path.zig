@@ -241,11 +241,11 @@ fn longestCommonPathGeneric(input: []const []const u8, comptime platform: Platfo
 }
 
 pub fn longestCommonPath(input: []const []const u8) []const u8 {
-    return longestCommonPathGeneric(input, .loose);
+    return longestCommonPathGeneric(input, Platform.auto);
 }
 
 pub fn getIfExistsLongestCommonPath(input: []const []const u8) ?[]const u8 {
-    return getIfExistsLongestCommonPathGeneric(input, .loose);
+    return getIfExistsLongestCommonPathGeneric(input, Platform.auto);
 }
 
 fn windowsVolume(comptime T: type, path: []const T) []const T {
@@ -480,7 +480,6 @@ pub fn normalizeStringGenericTZ(
 }
 
 pub const Platform = enum {
-    loose,
     windows,
     posix,
     nt,
@@ -488,7 +487,7 @@ pub const Platform = enum {
     pub const auto: Platform = switch (bun.Environment.os) {
         .windows => .windows,
         .linux, .mac, .freebsd => .posix,
-        .wasm => .loose,
+        .wasm => .posix,
     };
 
     pub fn isAbsolute(comptime platform: Platform, path: []const u8) bool {
@@ -501,7 +500,6 @@ pub const Platform = enum {
             .posix => path.len > 0 and path[0] == '/',
             .nt,
             .windows,
-            .loose,
             => if (T == u8)
                 std.fs.path.isAbsoluteWindows(path)
             else
@@ -511,31 +509,27 @@ pub const Platform = enum {
 
     pub inline fn separator(comptime platform: Platform) u8 {
         return switch (platform) {
-            .loose, .posix => std.fs.path.sep_posix,
+            .posix => std.fs.path.sep_posix,
             .nt, .windows => std.fs.path.sep_windows,
         };
     }
 
     pub inline fn separatorString(comptime platform: Platform) []const u8 {
         return switch (platform) {
-            .loose, .posix => std.fs.path.sep_str_posix,
+            .posix => std.fs.path.sep_str_posix,
             .nt, .windows => std.fs.path.sep_str_windows,
         };
     }
 
     pub inline fn pathType(comptime platform: Platform) std.fs.path.PathType {
         return switch (platform) {
-            .loose, .nt, .windows => .windows,
+            .nt, .windows => .windows,
             .posix => .posix,
         };
     }
 
     pub fn lastIndexOfSeparator(comptime platform: Platform, comptime T: type, path: []const T) ?usize {
         return switch (platform) {
-            .loose => if (bun.Environment.isWindows)
-                std.mem.lastIndexOfAny(T, path, strings.literal(T, "/\\"))
-            else
-                std.mem.lastIndexOfScalar(T, path, std.fs.path.sep_posix),
             .nt, .windows => std.mem.lastIndexOfAny(T, path, strings.literal(T, "/\\")),
             .posix => std.mem.lastIndexOfScalar(T, path, std.fs.path.sep_posix),
         };
@@ -552,7 +546,7 @@ pub const Platform = enum {
     pub fn trailingSeparator(comptime platform: Platform) [2]u8 {
         return switch (platform) {
             .nt, .windows => ".\\".*,
-            .posix, .loose => "./".*,
+            .posix => "./".*,
         };
     }
 
@@ -591,8 +585,6 @@ pub const Platform = enum {
                     return null;
                 }
             },
-            .loose => return leadingSeparatorIndex(.windows, path) orelse
-                leadingSeparatorIndex(.posix, path),
         }
     }
 };
@@ -662,17 +654,7 @@ pub fn normalizeStringBufT(
             );
         },
         .posix => {
-            return normalizeStringLooseBufT(
-                T,
-                str,
-                buf,
-                allow_above_root,
-                preserve_trailing_slash,
-            );
-        },
-
-        .loose => {
-            return normalizeStringLooseBufT(
+            return normalizeStringPosixT(
                 T,
                 str,
                 buf,
@@ -771,9 +753,7 @@ pub fn joinAbsStringBufZ(cwd: []const u8, buf: []u8, _parts: anytype, comptime p
 }
 
 fn _joinAbsStringBuf(comptime is_sentinel: bool, comptime ReturnType: type, _cwd: []const u8, buf: []u8, _parts: anytype, comptime platform: Platform) ReturnType {
-    if (platform == .windows or
-        (bun.Environment.os == .windows and platform == .loose))
-    {
+    if (platform == .windows) {
         return _joinAbsStringBufWindows(is_sentinel, ReturnType, _cwd, buf, _parts);
     }
 
@@ -795,7 +775,7 @@ fn _joinAbsStringBuf(comptime is_sentinel: bool, comptime ReturnType: type, _cwd
         return _cwd;
     }
 
-    if ((comptime platform == .loose or platform == .posix) and
+    if (platform == .posix and
         parts.len == 1 and
         parts[0].len == 1 and
         parts[0][0] == std.fs.path.sep_posix)
@@ -851,14 +831,6 @@ fn _joinAbsStringBuf(comptime is_sentinel: bool, comptime ReturnType: type, _cwd
 
     const leading_separator: []const u8 = if (platform.leadingSeparatorIndex(temp_buf[0..out])) |i| brk: {
         const outdir = temp_buf[0 .. i + 1];
-        if (platform == .loose) {
-            for (outdir) |*c| {
-                if (c.* == '\\') {
-                    c.* = '/';
-                }
-            }
-        }
-
         break :brk outdir;
     } else "/";
 
@@ -999,7 +971,7 @@ fn _joinAbsStringBufWindows(
     }
 }
 
-pub fn normalizeStringLooseBufT(
+pub fn normalizeStringPosixT(
     comptime T: type,
     str: []const T,
     buf: []T,
@@ -1012,7 +984,7 @@ pub fn normalizeStringLooseBufT(
         buf,
         allow_above_root,
         std.fs.path.sep_posix,
-        .windows,
+        .posix,
         preserve_trailing_slash,
     );
 }

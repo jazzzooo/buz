@@ -862,7 +862,7 @@ pub const Resolver = struct {
                 } else if (bun.StandaloneModuleGraph.isBunStandaloneFilePath(source_dir)) {
                     if (import_path.len > 2 and isDotSlash(import_path[0..2])) {
                         const buf = bufs(.import_path_for_standalone_module_graph);
-                        const joined = bun.path.joinAbsStringBuf(source_dir, buf, &.{import_path}, .loose);
+                        const joined = bun.path.joinAbsStringBuf(source_dir, buf, &.{import_path}, .auto);
 
                         // Support relative paths in the graph
                         if (graph.findAssumeStandalonePath(joined)) |file| {
