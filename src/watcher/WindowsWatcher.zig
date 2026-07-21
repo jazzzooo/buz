@@ -236,11 +236,10 @@ pub fn watchLoopCycle(this: *bun.Watcher) bun.sys.Maybe(void) {
             for (item_paths, 0..) |path, item_idx| {
                 // check if the current change applies to this item
                 // if so, add it to the eventlist
-                const rel = bun.path.isParentOrEqual(path, eventpath);
-                log("checking path: {s} = .{s}", .{ path, @tagName(rel) });
+                const relation = bun.path.ancestorRelation(path, eventpath);
+                log("checking path: {s} = .{s}", .{ path, @tagName(relation) });
                 // skip unrelated items
-                if (rel == .unrelated) continue;
-                // if the event is for a parent dir of the item, only emit it if it's a delete or rename
+                if (relation == .unrelated) continue;
 
                 // Check if we're about to exceed the watch_events array capacity
                 if (event_id >= this.watch_events.len) {

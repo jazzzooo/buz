@@ -386,8 +386,7 @@ fn appendFileAssumeCapacity(
 ) bun.sys.Maybe(void) {
     if (comptime Environment.isWindows) {
         // on windows we can only watch items that are in the directory tree of the top level dir
-        const rel = bun.path.isParentOrEqual(this.fs.top_level_dir, file_path);
-        if (rel == .unrelated) {
+        if (bun.path.ancestorRelation(this.fs.top_level_dir, file_path) == .unrelated) {
             Output.warn("File {s} is not in the project directory and will not be watched\n", .{file_path});
             return .success;
         }
@@ -438,8 +437,7 @@ fn appendDirectoryAssumeCapacity(
 ) bun.sys.Maybe(WatchItemIndex) {
     if (comptime Environment.isWindows) {
         // on windows we can only watch items that are in the directory tree of the top level dir
-        const rel = bun.path.isParentOrEqual(this.fs.top_level_dir, file_path);
-        if (rel == .unrelated) {
+        if (bun.path.ancestorRelation(this.fs.top_level_dir, file_path) == .unrelated) {
             Output.warn("Directory {s} is not in the project directory and will not be watched\n", .{file_path});
             return .{ .result = no_watch_item };
         }
@@ -608,7 +606,7 @@ pub fn appendFileMaybeLock(
 }
 
 inline fn isEligibleDirectory(this: *Watcher, dir: string) bool {
-    return bun.path.isParentOrEqual(this.fs.top_level_dir, dir) != .unrelated and
+    return bun.path.ancestorRelation(this.fs.top_level_dir, dir) != .unrelated and
         !strings.pathContainsNodeModulesFolder(dir);
 }
 
@@ -787,7 +785,7 @@ pub fn onMaybeWatchDirectory(watch: *Watcher, file_path: string, dir_fd: bun.FD)
     // We don't want to watch:
     // - Directories outside the root directory
     // - Directories inside node_modules
-    if (bun.path.isParentOrEqual(watch.fs.top_level_dir, file_path) != .unrelated and
+    if (bun.path.ancestorRelation(watch.fs.top_level_dir, file_path) != .unrelated and
         !strings.pathContainsNodeModulesFolder(file_path))
     {
         _ = watch.addDirectory(dir_fd, file_path, false);

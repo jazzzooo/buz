@@ -35,9 +35,9 @@ pub const PackageJSON = struct {
             return this.name;
         } else {
             const package_dir = std.fs.path.dirname(this.source.path.text) orelse return this.name;
-            const project_dir = strings.withoutTrailingSlashWindowsPath(fs.FileSystem.instance.top_level_dir);
-            switch (bun.path.isParentOrEqual(project_dir, package_dir)) {
-                .parent => {
+            const project_dir = fs.FileSystem.instance.top_level_dir;
+            switch (bun.path.ancestorRelation(project_dir, package_dir)) {
+                .ancestor => {
                     const relative_dir = try std.fs.path.relative(allocator, project_dir, null, project_dir, package_dir);
                     defer allocator.free(relative_dir);
                     return std.fmt.allocPrint(allocator, ".{c}{s}{c}", .{ std.fs.path.sep, relative_dir, std.fs.path.sep });

@@ -19,25 +19,23 @@ pub fn z(input: []const u8, output: *bun.PathBuffer) [:0]const u8 {
     return output[0..input.len :0];
 }
 
-const ParentEqual = enum {
-    parent,
+pub const AncestorRelation = enum {
+    ancestor,
     equal,
     unrelated,
 };
 
-pub fn isParentOrEqual(parent_: []const u8, child: []const u8) ParentEqual {
-    const parent = strings.withoutTrailingSlashWindowsPath(parent_);
-    const normalized_child = strings.withoutTrailingSlashWindowsPath(child);
-    const startsWith = if (comptime !bun.Environment.isLinux)
-        strings.startsWithCaseInsensitiveAscii
-    else
-        strings.startsWith;
-    if (!startsWith(normalized_child, parent)) return .unrelated;
+pub fn ancestorRelation(ancestor: []const u8, descendant: []const u8) AncestorRelation {
+    if (!rootsEqual(ancestor, descendant)) return .unrelated;
 
-    if (normalized_child.len == parent.len) return .equal;
-    if (parent.len > 0 and std.fs.path.PathType.windows.isSep(u8, parent[parent.len - 1])) return .parent;
-    if (std.fs.path.PathType.windows.isSep(u8, normalized_child[parent.len])) return .parent;
-    return .unrelated;
+    var ancestor_components = std.fs.path.componentIterator(ancestor);
+    var descendant_components = std.fs.path.componentIterator(descendant);
+    while (ancestor_components.next()) |ancestor_component| {
+        const descendant_component = descendant_components.next() orelse return .unrelated;
+        if (!componentsEqual(ancestor_component.name, descendant_component.name)) return .unrelated;
+    }
+
+    return if (descendant_components.next() == null) .equal else .ancestor;
 }
 
 const CommonPath = struct {
@@ -343,5 +341,3 @@ pub fn posixToPlatformInPlace(comptime T: type, path_buffer: []T) void {
 const std = @import("std");
 
 const bun = @import("bun");
-const assert = bun.assert;
-const strings = bun.strings;
