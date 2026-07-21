@@ -36,10 +36,6 @@ pub const FolderResolution = union(Tag) {
 
     pub const Map = std.HashMapUnmanaged(u64, FolderResolution, IdentityContext(u64), 80);
 
-    pub fn normalize(path: string) string {
-        return FileSystem.instance.normalize(path);
-    }
-
     pub fn hash(normalized_path: string) u64 {
         return bun.hash(normalized_path);
     }
@@ -102,13 +98,17 @@ pub const FolderResolution = union(Tag) {
     ) Paths {
         var abs: string = "";
         var rel: string = "";
+        var normalized_buf: bun.PathBuffer = undefined;
         // We consider it valid if there is a package.json in the folder
         const normalized = if (non_normalized_path.len == 1 and non_normalized_path[0] == '.')
             non_normalized_path
         else if (std.fs.path.isAbsolute(non_normalized_path))
             std.mem.trimEnd(u8, non_normalized_path, std.fs.path.sep_str)
-        else
-            std.mem.trimEnd(u8, normalize(non_normalized_path), std.fs.path.sep_str);
+        else normalized: {
+            var fba = std.heap.FixedBufferAllocator.init(&normalized_buf);
+            const resolved = std.fs.path.resolve(fba.allocator(), &.{non_normalized_path}) catch @panic("normalized package path exceeds buffer");
+            break :normalized std.mem.trimEnd(u8, resolved, std.fs.path.sep_str);
+        };
 
         if (strings.startsWithChar(normalized, '.')) {
             var tempcat: bun.PathBuffer = undefined;

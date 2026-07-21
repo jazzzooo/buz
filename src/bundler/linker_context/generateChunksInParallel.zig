@@ -241,8 +241,7 @@ pub fn generateChunksInParallel(
             // resolve any /./ and /../ occurrences
             // use resolvePosix since we asserted above all seps are '/'
             if (Environment.isWindows and std.mem.indexOf(u8, rel_path, "/./") != null) {
-                var buf: bun.PathBuffer = undefined;
-                const rel_path_fixed = bun.handleOom(c.allocator().dupe(u8, bun.path.normalizeBuf(rel_path, &buf, .posix)));
+                const rel_path_fixed = bun.handleOom(std.fs.path.resolvePosix(c.allocator(), &.{rel_path}));
                 chunk.final_rel_path = rel_path_fixed;
                 continue;
             }

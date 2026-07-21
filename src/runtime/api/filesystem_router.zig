@@ -240,7 +240,8 @@ pub const FileSystemRouter = struct {
         var vm = globalThis.bunVM();
         var path = inputPath;
         if (comptime Environment.isWindows) {
-            path = vm.transpiler.resolver.fs.normalizeBuf(&win32_normalize_bufs.get().buf, path);
+            var fba = std.heap.FixedBufferAllocator.init(&win32_normalize_bufs.get().buf);
+            path = std.fs.path.resolveWindows(fba.allocator(), &.{path}) catch return;
         }
 
         const root_dir_info = vm.transpiler.resolver.readDirInfo(path) catch {

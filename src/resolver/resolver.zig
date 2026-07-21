@@ -2740,15 +2740,8 @@ pub const Resolver = struct {
 
         if (comptime Environment.isWindows) {
             const win32_normalized_dir_info_cache_buf = bufs(.win32_normalized_dir_info_cache);
-            input_path = r.fs.normalizeBuf(win32_normalized_dir_info_cache_buf, input_path);
-            // kind of a patch on the fact normalizeBuf isn't 100% perfect what we want
-            if ((input_path.len == 2 and input_path[1] == ':') or
-                (input_path.len == 3 and input_path[1] == ':' and input_path[2] == '.'))
-            {
-                bun.unsafeAssert(input_path.ptr == win32_normalized_dir_info_cache_buf);
-                win32_normalized_dir_info_cache_buf[2] = '\\';
-                input_path.len = 3;
-            }
+            var fba = std.heap.FixedBufferAllocator.init(win32_normalized_dir_info_cache_buf);
+            input_path = std.fs.path.resolveWindows(fba.allocator(), &.{input_path}) catch return null;
 
             // Filter out \\hello\, a UNC server path but without a share.
             // When there isn't a share name, such path is not considered to exist.
@@ -3387,7 +3380,8 @@ pub const Resolver = struct {
         }
 
         // Normalize the path so we can compare against it without getting confused by "./"
-        const cleaned = r.fs.normalizeBuf(bufs(.check_browser_map), input_path);
+        var fba = std.heap.FixedBufferAllocator.init(bufs(.check_browser_map));
+        const cleaned = std.fs.path.resolve(fba.allocator(), &.{input_path}) catch return null;
 
         if (cleaned.len == 1 and cleaned[0] == '.') {
             // No bundler supports remapping ".", so we don't either

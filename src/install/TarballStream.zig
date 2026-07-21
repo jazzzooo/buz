@@ -548,32 +548,19 @@ fn beginEntry(this: *TarballStream, entry: *lib.Archive.Entry) !void {
     pathname = rest.ptr[0..rest.len :0];
 
     var norm_buf: bun.OSPathBuffer = undefined;
-    const normalized = bun.path.normalizeBufT(bun.OSPathChar, pathname, &norm_buf, .auto);
-    norm_buf[normalized.len] = 0;
-    const path: [:0]bun.OSPathChar = norm_buf[0..normalized.len :0];
-    if (path.len == 0 or (path.len == 1 and path[0] == '.')) {
+    const normalized = bun.libarchive.resolveRelativeArchivePath(pathname, norm_buf[0 .. norm_buf.len - 1]) orelse {
         this.phase = .want_data;
         this.out_fd = null;
         return;
-    }
-    // `normalizeBufT` collapses interior `..` but leaves a leading `..`
-    // on a relative input. Reject those so `openat(dest_fd, ...)` can
-    // never escape the temp extraction root. `Archiver.extractToDir`
-    // sees the same normalised path; this check is belt-and-braces on
-    // top of the integrity gate.
-    if (path.len >= 2 and path[0] == '.' and path[1] == '.' and
-        (path.len == 2 or path[2] == std.fs.path.sep))
-    {
+    };
+    norm_buf[normalized.len] = 0;
+    const path: [:0]bun.OSPathChar = norm_buf[0..normalized.len :0];
+    if (path.len == 0) {
         this.phase = .want_data;
         this.out_fd = null;
         return;
     }
     if (comptime Environment.isWindows) {
-        if (std.fs.path.isAbsoluteWindowsWtf16(path)) {
-            this.phase = .want_data;
-            this.out_fd = null;
-            return;
-        }
         if (this.npm_mode) applyWindowsNpmPathEscapes(path);
     }
 

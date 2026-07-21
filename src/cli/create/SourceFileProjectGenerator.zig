@@ -212,7 +212,6 @@ pub fn generateFiles(io: std.Io, allocator: std.mem.Allocator, entry_point: stri
     }
 
     // Normalize file paths
-    var normalized_buf: bun.PathBuffer = undefined;
     const normalized_name_owned = if (std.fs.path.isAbsolute(entry_point))
         try std.fs.path.relative(
             allocator,
@@ -222,9 +221,9 @@ pub fn generateFiles(io: std.Io, allocator: std.mem.Allocator, entry_point: stri
             entry_point,
         )
     else
-        null;
-    defer if (normalized_name_owned) |name| allocator.free(name);
-    var normalized_name = normalized_name_owned orelse bun.path.normalizeBuf(entry_point, &normalized_buf, .auto);
+        try std.fs.path.resolve(allocator, &.{entry_point});
+    defer allocator.free(normalized_name_owned);
+    var normalized_name = normalized_name_owned;
     bun.path.platformToPosixInPlace(u8, normalized_name);
 
     if (extension.len > 0) {

@@ -189,7 +189,8 @@ pub const URL = struct {
             bun.copy(u8, buf[buf_i..], part);
             buf_i += part.len;
         }
-        return resolve_path.normalizeStringBuf(buf[0..buf_i], out, false, .posix, false);
+        var fba = std.heap.FixedBufferAllocator.init(out);
+        return std.fs.path.resolvePosix(fba.allocator(), &.{buf[0..buf_i]}) catch @panic("normalized URL path exceeds buffer");
     }
 
     pub fn joinWrite(

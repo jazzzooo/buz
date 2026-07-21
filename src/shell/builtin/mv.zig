@@ -109,13 +109,14 @@ pub const ShellMvBatchedTask = struct {
     }
 
     pub fn moveInDir(this: *@This(), src: [:0]const u8, buf: *bun.PathBuffer) bool {
-        const path_in_dir_ = bun.path.normalizeBuf(std.fs.path.basename(src), buf, .auto);
-        if (path_in_dir_.len + 1 >= buf.len) {
+        const basename = std.fs.path.basename(src);
+        if (basename.len >= buf.len) {
             this.err = Syscall.Error.fromCode(Syscall.E.NAMETOOLONG, .rename);
             return false;
         }
-        buf[path_in_dir_.len] = 0;
-        const path_in_dir = buf[0..path_in_dir_.len :0];
+        @memcpy(buf[0..basename.len], basename);
+        buf[basename.len] = 0;
+        const path_in_dir = buf[0..basename.len :0];
 
         switch (Syscall.renameat(this.cwd, src, this.target_fd.?, path_in_dir)) {
             .err => |e| {

@@ -1154,14 +1154,11 @@ pub const PublishCommand = struct {
             switch (bin_query.expr.data) {
                 .e_string => |bin_str| {
                     var bin_props = std.array_list.Managed(G.Property).init(allocator);
-                    const normalized = strings.withoutPrefixComptimeZ(
-                        path.normalizeBufZ(
-                            try bin_str.string(allocator),
-                            &path_buf,
-                            .posix,
-                        ),
-                        "./",
-                    );
+                    var fba = std.heap.FixedBufferAllocator.init(path_buf[0 .. path_buf.len - 1]);
+                    const resolved = try std.fs.path.resolvePosix(fba.allocator(), &.{try bin_str.string(allocator)});
+                    if (!Pack.isSafePackagePath(resolved)) return;
+                    path_buf[resolved.len] = 0;
+                    const normalized = path_buf[0..resolved.len :0];
                     if (!bun.sys.existsAt(workspace_root, normalized)) {
                         Output.warn("bin '{s}' does not exist", .{normalized});
                     }
@@ -1193,14 +1190,10 @@ pub const PublishCommand = struct {
                         const key = key: {
                             if (bin_prop.key) |key| {
                                 if (key.isString() and key.data.e_string.len() != 0) {
-                                    break :key try allocator.dupeSentinel(u8, strings.withoutPrefixComptime(
-                                        path.normalizeBuf(
-                                            try key.data.e_string.string(allocator),
-                                            &path_buf,
-                                            .posix,
-                                        ),
-                                        "./",
-                                    ), 0);
+                                    var fba = std.heap.FixedBufferAllocator.init(&path_buf);
+                                    const resolved = try std.fs.path.resolvePosix(fba.allocator(), &.{try key.data.e_string.string(allocator)});
+                                    if (!Pack.isSafePackagePath(resolved)) continue;
+                                    break :key try allocator.dupeSentinel(u8, resolved, 0);
                                 }
                             }
 
@@ -1214,15 +1207,10 @@ pub const PublishCommand = struct {
                         const value = value: {
                             if (bin_prop.value) |value| {
                                 if (value.isString() and value.data.e_string.len() != 0) {
-                                    break :value try allocator.dupeSentinel(u8, strings.withoutPrefixComptimeZ(
-                                        // replace separators
-                                        path.normalizeBufZ(
-                                            try value.data.e_string.string(allocator),
-                                            &path_buf,
-                                            .posix,
-                                        ),
-                                        "./",
-                                    ), 0);
+                                    var fba = std.heap.FixedBufferAllocator.init(&path_buf);
+                                    const resolved = try std.fs.path.resolvePosix(fba.allocator(), &.{try value.data.e_string.string(allocator)});
+                                    if (!Pack.isSafePackagePath(resolved)) continue;
+                                    break :value try allocator.dupeSentinel(u8, resolved, 0);
                                 }
                             }
 
@@ -1264,16 +1252,10 @@ pub const PublishCommand = struct {
                     return;
                 };
                 var bin_props = std.array_list.Managed(G.Property).init(allocator);
-                const normalized_bin_dir = try allocator.dupeSentinel(u8, strings.withoutTrailingSlash(
-                    strings.withoutPrefixComptime(
-                        path.normalizeBuf(
-                            bin_dir_str,
-                            &path_buf,
-                            .posix,
-                        ),
-                        "./",
-                    ),
-                ), 0);
+                var fba = std.heap.FixedBufferAllocator.init(&path_buf);
+                const resolved = try std.fs.path.resolvePosix(fba.allocator(), &.{bin_dir_str});
+                if (!Pack.isSafePackagePath(resolved)) return;
+                const normalized_bin_dir = try allocator.dupeSentinel(u8, resolved, 0);
 
                 if (normalized_bin_dir.len == 0) {
                     return;

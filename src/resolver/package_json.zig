@@ -765,7 +765,7 @@ pub const PackageJSON = struct {
                             // import of "foo", but that's actually not a bug. Or arguably it's a
                             // bug in Browserify but we have to replicate this bug because packages
                             // do this in the wild.
-                            const key = allocator.dupe(u8, r.fs.normalize(_key_str)) catch unreachable;
+                            const key = std.fs.path.resolve(allocator, &.{_key_str}) catch unreachable;
 
                             switch (value.data) {
                                 .e_string => |str| {

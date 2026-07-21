@@ -1078,10 +1078,6 @@ pub fn normalizePathWindows(
             .syscall = .open,
         },
     };
-    // normalizeStringGenericTZ writes into `buf` with .add_nt_prefix = true and
-    // .zero_terminate = true but performs no bounds checking of its own. The NT
-    // prefix adds up to 6 u16 ("\\" -> "\??\UNC\") plus a NUL. Reserve enough
-    // headroom wherever we feed it a path that could approach `buf.len`.
     const nt_prefix_headroom = 8;
 
     const wbuf = if (T != u16) bun.w_path_buffer_pool.get();
@@ -1123,26 +1119,13 @@ pub fn normalizePathWindows(
                     buf[path.len] = 0;
                     return .{ .result = buf[0..path.len :0] };
                 }
-                // For long paths and nt object paths, conver the prefix into an nt object, then resolve.
-                // TODO: NT object paths technically mean they are already resolved. Will that break?
-                if (path[2] == '?' and (path[1] == '?' or path[1] == '/' or path[1] == '\\')) {
-                    path = path[4..];
-                }
             }
         }
 
-        // With .add_nt_prefix = false, normalizeStringGenericTZ can still grow
-        // the input by one u16 (it appends a trailing '\' after a bare UNC
-        // volume name) plus the NUL terminator.
         if (path.len > buf.len -| (if (opts.add_nt_prefix) nt_prefix_headroom else 2)) {
             return name_too_long;
         }
-        const norm = bun.path.normalizeStringGenericTZ(u16, path, buf, .{
-            .add_nt_prefix = opts.add_nt_prefix,
-            .path_type = .windows,
-            .separator = std.fs.path.sep_windows,
-            .zero_terminate = true,
-        });
+        const norm = normalizeWindowsPathForNtdll(path, buf, opts.add_nt_prefix);
         return .{ .result = norm };
     }
 
@@ -1186,15 +1169,123 @@ pub fn normalizePathWindows(
     @memcpy(buf1[0..base_path.len], base_path);
     buf1[base_path.len] = '\\';
     @memcpy(buf1[base_path.len + 1 .. joined_len], path);
-    const norm = bun.path.normalizeStringGenericTZ(u16, buf1[0..joined_len], buf, .{
-        .add_nt_prefix = true,
-        .path_type = .windows,
-        .separator = std.fs.path.sep_windows,
-        .zero_terminate = true,
-    });
+    const norm = normalizeWindowsPathForNtdll(buf1[0..joined_len], buf, true);
     return .{
         .result = norm,
     };
+}
+
+fn normalizeWindowsPathForNtdll(path_: []const u16, out: []u16, comptime add_nt_prefix: bool) [:0]u16 {
+    const separator = std.fs.path.sep_windows;
+    var path = path_;
+    var out_len: usize = 0;
+    var long_path = false;
+    var long_unc = false;
+
+    if (path.len >= 4 and
+        std.fs.path.PathType.windows.isSep(u16, path[0]) and
+        std.fs.path.PathType.windows.isSep(u16, path[1]) and
+        path[2] == '?' and
+        std.fs.path.PathType.windows.isSep(u16, path[3]))
+    {
+        long_path = true;
+        path = path[4..];
+        long_unc = path.len >= 4 and
+            (path[0] == 'U' or path[0] == 'u') and
+            (path[1] == 'N' or path[1] == 'n') and
+            (path[2] == 'C' or path[2] == 'c') and
+            std.fs.path.PathType.windows.isSep(u16, path[3]);
+        if (long_unc) path = path[4..];
+        if (add_nt_prefix and !long_unc) {
+            appendWtf16(out, &out_len, bun.strings.w("\\??\\"));
+        } else if (!add_nt_prefix and !long_unc) {
+            appendWtf16(out, &out_len, bun.strings.w("\\\\?\\"));
+        }
+    }
+
+    var components = std.fs.path.ComponentIterator(.windows, u16).init(path);
+    const parsed = std.fs.path.parsePathWindows(u16, path);
+    var root_end: usize = 0;
+
+    if (long_unc or parsed.kind == .unc_absolute) {
+        if (add_nt_prefix) {
+            appendWtf16(out, &out_len, bun.strings.w("\\??\\UNC\\"));
+        } else if (long_unc) {
+            appendWtf16(out, &out_len, bun.strings.w("\\\\?\\UNC\\"));
+        } else {
+            appendWtf16(out, &out_len, bun.strings.w("\\\\"));
+        }
+
+        if (long_unc) {
+            for (0..2) |_| {
+                const component = components.next() orelse break;
+                appendWindowsWtf16Component(out, &out_len, component.name);
+            }
+        } else {
+            var root_components = std.mem.tokenizeAny(u16, parsed.root[2..], bun.strings.w("/\\"));
+            while (root_components.next()) |component| appendWindowsWtf16Component(out, &out_len, component);
+        }
+        if (out_len > 0 and out[out_len - 1] != separator) {
+            out[out_len] = separator;
+            out_len += 1;
+        }
+        root_end = out_len;
+    } else {
+        switch (parsed.kind) {
+            .drive_absolute, .drive_relative => {
+                if (add_nt_prefix and !long_path and parsed.kind == .drive_absolute) {
+                    appendWtf16(out, &out_len, bun.strings.w("\\??\\"));
+                }
+                const drive = parsed.root[0];
+                out[out_len] = if (drive <= std.math.maxInt(u8)) std.ascii.toUpper(@intCast(drive)) else drive;
+                out[out_len + 1] = ':';
+                out_len += 2;
+                if (parsed.kind == .drive_absolute) {
+                    out[out_len] = separator;
+                    out_len += 1;
+                }
+                root_end = out_len;
+            },
+            .rooted => {
+                out[out_len] = separator;
+                out_len += 1;
+                root_end = out_len;
+            },
+            .local_device, .root_local_device, .relative => root_end = out_len,
+            .unc_absolute => unreachable,
+        }
+    }
+
+    while (components.next()) |component| {
+        const name = component.name;
+        if (name.len == 1 and name[0] == '.') continue;
+        if (name.len == 2 and name[0] == '.' and name[1] == '.') {
+            while (out_len > root_end and out[out_len - 1] != separator) out_len -= 1;
+            out_len -= @intFromBool(out_len > root_end);
+            continue;
+        }
+        appendWindowsWtf16Component(out, &out_len, name);
+    }
+
+    if (parsed.kind == .drive_relative and out_len == root_end) {
+        out[out_len] = '.';
+        out_len += 1;
+    }
+    out[out_len] = 0;
+    return out[0..out_len :0];
+}
+
+fn appendWtf16(out: []u16, out_len: *usize, value: []const u16) void {
+    @memcpy(out[out_len.*..][0..value.len], value);
+    out_len.* += value.len;
+}
+
+fn appendWindowsWtf16Component(out: []u16, out_len: *usize, component: []const u16) void {
+    if (out_len.* > 0 and out[out_len.* - 1] != std.fs.path.sep_windows) {
+        out[out_len.*] = std.fs.path.sep_windows;
+        out_len.* += 1;
+    }
+    appendWtf16(out, out_len, component);
 }
 
 fn openDirAtWindowsNtPath(

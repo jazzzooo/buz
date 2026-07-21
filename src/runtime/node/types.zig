@@ -598,9 +598,10 @@ pub const PathLike = union(enum) {
                     // resolveCWDWithExternalBufZ would just memcpy it, making the
                     // temporary allocation unnecessary.
                     buf[0..4].* = bun.windows.long_path_prefix_u8;
-                    const n = bun.path.normalizeBuf(sliced, buf[4..], .windows).len;
-                    buf[4 + n] = 0;
-                    return buf[0 .. 4 + n :0];
+                    var fba = std.heap.FixedBufferAllocator.init(buf[4 .. buf.len - 1]);
+                    const normalized = std.fs.path.resolveWindows(fba.allocator(), &.{sliced}) catch @panic("normalized path exceeds buffer");
+                    buf[4 + normalized.len] = 0;
+                    return buf[0 .. 4 + normalized.len :0];
                 }
                 return path_handler.PosixToWinNormalizer.resolveCWDWithExternalBufZ(buf, sliced) catch @panic("Error while resolving path.");
             }
@@ -659,16 +660,13 @@ pub const PathLike = union(enum) {
             if (s.len >= 4 and windows_path.isSep(u8, s[0]) and windows_path.isSep(u8, s[1]) and (s[2] == '.' or s[2] == '?') and windows_path.isSep(u8, s[3])) {
                 return strings.toKernel32Path(@alignCast(std.mem.bytesAsSlice(u16, buf)), s);
             }
+            var normal_fba = std.heap.FixedBufferAllocator.init(b);
             if (s.len > 0 and windows_path.isSep(u8, s[0])) {
                 const resolve = path_handler.PosixToWinNormalizer.resolveCWDWithExternalBuf(buf, s) catch @panic("Error while resolving path.");
-                const normal = path_handler.normalizeBuf(resolve, b, .windows);
+                const normal = std.fs.path.resolveWindows(normal_fba.allocator(), &.{resolve}) catch @panic("normalized path exceeds buffer");
                 return strings.toKernel32Path(@alignCast(std.mem.bytesAsSlice(u16, buf)), normal);
             }
-            // Handle "." specially since normalizeStringBuf strips it to an empty string
-            if (s.len == 1 and s[0] == '.') {
-                return strings.toKernel32Path(@alignCast(std.mem.bytesAsSlice(u16, buf)), ".");
-            }
-            const normal = path_handler.normalizeStringBuf(s, b, true, .windows, false);
+            const normal = std.fs.path.resolveWindows(normal_fba.allocator(), &.{s}) catch @panic("normalized path exceeds buffer");
             return strings.toKernel32Path(@alignCast(std.mem.bytesAsSlice(u16, buf)), normal);
         }
 

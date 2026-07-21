@@ -454,7 +454,7 @@ pub noinline fn computeChunks(
             var real_path_buf: bun.PathBuffer = undefined;
             const dir = dir: {
                 var dir = bun.sys.openatA(.cwd(), dir_path, bun.O.PATH | bun.O.DIRECTORY, 0).unwrap() catch {
-                    break :dir bun.path.normalizeBuf(dir_path, &real_path_buf, .auto);
+                    break :dir try std.fs.path.resolve(this.allocator(), &.{dir_path});
                 };
                 defer dir.close();
 

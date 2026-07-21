@@ -416,20 +416,10 @@ pub const Archiver = struct {
                     const rest = tokenizer.rest();
                     pathname = rest.ptr[0..rest.len :0];
 
-                    const normalized = bun.path.normalizeBufT(bun.OSPathChar, pathname, &normalized_buf, .auto);
+                    const normalized = resolveRelativeArchivePath(pathname, normalized_buf[0 .. normalized_buf.len - 1]) orelse continue :loop;
                     normalized_buf[normalized.len] = 0;
                     const path: [:0]bun.OSPathChar = normalized_buf[0..normalized.len :0];
-                    if (path.len == 0 or path.len == 1 and path[0] == '.') continue;
-
-                    // Skip entries whose normalized path is absolute on Windows.
-                    // `openatWindows` ignores `dir_fd` for absolute inputs (drive
-                    // letter or UNC), so without this guard a tar entry could
-                    // resolve outside the extraction directory. On POSIX the
-                    // tokenize-on-'/' step already strips any leading separators,
-                    // so `normalizeBufT` cannot produce an absolute output.
-                    if (comptime Environment.isWindows) {
-                        if (std.fs.path.isAbsoluteWindowsWtf16(path)) continue :loop;
-                    }
+                    if (path.len == 0) continue;
 
                     if (options.npm and Environment.isWindows) {
                         // When writing files on Windows, translate the characters to their
@@ -669,6 +659,34 @@ pub const Archiver = struct {
         return try extractToDir(io, file_buffer, dir, ctx, FilePathAppender, appender, options);
     }
 };
+
+pub fn resolveRelativeArchivePath(path: []const bun.OSPathChar, out: []bun.OSPathChar) ?[]bun.OSPathChar {
+    const path_type: std.fs.path.PathType = if (Environment.isWindows) .windows else .posix;
+    var components = std.fs.path.ComponentIterator(path_type, bun.OSPathChar).init(path);
+    if (components.root() != null) return null;
+
+    var out_len: usize = 0;
+    while (components.next()) |component| {
+        const name = component.name;
+        if (name.len == 1 and name[0] == '.') continue;
+        if (name.len == 2 and name[0] == '.' and name[1] == '.') {
+            if (out_len == 0) return null;
+            while (out_len > 0 and !path_type.isSep(bun.OSPathChar, out[out_len - 1])) out_len -= 1;
+            out_len -= @intFromBool(out_len > 0);
+            continue;
+        }
+
+        const separator_len: usize = @intFromBool(out_len > 0);
+        if (name.len + separator_len > out.len - out_len) return null;
+        if (separator_len != 0) {
+            out[out_len] = std.fs.path.sep;
+            out_len += 1;
+        }
+        @memcpy(out[out_len..][0..name.len], name);
+        out_len += name.len;
+    }
+    return out[0..out_len];
+}
 
 const string = []const u8;
 

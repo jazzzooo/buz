@@ -988,6 +988,21 @@ pub const PackCommand = struct {
         };
     };
 
+    pub fn isSafePackagePath(path: []const u8) bool {
+        if (std.fs.path.isAbsolutePosix(path) or
+            strings.eqlComptime(path, "..") or
+            strings.hasPrefixComptime(path, "../")) return false;
+
+        if (comptime Environment.isWindows) {
+            var components = std.fs.path.ComponentIterator(.windows, u8).init(path);
+            if (components.root() != null) return false;
+            if (components.next()) |component| {
+                if (strings.eqlComptime(component.name, "..")) return false;
+            }
+        }
+        return true;
+    }
+
     fn getPackageBins(
         allocator: std.mem.Allocator,
         json: Expr,
@@ -998,7 +1013,9 @@ pub const PackCommand = struct {
 
         if (json.asProperty("bin")) |bin| {
             if (bin.expr.asString(allocator)) |bin_str| {
-                const normalized = bun.path.normalizeBuf(bin_str, &path_buf, .posix);
+                var fba = std.heap.FixedBufferAllocator.init(&path_buf);
+                const normalized = try std.fs.path.resolvePosix(fba.allocator(), &.{bin_str});
+                if (!isSafePackagePath(normalized)) return bins.items;
                 try bins.append(allocator, .{
                     .path = try allocator.dupeSentinel(u8, normalized, 0),
                     .type = .file,
@@ -1013,7 +1030,9 @@ pub const PackCommand = struct {
                     for (bin_obj.properties.slice()) |bin_prop| {
                         if (bin_prop.value) |bin_prop_value| {
                             if (bin_prop_value.asString(allocator)) |bin_str| {
-                                const normalized = bun.path.normalizeBuf(bin_str, &path_buf, .posix);
+                                var fba = std.heap.FixedBufferAllocator.init(&path_buf);
+                                const normalized = try std.fs.path.resolvePosix(fba.allocator(), &.{bin_str});
+                                if (!isSafePackagePath(normalized)) continue;
                                 try bins.append(allocator, .{
                                     .path = try allocator.dupeSentinel(u8, normalized, 0),
                                     .type = .file,
@@ -1033,7 +1052,9 @@ pub const PackCommand = struct {
                 .e_object => |directories_obj| {
                     if (directories_obj.asProperty("bin")) |bin| {
                         if (bin.expr.asString(allocator)) |bin_str| {
-                            const normalized = bun.path.normalizeBuf(bin_str, &path_buf, .posix);
+                            var fba = std.heap.FixedBufferAllocator.init(&path_buf);
+                            const normalized = try std.fs.path.resolvePosix(fba.allocator(), &.{bin_str});
+                            if (!isSafePackagePath(normalized)) return bins.items;
                             try bins.append(allocator, .{
                                 .path = try allocator.dupeSentinel(u8, normalized, 0),
                                 .type = .dir,
@@ -1494,7 +1515,8 @@ pub const PackCommand = struct {
                         var files_array = _files_array;
                         while (files_array.next()) |files_entry| {
                             if (files_entry.asString(ctx.allocator)) |file_entry_str| {
-                                const normalized = bun.path.normalizeBuf(file_entry_str, &path_buf, .posix);
+                                var fba = std.heap.FixedBufferAllocator.init(&path_buf);
+                                const normalized = try std.fs.path.resolvePosix(fba.allocator(), &.{file_entry_str});
                                 const parsed = try Pattern.fromUTF8(ctx.allocator, normalized) orelse continue;
                                 if (parsed.flags.negated) {
                                     @branchHint(.unlikely); // most "files" entries are not exclusions.

@@ -1586,7 +1586,8 @@ pub const RunCommand = struct {
                     var win_resolver = resolve_path.PosixToWinNormalizer{};
                     var resolved = win_resolver.resolveCWD(script_name_to_search) catch @panic("Could not resolve path");
                     if (comptime Environment.isWindows) {
-                        resolved = resolve_path.normalizeString(resolved, false, .windows);
+                        var fba = std.heap.FixedBufferAllocator.init(&script_name_buf);
+                        resolved = std.fs.path.resolveWindows(fba.allocator(), &.{resolved}) catch @panic("Could not normalize path");
                     }
                     break :brk bun.openFile(
                         resolved,

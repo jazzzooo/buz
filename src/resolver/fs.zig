@@ -413,14 +413,6 @@ pub const FileSystem = struct {
     // pub fn readDir(fs: *FileSystemEntry, path: string) ?[]string {
 
     // }
-    pub fn normalize(_: *@This(), str: string) string {
-        return @call(bun.callmod_inline, path_handler.normalizeString, .{ str, true, bun.path.Platform.auto });
-    }
-
-    pub fn normalizeBuf(_: *@This(), buf: []u8, str: string) string {
-        return @call(bun.callmod_inline, path_handler.normalizeStringBuf, .{ str, buf, false, bun.path.Platform.auto, false });
-    }
-
     pub fn abs(f: *@This(), parts: anytype) string {
         return path_handler.joinAbsString(
             f.top_level_dir,
