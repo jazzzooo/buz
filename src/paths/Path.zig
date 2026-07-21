@@ -138,6 +138,9 @@ pub fn Path(comptime opts: Options) type {
     return struct {
         _buf: opts.Buf(),
 
+        const native_path_type: std.fs.path.PathType = if (Environment.isWindows) .windows else .posix;
+        const path_type: std.fs.path.PathType = if (opts.sep == .posix) .posix else native_path_type;
+
         pub fn init() @This() {
             return .{
                 ._buf = .{
@@ -260,14 +263,12 @@ pub fn Path(comptime opts: Options) type {
         }
 
         pub fn basename(this: *const @This()) []const opts.pathUnit() {
-            return bun.strings.basename(opts.pathUnit(), this.slice());
+            var it = std.fs.path.ComponentIterator(native_path_type, opts.pathUnit()).init(this.slice());
+            const last = it.last() orelse return &.{};
+            return last.name;
         }
 
         pub fn dirname(this: *const @This()) ?[]const opts.pathUnit() {
-            const path_type = comptime switch (opts.sep) {
-                .posix => std.fs.path.PathType.posix,
-                .any, .auto => if (Environment.isWindows) std.fs.path.PathType.windows else std.fs.path.PathType.posix,
-            };
             var it = std.fs.path.ComponentIterator(path_type, opts.pathUnit()).init(this.slice());
             _ = it.last() orelse return null;
             const parent = it.previous() orelse return it.root();
@@ -314,83 +315,13 @@ pub fn Path(comptime opts: Options) type {
         }
 
         pub fn rootLen(input: anytype) ?usize {
-            if (comptime Environment.isWindows) {
-                if (input.len > 2 and input[1] == ':' and switch (input[2]) {
-                    '/', '\\' => true,
-                    else => false,
-                }) {
-                    const letter = input[0];
-                    if (('a' <= letter and letter <= 'z') or ('A' <= letter and letter <= 'Z')) {
-                        // C:\
-                        return 3;
-                    }
-                }
+            if (!isInputAbsolute(input)) return null;
 
-                if (input.len > 5 and
-                    switch (input[0]) {
-                        '/', '\\' => true,
-                        else => false,
-                    } and
-                    switch (input[1]) {
-                        '/', '\\' => true,
-                        else => false,
-                    } and
-                    switch (input[2]) {
-                        '\\', '.' => false,
-                        else => true,
-                    })
-                {
-                    var i: usize = 3;
-                    // \\network\share\
-                    //   ^
-                    while (i < input.len and switch (input[i]) {
-                        '/', '\\' => false,
-                        else => true,
-                    }) {
-                        i += 1;
-                    }
-
-                    i += 1;
-                    // \\network\share\
-                    //           ^
-                    const start = i;
-                    while (i < input.len and switch (input[i]) {
-                        '/', '\\' => false,
-                        else => true,
-                    }) {
-                        i += 1;
-                    }
-
-                    if (start != i and i < input.len and switch (input[i]) {
-                        '/', '\\' => true,
-                        else => false,
-                    }) {
-                        // \\network\share\
-                        //                ^
-                        if (i + 1 < input.len) {
-                            return i + 1;
-                        }
-                        return i;
-                    }
-                }
-
-                if (input.len > 0 and switch (input[0]) {
-                    '/', '\\' => true,
-                    else => false,
-                }) {
-                    // \
-                    return 1;
-                }
-
-                return null;
-            }
-
-            if (input.len > 0 and input[0] == '/') {
-                // /
-                return 1;
-            }
-
-            return null;
+            return switch (comptime native_path_type) {
+                .windows => std.fs.path.parsePathWindows(opts.inputChildType(@TypeOf(input)), input).root.len,
+                .posix => 1,
+                .uefi => unreachable,
+            };
         }
 
         const TrimInputKind = enum {
@@ -462,32 +393,16 @@ pub fn Path(comptime opts: Options) type {
         }
 
         fn isInputAbsolute(input: anytype) bool {
-            if (input.len == 0) {
-                return false;
-            }
-
-            if (input[0] == '/') {
-                return true;
-            }
-
-            if (comptime Environment.isWindows) {
-                if (input[0] == '\\') {
-                    return true;
-                }
-
-                if (input.len < 3) {
-                    return false;
-                }
-
-                if (input[1] == ':' and switch (input[2]) {
-                    '/', '\\' => true,
-                    else => false,
-                }) {
-                    return true;
-                }
-            }
-
-            return false;
+            const T = opts.inputChildType(@TypeOf(input));
+            return switch (comptime native_path_type) {
+                .windows => switch (T) {
+                    u8 => std.fs.path.isAbsoluteWindows(input),
+                    u16 => std.fs.path.isAbsoluteWindowsWtf16(input),
+                    else => @compileError("unexpected character type"),
+                },
+                .posix => input.len > 0 and std.fs.path.PathType.posix.isSep(T, input[0]),
+                .uefi => unreachable,
+            };
         }
 
         pub fn append(this: *@This(), input: anytype) void {
