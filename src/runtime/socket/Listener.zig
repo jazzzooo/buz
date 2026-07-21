@@ -935,16 +935,17 @@ fn isValidPipeName(pipe_name: []const u8) bool {
     if (!Environment.isWindows) {
         return false;
     }
+    const windows_path = std.fs.path.PathType.windows;
     // check for valid pipe names
     // at minimum we need to have \\.\pipe\ or \\?\pipe\ + 1 char that is not a separator
     return pipe_name.len > 9 and
-        NodePath.isSepWindowsT(u8, pipe_name[0]) and
-        NodePath.isSepWindowsT(u8, pipe_name[1]) and
+        windows_path.isSep(u8, pipe_name[0]) and
+        windows_path.isSep(u8, pipe_name[1]) and
         (pipe_name[2] == '.' or pipe_name[2] == '?') and
-        NodePath.isSepWindowsT(u8, pipe_name[3]) and
+        windows_path.isSep(u8, pipe_name[3]) and
         strings.eql(pipe_name[4..8], "pipe") and
-        NodePath.isSepWindowsT(u8, pipe_name[8]) and
-        !NodePath.isSepWindowsT(u8, pipe_name[9]);
+        windows_path.isSep(u8, pipe_name[8]) and
+        !windows_path.isSep(u8, pipe_name[9]);
 }
 
 fn normalizePipeName(pipe_name: []const u8, buffer: []u8) ?[]const u8 {
@@ -1118,4 +1119,3 @@ const jsc = bun.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
 const JSValue = jsc.JSValue;
 const ZigString = jsc.ZigString;
-const NodePath = jsc.Node.path;
