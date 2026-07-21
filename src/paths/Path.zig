@@ -1,19 +1,10 @@
 const Options = struct {
-    kind: Kind = .any,
     unit: Unit = .u8,
 
     const Unit = enum {
         u8,
         u16,
         os,
-    };
-
-    const Kind = enum {
-        abs,
-        rel,
-
-        // not recommended, but useful when you don't know
-        any,
     };
 
     pub fn pathUnit(comptime opts: @This()) type {
@@ -96,18 +87,6 @@ const Options = struct {
     }
 };
 
-pub fn AbsPath(comptime opts: Options) type {
-    var copy = opts;
-    copy.kind = .abs;
-    return Path(copy);
-}
-
-pub fn RelPath(comptime opts: Options) type {
-    var copy = opts;
-    copy.kind = .rel;
-    return Path(copy);
-}
-
 pub fn Path(comptime opts: Options) type {
     return struct {
         _buf: opts.Buf(),
@@ -143,28 +122,14 @@ pub fn Path(comptime opts: Options) type {
         pub fn initTopLevelDir() @This() {
             bun.debugAssert(bun.fs.FileSystem.instance_loaded);
             const top_level_dir = bun.fs.FileSystem.instance.top_level_dir;
-
-            const trimmed = switch (comptime opts.kind) {
-                .abs => trimmed: {
-                    bun.debugAssert(isInputAbsolute(top_level_dir));
-                    break :trimmed trimInput(.abs, top_level_dir);
-                },
-                .rel => @compileError("cannot create a relative path from top_level_dir"),
-                .any => trimInput(.abs, top_level_dir),
-            };
+            bun.debugAssert(isInputAbsolute(top_level_dir));
 
             var this = init();
-            this._buf.append(trimmed, false);
+            this._buf.append(trimInput(.abs, top_level_dir), false);
             return this;
         }
 
         pub fn initFdPath(fd: FD) !@This() {
-            switch (comptime opts.kind) {
-                .abs => {},
-                .rel => @compileError("cannot create a relative path from getFdPath"),
-                .any => {},
-            }
-
             var this = init();
             const raw = try fd.getFdPath(this._buf.pooled);
             const trimmed = trimInput(.abs, raw);
@@ -174,22 +139,13 @@ pub fn Path(comptime opts: Options) type {
         }
 
         pub fn fromLongPath(input: anytype) @This() {
+            // TODO: Apply extended-path prefixes at Windows syscall boundaries; blindly prefixing here mishandles UNC and device paths.
             switch (comptime @TypeOf(input)) {
                 []u8, []const u8, [:0]u8, [:0]const u8 => {},
                 []u16, []const u16, [:0]u16, [:0]const u16 => {},
                 else => @compileError("unsupported type: " ++ @typeName(@TypeOf(input))),
             }
-            const trimmed = switch (comptime opts.kind) {
-                .abs => trimmed: {
-                    bun.debugAssert(isInputAbsolute(input));
-                    break :trimmed trimInput(.abs, input);
-                },
-                .rel => trimmed: {
-                    bun.debugAssert(!isInputAbsolute(input));
-                    break :trimmed trimInput(.rel, input);
-                },
-                .any => trimInput(if (isInputAbsolute(input)) .abs else .rel, input),
-            };
+            const trimmed = trimInput(if (isInputAbsolute(input)) .abs else .rel, input);
 
             var this = init();
             if (comptime Environment.isWindows) {
@@ -208,29 +164,11 @@ pub fn Path(comptime opts: Options) type {
         }
 
         pub fn from(input: anytype) @This() {
-            const trimmed = switch (comptime opts.kind) {
-                .abs => trimmed: {
-                    bun.debugAssert(isInputAbsolute(input));
-                    break :trimmed trimInput(.abs, input);
-                },
-                .rel => trimmed: {
-                    bun.debugAssert(!isInputAbsolute(input));
-                    break :trimmed trimInput(.rel, input);
-                },
-                .any => trimInput(if (isInputAbsolute(input)) .abs else .rel, input),
-            };
+            const trimmed = trimInput(if (isInputAbsolute(input)) .abs else .rel, input);
 
             var this = init();
             this._buf.append(trimmed, false);
             return this;
-        }
-
-        pub fn isAbsolute(this: *const @This()) bool {
-            return switch (comptime opts.kind) {
-                .abs => @compileError("already known to be absolute"),
-                .rel => @compileError("already known to not be absolute"),
-                .any => isInputAbsolute(this.slice()),
-            };
         }
 
         pub fn basename(this: *const @This()) []const opts.pathUnit() {
@@ -261,19 +199,7 @@ pub fn Path(comptime opts: Options) type {
 
         pub fn setLength(this: *@This(), new_length: usize) void {
             this._buf.setLength(new_length);
-
-            const trimmed = switch (comptime opts.kind) {
-                .abs => trimInput(.abs, this.slice()),
-                .rel => trimInput(.rel, this.slice()),
-                .any => trimmed: {
-                    if (this.isAbsolute()) {
-                        break :trimmed trimInput(.abs, this.slice());
-                    }
-
-                    break :trimmed trimInput(.rel, this.slice());
-                },
-            };
-
+            const trimmed = trimInput(if (isInputAbsolute(this.slice())) .abs else .rel, this.slice());
             this._buf.setLength(trimmed.len);
         }
 
@@ -343,64 +269,15 @@ pub fn Path(comptime opts: Options) type {
 
         pub fn append(this: *@This(), input: anytype) void {
             const needs_sep = this.len() > 0 and !native_path_type.isSep(opts.pathUnit(), this.slice()[this.len() - 1]);
+            const input_is_absolute = isInputAbsolute(input);
 
-            switch (comptime opts.kind) {
-                .abs => {
-                    const has_root = this.len() > 0;
-
-                    if (comptime Environment.isDebug) {
-                        if (has_root) {
-                            bun.debugAssert(!isInputAbsolute(input));
-                        } else {
-                            bun.debugAssert(isInputAbsolute(input));
-                        }
-                    }
-
-                    const trimmed = trimInput(if (has_root) .rel else .abs, input);
-
-                    if (trimmed.len == 0) {
-                        return;
-                    }
-
-                    this._buf.append(trimmed, needs_sep);
-                },
-                .rel => {
-                    bun.debugAssert(!isInputAbsolute(input));
-
-                    const trimmed = trimInput(.rel, input);
-
-                    if (trimmed.len == 0) {
-                        return;
-                    }
-
-                    this._buf.append(trimmed, needs_sep);
-                },
-                .any => {
-                    const input_is_absolute = isInputAbsolute(input);
-
-                    if (comptime Environment.isDebug) {
-                        if (needs_sep) {
-                            bun.debugAssert(!input_is_absolute);
-                        }
-                    }
-
-                    const trimmed = trimInput(if (this.len() > 0)
-                        // anything appended to an existing path should be trimmed
-                        // as a relative path
-                        .rel
-                    else if (isInputAbsolute(input))
-                        // path is empty, trim based on input
-                        .abs
-                    else
-                        .rel, input);
-
-                    if (trimmed.len == 0) {
-                        return;
-                    }
-
-                    this._buf.append(trimmed, needs_sep);
-                },
+            if (comptime Environment.isDebug) {
+                if (this.len() > 0) bun.debugAssert(!input_is_absolute);
             }
+
+            const trimmed = trimInput(if (this.len() == 0 and input_is_absolute) .abs else .rel, input);
+            if (trimmed.len == 0) return;
+            this._buf.append(trimmed, needs_sep);
         }
 
         pub fn appendFmt(this: *@This(), comptime fmt: []const u8, args: anytype) void {
@@ -414,16 +291,7 @@ pub fn Path(comptime opts: Options) type {
         }
 
         pub fn undo(this: *@This(), n_components: usize) void {
-            const min_len = switch (comptime opts.kind) {
-                .abs => rootLen(this.slice()) orelse 0,
-                .rel => 0,
-                .any => min_len: {
-                    if (this.isAbsolute()) {
-                        break :min_len rootLen(this.slice()) orelse 0;
-                    }
-                    break :min_len 0;
-                },
-            };
+            const min_len = rootLen(this.slice()) orelse 0;
 
             var it = std.fs.path.ComponentIterator(native_path_type, opts.pathUnit()).init(this.slice());
             _ = it.last() orelse {

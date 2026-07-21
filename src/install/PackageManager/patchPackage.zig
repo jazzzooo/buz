@@ -845,12 +845,12 @@ fn overwritePackageInNodeModulesFolder(
     var dest_subpath: bun.Path(.{ .unit = .os }) = .from(node_modules_folder_path);
     defer dest_subpath.deinit();
 
-    const src_path: bun.AbsPath(.{ .unit = .os }) = src_path: {
+    var src_path: bun.Path(.{ .unit = .os }) = src_path: {
         if (comptime Environment.isWindows) {
             var path_buf: bun.WPathBuffer = undefined;
             const abs_path = try bun.getFdPathW(.fromStdDir(cache_dir), &path_buf);
 
-            var src_path: bun.AbsPath(.{ .unit = .os }) = .from(abs_path);
+            var src_path: bun.Path(.{ .unit = .os }) = .from(abs_path);
             src_path.append(cache_dir_subpath);
 
             break :src_path src_path;
@@ -873,8 +873,8 @@ fn overwritePackageInNodeModulesFolder(
     var copier: bun.install.FileCopier = try .init(
         io,
         .fromStdDir(cached_package_folder),
-        src_path,
-        dest_subpath,
+        &src_path,
+        &dest_subpath,
         ignore_directories,
     );
     defer copier.deinit();

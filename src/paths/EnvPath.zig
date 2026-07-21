@@ -57,7 +57,7 @@ pub fn EnvPath(comptime opts: EnvPathOptions) type {
 
         pub const PathComponentBuilder = struct {
             env_path: *EnvPath(opts),
-            path_buf: AbsPath(.{}),
+            path_buf: Path(.{}),
 
             pub fn append(this: *@This(), component: string) void {
                 this.path_buf.append(component);
@@ -87,6 +87,6 @@ const string = []const u8;
 const std = @import("std");
 
 const bun = @import("bun");
-const AbsPath = bun.AbsPath;
+const Path = bun.Path;
 const OOM = bun.OOM;
 const strings = bun.strings;

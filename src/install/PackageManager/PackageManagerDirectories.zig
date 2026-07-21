@@ -5,7 +5,7 @@ pub inline fn getCacheDirectory(this: *PackageManager) std.Io.Dir {
     };
 }
 
-pub inline fn getCacheDirectoryAndAbsPath(this: *PackageManager) struct { FD, bun.AbsPath(.{}) } {
+pub inline fn getCacheDirectoryAndAbsPath(this: *PackageManager) struct { FD, bun.Path(.{}) } {
     const cache_dir = this.getCacheDirectory();
     return .{ .fromStdDir(cache_dir), .from(this.cache_directory_path) };
 }

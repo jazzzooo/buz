@@ -235,7 +235,7 @@ pub const Installer = struct {
         // doesn't leak in the cache (it would never be reused — the suffix is
         // random — but it's wasted disk).
         if (this.entryUsesGlobalStore(entry_id)) {
-            var staging: bun.AbsPath(.{}) = .init();
+            var staging: bun.Path(.{}) = .init();
             defer staging.deinit();
             this.appendGlobalStoreEntryPath(&staging, entry_id, .staging);
             FD.cwd().deleteTree(this.manager.io, staging.slice()) catch {};
@@ -260,7 +260,7 @@ pub const Installer = struct {
             .remote_tarball,
             .folder,
             => {
-                var store_path: bun.RelPath(.{}) = .init();
+                var store_path: bun.Path(.{}) = .init();
                 defer store_path.deinit();
 
                 store_path.appendFmt("node_modules/{f}", .{
@@ -557,7 +557,7 @@ pub const Installer = struct {
                 inline .link_package => |current_step| {
                     const string_buf = lockfile.buffers.string_bytes.items;
 
-                    var pkg_cache_dir_subpath: bun.RelPath(.{}) = .from(switch (pkg_res.tag) {
+                    var pkg_cache_dir_subpath: bun.Path(.{}) = .from(switch (pkg_res.tag) {
                         else => |tag| pkg_cache_dir_subpath: {
                             const patch_info = try installer.packagePatchInfo(
                                 pkg_name,
@@ -602,7 +602,7 @@ pub const Installer = struct {
                                         pkg_res.value.folder.slice(string_buf),
                                     }));
                                     defer bun.default_allocator.free(resolved_src);
-                                    var src: bun.AbsPath(.{ .unit = .os }) = .fromLongPath(resolved_src);
+                                    var src: bun.Path(.{ .unit = .os }) = .fromLongPath(resolved_src);
                                     defer src.deinit();
 
                                     var dest: bun.Path(.{ .unit = .os }) = .init();
@@ -613,8 +613,8 @@ pub const Installer = struct {
                                     var hardlinker: Hardlinker = try .init(
                                         installer.manager.io,
                                         folder_dir,
-                                        src,
-                                        dest,
+                                        &src,
+                                        &dest,
                                         &.{comptime bun.OSPathLiteral("node_modules")},
                                     );
                                     defer hardlinker.deinit();
@@ -648,7 +648,7 @@ pub const Installer = struct {
                                 },
 
                                 .copyfile => {
-                                    var src_path: bun.AbsPath(.{ .unit = .os }) = .init();
+                                    var src_path: bun.Path(.{ .unit = .os }) = .init();
                                     defer src_path.deinit();
 
                                     if (comptime Environment.isWindows) {
@@ -679,8 +679,8 @@ pub const Installer = struct {
                                     var file_copier: FileCopier = try .init(
                                         installer.manager.io,
                                         folder_dir,
-                                        src_path,
-                                        dest,
+                                        &src_path,
+                                        &dest,
                                         &.{comptime bun.OSPathLiteral("node_modules")},
                                     );
                                     defer file_copier.deinit();
@@ -769,7 +769,7 @@ pub const Installer = struct {
                         // Clear any leftover staging directory from a crashed
                         // earlier run with the same suffix (vanishingly
                         // unlikely with a 64-bit random suffix, but cheap).
-                        var staging: bun.AbsPath(.{}) = .init();
+                        var staging: bun.Path(.{}) = .init();
                         defer staging.deinit();
                         installer.appendGlobalStoreEntryPath(&staging, this.entry_id, .staging);
                         FD.cwd().deleteTree(installer.manager.io, staging.slice()) catch {};
@@ -802,8 +802,8 @@ pub const Installer = struct {
 
                             var cloner: FileCloner = .{
                                 .cache_dir = cache_dir,
-                                .cache_dir_subpath = pkg_cache_dir_subpath,
-                                .dest_subpath = dest_subpath,
+                                .cache_dir_subpath = &pkg_cache_dir_subpath,
+                                .dest_subpath = &dest_subpath,
                                 .io = installer.manager.io,
                             };
 
@@ -846,15 +846,15 @@ pub const Installer = struct {
                                 },
                             };
 
-                            var src: bun.AbsPath(.{ .unit = .os }) = .fromLongPath(cache_dir_path.slice());
+                            var src: bun.Path(.{ .unit = .os }) = .fromLongPath(cache_dir_path.slice());
                             defer src.deinit();
                             src.append(pkg_cache_dir_subpath.slice());
 
                             var hardlinker: Hardlinker = try .init(
                                 installer.manager.io,
                                 cached_package_dir.?,
-                                src,
-                                dest_subpath,
+                                &src,
+                                &dest_subpath,
                                 &.{},
                             );
                             defer hardlinker.deinit();
@@ -914,15 +914,15 @@ pub const Installer = struct {
                                 },
                             };
 
-                            var src_path: bun.AbsPath(.{ .unit = .os }) = .from(cache_dir_path.slice());
+                            var src_path: bun.Path(.{ .unit = .os }) = .from(cache_dir_path.slice());
                             defer src_path.deinit();
                             src_path.append(pkg_cache_dir_subpath.slice());
 
                             var file_copier: FileCopier = try .init(
                                 installer.manager.io,
                                 cached_package_dir.?,
-                                src_path,
-                                dest_subpath,
+                                &src_path,
+                                &dest_subpath,
                                 &.{},
                             );
                             defer file_copier.deinit();
@@ -977,7 +977,7 @@ pub const Installer = struct {
                             }
                         }
 
-                        var dep_store_path: bun.AbsPath(.{}) = .initTopLevelDir();
+                        var dep_store_path: bun.Path(.{}) = .initTopLevelDir();
                         defer dep_store_path.deinit();
 
                         // When this entry lives in the global virtual store, its
@@ -1017,15 +1017,15 @@ pub const Installer = struct {
                                 dep_store_path.slice(),
                             ));
                             defer installer.manager.allocator.free(relative_path);
-                            break :target bun.RelPath(.{}).from(relative_path);
+                            break :target bun.Path(.{}).from(relative_path);
                         };
                         defer target.deinit();
 
                         const symlinker: Symlinker = .{
                             .io = installer.manager.io,
-                            .dest = dest,
-                            .target = target,
-                            .fallback_junction_target = dep_store_path,
+                            .dest = dest.sliceZ(),
+                            .target = target.sliceZ(),
+                            .fallback_junction_target = dep_store_path.sliceZ(),
                         };
 
                         const link_strategy: Symlinker.Strategy = if (pkg_res.tag == .root or pkg_res.tag == .workspace)
@@ -1139,7 +1139,7 @@ pub const Installer = struct {
                         break :brk .{ false, false };
                     };
 
-                    var pkg_cwd: bun.AbsPath(.{}) = .initTopLevelDir();
+                    var pkg_cwd: bun.Path(.{}) = .initTopLevelDir();
                     defer pkg_cwd.deinit();
 
                     installer.appendStorePath(&pkg_cwd, this.entry_id);
@@ -1232,11 +1232,11 @@ pub const Installer = struct {
                     var seen: bun.StringHashMap(void) = .init(bun.default_allocator);
                     defer seen.deinit();
 
-                    var node_modules_path: bun.AbsPath(.{}) = .initTopLevelDir();
+                    var node_modules_path: bun.Path(.{}) = .initTopLevelDir();
                     defer node_modules_path.deinit();
                     installer.appendRealStoreNodeModulesPath(&node_modules_path, this.entry_id, .staging);
 
-                    var target_node_modules_path: ?bun.AbsPath(.{}) = null;
+                    var target_node_modules_path: ?bun.Path(.{}) = null;
                     defer if (target_node_modules_path) |*path| path.deinit();
 
                     var target_package_name: strings.StringOrTinyString = strings.StringOrTinyString.init(dep_name);
@@ -1250,7 +1250,7 @@ pub const Installer = struct {
                         installer.lockfile.packages.items(.meta),
                         pkg_id,
                     )) |replacement_entry_id| {
-                        target_node_modules_path = bun.AbsPath(.{}).initTopLevelDir();
+                        target_node_modules_path = bun.Path(.{}).initTopLevelDir();
                         installer.appendRealStoreNodeModulesPath(&target_node_modules_path.?, replacement_entry_id, .final);
 
                         const replacement_node_id = entry_node_ids[replacement_entry_id.get()];
@@ -1496,7 +1496,7 @@ pub const Installer = struct {
         );
         hidden_hoisted_node_modules.append(pkg_name.slice(string_buf));
 
-        var target: bun.RelPath(.{}) = .init();
+        var target: bun.Path(.{}) = .init();
         defer target.deinit();
 
         target.append("..");
@@ -1509,16 +1509,16 @@ pub const Installer = struct {
             pkg_name.slice(string_buf),
         });
 
-        var full_target: bun.AbsPath(.{}) = .initTopLevelDir();
+        var full_target: bun.Path(.{}) = .initTopLevelDir();
         defer full_target.deinit();
 
         this.appendStorePath(&full_target, entry_id);
 
         const symlinker: Symlinker = .{
             .io = this.manager.io,
-            .dest = hidden_hoisted_node_modules,
-            .target = target,
-            .fallback_junction_target = full_target,
+            .dest = hidden_hoisted_node_modules.sliceZ(),
+            .target = target.sliceZ(),
+            .fallback_junction_target = full_target.sliceZ(),
         };
 
         // symlinks won't exist if node_modules/.bun is new
@@ -1603,7 +1603,7 @@ pub const Installer = struct {
         var seen: bun.StringHashMap(void) = .init(bun.default_allocator);
         defer seen.deinit();
 
-        var node_modules_path: bun.AbsPath(.{}) = .initTopLevelDir();
+        var node_modules_path: bun.Path(.{}) = .initTopLevelDir();
         defer node_modules_path.deinit();
 
         this.appendRealStoreNodeModulesPath(&node_modules_path, parent_entry_id, .staging);
@@ -1618,7 +1618,7 @@ pub const Installer = struct {
             }
             const alias = lockfile.buffers.dependencies.items[dep_id].name;
 
-            var target_node_modules_path: ?bun.AbsPath(.{}) = null;
+            var target_node_modules_path: ?bun.Path(.{}) = null;
             defer if (target_node_modules_path) |*path| path.deinit();
             const package_name = strings.StringOrTinyString.init(alias.slice(string_buf));
 
@@ -1633,7 +1633,7 @@ pub const Installer = struct {
                 pkg_metas,
                 pkg_id,
             )) |replacement_entry_id| {
-                target_node_modules_path = bun.AbsPath(.{}).initTopLevelDir();
+                target_node_modules_path = bun.Path(.{}).initTopLevelDir();
                 this.appendRealStoreNodeModulesPath(&target_node_modules_path.?, replacement_entry_id, .final);
 
                 const replacement_node_id = entry_node_ids[replacement_entry_id.get()];
@@ -1719,10 +1719,10 @@ pub const Installer = struct {
     /// existing is the only completeness signal — no separate stamp file.
     pub fn commitGlobalStoreEntry(this: *const Installer, entry_id: Store.Entry.Id) sys.Maybe(void) {
         if (!this.entryUsesGlobalStore(entry_id)) return .success;
-        var staging: bun.AbsPath(.{}) = .init();
+        var staging: bun.Path(.{}) = .init();
         defer staging.deinit();
         this.appendGlobalStoreEntryPath(&staging, entry_id, .staging);
-        var final: bun.AbsPath(.{}) = .init();
+        var final: bun.Path(.{}) = .init();
         defer final.deinit();
         this.appendGlobalStoreEntryPath(&final, entry_id, .final);
 
@@ -1741,7 +1741,7 @@ pub const Installer = struct {
                 // concurrent install and is content-identical — keep it and
                 // discard ours.
                 if (this.manager.options.enable.force_install) {
-                    var old: bun.AbsPath(.{}) = .init();
+                    var old: bun.Path(.{}) = .init();
                     defer old.deinit();
                     old.append(this.global_store_path.?);
                     old.appendFmt("{f}.old-{x}", .{
@@ -1803,24 +1803,20 @@ pub const Installer = struct {
         defer dest.deinit();
         this.appendLocalStoreEntryPath(&dest, entry_id);
 
-        var target_abs: bun.AbsPath(.{}) = .init();
+        var target_abs: bun.Path(.{}) = .init();
         defer target_abs.deinit();
         this.appendGlobalStoreEntryPath(&target_abs, entry_id, .final);
 
         // Absolute target so the link is independent of where node_modules
-        // lives (project root may itself be behind a symlink). Symlinker's
-        // `target` field is RelPath-typed for the common in-tree case, so
-        // call sys.symlink/symlinkOrJunction directly here.
-        const do_symlink = struct {
-            fn call(d: [:0]const u8, t: [:0]const u8) sys.Maybe(void) {
-                if (comptime Environment.isWindows) {
-                    return sys.symlinkOrJunction(d, t, t);
-                }
-                return sys.symlink(t, d);
-            }
-        }.call;
+        // lives (project root may itself be behind a symlink).
+        const symlinker: Symlinker = .{
+            .io = this.manager.io,
+            .dest = dest.sliceZ(),
+            .target = target_abs.sliceZ(),
+            .fallback_junction_target = target_abs.sliceZ(),
+        };
 
-        switch (do_symlink(dest.sliceZ(), target_abs.sliceZ())) {
+        switch (symlinker.symlink()) {
             .result => return .success,
             .err => |err| switch (err.getErrno()) {
                 .NOENT => {
@@ -1856,7 +1852,7 @@ pub const Installer = struct {
                 else => return .initErr(err),
             },
         }
-        return do_symlink(dest.sliceZ(), target_abs.sliceZ());
+        return symlinker.symlink();
     }
 
     pub fn appendStoreNodeModulesPath(this: *const Installer, buf: anytype, entry_id: Store.Entry.Id) void {

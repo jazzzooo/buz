@@ -506,7 +506,7 @@ pub const Bin = extern struct {
 
         /// Usually will be the same as `node_modules_path`.
         /// Used to support native bin linking.
-        target_node_modules_path: *bun.AbsPath(.{}),
+        target_node_modules_path: *bun.Path(.{}),
 
         /// Usually will be the same as `package_name`.
         /// Used to support native bin linking.
@@ -516,7 +516,7 @@ pub const Bin = extern struct {
         // linking each tree.
         seen: ?*bun.StringHashMap(void),
 
-        node_modules_path: *bun.AbsPath(.{}),
+        node_modules_path: *bun.Path(.{}),
 
         /// Used for generating relative paths
         package_name: strings.StringOrTinyString,

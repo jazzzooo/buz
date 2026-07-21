@@ -1227,7 +1227,7 @@ fn parseAppendImporterDependencies(
 
 /// Updates package.json with workspace and catalog information after migration
 fn updatePackageJsonAfterMigration(allocator: Allocator, manager: *PackageManager, log: *logger.Log, dir: bun.FD, patches: bun.StringArrayHashMap([]const u8)) OOM!void {
-    var pkg_json_path: bun.AbsPath(.{}) = .initTopLevelDir();
+    var pkg_json_path: bun.Path(.{}) = .initTopLevelDir();
     defer pkg_json_path.deinit();
 
     pkg_json_path.append("package.json");

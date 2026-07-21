@@ -220,7 +220,7 @@ pub fn loadRootLifecycleScripts(this: *PackageManager, root_package: Package) vo
     // need to clone because this is a copy before Lockfile.cleanWithLogger
     const name = root_package.name.slice(buf);
 
-    var top_level_dir: bun.AbsPath(.{}) = .initTopLevelDir();
+    var top_level_dir: bun.Path(.{}) = .initTopLevelDir();
     defer top_level_dir.deinit();
 
     if (root_package.scripts.hasAny()) {

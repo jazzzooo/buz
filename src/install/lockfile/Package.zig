@@ -851,7 +851,7 @@ pub fn Package(comptime SemverIntType: type) type {
                                     break :update_mapping false;
                                 };
 
-                                var package_json_path: bun.AbsPath(.{}) = .initTopLevelDir();
+                                var package_json_path: bun.Path(.{}) = .initTopLevelDir();
                                 defer package_json_path.deinit();
 
                                 package_json_path.append(workspace_path.slice(to_lockfile.buffers.string_bytes.items));

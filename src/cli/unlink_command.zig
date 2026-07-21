@@ -92,7 +92,7 @@ fn unlink(ctx: Command.Context) !void {
             var link_target_buf: bun.PathBuffer = undefined;
             var link_dest_buf: bun.PathBuffer = undefined;
 
-            var node_modules_path = bun.AbsPath(.{}).initFdPath(.fromStdDir(node_modules)) catch |err| {
+            var node_modules_path = bun.Path(.{}).initFdPath(.fromStdDir(node_modules)) catch |err| {
                 if (manager.options.log_level != .silent) {
                     Output.err(err, "failed to link binary", .{});
                 }

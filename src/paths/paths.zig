@@ -1,6 +1,4 @@
 pub const Path = paths.Path;
-pub const AbsPath = paths.AbsPath;
-pub const RelPath = paths.RelPath;
 
 pub const EnvPath = @import("./EnvPath.zig").EnvPath;
 

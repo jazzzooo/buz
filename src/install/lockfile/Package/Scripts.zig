@@ -193,7 +193,7 @@ pub const Scripts = extern struct {
         this: *const Package.Scripts,
         lockfile: *const Lockfile,
         lockfile_buf: []const u8,
-        cwd_: *bun.AbsPath(.{}),
+        cwd_: *bun.Path(.{}),
         package_name: string,
         resolution_tag: Resolution.Tag,
         add_node_gyp_rebuild_script: bool,
@@ -254,7 +254,7 @@ pub const Scripts = extern struct {
         this: *Package.Scripts,
         log: *logger.Log,
         lockfile: *const Lockfile,
-        folder_path: *bun.AbsPath(.{}),
+        folder_path: *bun.Path(.{}),
         folder_name: string,
         resolution: *const Resolution,
     ) !?Package.Scripts.List {
@@ -296,7 +296,7 @@ pub const Scripts = extern struct {
         allocator: std.mem.Allocator,
         string_builder: *Lockfile.StringBuilder,
         log: *logger.Log,
-        folder_path: *bun.AbsPath(.{}),
+        folder_path: *bun.Path(.{}),
     ) !void {
         const json = brk: {
             var save = folder_path.save();
@@ -326,7 +326,7 @@ pub const Scripts = extern struct {
         this: *Package.Scripts,
         log: *logger.Log,
         lockfile: *const Lockfile,
-        folder_path: *bun.AbsPath(.{}),
+        folder_path: *bun.Path(.{}),
         folder_name: string,
         resolution_tag: Resolution.Tag,
     ) !?Package.Scripts.List {

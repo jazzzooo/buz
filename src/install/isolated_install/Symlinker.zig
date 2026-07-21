@@ -1,14 +1,14 @@
 pub const Symlinker = struct {
     io: std.Io,
-    dest: bun.Path(.{}),
-    target: bun.RelPath(.{}),
-    fallback_junction_target: bun.AbsPath(.{}),
+    dest: [:0]const u8,
+    target: [:0]const u8,
+    fallback_junction_target: [:0]const u8,
 
     pub fn symlink(this: *const @This()) sys.Maybe(void) {
         if (comptime Environment.isWindows) {
-            return sys.symlinkOrJunction(this.dest.sliceZ(), this.target.sliceZ(), this.fallback_junction_target.sliceZ());
+            return sys.symlinkOrJunction(this.dest, this.target, this.fallback_junction_target);
         }
-        return sys.symlink(this.target.sliceZ(), this.dest.sliceZ());
+        return sys.symlink(this.target, this.dest);
     }
 
     pub const Strategy = enum {
@@ -27,7 +27,7 @@ pub const Symlinker = struct {
                     .result => .success,
                     .err => |symlink_err| switch (symlink_err.getErrno()) {
                         .NOENT => {
-                            const dest_parent = this.dest.dirname() orelse {
+                            const dest_parent = std.fs.path.dirname(this.dest) orelse {
                                 return .success;
                             };
 
@@ -44,7 +44,7 @@ pub const Symlinker = struct {
                     .result => .success,
                     .err => |symlink_err1| switch (symlink_err1.getErrno()) {
                         .NOENT => {
-                            const dest_parent = this.dest.dirname() orelse {
+                            const dest_parent = std.fs.path.dirname(this.dest) orelse {
                                 return .initErr(symlink_err1);
                             };
 
@@ -52,7 +52,7 @@ pub const Symlinker = struct {
                             return this.symlink();
                         },
                         .EXIST => {
-                            FD.cwd().deleteTree(this.io, this.dest.sliceZ()) catch {};
+                            FD.cwd().deleteTree(this.io, this.dest) catch {};
                             return this.symlink();
                         },
                         else => .initErr(symlink_err1),
@@ -62,14 +62,14 @@ pub const Symlinker = struct {
             .expect_existing => {
                 const current_link_buf = bun.path_buffer_pool.get();
                 defer bun.path_buffer_pool.put(current_link_buf);
-                var current_link: []const u8 = switch (sys.readlink(this.dest.sliceZ(), current_link_buf)) {
+                var current_link: []const u8 = switch (sys.readlink(this.dest, current_link_buf)) {
                     .result => |res| res,
                     .err => |readlink_err| return switch (readlink_err.getErrno()) {
                         .NOENT => switch (this.symlink()) {
                             .result => .success,
                             .err => |symlink_err| switch (symlink_err.getErrno()) {
                                 .NOENT => {
-                                    const dest_parent = this.dest.dirname() orelse {
+                                    const dest_parent = std.fs.path.dirname(this.dest) orelse {
                                         return .initErr(symlink_err);
                                     };
 
@@ -88,13 +88,13 @@ pub const Symlinker = struct {
                         // a regular file, replace it.
                         else => {
                             const is_dir = if (comptime Environment.isWindows)
-                                if (sys.getFileAttributes(this.dest.sliceZ())) |a| a.is_directory and !a.is_reparse_point else false
-                            else if (sys.lstat(this.dest.sliceZ()).asValue()) |st|
+                                if (sys.getFileAttributes(this.dest)) |a| a.is_directory and !a.is_reparse_point else false
+                            else if (sys.lstat(this.dest).asValue()) |st|
                                 std.posix.S.ISDIR(@intCast(st.mode))
                             else
                                 false;
                             if (is_dir) return .success;
-                            _ = sys.unlink(this.dest.sliceZ());
+                            _ = sys.unlink(this.dest);
                             return this.symlink();
                         },
                     },
@@ -103,30 +103,30 @@ pub const Symlinker = struct {
                 // libuv adds a trailing slash to junctions.
                 current_link = strings.withoutTrailingSlash(current_link);
 
-                if (strings.eqlLong(current_link, this.target.sliceZ(), true)) {
+                if (strings.eqlLong(current_link, this.target, true)) {
                     return .success;
                 }
 
                 if (comptime Environment.isWindows) {
-                    if (strings.eqlLong(current_link, this.fallback_junction_target.slice(), true)) {
+                    if (strings.eqlLong(current_link, this.fallback_junction_target, true)) {
                         return .success;
                     }
 
                     // this existing link is pointing to the wrong package.
                     // on windows rmdir must be used for symlinks created to point
                     // at directories, even if the target no longer exists
-                    switch (sys.rmdir(this.dest.sliceZ())) {
+                    switch (sys.rmdir(this.dest)) {
                         .result => {},
                         .err => |err| switch (err.getErrno()) {
                             .PERM => {
-                                _ = sys.unlink(this.dest.sliceZ());
+                                _ = sys.unlink(this.dest);
                             },
                             else => {},
                         },
                     }
                 } else {
                     // this existing link is pointing to the wrong package
-                    _ = sys.unlink(this.dest.sliceZ());
+                    _ = sys.unlink(this.dest);
                 }
 
                 return this.symlink();
