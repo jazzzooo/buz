@@ -37,24 +37,6 @@ fn dangerouslyRunWithoutJitProtections(R: type, func: anytype, args: anytype) R 
     return @call(bun.callmod_inline, func, args);
 }
 
-const Offsets = extern struct {
-    JSArrayBufferView__offsetOfLength: u32,
-    JSArrayBufferView__offsetOfByteOffset: u32,
-    JSArrayBufferView__offsetOfVector: u32,
-    JSCell__offsetOfType: u32,
-
-    extern "c" var Bun__FFI__offsets: Offsets;
-    extern "c" fn Bun__FFI__ensureOffsetsAreLoaded() void;
-    fn loadOnce() void {
-        Bun__FFI__ensureOffsetsAreLoaded();
-    }
-    var once = bun.once(loadOnce);
-    pub fn get() *const Offsets {
-        once.call(.{});
-        return &Bun__FFI__offsets;
-    }
-};
-
 pub const FFI = struct {
     pub const js = jsc.Codegen.JSFFI;
     pub const toJS = js.toJS;
@@ -2400,10 +2382,9 @@ const CompilerRT = struct {
             };
         }
 
-        const Sizes = @import("../../jsc/sizes.zig");
         const offsets = Offsets.get();
         state.defineSymbolsComptime(.{
-            .Bun_FFI_PointerOffsetToArgumentsList = Sizes.Bun_FFI_PointerOffsetToArgumentsList,
+            .Bun_FFI_PointerOffsetToArgumentsList = offsets.CallFrame__argumentOffset,
             .JSArrayBufferView__offsetOfLength = offsets.JSArrayBufferView__offsetOfLength,
             .JSArrayBufferView__offsetOfVector = offsets.JSArrayBufferView__offsetOfVector,
             .JSCell__offsetOfType = offsets.JSCell__offsetOfType,
@@ -2482,6 +2463,7 @@ const WindowsDynLib = struct {
 };
 
 const jsc = bun.jsc;
+const Offsets = jsc.FFIOffsets;
 const JSGlobalObject = bun.jsc.JSGlobalObject;
 const JSValue = bun.jsc.JSValue;
 const VM = bun.jsc.VM;

@@ -1,10 +1,10 @@
 pub const JSUint8Array = opaque {
     pub fn ptr(this: *JSUint8Array) [*]u8 {
-        return @as(*[*]u8, @ptrFromInt(@intFromPtr(this) + Sizes.Bun_FFI_PointerOffsetToTypedArrayVector)).*;
+        return @as(*[*]u8, @ptrFromInt(@intFromPtr(this) + @as(usize, FFIOffsets.get().JSArrayBufferView__offsetOfVector))).*;
     }
 
     pub fn len(this: *JSUint8Array) usize {
-        return @as(*usize, @ptrFromInt(@intFromPtr(this) + Sizes.Bun_FFI_PointerOffsetToTypedArrayLength)).*;
+        return @as(*usize, @ptrFromInt(@intFromPtr(this) + @as(usize, FFIOffsets.get().JSArrayBufferView__offsetOfLength))).*;
     }
 
     pub fn slice(this: *JSUint8Array) []u8 {
@@ -27,7 +27,7 @@ pub const JSUint8Array = opaque {
     }
 };
 
-const Sizes = @import("./sizes.zig");
+const FFIOffsets = @import("./FFIOffsets.zig");
 const bun = @import("bun");
 
 const jsc = bun.jsc;

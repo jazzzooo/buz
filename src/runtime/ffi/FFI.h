@@ -130,11 +130,7 @@ EncodedJSValue ValueTrue = { TagValueTrue };
 
 typedef void* JSContext;
 
-// Bun_FFI_PointerOffsetToArgumentsList is injected into the build 
-// The value is generated in `make sizegen`
-// The value is 6.
-// On ARM64_32, the value is something else but it really doesn't matter for our case
-// However, I don't want this to subtly break amidst future upgrades to JavaScriptCore
+// Bun_FFI_PointerOffsetToArgumentsList is injected by the FFI compiler setup.
 #define LOAD_ARGUMENTS_FROM_CALL_FRAME \
   int64_t *argsPtr = (int64_t*)((size_t*)callFrame + Bun_FFI_PointerOffsetToArgumentsList)
 
@@ -249,6 +245,7 @@ static EncodedJSValue PTR_TO_JSVALUE(void* ptr) {
   return val;
 }
 
+// TODO: Canonicalize NaNs to avoid JSValue tag collisions, and decode Int32-tagged values before the double path.
 static EncodedJSValue DOUBLE_TO_JSVALUE(double val) {
    EncodedJSValue res;
    res.asDouble = val;

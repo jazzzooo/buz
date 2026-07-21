@@ -379,8 +379,6 @@ fn ptr_(
     }
 
     var addr: usize = @intFromPtr(array_buffer.ptr);
-    // const Sizes = @import("../../jsc/sizes.zig");
-    // assert(addr == @intFromPtr(value.asEncoded().ptr) + Sizes.Bun_FFI_PointerOffsetToTypedArrayVector);
 
     if (byteOffset) |off| {
         if (!off.isEmptyOrUndefinedOrNull()) {

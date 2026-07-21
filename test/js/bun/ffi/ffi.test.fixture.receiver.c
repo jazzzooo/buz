@@ -137,11 +137,7 @@ EncodedJSValue ValueTrue = { TagValueTrue };
 
 typedef void* JSContext;
 
-// Bun_FFI_PointerOffsetToArgumentsList is injected into the build 
-// The value is generated in `make sizegen`
-// The value is 6.
-// On ARM64_32, the value is something else but it really doesn't matter for our case
-// However, I don't want this to subtly break amidst future upgrades to JavaScriptCore
+// Bun_FFI_PointerOffsetToArgumentsList is injected by the FFI compiler setup.
 #define LOAD_ARGUMENTS_FROM_CALL_FRAME \
   int64_t *argsPtr = (int64_t*)((size_t*)callFrame + Bun_FFI_PointerOffsetToArgumentsList)
 
@@ -393,4 +389,3 @@ ZIG_REPR_TYPE JSFunctionCall(void* JS_GLOBAL_OBJECT, void* callFrame) {
 
     return FLOAT_TO_JSVALUE(return_value).asZigRepr;
 }
-

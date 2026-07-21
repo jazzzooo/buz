@@ -53,6 +53,7 @@ pub const DOMFormData = @import("./DOMFormData.zig").DOMFormData;
 pub const DOMURL = @import("./DOMURL.zig").DOMURL;
 pub const DecodedJSValue = @import("./DecodedJSValue.zig").DecodedJSValue;
 pub const DeferredError = @import("./DeferredError.zig").DeferredError;
+pub const FFIOffsets = @import("./FFIOffsets.zig");
 pub const GetterSetter = @import("./GetterSetter.zig").GetterSetter;
 pub const JSArray = @import("./JSArray.zig").JSArray;
 pub const JSArrayIterator = @import("./JSArrayIterator.zig").JSArrayIterator;
@@ -155,8 +156,6 @@ pub const WorkTask = EventLoop.WorkTask;
 
 /// Deprecated: Avoid using this in new code.
 pub const C = @import("./javascript_core_c_api.zig");
-/// Deprecated: Remove all of these please.
-pub const Sizes = @import("./sizes.zig");
 /// Deprecated: Use `bun.String`
 pub const ZigString = @import("./ZigString.zig").ZigString;
 /// Deprecated: Use `bun.webcore`
