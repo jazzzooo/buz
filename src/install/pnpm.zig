@@ -1227,15 +1227,16 @@ fn parseAppendImporterDependencies(
 
 /// Updates package.json with workspace and catalog information after migration
 fn updatePackageJsonAfterMigration(allocator: Allocator, manager: *PackageManager, log: *logger.Log, dir: bun.FD, patches: bun.StringArrayHashMap([]const u8)) OOM!void {
-    var pkg_json_path: bun.Path(.{}) = .initTopLevelDir();
-    defer pkg_json_path.deinit();
-
-    pkg_json_path.append("package.json");
+    var pkg_json_path_buf: bun.PathBuffer = undefined;
+    const pkg_json_path = std.mem.print(&pkg_json_path_buf, "{f}", .{std.fs.path.fmtJoin(&.{
+        bun.fs.FileSystem.instance.topLevelDirWithoutTrailingSlash(),
+        "package.json",
+    })}) catch unreachable;
 
     const root_pkg_json = manager.workspace_package_json_cache.getWithPath(
         manager.allocator,
         log,
-        pkg_json_path.slice(),
+        pkg_json_path,
         .{
             .guess_indentation = true,
         },

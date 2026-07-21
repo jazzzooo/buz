@@ -220,8 +220,7 @@ pub fn loadRootLifecycleScripts(this: *PackageManager, root_package: Package) vo
     // need to clone because this is a copy before Lockfile.cleanWithLogger
     const name = root_package.name.slice(buf);
 
-    var top_level_dir: bun.Path(.{}) = .initTopLevelDir();
-    defer top_level_dir.deinit();
+    const top_level_dir = Fs.FileSystem.instance.topLevelDirWithoutTrailingSlash();
 
     if (root_package.scripts.hasAny()) {
         const add_node_gyp_rebuild_script = root_package.scripts.install.isEmpty() and root_package.scripts.preinstall.isEmpty() and Syscall.exists(binding_dot_gyp_path);
@@ -229,7 +228,7 @@ pub fn loadRootLifecycleScripts(this: *PackageManager, root_package: Package) vo
         this.root_lifecycle_scripts = root_package.scripts.createList(
             this.lockfile,
             buf,
-            &top_level_dir,
+            top_level_dir,
             name,
             .root,
             add_node_gyp_rebuild_script,
@@ -240,7 +239,7 @@ pub fn loadRootLifecycleScripts(this: *PackageManager, root_package: Package) vo
             this.root_lifecycle_scripts = root_package.scripts.createList(
                 this.lockfile,
                 buf,
-                &top_level_dir,
+                top_level_dir,
                 name,
                 .root,
                 true,

@@ -1004,27 +1004,29 @@ pub const Installer = struct {
                             installer.appendStorePath(&dep_store_path, dep.entry_id);
                         }
 
-                        const target = target: {
+                        var target_buf = target: {
                             var dest_save = dest.save();
                             defer dest_save.restore();
 
                             dest.undo(1);
-                            const relative_path = bun.handleOom(std.fs.path.relative(
+                            break :target bun.handleOom(std.fs.path.relative(
                                 installer.manager.allocator,
                                 bun.fs.FileSystem.instance.top_level_dir,
                                 null,
                                 dest.slice(),
                                 dep_store_path.slice(),
                             ));
-                            defer installer.manager.allocator.free(relative_path);
-                            break :target bun.Path(.{}).from(relative_path);
                         };
-                        defer target.deinit();
+                        const target_len = target_buf.len;
+                        target_buf = bun.handleOom(installer.manager.allocator.realloc(target_buf, target_len + 1));
+                        defer installer.manager.allocator.free(target_buf);
+                        target_buf[target_len] = 0;
+                        const target = target_buf[0..target_len :0];
 
                         const symlinker: Symlinker = .{
                             .io = installer.manager.io,
                             .dest = dest.sliceZ(),
-                            .target = target.sliceZ(),
+                            .target = target,
                             .fallback_junction_target = dep_store_path.sliceZ(),
                         };
 
@@ -1167,7 +1169,7 @@ pub const Installer = struct {
                         const scripts_list = pkg_scripts.getList(
                             &log,
                             installer.lockfile,
-                            &pkg_cwd,
+                            pkg_cwd.slice(),
                             dep.name.slice(string_buf),
                             &pkg_res,
                         ) catch |err| {
@@ -1267,8 +1269,8 @@ pub const Installer = struct {
                         .string_buf = string_buf,
                         .extern_string_buf = installer.lockfile.buffers.extern_strings.items,
                         .seen = &seen,
-                        .target_node_modules_path = if (target_node_modules_path) |*path| path else &node_modules_path,
-                        .node_modules_path = &node_modules_path,
+                        .target_node_modules_path = if (target_node_modules_path) |*path| path.slice() else node_modules_path.slice(),
+                        .node_modules_path = node_modules_path.slice(),
                         .abs_target_buf = abs_target_buf,
                         .abs_dest_buf = abs_dest_buf,
                     };
@@ -1279,7 +1281,7 @@ pub const Installer = struct {
                         target_node_modules_path.?.deinit();
                         target_node_modules_path = null;
 
-                        bin_linker.target_node_modules_path = &node_modules_path;
+                        bin_linker.target_node_modules_path = node_modules_path.slice();
                         bin_linker.target_package_name = strings.StringOrTinyString.init(dep_name);
 
                         if (this.installer.manager.options.log_level.isVerbose()) {
@@ -1488,26 +1490,25 @@ pub const Installer = struct {
         const pkg_id = this.store.nodes.items(.pkg_id)[node_id.get()];
         const pkg_name = this.lockfile.packages.items(.name)[pkg_id];
 
-        var hidden_hoisted_node_modules: bun.Path(.{}) = .init();
-        defer hidden_hoisted_node_modules.deinit();
+        const package_name = pkg_name.slice(string_buf);
+        var dest_buf: bun.PathBuffer = undefined;
+        const dest = std.mem.printSentinel(&dest_buf, "{f}", .{std.fs.path.fmtJoin(&.{
+            "node_modules",
+            Store.modules_dir_name,
+            "node_modules",
+            package_name,
+        })}, 0) catch return;
 
-        hidden_hoisted_node_modules.append(
-            "node_modules" ++ std.fs.path.sep_str ++ ".bun" ++ std.fs.path.sep_str ++ "node_modules",
-        );
-        hidden_hoisted_node_modules.append(pkg_name.slice(string_buf));
-
-        var target: bun.Path(.{}) = .init();
-        defer target.deinit();
-
-        target.append("..");
-        if (strings.containsChar(pkg_name.slice(string_buf), '/')) {
-            target.append("..");
-        }
-
-        target.appendFmt("{f}/node_modules/{s}", .{
+        var store_path_buf: bun.PathBuffer = undefined;
+        const store_path = std.mem.print(&store_path_buf, "{f}", .{
             Store.Entry.fmtStorePath(entry_id, this.store, this.lockfile),
-            pkg_name.slice(string_buf),
-        });
+        }) catch return;
+        const target_parts = [_][]const u8{ "..", "..", store_path, "node_modules", package_name };
+        const target_start: usize = if (strings.containsChar(package_name, '/')) 0 else 1;
+        var target_buf: bun.PathBuffer = undefined;
+        const target = std.mem.printSentinel(&target_buf, "{f}", .{
+            std.fs.path.fmtJoin(target_parts[target_start..]),
+        }, 0) catch return;
 
         var full_target: bun.Path(.{}) = .initTopLevelDir();
         defer full_target.deinit();
@@ -1516,8 +1517,8 @@ pub const Installer = struct {
 
         const symlinker: Symlinker = .{
             .io = this.manager.io,
-            .dest = hidden_hoisted_node_modules.sliceZ(),
-            .target = target.sliceZ(),
+            .dest = dest,
+            .target = target,
             .fallback_junction_target = full_target.sliceZ(),
         };
 
@@ -1650,8 +1651,8 @@ pub const Installer = struct {
                 .string_buf = string_buf,
                 .extern_string_buf = extern_string_buf,
                 .seen = &seen,
-                .node_modules_path = &node_modules_path,
-                .target_node_modules_path = if (target_node_modules_path) |*path| path else &node_modules_path,
+                .node_modules_path = node_modules_path.slice(),
+                .target_node_modules_path = if (target_node_modules_path) |*path| path.slice() else node_modules_path.slice(),
                 .target_package_name = if (target_node_modules_path != null) target_package_name else package_name,
                 .abs_target_buf = link_target_buf,
                 .abs_dest_buf = link_dest_buf,
@@ -1663,7 +1664,7 @@ pub const Installer = struct {
                 target_node_modules_path.?.deinit();
                 target_node_modules_path = null;
 
-                bin_linker.target_node_modules_path = &node_modules_path;
+                bin_linker.target_node_modules_path = node_modules_path.slice();
                 bin_linker.target_package_name = package_name;
 
                 if (this.manager.options.log_level.isVerbose()) {
@@ -1820,7 +1821,7 @@ pub const Installer = struct {
             .result => return .success,
             .err => |err| switch (err.getErrno()) {
                 .NOENT => {
-                    if (dest.dirname()) |parent| {
+                    if (std.fs.path.dirname(dest.slice())) |parent| {
                         FD.cwd().makePath(this.manager.io, u8, parent) catch {};
                     }
                 },

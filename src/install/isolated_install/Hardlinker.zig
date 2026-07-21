@@ -130,7 +130,7 @@ pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
                                         },
                                     );
                                 }
-                                const dest_parent = this.dest.dirname() orelse {
+                                const dest_parent = bun.path.dirnameWindowsWtf16(this.dest.slice()) orelse {
                                     return .initErr(link_err1);
                                 };
 
@@ -178,7 +178,7 @@ pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
                                 }
                             },
                             .NOENT => {
-                                const dest_parent = this.dest.dirname() orelse {
+                                const dest_parent = std.fs.path.dirname(this.dest.slice()) orelse {
                                     return .initErr(link_err1);
                                 };
 

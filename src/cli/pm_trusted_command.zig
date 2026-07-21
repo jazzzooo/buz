@@ -82,7 +82,7 @@ pub const UntrustedCommand = struct {
                     const maybe_scripts_list = package_scripts.getList(
                         pm.log,
                         pm.lockfile,
-                        &node_modules_path,
+                        node_modules_path.slice(),
                         alias,
                         resolution,
                     ) catch |err| {
@@ -250,7 +250,7 @@ pub const TrustCommand = struct {
                     const maybe_scripts_list = package_scripts.getList(
                         pm.log,
                         pm.lockfile,
-                        &node_modules_path,
+                        node_modules_path.slice(),
                         alias,
                         resolution,
                     ) catch |err| {

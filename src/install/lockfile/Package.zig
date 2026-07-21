@@ -851,13 +851,14 @@ pub fn Package(comptime SemverIntType: type) type {
                                     break :update_mapping false;
                                 };
 
-                                var package_json_path: bun.Path(.{}) = .initTopLevelDir();
-                                defer package_json_path.deinit();
+                                var package_json_path_buf: bun.PathBuffer = undefined;
+                                const package_json_path = std.mem.printSentinel(&package_json_path_buf, "{f}", .{std.fs.path.fmtJoin(&.{
+                                    bun.fs.FileSystem.instance.topLevelDirWithoutTrailingSlash(),
+                                    workspace_path.slice(to_lockfile.buffers.string_bytes.items),
+                                    "package.json",
+                                })}, 0) catch break :update_mapping false;
 
-                                package_json_path.append(workspace_path.slice(to_lockfile.buffers.string_bytes.items));
-                                package_json_path.append("package.json");
-
-                                const source = &(bun.sys.File.toSource(package_json_path.sliceZ(), allocator, .{}).unwrap() catch {
+                                const source = &(bun.sys.File.toSource(package_json_path, allocator, .{}).unwrap() catch {
                                     break :update_mapping false;
                                 });
 

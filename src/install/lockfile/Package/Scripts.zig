@@ -193,7 +193,7 @@ pub const Scripts = extern struct {
         this: *const Package.Scripts,
         lockfile: *const Lockfile,
         lockfile_buf: []const u8,
-        cwd_: *bun.Path(.{}),
+        cwd_path: []const u8,
         package_name: string,
         resolution_tag: Resolution.Tag,
         add_node_gyp_rebuild_script: bool,
@@ -204,10 +204,12 @@ pub const Scripts = extern struct {
             var cwd_buf: if (Environment.isWindows) bun.PathBuffer else void = undefined;
 
             const cwd = if (comptime !Environment.isWindows)
-                cwd_.slice()
+                cwd_path
             else brk: {
-                const cwd_handle = bun.openDirNoRenamingOrDeletingWindows(bun.invalid_fd, cwd_.sliceZ()) catch break :brk cwd_.slice();
-                break :brk FD.fromStdDir(cwd_handle).getFdPath(&cwd_buf) catch break :brk cwd_.slice();
+                var cwd_z_buf: bun.PathBuffer = undefined;
+                const cwd_z = std.mem.printSentinel(&cwd_z_buf, "{s}", .{cwd_path}, 0) catch break :brk cwd_path;
+                const cwd_handle = bun.openDirNoRenamingOrDeletingWindows(bun.invalid_fd, cwd_z) catch break :brk cwd_path;
+                break :brk FD.fromStdDir(cwd_handle).getFdPath(&cwd_buf) catch break :brk cwd_path;
             };
 
             return .{
@@ -254,7 +256,7 @@ pub const Scripts = extern struct {
         this: *Package.Scripts,
         log: *logger.Log,
         lockfile: *const Lockfile,
-        folder_path: *bun.Path(.{}),
+        folder_path: []const u8,
         folder_name: string,
         resolution: *const Resolution,
     ) !?Package.Scripts.List {
@@ -263,11 +265,9 @@ pub const Scripts = extern struct {
                 this.install.isEmpty() and
                 this.preinstall.isEmpty())
             brk: {
-                var save = folder_path.save();
-                defer save.restore();
-                folder_path.append("binding.gyp");
-
-                break :brk bun.sys.exists(folder_path.slice());
+                var path_buf: bun.PathBuffer = undefined;
+                const path = std.mem.print(&path_buf, "{f}", .{std.fs.path.fmtJoin(&.{ folder_path, "binding.gyp" })}) catch break :brk false;
+                break :brk bun.sys.exists(path);
             } else false;
 
             return this.createList(
@@ -296,16 +296,14 @@ pub const Scripts = extern struct {
         allocator: std.mem.Allocator,
         string_builder: *Lockfile.StringBuilder,
         log: *logger.Log,
-        folder_path: *bun.Path(.{}),
+        folder_path: []const u8,
     ) !void {
+        var path_buf: bun.PathBuffer = undefined;
+        const package_json_path = std.mem.printSentinel(&path_buf, "{f}", .{std.fs.path.fmtJoin(&.{ folder_path, "package.json" })}, 0) catch return error.NameTooLong;
         const json = brk: {
-            var save = folder_path.save();
-            defer save.restore();
-            folder_path.append("package.json");
-
             const json_src = brk2: {
-                const buf = try bun.sys.File.readFrom(bun.FD.cwd(), folder_path.sliceZ(), allocator).unwrap();
-                break :brk2 logger.Source.initPathString(folder_path.slice(), buf);
+                const buf = try bun.sys.File.readFrom(bun.FD.cwd(), package_json_path, allocator).unwrap();
+                break :brk2 logger.Source.initPathString(package_json_path, buf);
             };
 
             initializeStore();
@@ -326,7 +324,7 @@ pub const Scripts = extern struct {
         this: *Package.Scripts,
         log: *logger.Log,
         lockfile: *const Lockfile,
-        folder_path: *bun.Path(.{}),
+        folder_path: []const u8,
         folder_name: string,
         resolution_tag: Resolution.Tag,
     ) !?Package.Scripts.List {
@@ -337,11 +335,9 @@ pub const Scripts = extern struct {
         try this.fillFromPackageJSON(lockfile.allocator, &builder, log, folder_path);
 
         const add_node_gyp_rebuild_script = if (this.install.isEmpty() and this.preinstall.isEmpty()) brk: {
-            const save = folder_path.save();
-            defer save.restore();
-            folder_path.append("binding.gyp");
-
-            break :brk bun.sys.exists(folder_path.slice());
+            var path_buf: bun.PathBuffer = undefined;
+            const path = std.mem.print(&path_buf, "{f}", .{std.fs.path.fmtJoin(&.{ folder_path, "binding.gyp" })}) catch break :brk false;
+            break :brk bun.sys.exists(path);
         } else false;
 
         return this.createList(

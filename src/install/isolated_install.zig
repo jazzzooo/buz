@@ -1319,19 +1319,19 @@ pub fn installIsolatedPackages(
 
                 // 3
                 for (lockfile.workspace_paths.values()) |workspace_path| {
-                    var workspace_node_modules: bun.Path(.{}) = .from(workspace_path.slice(lockfile.buffers.string_bytes.items));
-                    defer workspace_node_modules.deinit();
-
-                    const basename = workspace_node_modules.basename();
-
-                    workspace_node_modules.append("node_modules");
+                    const workspace = workspace_path.slice(lockfile.buffers.string_bytes.items);
+                    const basename = std.fs.path.basename(workspace);
+                    var workspace_node_modules_buf: bun.PathBuffer = undefined;
+                    const workspace_node_modules = std.mem.printSentinel(&workspace_node_modules_buf, "{f}", .{
+                        std.fs.path.fmtJoin(&.{ workspace, "node_modules" }),
+                    }, 0) catch continue;
 
                     var rename_path_save = rename_path.save();
                     defer rename_path_save.restore();
 
                     rename_path.appendFmt(".old_{s}_modules", .{basename});
 
-                    sys.renameat(FD.cwd(), workspace_node_modules.sliceZ(), FD.cwd(), rename_path.sliceZ()).unwrap() catch {};
+                    sys.renameat(FD.cwd(), workspace_node_modules, FD.cwd(), rename_path.sliceZ()).unwrap() catch {};
                 }
             } else {
 
@@ -1372,32 +1372,27 @@ pub fn installIsolatedPackages(
 
                 rename_path.append(".cache");
 
-                var cache_path: bun.Path(.{}) = .from("node_modules");
-                defer cache_path.deinit();
-
-                cache_path.append(".cache");
-
                 // 4
-                sys.renameat(FD.cwd(), rename_path.sliceZ(), FD.cwd(), cache_path.sliceZ()).unwrap() catch {};
+                sys.renameat(FD.cwd(), rename_path.sliceZ(), FD.cwd(), "node_modules/.cache").unwrap() catch {};
 
                 // remove .cache so we can append destination for each workspace
                 rename_path.undo(1);
 
                 // 5
                 for (lockfile.workspace_paths.values()) |workspace_path| {
-                    var workspace_node_modules: bun.Path(.{}) = .from(workspace_path.slice(lockfile.buffers.string_bytes.items));
-                    defer workspace_node_modules.deinit();
-
-                    const basename = workspace_node_modules.basename();
-
-                    workspace_node_modules.append("node_modules");
+                    const workspace = workspace_path.slice(lockfile.buffers.string_bytes.items);
+                    const basename = std.fs.path.basename(workspace);
+                    var workspace_node_modules_buf: bun.PathBuffer = undefined;
+                    const workspace_node_modules = std.mem.printSentinel(&workspace_node_modules_buf, "{f}", .{
+                        std.fs.path.fmtJoin(&.{ workspace, "node_modules" }),
+                    }, 0) catch continue;
 
                     var rename_path_save = rename_path.save();
                     defer rename_path_save.restore();
 
                     rename_path.appendFmt(".old_{s}_modules", .{basename});
 
-                    sys.renameat(FD.cwd(), workspace_node_modules.sliceZ(), FD.cwd(), rename_path.sliceZ()).unwrap() catch {};
+                    sys.renameat(FD.cwd(), workspace_node_modules, FD.cwd(), rename_path.sliceZ()).unwrap() catch {};
                 }
             }
 

@@ -129,15 +129,6 @@ pub fn Path(comptime opts: Options) type {
             return this;
         }
 
-        pub fn initFdPath(fd: FD) !@This() {
-            var this = init();
-            const raw = try fd.getFdPath(this._buf.pooled);
-            const trimmed = trimInput(.abs, raw);
-            this._buf.len = trimmed.len;
-
-            return this;
-        }
-
         pub fn fromLongPath(input: anytype) @This() {
             // TODO: Apply extended-path prefixes at Windows syscall boundaries; blindly prefixing here mishandles UNC and device paths.
             switch (comptime @TypeOf(input)) {
@@ -169,19 +160,6 @@ pub fn Path(comptime opts: Options) type {
             var this = init();
             this._buf.append(trimmed, false);
             return this;
-        }
-
-        pub fn basename(this: *const @This()) []const opts.pathUnit() {
-            var it = std.fs.path.ComponentIterator(native_path_type, opts.pathUnit()).init(this.slice());
-            const last = it.last() orelse return &.{};
-            return last.name;
-        }
-
-        pub fn dirname(this: *const @This()) ?[]const opts.pathUnit() {
-            var it = std.fs.path.ComponentIterator(native_path_type, opts.pathUnit()).init(this.slice());
-            _ = it.last() orelse return null;
-            const parent = it.previous() orelse return it.root();
-            return parent.path;
         }
 
         pub fn slice(this: *const @This()) []const opts.pathUnit() {
@@ -281,11 +259,9 @@ pub fn Path(comptime opts: Options) type {
         }
 
         pub fn appendFmt(this: *@This(), comptime fmt: []const u8, args: anytype) void {
-            // TODO: there's probably a better way to do this. needed for trimming slashes
-            var temp: Path(.{}) = .init();
-            defer temp.deinit();
-
-            const input = std.fmt.bufPrint(temp._buf.pooled, fmt, args) catch unreachable;
+            const temp = bun.path_buffer_pool.get();
+            defer bun.path_buffer_pool.put(temp);
+            const input = std.mem.print(temp, fmt, args) catch unreachable;
 
             this.append(input);
         }
@@ -327,7 +303,6 @@ const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const FD = bun.FD;
 const PathBuffer = bun.PathBuffer;
 const WPathBuffer = bun.WPathBuffer;
 const native_path_type: std.fs.path.PathType = if (Environment.isWindows) .windows else .posix;

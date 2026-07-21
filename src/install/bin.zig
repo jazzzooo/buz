@@ -506,7 +506,7 @@ pub const Bin = extern struct {
 
         /// Usually will be the same as `node_modules_path`.
         /// Used to support native bin linking.
-        target_node_modules_path: *bun.Path(.{}),
+        target_node_modules_path: []const u8,
 
         /// Usually will be the same as `package_name`.
         /// Used to support native bin linking.
@@ -516,7 +516,7 @@ pub const Bin = extern struct {
         // linking each tree.
         seen: ?*bun.StringHashMap(void),
 
-        node_modules_path: *bun.Path(.{}),
+        node_modules_path: []const u8,
 
         /// Used for generating relative paths
         package_name: strings.StringOrTinyString,
@@ -720,10 +720,7 @@ pub const Bin = extern struct {
                     return;
                 }
 
-                const node_modules_path_save = this.node_modules_path.save();
-                this.node_modules_path.append(".bin");
-                bun.makePath(std.Io.Dir.cwd(), this.io, this.node_modules_path.slice()) catch {};
-                node_modules_path_save.restore();
+                bun.makePath(std.Io.Dir.cwd(), this.io, std.fs.path.dirname(abs_dest).?) catch {};
 
                 break :bunx_file bun.sys.File.openatOSPath(bun.invalid_fd, abs_bunx_file, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o664).unwrap() catch |real_err| {
                     this.err = real_err;
@@ -826,10 +823,7 @@ pub const Bin = extern struct {
                             return;
                         }
 
-                        const node_modules_path_save = this.node_modules_path.save();
-                        this.node_modules_path.append(".bin");
-                        bun.makePath(std.Io.Dir.cwd(), this.io, this.node_modules_path.slice()) catch {};
-                        node_modules_path_save.restore();
+                        bun.makePath(std.Io.Dir.cwd(), this.io, abs_dest_dir) catch {};
 
                         switch (bun.sys.symlinkRunningExecutable(rel_target, abs_dest)) {
                             .err => |real_error| {
@@ -909,7 +903,7 @@ pub const Bin = extern struct {
 
         /// uses `this.abs_target_buf`
         pub fn buildTargetPackageDir(this: *const Linker) []const u8 {
-            const dest_dir_without_trailing_slash = strings.withoutTrailingSlash(this.target_node_modules_path.slice());
+            const dest_dir_without_trailing_slash = strings.withoutTrailingSlash(this.target_node_modules_path);
 
             var remain = this.abs_target_buf;
 
@@ -928,7 +922,7 @@ pub const Bin = extern struct {
         }
 
         pub fn buildDestinationDir(this: *const Linker, global: bool) []u8 {
-            const dest_dir_without_trailing_slash = strings.withoutTrailingSlash(this.node_modules_path.slice());
+            const dest_dir_without_trailing_slash = strings.withoutTrailingSlash(this.node_modules_path);
 
             var remain = this.abs_dest_buf;
             if (global) {

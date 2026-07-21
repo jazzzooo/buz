@@ -258,8 +258,7 @@ pub const PackageInstaller = struct {
         const lockfile = this.lockfile;
         const manager = this.manager;
         const string_buf = lockfile.buffers.string_bytes.items;
-        var node_modules_path: bun.Path(.{}) = .from(this.node_modules.path.items);
-        defer node_modules_path.deinit();
+        const node_modules_path = this.node_modules.path.items;
 
         const pkgs = lockfile.packages.slice();
         const pkg_name_hashes = pkgs.items(.name_hash);
@@ -279,9 +278,6 @@ pub const PackageInstaller = struct {
             const package_name_ = strings.StringOrTinyString.init(alias);
             var target_package_name = package_name_;
             var can_retry_without_native_binlink_optimization = false;
-            var target_node_modules_path_opt: ?bun.Path(.{}) = null;
-            defer if (target_node_modules_path_opt) |*path| path.deinit();
-
             if (manager.postinstall_optimizer.isNativeBinlinkEnabled()) native_binlink_optimization: {
                 // Check for native binlink optimization
                 const name_hash = pkg_name_hashes[package_id];
@@ -338,8 +334,8 @@ pub const PackageInstaller = struct {
                     .string_buf = string_buf,
                     .extern_string_buf = lockfile.buffers.extern_strings.items,
                     .seen = &this.seen_bin_links,
-                    .node_modules_path = &node_modules_path,
-                    .target_node_modules_path = if (target_node_modules_path_opt) |*path| path else &node_modules_path,
+                    .node_modules_path = node_modules_path,
+                    .target_node_modules_path = node_modules_path,
                     .abs_target_buf = link_target_buf,
                     .abs_dest_buf = link_dest_buf,
                 };
@@ -688,7 +684,7 @@ pub const PackageInstaller = struct {
         alias: string,
         package_id: PackageID,
         resolution_tag: Resolution.Tag,
-        folder_path: *bun.Path(.{}),
+        folder_path: []const u8,
         log_level: Options.LogLevel,
     ) usize {
         if (comptime Environment.allow_assert) {
@@ -1171,9 +1167,11 @@ pub const PackageInstaller = struct {
                     };
 
                     if (resolution.tag != .root and (resolution.tag == .workspace or is_trusted)) {
-                        var folder_path: bun.Path(.{}) = .from(this.node_modules.path.items);
-                        defer folder_path.deinit();
-                        folder_path.append(alias.slice(this.lockfile.buffers.string_bytes.items));
+                        var folder_path_buf: bun.PathBuffer = undefined;
+                        const folder_path = std.mem.print(&folder_path_buf, "{f}", .{std.fs.path.fmtJoin(&.{
+                            this.node_modules.path.items,
+                            alias.slice(this.lockfile.buffers.string_bytes.items),
+                        })}) catch unreachable;
 
                         enqueueLifecycleScripts: {
                             if (this.manager.postinstall_optimizer.shouldIgnoreLifecycleScripts(
@@ -1199,7 +1197,7 @@ pub const PackageInstaller = struct {
                             if (this.enqueueLifecycleScripts(
                                 alias.slice(this.lockfile.buffers.string_bytes.items),
                                 log_level,
-                                &folder_path,
+                                folder_path,
                                 package_id,
                                 dep.behavior.optional,
                                 resolution,
@@ -1224,15 +1222,17 @@ pub const PackageInstaller = struct {
                         else => if (!is_trusted and this.metas[package_id].hasInstallScript()) {
                             // Check if the package actually has scripts. `hasInstallScript` can be false positive if a package is published with
                             // an auto binding.gyp rebuild script but binding.gyp is excluded from the published files.
-                            var folder_path: bun.Path(.{}) = .from(this.node_modules.path.items);
-                            defer folder_path.deinit();
-                            folder_path.append(alias.slice(this.lockfile.buffers.string_bytes.items));
+                            var folder_path_buf: bun.PathBuffer = undefined;
+                            const folder_path = std.mem.print(&folder_path_buf, "{f}", .{std.fs.path.fmtJoin(&.{
+                                this.node_modules.path.items,
+                                alias.slice(this.lockfile.buffers.string_bytes.items),
+                            })}) catch unreachable;
 
                             const count = this.getInstalledPackageScriptsCount(
                                 alias.slice(this.lockfile.buffers.string_bytes.items),
                                 package_id,
                                 resolution.tag,
-                                &folder_path,
+                                folder_path,
                                 log_level,
                             );
                             if (count > 0) {
@@ -1365,9 +1365,11 @@ pub const PackageInstaller = struct {
             };
 
             if (resolution.tag != .root and is_trusted) {
-                var folder_path: bun.Path(.{}) = .from(this.node_modules.path.items);
-                defer folder_path.deinit();
-                folder_path.append(alias.slice(this.lockfile.buffers.string_bytes.items));
+                var folder_path_buf: bun.PathBuffer = undefined;
+                const folder_path = std.mem.print(&folder_path_buf, "{f}", .{std.fs.path.fmtJoin(&.{
+                    this.node_modules.path.items,
+                    alias.slice(this.lockfile.buffers.string_bytes.items),
+                })}) catch unreachable;
 
                 enqueueLifecycleScripts: {
                     if (this.manager.postinstall_optimizer.shouldIgnoreLifecycleScripts(
@@ -1393,7 +1395,7 @@ pub const PackageInstaller = struct {
                     if (this.enqueueLifecycleScripts(
                         alias.slice(this.lockfile.buffers.string_bytes.items),
                         log_level,
-                        &folder_path,
+                        folder_path,
                         package_id,
                         dep.behavior.optional,
                         resolution,
@@ -1429,7 +1431,7 @@ pub const PackageInstaller = struct {
         this: *PackageInstaller,
         folder_name: string,
         log_level: Options.LogLevel,
-        package_path: *bun.Path(.{}),
+        package_path: []const u8,
         package_id: PackageID,
         optional: bool,
         resolution: *const Resolution,

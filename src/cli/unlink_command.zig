@@ -92,20 +92,20 @@ fn unlink(ctx: Command.Context) !void {
             var link_target_buf: bun.PathBuffer = undefined;
             var link_dest_buf: bun.PathBuffer = undefined;
 
-            var node_modules_path = bun.Path(.{}).initFdPath(.fromStdDir(node_modules)) catch |err| {
+            var node_modules_path_buf: bun.PathBuffer = undefined;
+            const node_modules_path = bun.FD.fromStdDir(node_modules).getFdPath(&node_modules_path_buf) catch |err| {
                 if (manager.options.log_level != .silent) {
                     Output.err(err, "failed to link binary", .{});
                 }
                 Global.crash();
             };
-            defer node_modules_path.deinit();
 
             var bin_linker = Bin.Linker{
                 .io = ctx.io,
-                .target_node_modules_path = &node_modules_path,
+                .target_node_modules_path = node_modules_path,
                 .target_package_name = strings.StringOrTinyString.init(name),
                 .bin = package.bin,
-                .node_modules_path = &node_modules_path,
+                .node_modules_path = node_modules_path,
                 .global_bin_path = manager.options.bin_path,
                 .package_name = strings.StringOrTinyString.init(name),
                 .string_buf = lockfile.buffers.string_bytes.items,
