@@ -13,8 +13,8 @@ pub const JSGlobalObject = opaque {
         return error.JSError;
     }
 
-    extern fn JSGlobalObject__createOutOfMemoryError(this: *JSGlobalObject) JSValue;
-    pub fn createOutOfMemoryError(this: *JSGlobalObject) JSValue {
+    extern fn JSGlobalObject__createOutOfMemoryError(this: *JSGlobalObject) *jsc.JSObject;
+    pub fn createOutOfMemoryError(this: *JSGlobalObject) *jsc.JSObject {
         return JSGlobalObject__createOutOfMemoryError(this);
     }
 
@@ -319,7 +319,7 @@ pub const JSGlobalObject = opaque {
         }
     }
 
-    pub fn createDOMExceptionInstance(this: *JSGlobalObject, code: jsc.WebCore.DOMExceptionCode, comptime fmt: [:0]const u8, args: anytype) JSError!JSValue {
+    pub fn createDOMExceptionInstance(this: *JSGlobalObject, code: jsc.WebCore.DOMExceptionCode, comptime fmt: [:0]const u8, args: anytype) JSError!*jsc.JSObject {
         if (comptime std.meta.fieldNames(@TypeOf(args)).len > 0) {
             var stack_fallback_buffer: [1024 * 4]u8 = undefined;
             var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, this.allocator());
@@ -459,7 +459,7 @@ pub const JSGlobalObject = opaque {
 
     pub fn throwDOMException(this: *JSGlobalObject, code: jsc.WebCore.DOMExceptionCode, comptime fmt: [:0]const u8, args: anytype) bun.JSError {
         const instance = try this.createDOMExceptionInstance(code, fmt, args);
-        return this.throwValue(instance);
+        return this.throwValue(instance.toJS());
     }
 
     pub fn throwError(this: *JSGlobalObject, err: anyerror, comptime fmt: [:0]const u8) bun.JSError {

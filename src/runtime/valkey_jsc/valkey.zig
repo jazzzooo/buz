@@ -1078,7 +1078,7 @@ pub const ValkeyClient = struct {
         switch (this.status) {
             .connecting, .connected => {
                 command.write(this.writer()) catch {
-                    try promise.reject(this.globalObject(), this.globalObject().createOutOfMemoryError());
+                    try promise.reject(this.globalObject(), this.globalObject().createOutOfMemoryError().toJS());
                     return;
                 };
             },

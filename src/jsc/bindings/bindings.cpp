@@ -2235,10 +2235,9 @@ void JSGlobalObject__throwOutOfMemoryError(JSC::JSGlobalObject* globalObject)
     throwOutOfMemoryError(globalObject, scope);
 }
 
-JSC::EncodedJSValue JSGlobalObject__createOutOfMemoryError(JSC::JSGlobalObject* globalObject)
+JSC::JSObject* JSGlobalObject__createOutOfMemoryError(JSC::JSGlobalObject* globalObject)
 {
-    JSObject* exception = createOutOfMemoryError(globalObject);
-    return JSValue::encode(exception);
+    return createOutOfMemoryError(globalObject);
 }
 
 // Walk a promise's reaction chain to find the async generators awaiting it,
@@ -3489,9 +3488,9 @@ JSC::JSObject* ZigString__toTypeErrorInstance(const ZigString* str, JSC::JSGloba
     return Zig::getTypeErrorInstance(str, globalObject);
 }
 
-JSC::EncodedJSValue ZigString__toDOMExceptionInstance(const ZigString* str, JSC::JSGlobalObject* globalObject, WebCore::ExceptionCode code)
+JSC::JSObject* ZigString__toDOMExceptionInstance(const ZigString* str, JSC::JSGlobalObject* globalObject, WebCore::ExceptionCode code)
 {
-    return JSValue::encode(createDOMException(globalObject, code, toStringCopy(*str)));
+    return createDOMException(globalObject, code, toStringCopy(*str)).getObject();
 }
 
 JSC::JSObject* ZigString__toSyntaxErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)

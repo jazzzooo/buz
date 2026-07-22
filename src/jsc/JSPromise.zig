@@ -289,7 +289,7 @@ pub const JSPromise = opaque {
         const err = value catch |err| switch (err) {
             // We can't use globalThis.takeException() because it throws out of
             // memory error when we instead need to take the exception.
-            error.OutOfMemory => globalThis.createOutOfMemoryError(),
+            error.OutOfMemory => globalThis.createOutOfMemoryError().toJS(),
 
             error.JSTerminated => return,
             else => err: {

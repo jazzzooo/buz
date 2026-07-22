@@ -1559,7 +1559,7 @@ pub const JSBundler = struct {
             jsc.markBinding(@src());
 
             const rejection_value = rejection catch |err| switch (err) {
-                error.OutOfMemory => globalThis.createOutOfMemoryError(),
+                error.OutOfMemory => globalThis.createOutOfMemoryError().toJS(),
                 error.JSError => globalThis.takeError(err),
                 error.JSTerminated => return error.JSTerminated,
             };

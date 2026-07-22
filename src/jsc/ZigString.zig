@@ -685,9 +685,9 @@ pub const ZigString = extern struct {
         return (try jsc.fromJSHostCallGeneric(global, @src(), ZigString__toTypeErrorInstance, .{ this, global })) orelse unreachable;
     }
 
-    extern fn ZigString__toDOMExceptionInstance(this: *const ZigString, global: *JSGlobalObject, code: u8) JSValue;
-    pub fn toDOMExceptionInstance(this: *const ZigString, global: *JSGlobalObject, code: jsc.WebCore.DOMExceptionCode) JSValue {
-        return ZigString__toDOMExceptionInstance(this, global, @backingInt(code));
+    extern fn ZigString__toDOMExceptionInstance(this: *const ZigString, global: *JSGlobalObject, code: u8) ?*jsc.JSObject;
+    pub fn toDOMExceptionInstance(this: *const ZigString, global: *JSGlobalObject, code: jsc.WebCore.DOMExceptionCode) bun.JSError!*jsc.JSObject {
+        return (try jsc.fromJSHostCallGeneric(global, @src(), ZigString__toDOMExceptionInstance, .{ this, global, @backingInt(code) })) orelse unreachable;
     }
 
     extern fn ZigString__toSyntaxErrorInstance(this: *const ZigString, global: *JSGlobalObject) ?*jsc.JSObject;
