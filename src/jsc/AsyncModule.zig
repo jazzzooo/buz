@@ -524,7 +524,7 @@ pub const AsyncModule = struct {
             else => "PackageResolveError",
         };
 
-        const error_instance = ZigString.init(msg).withEncoding().toErrorInstance(globalThis).getObject().?;
+        const error_instance = try ZigString.init(msg).withEncoding().toErrorInstance(globalThis);
         if (result.url.len > 0)
             error_instance.putDirect(globalThis, ZigString.static("url"), ZigString.init(result.url).withEncoding().toJS(globalThis));
         error_instance.putDirect(globalThis, ZigString.static("name"), ZigString.init(name).withEncoding().toJS(globalThis));
@@ -616,7 +616,7 @@ pub const AsyncModule = struct {
             else => "TarballDownloadError",
         };
 
-        const error_instance = ZigString.init(msg).withEncoding().toErrorInstance(globalThis).getObject().?;
+        const error_instance = try ZigString.init(msg).withEncoding().toErrorInstance(globalThis);
         if (result.url.len > 0)
             error_instance.putDirect(globalThis, ZigString.static("url"), ZigString.init(result.url).withEncoding().toJS(globalThis));
         error_instance.putDirect(globalThis, ZigString.static("name"), ZigString.init(name).withEncoding().toJS(globalThis));

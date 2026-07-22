@@ -361,11 +361,11 @@ pub const JSPasswordObject = struct {
                 err: PasswordObject.HashError,
                 hash: []const u8,
 
-                pub fn toErrorInstance(this: Value, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
+                pub fn toErrorInstance(this: Value, globalObject: *jsc.JSGlobalObject) bun.JSError!*jsc.JSObject {
                     const error_code = bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "PASSWORD{f}", .{PascalToUpperUnderscoreCaseFormatter{ .input = @errorName(this.err) }}));
                     defer bun.default_allocator.free(error_code);
-                    const instance = globalObject.createErrorInstance("Password hashing failed with error \"{s}\"", .{@errorName(this.err)});
-                    instance.getObject().?.putDirect(globalObject, ZigString.static("code"), jsc.ZigString.init(error_code).toJS(globalObject));
+                    const instance = try globalObject.createErrorInstance("Password hashing failed with error \"{s}\"", .{@errorName(this.err)});
+                    instance.putDirect(globalObject, ZigString.static("code"), jsc.ZigString.init(error_code).toJS(globalObject));
                     return instance;
                 }
             };
@@ -378,7 +378,7 @@ pub const JSPasswordObject = struct {
                 const global = this.global;
                 switch (this.value) {
                     .err => {
-                        const error_instance = this.value.toErrorInstance(global);
+                        const error_instance: bun.JSError!jsc.JSValue = if (this.value.toErrorInstance(global)) |instance| instance.toJS() else |err| err;
                         bun.destroy(this);
                         try promise.rejectWithAsyncStack(global, error_instance);
                     },
@@ -431,8 +431,8 @@ pub const JSPasswordObject = struct {
             const value = HashJob.getValue(globalObject.bunVM().io, password, algorithm);
             switch (value) {
                 .err => {
-                    const error_instance = value.toErrorInstance(globalObject);
-                    return globalObject.throwValue(error_instance);
+                    const error_instance = try value.toErrorInstance(globalObject);
+                    return globalObject.throwValue(error_instance.toJS());
                 },
                 .hash => |h| {
                     defer bun.default_allocator.free(h);
@@ -466,8 +466,8 @@ pub const JSPasswordObject = struct {
             const value = VerifyJob.getValue(globalObject.bunVM().io, password, prev_hash, algorithm);
             switch (value) {
                 .err => {
-                    const error_instance = value.toErrorInstance(globalObject);
-                    return globalObject.throwValue(error_instance);
+                    const error_instance = try value.toErrorInstance(globalObject);
+                    return globalObject.throwValue(error_instance.toJS());
                 },
                 .pass => |pass| {
                     return jsc.JSValue.jsBoolean(pass);
@@ -578,11 +578,11 @@ pub const JSPasswordObject = struct {
                 err: PasswordObject.HashError,
                 pass: bool,
 
-                pub fn toErrorInstance(this: Value, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
+                pub fn toErrorInstance(this: Value, globalObject: *jsc.JSGlobalObject) bun.JSError!*jsc.JSObject {
                     const error_code = bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "PASSWORD{f}", .{PascalToUpperUnderscoreCaseFormatter{ .input = @errorName(this.err) }}));
                     defer bun.default_allocator.free(error_code);
-                    const instance = globalObject.createErrorInstance("Password verification failed with error \"{s}\"", .{@errorName(this.err)});
-                    instance.getObject().?.putDirect(globalObject, ZigString.static("code"), jsc.ZigString.init(error_code).toJS(globalObject));
+                    const instance = try globalObject.createErrorInstance("Password verification failed with error \"{s}\"", .{@errorName(this.err)});
+                    instance.putDirect(globalObject, ZigString.static("code"), jsc.ZigString.init(error_code).toJS(globalObject));
                     return instance;
                 }
             };
@@ -595,7 +595,7 @@ pub const JSPasswordObject = struct {
                 const global = this.global;
                 switch (this.value) {
                     .err => {
-                        const error_instance = this.value.toErrorInstance(global);
+                        const error_instance: bun.JSError!jsc.JSValue = if (this.value.toErrorInstance(global)) |instance| instance.toJS() else |err| err;
                         bun.destroy(this);
                         try promise.rejectWithAsyncStack(global, error_instance);
                     },

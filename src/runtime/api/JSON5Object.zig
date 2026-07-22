@@ -77,15 +77,15 @@ pub fn parse(
         else => {
             if (log.msgs.items.len > 0) {
                 const first_msg = log.msgs.items[0];
-                return global.throwValue(global.createSyntaxErrorInstance(
+                return global.throwValue((try global.createSyntaxErrorInstance(
                     "JSON5 Parse error: {s}",
                     .{first_msg.data.text},
-                ));
+                )).toJS());
             }
-            return global.throwValue(global.createSyntaxErrorInstance(
+            return global.throwValue((try global.createSyntaxErrorInstance(
                 "JSON5 Parse error: Unable to parse JSON5 string",
                 .{},
-            ));
+            )).toJS());
         },
     };
 

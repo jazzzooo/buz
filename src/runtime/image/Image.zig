@@ -393,14 +393,14 @@ fn errorMessage(e: codecs.Error) [:0]const u8 {
     };
 }
 
-fn rejectError(global: *jsc.JSGlobalObject, e: codecs.Error) jsc.JSValue {
+fn rejectError(global: *jsc.JSGlobalObject, e: codecs.Error) bun.JSError!jsc.JSValue {
     return errorWithCode(global, errorCode(e), errorMessage(e));
 }
 
-fn errorWithCode(global: *jsc.JSGlobalObject, code: [:0]const u8, msg: [:0]const u8) jsc.JSValue {
-    const err = global.createErrorInstance("{s}", .{msg});
-    err.getObject().?.putDirect(global, jsc.ZigString.static("code"), jsc.ZigString.init(code).toJS(global));
-    return err;
+fn errorWithCode(global: *jsc.JSGlobalObject, code: [:0]const u8, msg: [:0]const u8) bun.JSError!jsc.JSValue {
+    const err = try global.createErrorInstance("{s}", .{msg});
+    err.putDirect(global, jsc.ZigString.static("code"), jsc.ZigString.init(code).toJS(global));
+    return err.toJS();
 }
 
 /// Fresh slice into the input bytes for use ON THE JS THREAD ONLY (re-reads
@@ -549,7 +549,7 @@ pub fn doMetadata(this: *Image, global: *jsc.JSGlobalObject, callframe: *jsc.Cal
         } else |e| switch (e) {
             // HEIC/AVIF need the system backend → fall through to async.
             error.UnsupportedOnPlatform => {},
-            else => return jsc.JSPromise.rejectedPromise(global, rejectError(global, e)).asValue(global),
+            else => return jsc.JSPromise.rejectedPromise(global, try rejectError(global, e)).asValue(global),
         }
     }
     return this.schedule(global, callframe.this(), .metadata, .uint8array);
@@ -637,7 +637,7 @@ fn schedule(this: *Image, global: *jsc.JSGlobalObject, this_value: jsc.JSValue, 
         if (e == error.OutOfMemory) bun.outOfMemory();
         return jsc.JSPromise.rejectedPromise(
             global,
-            errorWithCode(global, "ERR_INVALID_STATE", "Image: source ArrayBuffer was detached"),
+            try errorWithCode(global, "ERR_INVALID_STATE", "Image: source ArrayBuffer was detached"),
         ).asValue(global);
     };
     const job = PipelineTask.new(.{
@@ -800,21 +800,24 @@ const BlobReadChain = struct {
                     bun.default_allocator.free(bytes);
                 }
                 const this_value = image.this_ref.tryGet() orelse {
-                    outer.reject(global, global.createErrorInstance("Image: collected before read completed", .{})) catch {};
+                    const error_value: bun.JSError!jsc.JSValue = if (global.createErrorInstance("Image: collected before read completed", .{})) |err| err.toJS() else |err| err;
+                    outer.reject(global, error_value) catch {};
                     deliver.deinit();
                     return;
                 };
                 // Source is now `.owned`; this re-entry takes the regular path.
                 const inner = image.schedule(global, this_value, kind, deliver) catch {
                     deliver.deinit();
-                    outer.reject(global, global.createErrorInstance("Image: pipeline schedule failed", .{})) catch {};
+                    const error_value: bun.JSError!jsc.JSValue = if (global.createErrorInstance("Image: pipeline schedule failed", .{})) |err| err.toJS() else |err| err;
+                    outer.reject(global, error_value) catch {};
                     return;
                 };
                 outer.resolve(global, inner) catch {};
             },
             .err => |e| {
                 deliver.deinit();
-                outer.reject(global, e.toErrorInstance(global)) catch {};
+                const error_value: bun.JSError!jsc.JSValue = if (e.toErrorInstance(global)) |err| err.toJS() else |err| err;
+                outer.reject(global, error_value) catch {};
             },
         }
     }
@@ -1149,7 +1152,8 @@ pub const PipelineTask = struct {
                 .write_dest => |*dest| {
                     const dest_js = dest.get() orelse {
                         enc.out.deinit();
-                        return promise.reject(global, global.createErrorInstance("Image.write: destination was collected", .{}));
+                        const error_value: bun.JSError!jsc.JSValue = if (global.createErrorInstance("Image.write: destination was collected", .{})) |err| err.toJS() else |err| err;
+                        return promise.reject(global, error_value);
                     };
                     const data = jsc.JSValue.createBufferWithCtx(global, enc.out.bytes, null, enc.out.free);
                     var arg_slice = jsc.CallFrame.ArgumentsSlice.init(global.bunVM(), &.{dest_js});

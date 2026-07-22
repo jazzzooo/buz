@@ -2364,7 +2364,7 @@ extern "C" void Bun__attachAsyncStackFromPromise(JSC::JSGlobalObject* globalObje
     instance->setStackFrames(vm, WTF::move(frames));
 }
 
-JSC::EncodedJSValue SystemError__toErrorInstance(const SystemError* arg0, JSC::JSGlobalObject* globalObject)
+JSC::JSObject* SystemError__toErrorInstance(const SystemError* arg0, JSC::JSGlobalObject* globalObject)
 {
     SystemError err = *arg0;
 
@@ -2434,10 +2434,10 @@ JSC::EncodedJSValue SystemError__toErrorInstance(const SystemError* arg0, JSC::J
 
     result->putDirect(vm, names.errnoPublicName(), jsNumber(err.errno_), JSC::PropertyAttribute::DontDelete | 0);
 
-    return JSC::JSValue::encode(result);
+    return result;
 }
 
-JSC::EncodedJSValue SystemError__toErrorInstanceWithInfoObject(const SystemError* arg0, JSC::JSGlobalObject* globalObject)
+JSC::JSObject* SystemError__toErrorInstanceWithInfoObject(const SystemError* arg0, JSC::JSGlobalObject* globalObject)
 {
     SystemError err = *arg0;
 
@@ -2471,7 +2471,7 @@ JSC::EncodedJSValue SystemError__toErrorInstanceWithInfoObject(const SystemError
     info->putDirect(vm, clientData->builtinNames().errnoPublicName(), jsNumber(err.errno_), JSC::PropertyAttribute::DontDelete | 0);
     result->putDirect(vm, clientData->builtinNames().errnoPublicName(), jsNumber(err.errno_), JSC::PropertyAttribute::DontDelete | 0);
 
-    return JSC::JSValue::encode(result);
+    return result;
 }
 
 JSC::JSObject*
@@ -3104,37 +3104,43 @@ JSC::EncodedJSValue JSC__JSModuleLoader__evaluate(JSC::JSGlobalObject* globalObj
     return JSValue::encode(usedStream);
 }
 
-JSC::EncodedJSValue JSC__JSValue__createRangeError(const ZigString* message, const ZigString* arg1,
+JSC::JSObject* JSC__JSValue__createRangeError(const ZigString* message, const ZigString* arg1,
     JSC::JSGlobalObject* globalObject)
 {
     auto& vm = JSC::getVM(globalObject);
+    auto scope = DECLARE_THROW_SCOPE(vm);
     ZigString code = *arg1;
-    JSC::JSObject* rangeError = Zig::getRangeErrorInstance(message, globalObject).asCell()->getObject();
+    JSC::JSObject* rangeError = Zig::getRangeErrorInstance(message, globalObject);
+    RETURN_IF_EXCEPTION(scope, nullptr);
 
     if (code.len > 0) {
         auto clientData = WebCore::clientData(vm);
         JSC::JSValue codeValue = Zig::toJSString(code, globalObject);
+        RETURN_IF_EXCEPTION(scope, nullptr);
         rangeError->putDirect(vm, clientData->builtinNames().codePublicName(), codeValue,
             JSC::PropertyAttribute::ReadOnly | 0);
     }
 
-    return JSC::JSValue::encode(rangeError);
+    return rangeError;
 }
 
-JSC::EncodedJSValue JSC__JSValue__createTypeError(const ZigString* message, const ZigString* arg1,
+JSC::JSObject* JSC__JSValue__createTypeError(const ZigString* message, const ZigString* arg1,
     JSC::JSGlobalObject* globalObject)
 {
     auto& vm = JSC::getVM(globalObject);
+    auto scope = DECLARE_THROW_SCOPE(vm);
     ZigString code = *arg1;
-    JSC::JSObject* typeError = Zig::getTypeErrorInstance(message, globalObject).asCell()->getObject();
+    JSC::JSObject* typeError = Zig::getTypeErrorInstance(message, globalObject);
+    RETURN_IF_EXCEPTION(scope, nullptr);
 
     if (code.len > 0) {
         auto clientData = WebCore::clientData(vm);
         JSC::JSValue codeValue = Zig::toJSString(code, globalObject);
+        RETURN_IF_EXCEPTION(scope, nullptr);
         typeError->putDirect(vm, clientData->builtinNames().codePublicName(), codeValue, 0);
     }
 
-    return JSC::JSValue::encode(typeError);
+    return typeError;
 }
 
 JSC::EncodedJSValue JSC__JSValue__fromEntries(JSC::JSGlobalObject* globalObject, ZigString* keys,
@@ -3508,14 +3514,14 @@ JSC::EncodedJSValue ZigString__toExternalValueWithCallback(const ZigString* arg0
     }
 }
 
-JSC::EncodedJSValue ZigString__toErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
+JSC::JSObject* ZigString__toErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
 {
-    return JSC::JSValue::encode(Zig::getErrorInstance(str, globalObject));
+    return Zig::getErrorInstance(str, globalObject);
 }
 
-JSC::EncodedJSValue ZigString__toTypeErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
+JSC::JSObject* ZigString__toTypeErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
 {
-    return JSC::JSValue::encode(Zig::getTypeErrorInstance(str, globalObject));
+    return Zig::getTypeErrorInstance(str, globalObject);
 }
 
 JSC::EncodedJSValue ZigString__toDOMExceptionInstance(const ZigString* str, JSC::JSGlobalObject* globalObject, WebCore::ExceptionCode code)
@@ -3523,14 +3529,14 @@ JSC::EncodedJSValue ZigString__toDOMExceptionInstance(const ZigString* str, JSC:
     return JSValue::encode(createDOMException(globalObject, code, toStringCopy(*str)));
 }
 
-JSC::EncodedJSValue ZigString__toSyntaxErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
+JSC::JSObject* ZigString__toSyntaxErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
 {
-    return JSC::JSValue::encode(Zig::getSyntaxErrorInstance(str, globalObject));
+    return Zig::getSyntaxErrorInstance(str, globalObject);
 }
 
-JSC::EncodedJSValue ZigString__toRangeErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
+JSC::JSObject* ZigString__toRangeErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
 {
-    return JSC::JSValue::encode(Zig::getRangeErrorInstance(str, globalObject));
+    return Zig::getRangeErrorInstance(str, globalObject);
 }
 
 static JSC::EncodedJSValue resolverFunctionCallback(JSC::JSGlobalObject* globalObject,
@@ -5989,19 +5995,19 @@ CPP_DECL void JSC__VM__performOpportunisticallyScheduledTasks(JSC::VM* vm, doubl
     vm->performOpportunisticallyScheduledTasks(MonotonicTime::now() + Seconds(until), {});
 }
 
-extern "C" EncodedJSValue JSC__createError(JSC::JSGlobalObject* globalObject, const BunString* str)
+extern "C" JSC::JSObject* JSC__createError(JSC::JSGlobalObject* globalObject, const BunString* str)
 {
-    return JSValue::encode(JSC::createError(globalObject, str->toWTFString(BunString::ZeroCopy)));
+    return JSC::createError(globalObject, str->toWTFString(BunString::ZeroCopy));
 }
 
-extern "C" EncodedJSValue JSC__createTypeError(JSC::JSGlobalObject* globalObject, const BunString* str)
+extern "C" JSC::JSObject* JSC__createTypeError(JSC::JSGlobalObject* globalObject, const BunString* str)
 {
-    return JSValue::encode(JSC::createTypeError(globalObject, str->toWTFString(BunString::ZeroCopy)));
+    return JSC::createTypeError(globalObject, str->toWTFString(BunString::ZeroCopy));
 }
 
-extern "C" EncodedJSValue JSC__createRangeError(JSC::JSGlobalObject* globalObject, const BunString* str)
+extern "C" JSC::JSObject* JSC__createRangeError(JSC::JSGlobalObject* globalObject, const BunString* str)
 {
-    return JSValue::encode(JSC::createRangeError(globalObject, str->toWTFString(BunString::ZeroCopy)));
+    return JSC::createRangeError(globalObject, str->toWTFString(BunString::ZeroCopy));
 }
 
 extern "C" EncodedJSValue ExpectMatcherUtils__getSingleton(JSC::JSGlobalObject* globalObject_)

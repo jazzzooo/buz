@@ -150,7 +150,7 @@ pub const PluginRunner = struct {
         if (!path_value.isString()) {
             return jsc.ErrorableString.err(
                 error.JSErrorObject,
-                bun.String.static("Expected \"path\" to be a string in onResolve plugin").toErrorInstance(this.global_object),
+                (try bun.String.static("Expected \"path\" to be a string in onResolve plugin").toErrorInstance(this.global_object)).toJS(),
             );
         }
 
@@ -159,7 +159,7 @@ pub const PluginRunner = struct {
         if (file_path.length() == 0) {
             return jsc.ErrorableString.err(
                 error.JSErrorObject,
-                bun.String.static("Expected \"path\" to be a non-empty string in onResolve plugin").toErrorInstance(this.global_object),
+                (try bun.String.static("Expected \"path\" to be a non-empty string in onResolve plugin").toErrorInstance(this.global_object)).toJS(),
             );
         } else if
         // TODO: validate this better
@@ -170,7 +170,7 @@ pub const PluginRunner = struct {
         {
             return jsc.ErrorableString.err(
                 error.JSErrorObject,
-                bun.String.static("\"path\" is invalid in onResolve plugin").toErrorInstance(this.global_object),
+                (try bun.String.static("\"path\" is invalid in onResolve plugin").toErrorInstance(this.global_object)).toJS(),
             );
         }
         var static_namespace = true;
@@ -179,7 +179,7 @@ pub const PluginRunner = struct {
                 if (!namespace_value.isString()) {
                     return jsc.ErrorableString.err(
                         error.JSErrorObject,
-                        bun.String.static("Expected \"namespace\" to be a string").toErrorInstance(this.global_object),
+                        (try bun.String.static("Expected \"namespace\" to be a string").toErrorInstance(this.global_object)).toJS(),
                     );
                 }
 

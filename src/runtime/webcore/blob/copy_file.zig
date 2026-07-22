@@ -75,7 +75,7 @@ pub const CopyFile = struct {
             system_error.message = bun.String.static("Failed to copy file");
         }
 
-        const instance = system_error.toErrorInstanceWithAsyncStack(this.globalThis, promise);
+        const instance: bun.JSError!jsc.JSValue = if (system_error.toErrorInstanceWithAsyncStack(this.globalThis, promise)) |err| err.toJS() else |err| err;
         if (this.store) |store| {
             store.deref();
         }

@@ -334,10 +334,10 @@ pub const UDPSocket = struct {
                     .code = bun.String.static(code),
                     .message = bun.handleOom(bun.String.createFormat("bind {s} {f}", .{ code, this.config.hostname })),
                 };
-                const error_value = sys_err.toErrorInstance(globalThis);
-                error_value.getObject().?.putDirect(globalThis, "address", try this.config.hostname.toJS(globalThis));
+                const error_value = try sys_err.toErrorInstance(globalThis);
+                error_value.putDirect(globalThis, "address", try this.config.hostname.toJS(globalThis));
 
-                return globalThis.throwValue(error_value);
+                return globalThis.throwValue(error_value.toJS());
             }
 
             return globalThis.throw("Failed to bind socket", .{});

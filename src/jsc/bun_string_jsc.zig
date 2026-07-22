@@ -8,9 +8,9 @@ extern fn BunString__toJS(globalObject: *jsc.JSGlobalObject, in: *const String) 
 extern fn BunString__toJSWithLength(globalObject: *jsc.JSGlobalObject, in: *const String, usize) jsc.JSValue;
 extern fn BunString__toJSDOMURL(globalObject: *jsc.JSGlobalObject, in: *String) jsc.JSValue;
 extern fn BunString__createArray(globalObject: *jsc.JSGlobalObject, ptr: [*]const String, len: usize) jsc.JSValue;
-extern fn JSC__createError(*jsc.JSGlobalObject, str: *const String) jsc.JSValue;
-extern fn JSC__createTypeError(*jsc.JSGlobalObject, str: *const String) jsc.JSValue;
-extern fn JSC__createRangeError(*jsc.JSGlobalObject, str: *const String) jsc.JSValue;
+extern fn JSC__createError(*jsc.JSGlobalObject, str: *const String) ?*jsc.JSObject;
+extern fn JSC__createTypeError(*jsc.JSGlobalObject, str: *const String) ?*jsc.JSObject;
+extern fn JSC__createRangeError(*jsc.JSGlobalObject, str: *const String) ?*jsc.JSObject;
 
 // ── bun.String methods ──────────────────────────────────────────────────────
 pub fn transferToJS(this: *String, globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
@@ -18,19 +18,19 @@ pub fn transferToJS(this: *String, globalThis: *jsc.JSGlobalObject) bun.JSError!
     return bun.jsc.fromJSHostCall(globalThis, @src(), BunString__transferToJS, .{ this, globalThis });
 }
 
-pub fn toErrorInstance(this: *const String, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
+pub fn toErrorInstance(this: *const String, globalObject: *jsc.JSGlobalObject) bun.JSError!*jsc.JSObject {
     defer this.deref();
-    return JSC__createError(globalObject, this);
+    return (try jsc.fromJSHostCallGeneric(globalObject, @src(), JSC__createError, .{ globalObject, this })) orelse unreachable;
 }
 
-pub fn toTypeErrorInstance(this: *const String, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
+pub fn toTypeErrorInstance(this: *const String, globalObject: *jsc.JSGlobalObject) bun.JSError!*jsc.JSObject {
     defer this.deref();
-    return JSC__createTypeError(globalObject, this);
+    return (try jsc.fromJSHostCallGeneric(globalObject, @src(), JSC__createTypeError, .{ globalObject, this })) orelse unreachable;
 }
 
-pub fn toRangeErrorInstance(this: *const String, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
+pub fn toRangeErrorInstance(this: *const String, globalObject: *jsc.JSGlobalObject) bun.JSError!*jsc.JSObject {
     defer this.deref();
-    return JSC__createRangeError(globalObject, this);
+    return (try jsc.fromJSHostCallGeneric(globalObject, @src(), JSC__createRangeError, .{ globalObject, this })) orelse unreachable;
 }
 
 pub fn fromJS(value: bun.jsc.JSValue, globalObject: *jsc.JSGlobalObject) bun.JSError!String {

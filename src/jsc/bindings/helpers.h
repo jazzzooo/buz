@@ -378,12 +378,12 @@ static const WTF::String toStringStatic(ZigString str)
     return WTF::String(ascii);
 }
 
-static JSC::JSValue getErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
+static JSC::JSObject* getErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
 {
     WTF::String message = toString(*str);
     if (message.isNull() && str->len > 0) [[unlikely]] {
         // pending exception while creating an error.
-        return {};
+        return nullptr;
     }
 
     JSC::JSObject* result = JSC::createError(globalObject, message);
@@ -392,7 +392,7 @@ static JSC::JSValue getErrorInstance(const ZigString* str, JSC::JSGlobalObject* 
     return result;
 }
 
-static JSC::JSValue getTypeErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
+static JSC::JSObject* getTypeErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
 {
     JSC::JSObject* result = JSC::createTypeError(globalObject, toStringCopy(*str));
     JSC::EnsureStillAliveScope ensureAlive(result);
@@ -400,7 +400,7 @@ static JSC::JSValue getTypeErrorInstance(const ZigString* str, JSC::JSGlobalObje
     return result;
 }
 
-static JSC::JSValue getSyntaxErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
+static JSC::JSObject* getSyntaxErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
 {
     JSC::JSObject* result = JSC::createSyntaxError(globalObject, toStringCopy(*str));
     JSC::EnsureStillAliveScope ensureAlive(result);
@@ -408,7 +408,7 @@ static JSC::JSValue getSyntaxErrorInstance(const ZigString* str, JSC::JSGlobalOb
     return result;
 }
 
-static JSC::JSValue getRangeErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
+static JSC::JSObject* getRangeErrorInstance(const ZigString* str, JSC::JSGlobalObject* globalObject)
 {
     JSC::JSObject* result = JSC::createRangeError(globalObject, toStringCopy(*str));
     JSC::EnsureStillAliveScope ensureAlive(result);

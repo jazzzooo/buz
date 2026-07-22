@@ -675,14 +675,14 @@ pub const ZigString = extern struct {
         return out;
     }
 
-    extern fn ZigString__toErrorInstance(this: *const ZigString, global: *JSGlobalObject) JSValue;
-    pub fn toErrorInstance(this: *const ZigString, global: *JSGlobalObject) JSValue {
-        return ZigString__toErrorInstance(this, global);
+    extern fn ZigString__toErrorInstance(this: *const ZigString, global: *JSGlobalObject) ?*jsc.JSObject;
+    pub fn toErrorInstance(this: *const ZigString, global: *JSGlobalObject) bun.JSError!*jsc.JSObject {
+        return (try jsc.fromJSHostCallGeneric(global, @src(), ZigString__toErrorInstance, .{ this, global })) orelse unreachable;
     }
 
-    extern fn ZigString__toTypeErrorInstance(this: *const ZigString, global: *JSGlobalObject) JSValue;
-    pub fn toTypeErrorInstance(this: *const ZigString, global: *JSGlobalObject) JSValue {
-        return ZigString__toTypeErrorInstance(this, global);
+    extern fn ZigString__toTypeErrorInstance(this: *const ZigString, global: *JSGlobalObject) ?*jsc.JSObject;
+    pub fn toTypeErrorInstance(this: *const ZigString, global: *JSGlobalObject) bun.JSError!*jsc.JSObject {
+        return (try jsc.fromJSHostCallGeneric(global, @src(), ZigString__toTypeErrorInstance, .{ this, global })) orelse unreachable;
     }
 
     extern fn ZigString__toDOMExceptionInstance(this: *const ZigString, global: *JSGlobalObject, code: u8) JSValue;
@@ -690,14 +690,14 @@ pub const ZigString = extern struct {
         return ZigString__toDOMExceptionInstance(this, global, @backingInt(code));
     }
 
-    extern fn ZigString__toSyntaxErrorInstance(this: *const ZigString, global: *JSGlobalObject) JSValue;
-    pub fn toSyntaxErrorInstance(this: *const ZigString, global: *JSGlobalObject) JSValue {
-        return ZigString__toSyntaxErrorInstance(this, global);
+    extern fn ZigString__toSyntaxErrorInstance(this: *const ZigString, global: *JSGlobalObject) ?*jsc.JSObject;
+    pub fn toSyntaxErrorInstance(this: *const ZigString, global: *JSGlobalObject) bun.JSError!*jsc.JSObject {
+        return (try jsc.fromJSHostCallGeneric(global, @src(), ZigString__toSyntaxErrorInstance, .{ this, global })) orelse unreachable;
     }
 
-    extern fn ZigString__toRangeErrorInstance(this: *const ZigString, global: *JSGlobalObject) JSValue;
-    pub fn toRangeErrorInstance(this: *const ZigString, global: *JSGlobalObject) JSValue {
-        return ZigString__toRangeErrorInstance(this, global);
+    extern fn ZigString__toRangeErrorInstance(this: *const ZigString, global: *JSGlobalObject) ?*jsc.JSObject;
+    pub fn toRangeErrorInstance(this: *const ZigString, global: *JSGlobalObject) bun.JSError!*jsc.JSObject {
+        return (try jsc.fromJSHostCallGeneric(global, @src(), ZigString__toRangeErrorInstance, .{ this, global })) orelse unreachable;
     }
 };
 

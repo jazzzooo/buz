@@ -1258,13 +1258,13 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
             jsc.markBinding(@src());
 
             if (this.config.onRequest == .zero) {
-                return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, ZigString.init("fetch() requires the server to have a fetch handler").toErrorInstance(ctx));
+                return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, (try ZigString.init("fetch() requires the server to have a fetch handler").toErrorInstance(ctx)).toJS());
             }
 
             const arguments = callframe.arguments_old(2).slice();
             if (arguments.len == 0) {
                 const fetch_error = WebCore.Fetch.fetch_error_no_args;
-                return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, ZigString.init(fetch_error).toErrorInstance(ctx));
+                return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, (try ZigString.init(fetch_error).toErrorInstance(ctx)).toJS());
             }
 
             var headers: ?*WebCore.FetchHeaders = null;
@@ -1285,7 +1285,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
 
                 if (temp_url_str.len == 0) {
                     const fetch_error = jsc.WebCore.Fetch.fetch_error_blank_url;
-                    return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, ZigString.init(fetch_error).toErrorInstance(ctx));
+                    return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, (try ZigString.init(fetch_error).toErrorInstance(ctx)).toJS());
                 }
 
                 var url = URL.parse(temp_url_str);
@@ -1320,7 +1320,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
                         if (Blob.get(ctx, body__, true, false)) |new_blob| {
                             body = .{ .Blob = new_blob };
                         } else |_| {
-                            return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, ZigString.init("fetch() received invalid body").toErrorInstance(ctx));
+                            return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, (try ZigString.init("fetch() received invalid body").toErrorInstance(ctx)).toJS());
                         }
                     }
                 }
@@ -1359,7 +1359,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
             }
 
             if (response_value.isEmptyOrUndefinedOrNull()) {
-                return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, ZigString.init("fetch() returned an empty value").toErrorInstance(ctx));
+                return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, (try ZigString.init("fetch() returned an empty value").toErrorInstance(ctx)).toJS());
             }
 
             if (response_value.asAnyPromise() != null) {
@@ -1916,7 +1916,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
 
                 if (written > 0) {
                     const message = output_buf[0..written];
-                    error_instance = globalThis.createErrorInstance("OpenSSL {s}", .{message});
+                    error_instance = if (globalThis.createErrorInstance("OpenSSL {s}", .{message})) |err| err.toJS() else |err| globalThis.takeException(err);
                     BoringSSL.ERR_clear_error();
                 }
             }
@@ -1929,29 +1929,29 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
                                 const rc: i32 = -1;
                                 const code = Sys.getErrno(rc);
                                 if (code == bun.sys.E.ACCES) {
-                                    error_instance = (jsc.SystemError{
+                                    error_instance = if ((jsc.SystemError{
                                         .message = bun.String.init(std.fmt.bufPrint(&output_buf, "permission denied {s}:{d}", .{ tcp.hostname orelse "0.0.0.0", tcp.port }) catch "Failed to start server"),
                                         .code = bun.String.static("EACCES"),
                                         .syscall = bun.String.static("listen"),
-                                    }).toErrorInstance(globalThis);
+                                    }).toErrorInstance(globalThis)) |err| err.toJS() else |err| globalThis.takeException(err);
                                     break :error_set;
                                 }
                             }
-                            error_instance = (jsc.SystemError{
+                            error_instance = if ((jsc.SystemError{
                                 .message = bun.String.init(std.fmt.bufPrint(&output_buf, "Failed to start server. Is port {d} in use?", .{tcp.port}) catch "Failed to start server"),
                                 .code = bun.String.static("EADDRINUSE"),
                                 .syscall = bun.String.static("listen"),
-                            }).toErrorInstance(globalThis);
+                            }).toErrorInstance(globalThis)) |err| err.toJS() else |err| globalThis.takeException(err);
                         }
                     },
                     .unix => |unix| {
                         switch (bun.sys.getErrno(@as(i32, -1))) {
                             .SUCCESS => {
-                                error_instance = (jsc.SystemError{
+                                error_instance = if ((jsc.SystemError{
                                     .message = bun.String.init(std.fmt.bufPrint(&output_buf, "Failed to listen on unix socket {f}", .{bun.fmt.QuotedFormatter{ .text = unix }}) catch "Failed to start server"),
                                     .code = bun.String.static("EADDRINUSE"),
                                     .syscall = bun.String.static("listen"),
-                                }).toErrorInstance(globalThis);
+                                }).toErrorInstance(globalThis)) |err| err.toJS() else |err| globalThis.takeException(err);
                             },
                             else => |e| {
                                 var sys_err = bun.sys.Error.fromCode(e, .listen);

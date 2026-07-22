@@ -529,14 +529,14 @@ pub fn constructJSON(
     if (@backingInt(json_value) != 0) {
         // Validate top-level values that are not JSON serializable (Node.js compatibility)
         if (json_value.isUndefined() or json_value.isSymbol() or json_value.jsType() == .JSFunction) {
-            const err = globalThis.createTypeErrorInstance("Value is not JSON serializable", .{});
-            return globalThis.throwValue(err);
+            const err = try globalThis.createTypeErrorInstance("Value is not JSON serializable", .{});
+            return globalThis.throwValue(err.toJS());
         }
 
         // BigInt has a different error message to match Node.js exactly
         if (json_value.isBigInt()) {
-            const err = globalThis.createTypeErrorInstance("Do not know how to serialize a BigInt", .{});
-            return globalThis.throwValue(err);
+            const err = try globalThis.createTypeErrorInstance("Do not know how to serialize a BigInt", .{});
+            return globalThis.throwValue(err.toJS());
         }
 
         var str = bun.String.empty;
@@ -586,8 +586,8 @@ fn validateRedirectStatusCode(globalThis: *jsc.JSGlobalObject, status_code: i32)
     switch (status_code) {
         301, 302, 303, 307, 308 => return @intCast(status_code),
         else => {
-            const err = globalThis.createRangeErrorInstance("Failed to execute 'redirect' on 'Response': Invalid status code", .{});
-            return globalThis.throwValue(err);
+            const err = try globalThis.createRangeErrorInstance("Failed to execute 'redirect' on 'Response': Invalid status code", .{});
+            return globalThis.throwValue(err.toJS());
         },
     }
 }
@@ -849,8 +849,8 @@ pub const Init = struct {
                 result.status_code = @as(u16, @truncate(@as(u32, @intCast(number))));
             } else {
                 if (!globalThis.hasException()) {
-                    const err = globalThis.createRangeErrorInstance("The status provided ({d}) must be 101 or in the range of [200, 599]", .{number});
-                    return globalThis.throwValue(err);
+                    const err = try globalThis.createRangeErrorInstance("The status provided ({d}) must be 101 or in the range of [200, 599]", .{number});
+                    return globalThis.throwValue(err.toJS());
                 }
                 return error.JSError;
             }

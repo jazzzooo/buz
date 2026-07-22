@@ -243,7 +243,7 @@ fn messageWithTypeAndLevel_(
         writer.writeAll("undefined\n") catch {};
 
     if (message_type == .Trace) {
-        writeTrace(Writer, writer, global);
+        try writeTrace(Writer, writer, global);
         writer.flush() catch {};
     }
 }
@@ -678,7 +678,7 @@ pub const TablePrinter = struct {
     }
 };
 
-pub fn writeTrace(comptime Writer: type, writer: Writer, global: *JSGlobalObject) void {
+pub fn writeTrace(comptime Writer: type, writer: Writer, global: *JSGlobalObject) bun.JSError!void {
     var holder = ZigException.Holder.init();
     var vm = VirtualMachine.get();
     defer holder.deinit(vm);
@@ -687,7 +687,7 @@ pub fn writeTrace(comptime Writer: type, writer: Writer, global: *JSGlobalObject
     var source_code_slice: ?ZigString.Slice = null;
     defer if (source_code_slice) |slice| slice.deinit();
 
-    var err = ZigString.init("trace output").toErrorInstance(global);
+    var err = (try ZigString.init("trace output").toErrorInstance(global)).toJS();
     err.toZigException(global, exception);
     vm.remapZigException(
         exception,

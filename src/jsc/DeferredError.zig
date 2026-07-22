@@ -15,8 +15,8 @@ pub const DeferredError = struct {
         };
     }
 
-    pub fn toError(this: *const DeferredError, globalThis: *JSGlobalObject) JSValue {
-        const err = switch (this.kind) {
+    pub fn toError(this: *const DeferredError, globalThis: *JSGlobalObject) bun.JSError!*jsc.JSObject {
+        const err = try switch (this.kind) {
             .plainerror => this.msg.toErrorInstance(globalThis),
             .typeerror => this.msg.toTypeErrorInstance(globalThis),
             .rangeerror => this.msg.toRangeErrorInstance(globalThis),
@@ -31,4 +31,3 @@ const ZigString = @import("./ZigString.zig").ZigString;
 
 const jsc = bun.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;

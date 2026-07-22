@@ -50,13 +50,9 @@ pub const JSGlobalObject = opaque {
     }
 
     pub fn throwTODO(this: *JSGlobalObject, msg: []const u8) bun.JSError {
-        const err = this.createErrorInstance("{s}", .{msg});
-        if (err == .zero) {
-            bun.assert(this.hasException());
-            return error.JSError;
-        }
-        err.getObject().?.putDirect(this, ZigString.static("name"), (bun.String.static("TODOError").toJS(this)) catch return error.JSError);
-        return this.throwValue(err);
+        const err = try this.createErrorInstance("{s}", .{msg});
+        err.putDirect(this, ZigString.static("name"), (bun.String.static("TODOError").toJS(this)) catch return error.JSError);
+        return this.throwValue(err.toJS());
     }
 
     pub const clearTerminationException = JSGlobalObject__clearTerminationException;
@@ -278,7 +274,7 @@ pub const JSGlobalObject = opaque {
         return result;
     }
 
-    pub fn createErrorInstance(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) JSValue {
+    pub fn createErrorInstance(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) bun.JSError!*jsc.JSObject {
         if (comptime std.meta.fieldNames(@TypeOf(args)).len > 0) {
             var stack_fallback_buffer: [1024 * 4]u8 = undefined;
             var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, this.allocator());
@@ -305,7 +301,7 @@ pub const JSGlobalObject = opaque {
         }
     }
 
-    pub fn createTypeErrorInstance(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) JSValue {
+    pub fn createTypeErrorInstance(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) bun.JSError!*jsc.JSObject {
         if (comptime std.meta.fieldNames(@TypeOf(args)).len > 0) {
             var stack_fallback_buffer: [1024 * 4]u8 = undefined;
             var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, this.allocator());
@@ -338,7 +334,7 @@ pub const JSGlobalObject = opaque {
         }
     }
 
-    pub fn createSyntaxErrorInstance(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) JSValue {
+    pub fn createSyntaxErrorInstance(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) bun.JSError!*jsc.JSObject {
         if (comptime std.meta.fieldNames(@TypeOf(args)).len > 0) {
             var stack_fallback_buffer: [1024 * 4]u8 = undefined;
             var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, this.allocator());
@@ -356,7 +352,7 @@ pub const JSGlobalObject = opaque {
         }
     }
 
-    pub fn createRangeErrorInstance(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) JSValue {
+    pub fn createRangeErrorInstance(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) bun.JSError!*jsc.JSObject {
         if (comptime std.meta.fieldNames(@TypeOf(args)).len > 0) {
             var stack_fallback_buffer: [1024 * 4]u8 = undefined;
             var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, this.allocator());
@@ -374,13 +370,9 @@ pub const JSGlobalObject = opaque {
         }
     }
 
-    pub fn createRangeError(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) JSValue {
-        const err = createErrorInstance(this, fmt, args);
-        if (err == .zero) {
-            bun.assert(this.hasException());
-            return .zero;
-        }
-        err.getObject().?.putDirect(this, ZigString.static("code"), ZigString.static(@tagName(jsc.Node.ErrorCode.ERR_OUT_OF_RANGE)).toJS(this));
+    pub fn createRangeError(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) bun.JSError!*jsc.JSObject {
+        const err = try createErrorInstance(this, fmt, args);
+        err.putDirect(this, ZigString.static("code"), ZigString.static(@tagName(jsc.Node.ErrorCode.ERR_OUT_OF_RANGE)).toJS(this));
         return err;
     }
 
@@ -399,16 +391,11 @@ pub const JSGlobalObject = opaque {
         comptime message: [:0]const u8,
         args: anytype,
     ) JSError {
-        const err = createErrorInstance(this, message, args);
-        if (err == .zero) {
-            bun.assert(this.hasException());
-            return error.JSError;
-        }
-        const err_object = err.getObject().?;
-        err_object.putDirect(this, ZigString.static("code"), ZigString.init(@tagName(opts.code)).toJS(this));
-        if (opts.name) |name| err_object.putDirect(this, ZigString.static("name"), ZigString.init(name).toJS(this));
-        if (opts.errno) |errno| err_object.putDirect(this, ZigString.static("errno"), try .fromAny(this, i32, errno));
-        return this.throwValue(err);
+        const err = try createErrorInstance(this, message, args);
+        err.putDirect(this, ZigString.static("code"), ZigString.init(@tagName(opts.code)).toJS(this));
+        if (opts.name) |name| err.putDirect(this, ZigString.static("name"), ZigString.init(name).toJS(this));
+        if (opts.errno) |errno| err.putDirect(this, ZigString.static("errno"), try .fromAny(this, i32, errno));
+        return this.throwValue(err.toJS());
     }
 
     /// Throw an Error from a formatted string.
@@ -416,23 +403,15 @@ pub const JSGlobalObject = opaque {
     /// Note: If you are throwing an error within somewhere in the Bun API,
     /// chances are you should be using `.ERR(...).throw()` instead.
     pub fn throw(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) JSError {
-        const instance = this.createErrorInstance(fmt, args);
-        if (instance == .zero) {
-            bun.assert(this.hasException());
-            return error.JSError;
-        }
-        return this.throwValue(instance);
+        const instance = try this.createErrorInstance(fmt, args);
+        return this.throwValue(instance.toJS());
     }
 
     pub fn throwPretty(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) bun.JSError {
-        const instance = switch (Output.enable_ansi_colors_stderr) {
+        const instance = try switch (Output.enable_ansi_colors_stderr) {
             inline else => |enabled| this.createErrorInstance(Output.prettyFmt(fmt, enabled), args),
         };
-        if (instance == .zero) {
-            bun.assert(this.hasException());
-            return error.JSError;
-        }
-        return this.throwValue(instance);
+        return this.throwValue(instance.toJS());
     }
 
     extern fn JSC__JSGlobalObject__queueMicrotaskCallback(*JSGlobalObject, *anyopaque, Function: *const (fn (*anyopaque) callconv(.c) void)) void;
@@ -480,8 +459,8 @@ pub const JSGlobalObject = opaque {
     }
 
     pub fn throwTypeError(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) bun.JSError {
-        const instance = this.createTypeErrorInstance(fmt, args);
-        return this.throwValue(instance);
+        const instance = try this.createTypeErrorInstance(fmt, args);
+        return this.throwValue(instance.toJS());
     }
 
     pub fn throwDOMException(this: *JSGlobalObject, code: jsc.WebCore.DOMExceptionCode, comptime fmt: [:0]const u8, args: anytype) bun.JSError {
@@ -506,8 +485,8 @@ pub const JSGlobalObject = opaque {
         const buffer = try std.fmt.allocPrint(allocator_, comptime "{s} " ++ fmt, .{@errorName(err)});
         defer allocator_.free(buffer);
         const str = ZigString.initUTF8(buffer);
-        const err_value = str.toErrorInstance(this);
-        return this.throwValue(err_value);
+        const err_value = try str.toErrorInstance(this);
+        return this.throwValue(err_value.toJS());
     }
 
     // TODO: delete these two fns
@@ -992,7 +971,7 @@ pub const JSGlobalObject = opaque {
         globalThis: *jsc.JSGlobalObject,
         comptime fmt: string,
         args: anytype,
-    ) jsc.JSValue {
+    ) bun.JSError!*jsc.JSObject {
         if (comptime std.meta.fieldNames(@TypeOf(args)).len == 0) {
             var zig_str = jsc.ZigString.init(fmt);
             if (comptime !strings.isAllASCII(fmt)) {
@@ -1009,9 +988,8 @@ pub const JSGlobalObject = opaque {
             var zig_str = jsc.ZigString.init(buf);
             zig_str.detectEncoding();
             // it alwayas clones
-            const res = zig_str.toErrorInstance(globalThis);
-            alloc.free(buf);
-            return res;
+            defer alloc.free(buf);
+            return zig_str.toErrorInstance(globalThis);
         }
     }
 

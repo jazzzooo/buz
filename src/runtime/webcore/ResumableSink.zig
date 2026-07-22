@@ -62,7 +62,7 @@ pub fn ResumableSink(
                     .code = bun.String.static(@tagName(jsc.Node.ErrorCode.ERR_STREAM_CANNOT_PIPE)),
                     .message = bun.String.static("Stream already used, please create a new one"),
                 };
-                const err_instance = err.toErrorInstance(globalThis);
+                const err_instance = if (err.toErrorInstance(globalThis)) |error_object| error_object.toJS() else |js_err| globalThis.takeException(js_err);
                 err_instance.ensureStillAlive();
                 this.status = .done;
                 onEnd(this.context, err_instance);

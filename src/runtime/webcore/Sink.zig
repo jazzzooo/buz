@@ -303,7 +303,7 @@ pub fn JSSink(comptime SinkType: type, comptime abi_name: []const u8) type {
                     .message = bun.String.static(Static.message),
                     .code = bun.String.static(@tagName(.ERR_ILLEGAL_CONSTRUCTOR)),
                 };
-                return globalThis.throwValue(err.toErrorInstance(globalThis));
+                return globalThis.throwValue((try err.toErrorInstance(globalThis)).toJS());
             }
 
             var this = bun.new(SinkType, undefined);

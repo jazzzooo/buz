@@ -1240,7 +1240,7 @@ pub fn writeFileWithSourceDestination(ctx: *jsc.JSGlobalObject, source_blob: *Bl
         ), ctx)) |stream| {
             return destination_blob.pipeReadableStreamToBlob(ctx, stream, options.extra_options);
         } else {
-            return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, ctx.createErrorInstance("Failed to stream bytes from s3 bucket", .{}));
+            return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, (try ctx.createErrorInstance("Failed to stream bytes from s3 bucket", .{})).toJS());
         }
     } else if (destination_type == .bytes and source_type == .bytes) {
         // If this is bytes <> bytes, we can just duplicate it
@@ -1289,7 +1289,7 @@ pub fn writeFileWithSourceDestination(ctx: *jsc.JSGlobalObject, source_blob: *Bl
                             undefined,
                         );
                     } else {
-                        return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, ctx.createErrorInstance("Failed to stream bytes to s3 bucket", .{}));
+                        return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, (try ctx.createErrorInstance("Failed to stream bytes to s3 bucket", .{})).toJS());
                     }
                 } else {
                     const Wrapper = struct {
@@ -1364,7 +1364,7 @@ pub fn writeFileWithSourceDestination(ctx: *jsc.JSGlobalObject, source_blob: *Bl
                         undefined,
                     );
                 } else {
-                    return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, ctx.createErrorInstance("Failed to stream bytes to s3 bucket", .{}));
+                    return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, (try ctx.createErrorInstance("Failed to stream bytes to s3 bucket", .{})).toJS());
                 }
             },
         }
@@ -2540,7 +2540,7 @@ comptime {
 
 pub fn pipeReadableStreamToBlob(this: *Blob, globalThis: *jsc.JSGlobalObject, readable_stream: jsc.WebCore.ReadableStream, extra_options: ?JSValue) bun.JSError!jsc.JSValue {
     var store = this.store orelse {
-        return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, globalThis.createErrorInstance("Blob is detached", .{}));
+        return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, (try globalThis.createErrorInstance("Blob is detached", .{})).toJS());
     };
 
     if (this.isS3()) {
@@ -2573,7 +2573,7 @@ pub fn pipeReadableStreamToBlob(this: *Blob, globalThis: *jsc.JSGlobalObject, re
     }
 
     if (store.data != .file) {
-        return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, globalThis.createErrorInstance("Blob is read-only", .{}));
+        return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, (try globalThis.createErrorInstance("Blob is read-only", .{})).toJS());
     }
 
     const file_sink = brk_sink: {
@@ -3836,7 +3836,7 @@ pub fn toJSONWithBytes(this: *Blob, global: *JSGlobalObject, raw_bytes: []const 
     if (buf.len == 0) {
         // If all it contained was the bom, we still need to free the bytes
         if (lifetime == .temporary) bun.default_allocator.free(raw_bytes);
-        return global.createSyntaxErrorInstance("Unexpected end of JSON input", .{});
+        return (try global.createSyntaxErrorInstance("Unexpected end of JSON input", .{})).toJS();
     }
 
     if (bom == .utf16_le) {
@@ -3873,12 +3873,12 @@ pub fn toJSONWithBytes(this: *Blob, global: *JSGlobalObject, raw_bytes: []const 
 
 pub fn toFormDataWithBytes(this: *Blob, global: *JSGlobalObject, buf: []u8, comptime _: Lifetime) JSValue {
     var encoder = this.getFormDataEncoding() orelse return {
-        return ZigString.init("Invalid encoding").toErrorInstance(global);
+        return (ZigString.init("Invalid encoding").toErrorInstance(global) catch return .zero).toJS();
     };
     defer encoder.deinit();
 
     return bun.FormData.toJS(global, buf, encoder.encoding) catch |err|
-        global.createErrorInstance("FormData encoding failed: {s}", .{@errorName(err)});
+        (global.createErrorInstance("FormData encoding failed: {s}", .{@errorName(err)}) catch return .zero).toJS();
 }
 
 pub fn toArrayBufferWithBytes(this: *Blob, global: *JSGlobalObject, buf: []u8, comptime lifetime: Lifetime) bun.JSError!JSValue {

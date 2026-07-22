@@ -261,12 +261,11 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
                     .syscall = .static("listen"),
                     .fd = fd.uv(),
                 };
-                return globalObject.throwValue(err.toErrorInstance(globalObject));
+                return globalObject.throwValue((try err.toErrorInstance(globalObject)).toJS());
             },
         }
     } orelse {
-        const err_value = globalObject.createErrorInstance("Failed to listen at {s}", .{hostname});
-        const err = err_value.getObject().?;
+        const err = try globalObject.createErrorInstance("Failed to listen at {s}", .{hostname});
         log("Failed to listen {d}", .{errno});
         if (errno != 0) {
             err.putDirect(globalObject, ZigString.static("syscall"), try bun.String.createUTF8ForJS(globalObject, "listen"));
@@ -277,7 +276,7 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
                 err.putDirect(globalObject, ZigString.static("code"), ZigString.init(@tagName(str)).toJS(globalObject));
             }
         }
-        return globalObject.throwValue(err_value);
+        return globalObject.throwValue(err.toJS());
     };
 
     this.connection = connection;

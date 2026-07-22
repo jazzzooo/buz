@@ -17,8 +17,8 @@ pub const SystemError = extern struct {
         };
     }
 
-    extern fn SystemError__toErrorInstance(this: *const SystemError, global: *JSGlobalObject) JSValue;
-    extern fn SystemError__toErrorInstanceWithInfoObject(this: *const SystemError, global: *jsc.JSGlobalObject) JSValue;
+    extern fn SystemError__toErrorInstance(this: *const SystemError, global: *JSGlobalObject) ?*jsc.JSObject;
+    extern fn SystemError__toErrorInstanceWithInfoObject(this: *const SystemError, global: *jsc.JSGlobalObject) ?*jsc.JSObject;
 
     pub fn getErrno(this: *const SystemError) bun.sys.E {
         // The inverse in bun.sys.Error.toSystemError()
@@ -43,18 +43,18 @@ pub const SystemError = extern struct {
         this.dest.ref();
     }
 
-    pub fn toErrorInstance(this: *const SystemError, global: *JSGlobalObject) JSValue {
+    pub fn toErrorInstance(this: *const SystemError, global: *JSGlobalObject) bun.JSError!*jsc.JSObject {
         defer this.deref();
-        return SystemError__toErrorInstance(this, global);
+        return (try jsc.fromJSHostCallGeneric(global, @src(), SystemError__toErrorInstance, .{ this, global })) orelse unreachable;
     }
 
     /// Like `toErrorInstance` but populates the error's stack trace with async
     /// frames from the given promise's await chain. Use when creating an error
     /// from native code at the top of the event loop (threadpool callback) to
     /// reject a promise — otherwise the error will have an empty stack.
-    pub fn toErrorInstanceWithAsyncStack(this: *const SystemError, global: *JSGlobalObject, promise: *jsc.JSPromise) JSValue {
-        const value = this.toErrorInstance(global);
-        value.attachAsyncStackFromPromise(global, promise);
+    pub fn toErrorInstanceWithAsyncStack(this: *const SystemError, global: *JSGlobalObject, promise: *jsc.JSPromise) bun.JSError!*jsc.JSObject {
+        const value = try this.toErrorInstance(global);
+        value.toJS().attachAsyncStackFromPromise(global, promise);
         return value;
     }
 
@@ -77,9 +77,9 @@ pub const SystemError = extern struct {
     /// Before using this function, consider if the Node.js API it is
     /// implementing follows this convention. It is exclusively used
     /// to match the error code that `node:os` throws.
-    pub fn toErrorInstanceWithInfoObject(this: *const SystemError, global: *JSGlobalObject) JSValue {
+    pub fn toErrorInstanceWithInfoObject(this: *const SystemError, global: *JSGlobalObject) bun.JSError!*jsc.JSObject {
         defer this.deref();
-        return SystemError__toErrorInstanceWithInfoObject(this, global);
+        return (try jsc.fromJSHostCallGeneric(global, @src(), SystemError__toErrorInstanceWithInfoObject, .{ this, global })) orelse unreachable;
     }
 
     pub fn format(self: SystemError, writer: *std.Io.Writer) !void {

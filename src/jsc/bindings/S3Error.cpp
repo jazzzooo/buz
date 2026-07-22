@@ -21,7 +21,7 @@ Structure* createS3ErrorStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject
 }
 
 extern "C" {
-SYSV_ABI JSC::EncodedJSValue S3Error__toErrorInstance(const S3Error* arg0,
+SYSV_ABI JSC::JSObject* S3Error__toErrorInstance(const S3Error* arg0,
     JSC::JSGlobalObject* globalObject)
 {
     S3Error err = *arg0;
@@ -59,7 +59,7 @@ SYSV_ABI JSC::EncodedJSValue S3Error__toErrorInstance(const S3Error* arg0,
         }
     }
 
-    return JSC::JSValue::encode(result);
+    return result;
 }
 }
 }

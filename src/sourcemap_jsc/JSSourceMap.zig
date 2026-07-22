@@ -149,9 +149,9 @@ pub fn constructor(
         .success => |parsed| parsed,
         .fail => |fail| {
             if (fail.loc.toNullable()) |loc| {
-                return globalObject.throwValue(globalObject.createSyntaxErrorInstance("{s} at {d}", .{ fail.msg, loc.start }));
+                return globalObject.throwValue((try globalObject.createSyntaxErrorInstance("{s} at {d}", .{ fail.msg, loc.start })).toJS());
             }
-            return globalObject.throwValue(globalObject.createSyntaxErrorInstance("{s}", .{fail.msg}));
+            return globalObject.throwValue((try globalObject.createSyntaxErrorInstance("{s}", .{fail.msg})).toJS());
         },
     };
 

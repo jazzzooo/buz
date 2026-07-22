@@ -74,8 +74,8 @@ fn dataURLResponse(
     var data_url = _data_url;
 
     const data = data_url.decodeData(allocator) catch {
-        const err = globalThis.createError("failed to fetch the data URL", .{});
-        return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err);
+        const err = globalThis.createError("failed to fetch the data URL", .{}) catch return .zero;
+        return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err.toJS());
     };
     var blob = Blob.init(data, allocator, globalThis);
 
@@ -356,9 +356,9 @@ fn fetchImpl(
         defer url_slice.deinit();
 
         var data_url = DataURL.parseWithoutCheck(url_slice.slice()) catch {
-            const err = ctx.createError("failed to fetch the data URL", .{});
+            const err = try ctx.createError("failed to fetch the data URL", .{});
             is_error = true;
-            return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err);
+            return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err.toJS());
         };
 
         data_url.url = url_str;
@@ -1133,7 +1133,7 @@ fn fetchImpl(
                 body = .{ .ReadableStream = jsc.WebCore.ReadableStream.Strong.init(stream, globalThis) };
                 break :prepare_body;
             }
-            const rejected_value = JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, globalThis.createErrorInstance("Failed to start s3 stream", .{}));
+            const rejected_value = JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, (try globalThis.createErrorInstance("Failed to start s3 stream", .{})).toJS());
             body.detach();
 
             return rejected_value;
@@ -1314,7 +1314,7 @@ fn fetchImpl(
                 }
             };
             if (method != .PUT and method != .POST) {
-                return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, globalThis.createErrorInstance("Only POST and PUT do support body when using S3", .{}));
+                return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, (try globalThis.createErrorInstance("Only POST and PUT do support body when using S3", .{})).toJS());
             }
             const promise = jsc.JSPromise.Strong.init(globalThis);
 

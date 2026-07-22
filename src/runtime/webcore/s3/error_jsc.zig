@@ -45,17 +45,17 @@ const JSS3Error = extern struct {
         this.message.deref();
     }
 
-    pub fn toErrorInstance(this: *const @This(), global: *jsc.JSGlobalObject) jsc.JSValue {
+    pub fn toErrorInstance(this: *const @This(), global: *jsc.JSGlobalObject) bun.JSError!*jsc.JSObject {
         defer this.deinit();
-        return S3Error__toErrorInstance(this, global);
+        return (try jsc.fromJSHostCallGeneric(global, @src(), S3Error__toErrorInstance, .{ this, global })) orelse unreachable;
     }
-    extern fn S3Error__toErrorInstance(this: *const @This(), global: *jsc.JSGlobalObject) callconv(jsc.conv) jsc.JSValue;
+    extern fn S3Error__toErrorInstance(this: *const @This(), global: *jsc.JSGlobalObject) callconv(jsc.conv) ?*jsc.JSObject;
 };
 
 pub fn s3ErrorToJS(err: *const S3Error, globalObject: *jsc.JSGlobalObject, path: ?[]const u8) jsc.JSValue {
-    const value = JSS3Error.init(err.code, err.message, path).toErrorInstance(globalObject);
+    const value = JSS3Error.init(err.code, err.message, path).toErrorInstance(globalObject) catch return .zero;
     bun.assert(!globalObject.hasException());
-    return value;
+    return value.toJS();
 }
 
 /// Like `toJS` but populates the error's stack trace with async frames from

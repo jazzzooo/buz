@@ -26,7 +26,7 @@ pub fn verifyErrorToJS(this: *const uws.us_bun_verify_error_t, globalObject: *js
         .message = bun.String.cloneUTF8(reason),
     };
 
-    return fallback.toErrorInstance(globalObject);
+    return (try fallback.toErrorInstance(globalObject)).toJS();
 }
 
 // ── AnyWebSocket.getTopicsAsJSArray ────────────────────────────────────────

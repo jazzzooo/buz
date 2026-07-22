@@ -505,14 +505,14 @@ pub const HTMLRewriter = struct {
                             .code = bun.String.static("ERR_STREAM_ALREADY_FINISHED"),
                             .message = bun.String.static("Stream already used, please create a new one"),
                         };
-                        return err.toErrorInstance(sink.global);
+                        return (try err.toErrorInstance(sink.global)).toJS();
                     },
                     else => {
                         var err = jsc.SystemError{
                             .code = bun.String.static("ERR_STREAM_CANNOT_PIPE"),
                             .message = bun.String.static("Failed to pipe stream"),
                         };
-                        return err.toErrorInstance(sink.global);
+                        return (try err.toErrorInstance(sink.global)).toJS();
                     },
                 };
             };
@@ -1102,9 +1102,9 @@ fn createLOLHTMLError(global: *JSGlobalObject) JSValue {
     }
 
     var err = createLOLHTMLStringError();
-    const value = err.toErrorInstance(global);
-    value.getObject().?.putDirect(global, "name", ZigString.init("HTMLRewriterError").toJS(global));
-    return value;
+    const value = err.toErrorInstance(global) catch return .zero;
+    value.putDirect(global, "name", ZigString.init("HTMLRewriterError").toJS(global));
+    return value.toJS();
 }
 fn createLOLHTMLStringError() bun.String {
     // We must clone this string.

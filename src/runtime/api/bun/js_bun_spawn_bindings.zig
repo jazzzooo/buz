@@ -627,7 +627,7 @@ pub fn spawnMaybeSync(
                 "";
             var systemerror = bun.sys.Error.fromCode(if (err == error.EMFILE) .MFILE else .NFILE, .posix_spawn).withPath(display_path).toSystemError();
             systemerror.errno = if (err == error.EMFILE) -bun.sys.UV_E.MFILE else -bun.sys.UV_E.NFILE;
-            return globalThis.throwValue(systemerror.toErrorInstance(globalThis));
+            return globalThis.throwValue((try systemerror.toErrorInstance(globalThis)).toJS());
         },
         else => {
             spawn_options.deinit();
@@ -645,7 +645,7 @@ pub fn spawnMaybeSync(
                     if (display_path.len > 0) {
                         var systemerror = err.withPath(display_path).toSystemError();
                         if (errno == .NOENT) systemerror.errno = -bun.sys.UV_E.NOENT;
-                        return globalThis.throwValue(systemerror.toErrorInstance(globalThis));
+                        return globalThis.throwValue((try systemerror.toErrorInstance(globalThis)).toJS());
                     }
                 },
                 else => {},
@@ -1132,7 +1132,7 @@ fn throwCommandNotFound(globalThis: *jsc.JSGlobalObject, command: []const u8) bu
         .errno = -bun.sys.UV_E.NOENT,
         .path = bun.String.cloneUTF8(command),
     };
-    return globalThis.throwValue(err.toErrorInstance(globalThis));
+    return globalThis.throwValue((try err.toErrorInstance(globalThis)).toJS());
 }
 
 pub fn appendEnvpFromJS(globalThis: *jsc.JSGlobalObject, object: *jsc.JSObject, envp: *std.array_list.Managed(?[*:0]const u8), PATH: *[]const u8) bun.JSError!void {

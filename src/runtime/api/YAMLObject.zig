@@ -1008,10 +1008,10 @@ pub fn parse(
 
     const input_len = input.byteLength();
     if (input_len > std.math.maxInt(i32)) {
-        const err = global.createRangeErrorInstance(
+        const err = try global.createRangeErrorInstance(
             "The value of \"input.byteLength\" is out of range. It must be <= {d}. Received {d}",
             .{ std.math.maxInt(i32), input_len },
-        ).getObject().?;
+        );
         err.putDirect(global, ZigString.static("code"), ZigString.static("ERR_OUT_OF_RANGE").toJS(global));
         return global.throwValue(err.toJS());
     }
@@ -1028,9 +1028,9 @@ pub fn parse(
             if (log.msgs.items.len > 0) {
                 const first_msg = log.msgs.items[0];
                 const error_text = first_msg.data.text;
-                return global.throwValue(global.createSyntaxErrorInstance("YAML Parse error: {s}", .{error_text}));
+                return global.throwValue((try global.createSyntaxErrorInstance("YAML Parse error: {s}", .{error_text})).toJS());
             }
-            return global.throwValue(global.createSyntaxErrorInstance("YAML Parse error: Unable to parse YAML string", .{}));
+            return global.throwValue((try global.createSyntaxErrorInstance("YAML Parse error: Unable to parse YAML string", .{})).toJS());
         },
     };
 

@@ -1057,7 +1057,7 @@ pub fn doSend(ipc: ?*SendQueue, globalObject: *jsc.JSGlobalObject, callFrame: *j
     const status = ipc_data.serializeAndSend(globalObject, message, .external, callback, zig_handle);
 
     if (status == .failure) {
-        const ex = globalObject.createTypeErrorInstance("process.send() failed", .{}).getObject().?;
+        const ex = try globalObject.createTypeErrorInstance("process.send() failed", .{});
         ex.putDirect(globalObject, jsc.ZigString.static("syscall"), try bun.String.static("write").toJS(globalObject));
         return doSendErr(globalObject, callback, ex.toJS(), from);
     }

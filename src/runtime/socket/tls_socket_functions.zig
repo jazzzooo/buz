@@ -363,7 +363,7 @@ pub fn exportKeyingMaterial(this: *This, globalObject: *jsc.JSGlobalObject, call
 
             const result = BoringSSL.SSL_export_keying_material(ssl_ptr, buffer_ptr, buffer_size, @as([*c]const u8, @ptrCast(label_slice.ptr)), label_slice.len, @as([*c]const u8, @ptrCast(context_slice.ptr)), context_slice.len, 1);
             if (result != 1) {
-                return globalObject.throwValue(getSSLException(globalObject, "Failed to export keying material"));
+                return globalObject.throwValue(try getSSLException(globalObject, "Failed to export keying material"));
             }
             return buffer;
         } else {
@@ -376,7 +376,7 @@ pub fn exportKeyingMaterial(this: *This, globalObject: *jsc.JSGlobalObject, call
 
         const result = BoringSSL.SSL_export_keying_material(ssl_ptr, buffer_ptr, buffer_size, @as([*c]const u8, @ptrCast(label_slice.ptr)), label_slice.len, null, 0, 0);
         if (result != 1) {
-            return globalObject.throwValue(getSSLException(globalObject, "Failed to export keying material"));
+            return globalObject.throwValue(try getSSLException(globalObject, "Failed to export keying material"));
         }
         return buffer;
     }
@@ -504,7 +504,7 @@ pub fn setSession(this: *This, globalObject: *jsc.JSGlobalObject, callframe: *js
         // so we must release the one returned by d2i_SSL_SESSION on every path.
         defer BoringSSL.SSL_SESSION_free(session);
         if (BoringSSL.SSL_set_session(ssl_ptr, session) != 1) {
-            return globalObject.throwValue(getSSLException(globalObject, "SSL_set_session error"));
+            return globalObject.throwValue(try getSSLException(globalObject, "SSL_set_session error"));
         }
         return .js_undefined;
     } else {
@@ -531,7 +531,7 @@ pub fn renegotiate(this: *This, globalObject: *jsc.JSGlobalObject, _: *jsc.CallF
     const ssl_ptr = this.socket.ssl() orelse return .js_undefined;
     BoringSSL.ERR_clear_error();
     if (BoringSSL.SSL_renegotiate(ssl_ptr) != 1) {
-        return globalObject.throwValue(getSSLException(globalObject, "SSL_renegotiate error"));
+        return globalObject.throwValue(try getSSLException(globalObject, "SSL_renegotiate error"));
     }
     return .js_undefined;
 }
@@ -583,7 +583,7 @@ fn alwaysAllowSSLVerifyCallback(_: c_int, _: ?*BoringSSL.X509_STORE_CTX) callcon
     return 1;
 }
 
-noinline fn getSSLException(globalThis: *jsc.JSGlobalObject, defaultMessage: []const u8) JSValue {
+noinline fn getSSLException(globalThis: *jsc.JSGlobalObject, defaultMessage: []const u8) bun.JSError!JSValue {
     var zig_str: ZigString = ZigString.init("");
     var output_buf: [4096]u8 = undefined;
 
@@ -648,12 +648,12 @@ noinline fn getSSLException(globalThis: *jsc.JSGlobalObject, defaultMessage: []c
 
     // store the exception in here
     // toErrorInstance clones the string
-    const exception = zig_str.toErrorInstance(globalThis);
+    const exception = try zig_str.toErrorInstance(globalThis);
 
     // reference it in stack memory
     exception.ensureStillAlive();
 
-    return exception;
+    return exception.toJS();
 }
 
 const string = []const u8;

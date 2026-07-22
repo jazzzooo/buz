@@ -6019,11 +6019,12 @@ pub const NodeFS = struct {
         const watcher = args.createStatWatcher() catch |err| {
             const buf = bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "Failed to watch file {f}", .{bun.fmt.QuotedFormatter{ .text = args.path.slice() }}));
             defer bun.default_allocator.free(buf);
-            args.global_this.throwValue((jsc.SystemError{
+            const error_instance = (jsc.SystemError{
                 .message = bun.String.init(buf),
                 .code = bun.String.init(@errorName(err)),
                 .path = bun.String.init(args.path.slice()),
-            }).toErrorInstance(args.global_this)) catch {};
+            }).toErrorInstance(args.global_this) catch return Maybe(Return.Watch){ .result = .js_undefined };
+            args.global_this.throwValue(error_instance.toJS()) catch {};
             return Maybe(Return.Watch){ .result = .js_undefined };
         };
         return Maybe(Return.Watch){ .result = watcher };

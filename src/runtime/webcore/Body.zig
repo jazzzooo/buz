@@ -301,9 +301,9 @@ pub const Value = union(Tag) {
         pub fn toJS(this: *@This(), globalObject: *jsc.JSGlobalObject) jsc.JSValue {
             const js_value = switch (this.*) {
                 .AbortReason => |reason| reason.toJS(globalObject),
-                .SystemError => |system_error| system_error.toErrorInstance(globalObject),
-                .Message => |message| message.toErrorInstance(globalObject),
-                .TypeError => |message| message.toTypeErrorInstance(globalObject),
+                .SystemError => |system_error| if (system_error.toErrorInstance(globalObject)) |err| err.toJS() else |err| globalObject.takeException(err),
+                .Message => |message| if (message.toErrorInstance(globalObject)) |err| err.toJS() else |err| globalObject.takeException(err),
+                .TypeError => |message| if (message.toTypeErrorInstance(globalObject)) |err| err.toJS() else |err| globalObject.takeException(err),
                 // do a early return in this case we don't need to create a new Strong
                 .JSValue => |js_value| return js_value.get() orelse .js_undefined,
             };
@@ -561,7 +561,7 @@ pub const Value = union(Tag) {
                     .InternalBlob = .{
                         .bytes = std.array_list.Managed(u8){
                             .items = bun.default_allocator.dupe(u8, bytes) catch {
-                                return globalThis.throwValue(ZigString.static("Failed to clone ArrayBufferView").toErrorInstance(globalThis));
+                                return globalThis.throwValue((try ZigString.static("Failed to clone ArrayBufferView").toErrorInstance(globalThis)).toJS());
                             },
                             .capacity = bytes.len,
                             .allocator = bun.default_allocator,
@@ -720,7 +720,8 @@ pub const Value = union(Tag) {
                         var blob = new.useAsAnyBlob();
                         defer blob.detach();
                         var async_form_data: *bun.FormData.AsyncFormData = locked.action.getFormData orelse {
-                            try promise.reject(global, ZigString.init("Internal error: task for FormData must not be null").toErrorInstance(global));
+                            const err = if (ZigString.init("Internal error: task for FormData must not be null").toErrorInstance(global)) |err| err.toJS() else |err| global.takeException(err);
+                            try promise.reject(global, err);
                             break :inner;
                         };
                         defer async_form_data.deinit();

@@ -30,7 +30,8 @@ pub fn NewReadFileHandler(comptime Function: anytype) type {
                     try jsc.AnyPromise.wrap(.{ .normal = promise }, globalThis, WrappedFn.wrapped, .{ &blob, globalThis, bytes });
                 },
                 .err => |err| {
-                    try promise.reject(globalThis, err.toErrorInstanceWithAsyncStack(globalThis, promise));
+                    const error_value: bun.JSError!jsc.JSValue = if (err.toErrorInstanceWithAsyncStack(globalThis, promise)) |error_object| error_object.toJS() else |js_err| js_err;
+                    try promise.reject(globalThis, error_value);
                 },
             }
         }

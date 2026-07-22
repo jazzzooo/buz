@@ -485,12 +485,12 @@ pub const ErrorDeferred = struct {
             .hostname = this.hostname orelse bun.String.empty,
         };
 
-        const instance = system_error.toErrorInstanceWithAsyncStack(globalThis, this.promise.get());
-        instance.getObject().?.putDirect(globalThis, "name", try bun.String.static("DNSException").toJS(globalThis));
+        const instance = try system_error.toErrorInstanceWithAsyncStack(globalThis, this.promise.get());
+        instance.putDirect(globalThis, "name", try bun.String.static("DNSException").toJS(globalThis));
 
         defer this.deinit();
         defer this.hostname = null;
-        return this.promise.reject(globalThis, instance);
+        return this.promise.reject(globalThis, instance.toJS());
     }
 
     pub fn rejectLater(this: *ErrorDeferred, globalThis: *jsc.JSGlobalObject) void {
@@ -529,26 +529,26 @@ pub fn errorToDeferred(this: c_ares.Error, syscall: []const u8, hostname: ?[]con
 }
 
 pub fn errorToJSWithSyscall(this: c_ares.Error, globalThis: *jsc.JSGlobalObject, comptime syscall: [:0]const u8) bun.JSError!jsc.JSValue {
-    const instance = (jsc.SystemError{
+    const instance = try (jsc.SystemError{
         .errno = @backingInt(this),
         .code = bun.String.static(this.code()[4..]),
         .syscall = bun.String.static(syscall),
         .message = bun.handleOom(bun.String.createFormat("{s} {s}", .{ syscall, this.code()[4..] })),
     }).toErrorInstance(globalThis);
-    instance.getObject().?.putDirect(globalThis, "name", try bun.String.static("DNSException").toJS(globalThis));
-    return instance;
+    instance.putDirect(globalThis, "name", try bun.String.static("DNSException").toJS(globalThis));
+    return instance.toJS();
 }
 
 pub fn errorToJSWithSyscallAndHostname(this: c_ares.Error, globalThis: *jsc.JSGlobalObject, comptime syscall: [:0]const u8, hostname: []const u8) bun.JSError!jsc.JSValue {
-    const instance = (jsc.SystemError{
+    const instance = try (jsc.SystemError{
         .errno = @backingInt(this),
         .code = bun.String.static(this.code()[4..]),
         .message = bun.handleOom(bun.String.createFormat("{s} {s} {s}", .{ syscall, this.code()[4..], hostname })),
         .syscall = bun.String.static(syscall),
         .hostname = bun.String.cloneUTF8(hostname),
     }).toErrorInstance(globalThis);
-    instance.getObject().?.putDirect(globalThis, "name", try bun.String.static("DNSException").toJS(globalThis));
-    return instance;
+    instance.putDirect(globalThis, "name", try bun.String.static("DNSException").toJS(globalThis));
+    return instance.toJS();
 }
 
 // ── canonicalizeIP host fn ─────────────────────────────────────────────────

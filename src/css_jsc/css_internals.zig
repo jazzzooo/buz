@@ -113,7 +113,7 @@ pub fn testingImpl(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, c
             switch (stylesheet.minify(alloc, minify_options, &extra)) {
                 .result => {},
                 .err => |*err| {
-                    return globalThis.throwValue(try err.toErrorInstance(globalThis));
+                    return globalThis.throwValue((try err.toErrorInstance(globalThis)).toJS());
                 },
             }
 
@@ -137,7 +137,7 @@ pub fn testingImpl(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, c
             )) {
                 .result => |result| result,
                 .err => |*err| {
-                    return globalThis.throwValue(try err.toErrorInstance(globalThis));
+                    return globalThis.throwValue((try err.toErrorInstance(globalThis)).toJS());
                 },
             };
 

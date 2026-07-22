@@ -569,7 +569,7 @@ const ExtractContext = struct {
     fn runFromJS(this: *ExtractContext, globalThis: *jsc.JSGlobalObject) bun.JSError!PromiseResult {
         return switch (this.result) {
             .success => |count| .{ .resolve = jsc.JSValue.jsNumber(count) },
-            .err => |e| .{ .reject = globalThis.createErrorInstance("{s}", .{@errorName(e)}) },
+            .err => |e| .{ .reject = (try globalThis.createErrorInstance("{s}", .{@errorName(e)})).toJS() },
         };
     }
 
@@ -631,7 +631,7 @@ const BlobContext = struct {
 
     fn runFromJS(this: *BlobContext, globalThis: *jsc.JSGlobalObject) bun.JSError!PromiseResult {
         switch (this.result) {
-            .err => |e| return .{ .reject = globalThis.createErrorInstance("{s}", .{@errorName(e)}) },
+            .err => |e| return .{ .reject = (try globalThis.createErrorInstance("{s}", .{@errorName(e)})).toJS() },
             .compressed => |data| {
                 this.result = .{ .uncompressed = {} }; // Ownership transferred
                 return .{ .resolve = switch (this.output_type) {
@@ -715,7 +715,7 @@ const WriteContext = struct {
     fn runFromJS(this: *WriteContext, globalThis: *jsc.JSGlobalObject) bun.JSError!PromiseResult {
         return switch (this.result) {
             .success => .{ .resolve = .js_undefined },
-            .err => |e| .{ .reject = globalThis.createErrorInstance("{s}", .{@errorName(e)}) },
+            .err => |e| .{ .reject = (try globalThis.createErrorInstance("{s}", .{@errorName(e)})).toJS() },
             .sys_err => |sys_err| .{ .reject = try sys_err.toJS(globalThis) },
         };
     }
@@ -859,7 +859,7 @@ const FilesContext = struct {
             .success => |*entries| {
                 const map = jsc.JSMap.create(globalThis);
                 const map_ptr = jsc.JSMap.fromJS(map) orelse {
-                    return .{ .reject = globalThis.createErrorInstance("Failed to create Map", .{}) };
+                    return .{ .reject = (try globalThis.createErrorInstance("Failed to create Map", .{})).toJS() };
                 };
 
                 for (entries.items) |*entry| {
@@ -874,8 +874,8 @@ const FilesContext = struct {
 
                 return .{ .resolve = map };
             },
-            .libarchive_err => |err_msg| return .{ .reject = globalThis.createErrorInstance("{s}", .{err_msg}) },
-            .err => |e| return .{ .reject = globalThis.createErrorInstance("{s}", .{@errorName(e)}) },
+            .libarchive_err => |err_msg| return .{ .reject = (try globalThis.createErrorInstance("{s}", .{err_msg})).toJS() },
+            .err => |e| return .{ .reject = (try globalThis.createErrorInstance("{s}", .{@errorName(e)})).toJS() },
         }
     }
 

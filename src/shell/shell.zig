@@ -65,12 +65,12 @@ pub const ShellErr = union(enum) {
         }
         switch (this.*) {
             .sys => {
-                const err = this.sys.toErrorInstance(globalThis);
-                return globalThis.throwValue(err);
+                const err = try this.sys.toErrorInstance(globalThis);
+                return globalThis.throwValue(err.toJS());
             },
             .custom => {
-                const err_value = bun.String.cloneUTF8(this.custom).toErrorInstance(globalThis);
-                return globalThis.throwValue(err_value);
+                const err_value = try bun.String.cloneUTF8(this.custom).toErrorInstance(globalThis);
+                return globalThis.throwValue(err_value.toJS());
                 // this.bunVM().allocator.free(jsc.ZigString.untagged(str._unsafe_ptr_do_not_use)[0..str.len]);
             },
             .invalid_arguments => {

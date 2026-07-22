@@ -465,12 +465,12 @@ pub fn uploadStream(
     this.ref(); // ref the credentials
     const proxy_url = (proxy orelse "");
     if (readable_stream.isDisturbed(globalThis)) {
-        return jsc.JSPromise.rejectedPromise(globalThis, bun.String.static("ReadableStream is already disturbed").toErrorInstance(globalThis)).toJS();
+        return jsc.JSPromise.rejectedPromise(globalThis, (try bun.String.static("ReadableStream is already disturbed").toErrorInstance(globalThis)).toJS()).toJS();
     }
 
     switch (readable_stream.ptr) {
         .Invalid => {
-            return jsc.JSPromise.rejectedPromise(globalThis, bun.String.static("ReadableStream is invalid").toErrorInstance(globalThis)).toJS();
+            return jsc.JSPromise.rejectedPromise(globalThis, (try bun.String.static("ReadableStream is invalid").toErrorInstance(globalThis)).toJS()).toJS();
         },
         inline .File, .Bytes => |stream| {
             if (stream.pending.result == .err) {

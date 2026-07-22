@@ -95,7 +95,8 @@ const LibInfo = struct {
         );
 
         if (errno != 0) {
-            request.head.promise.rejectTask(globalThis, globalThis.createErrorInstance("getaddrinfo_async_start error: {s}", .{@tagName(bun.sys.getErrno(errno))})) catch {}; // TODO: properly propagate exception upwards
+            const error_value = if (globalThis.createErrorInstance("getaddrinfo_async_start error: {s}", .{@tagName(bun.sys.getErrno(errno))})) |err| err.toJS() else |err| globalThis.takeException(err);
+            request.head.promise.rejectTask(globalThis, error_value) catch {}; // TODO: properly propagate exception upwards
             if (request.cache.pending_cache) {
                 // Release the pending-cache slot. `getOrPutIntoPendingCache` already
                 // set the `used` bit via `HiveArray.get`, so failing to unset it here
@@ -2488,7 +2489,7 @@ pub const Resolver = struct {
                     .message = bun.String.static(err.label()),
                 };
 
-                return globalThis.throwValue(system_error.toErrorInstance(globalThis));
+                return globalThis.throwValue((try system_error.toErrorInstance(globalThis)).toJS());
             },
         }
     }
@@ -3226,7 +3227,7 @@ pub const Resolver = struct {
                     .syscall = syscall,
                 };
 
-                return globalThis.throwValue(system_error.toErrorInstance(globalThis));
+                return globalThis.throwValue((try system_error.toErrorInstance(globalThis)).toJS());
             },
         };
 
@@ -3269,7 +3270,7 @@ pub const Resolver = struct {
         const r = c_ares.ares_get_servers_ports(channel, &servers);
         if (r != c_ares.ARES_SUCCESS) {
             const err = c_ares.Error.get(r).?;
-            return globalThis.throwValue(globalThis.createErrorInstance("ares_get_servers_ports error: {s}", .{err.label()}));
+            return globalThis.throwValue((try globalThis.createErrorInstance("ares_get_servers_ports error: {s}", .{err.label()})).toJS());
         }
         defer c_ares.ares_free_data(servers);
 
@@ -3294,7 +3295,7 @@ pub const Resolver = struct {
                 break :blk c_ares.ares_inet_ntop(family, &current.addr.addr4, buf[1..], @sizeOf(@TypeOf(buf)) - 1);
             };
             if (ip == null) {
-                return globalThis.throwValue(globalThis.createErrorInstance("ares_inet_ntop error: no more space to convert a network format address", .{}));
+                return globalThis.throwValue((try globalThis.createErrorInstance("ares_inet_ntop error: no more space to convert a network format address", .{})).toJS());
             }
 
             var port = current.tcp_port;
@@ -3406,7 +3407,7 @@ pub const Resolver = struct {
             const r = c_ares.ares_set_servers_ports(channel, null);
             if (r != c_ares.ARES_SUCCESS) {
                 const err = c_ares.Error.get(r).?;
-                return globalThis.throwValue(globalThis.createErrorInstance("ares_set_servers_ports error: {s}", .{err.label()}));
+                return globalThis.throwValue((try globalThis.createErrorInstance("ares_set_servers_ports error: {s}", .{err.label()})).toJS());
             }
             return .js_undefined;
         }
@@ -3464,7 +3465,7 @@ pub const Resolver = struct {
         const r = c_ares.ares_set_servers_ports(channel, entries.ptr);
         if (r != c_ares.ARES_SUCCESS) {
             const err = c_ares.Error.get(r).?;
-            return globalThis.throwValue(globalThis.createErrorInstance("ares_set_servers_ports error: {s}", .{err.label()}));
+            return globalThis.throwValue((try globalThis.createErrorInstance("ares_set_servers_ports error: {s}", .{err.label()})).toJS());
         }
 
         return .js_undefined;

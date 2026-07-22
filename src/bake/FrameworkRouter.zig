@@ -1206,10 +1206,10 @@ pub const JSFrameworkRouter = struct {
                 try arr.putDirectIndex(
                     global,
                     @intCast(i),
-                    global.createErrorInstance("Invalid route {f}: {s}", .{
+                    (try global.createErrorInstance("Invalid route {f}: {s}", .{
                         bun.fmt.quote(item.rel_path),
                         item.log.msg.slice(),
-                    }),
+                    })).toJS(),
                 );
             }
             return global.throwValue(try global.createAggregateErrorWithArray(.static("Errors scanning routes"), arr.toJS()));

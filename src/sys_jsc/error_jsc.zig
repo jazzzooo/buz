@@ -1,7 +1,7 @@
 //! JSC bridge for `bun.sys.Error`. Keeps `src/sys/` free of JSC types.
 
 pub fn toJS(this: Error, ptr: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-    return this.toSystemError().toErrorInstance(ptr);
+    return (try this.toSystemError().toErrorInstance(ptr)).toJS();
 }
 
 /// Like `toJS` but populates the error's stack trace with async frames from the
@@ -9,7 +9,7 @@ pub fn toJS(this: Error, ptr: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
 /// at the top of the event loop (threadpool callback) — otherwise the error
 /// will have an empty stack trace.
 pub fn toJSWithAsyncStack(this: Error, ptr: *jsc.JSGlobalObject, promise: *jsc.JSPromise) bun.JSError!jsc.JSValue {
-    return this.toSystemError().toErrorInstanceWithAsyncStack(ptr, promise);
+    return (try this.toSystemError().toErrorInstanceWithAsyncStack(ptr, promise)).toJS();
 }
 
 pub const TestingAPIs = struct {

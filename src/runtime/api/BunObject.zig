@@ -1103,7 +1103,8 @@ pub export fn Bun__escapeHTML16(globalObject: *jsc.JSGlobalObject, input_value: 
     assert(len > 0);
     const input_slice = ptr[0..len];
     const escaped = strings.escapeHTMLForUTF16Input(globalObject.bunVM().allocator, input_slice) catch {
-        return globalObject.throwValue(ZigString.init("Out of memory").toErrorInstance(globalObject)) catch return .zero;
+        const err = ZigString.init("Out of memory").toErrorInstance(globalObject) catch return .zero;
+        return globalObject.throwValue(err.toJS()) catch return .zero;
     };
 
     return switch (escaped) {
@@ -1122,7 +1123,8 @@ pub export fn Bun__escapeHTML8(globalObject: *jsc.JSGlobalObject, input_value: J
     const allocator = if (input_slice.len <= 32) stack_allocator.allocator() else stack_allocator.fallback_allocator;
 
     const escaped = strings.escapeHTMLForLatin1Input(allocator, input_slice) catch {
-        return globalObject.throwValue(ZigString.init("Out of memory").toErrorInstance(globalObject)) catch return .zero;
+        const err = ZigString.init("Out of memory").toErrorInstance(globalObject) catch return .zero;
+        return globalObject.throwValue(err.toJS()) catch return .zero;
     };
 
     switch (escaped) {
@@ -1665,7 +1667,7 @@ pub const JSZlib = struct {
 
                 reader.readAll(true) catch {
                     defer reader.deinit();
-                    return globalThis.throwValue(ZigString.init(reader.errorMessage() orelse "Zlib returned an error").toErrorInstance(globalThis));
+                    return globalThis.throwValue((try ZigString.init(reader.errorMessage() orelse "Zlib returned an error").toErrorInstance(globalThis)).toJS());
                 };
                 reader.list_ptr = &reader.list;
 
@@ -1770,7 +1772,7 @@ pub const JSZlib = struct {
 
                 reader.readAll() catch {
                     defer reader.deinit();
-                    return globalThis.throwValue(ZigString.init(reader.errorMessage() orelse "Zlib returned an error").toErrorInstance(globalThis));
+                    return globalThis.throwValue((try ZigString.init(reader.errorMessage() orelse "Zlib returned an error").toErrorInstance(globalThis)).toJS());
                 };
                 reader.list = .fromOwnedSlice(bun.handleOom(reader.list.toOwnedSlice(allocator)));
                 reader.list_ptr = &reader.list;

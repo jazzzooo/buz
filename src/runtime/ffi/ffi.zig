@@ -775,8 +775,8 @@ pub const FFI = struct {
             };
             switch (function.step) {
                 .failed => |err| {
-                    const res = ZigString.init(err.msg).toErrorInstance(globalThis);
-                    return globalThis.throwValue(res);
+                    const res = try ZigString.init(err.msg).toErrorInstance(globalThis);
+                    return globalThis.throwValue(res.toJS());
                 },
                 .pending => {
                     return globalThis.throw("Failed to compile (nothing happend!)", .{});
@@ -835,7 +835,7 @@ pub const FFI = struct {
         var function: Function = .{ .allocator = allocator };
         var func = &function;
 
-        if (generateSymbolForFunction(globalThis, allocator, interface, func) catch ZigString.init("Out of memory").toErrorInstance(globalThis)) |val| {
+        if (generateSymbolForFunction(globalThis, allocator, interface, func) catch return (try ZigString.init("Out of memory").toErrorInstance(globalThis)).toJS()) |val| {
             return val;
         }
 
@@ -843,18 +843,18 @@ pub const FFI = struct {
         func.base_name = "";
         js_callback.ensureStillAlive();
 
-        func.compileCallback(globalThis, js_callback, func.threadsafe) catch return ZigString.init("Out of memory").toErrorInstance(globalThis);
+        func.compileCallback(globalThis, js_callback, func.threadsafe) catch return (try ZigString.init("Out of memory").toErrorInstance(globalThis)).toJS();
         switch (func.step) {
             .failed => |err| {
-                const message = ZigString.init(err.msg).toErrorInstance(globalThis);
+                const message = try ZigString.init(err.msg).toErrorInstance(globalThis);
 
                 func.deinit(globalThis);
 
-                return message;
+                return message.toJS();
             },
             .pending => {
                 func.deinit(globalThis);
-                return ZigString.init("Failed to compile, but not sure why. Please report this bug").toErrorInstance(globalThis);
+                return (try ZigString.init("Failed to compile, but not sure why. Please report this bug").toErrorInstance(globalThis)).toJS();
             },
             .compiled => {
                 const function_ = bun.default_allocator.create(Function) catch unreachable;
@@ -909,7 +909,7 @@ pub const FFI = struct {
         }
 
         var function: Function = .{ .allocator = allocator };
-        if (generateSymbolForFunction(global, allocator, object, &function) catch ZigString.init("Out of memory").toErrorInstance(global)) |val| {
+        if (generateSymbolForFunction(global, allocator, object, &function) catch |err| return global.takeException(err)) |val| {
             return val;
         }
 
@@ -919,7 +919,7 @@ pub const FFI = struct {
         function.base_name = "my_callback_function";
 
         function.printCallbackSourceCode(null, null, &arraylist.writer) catch {
-            return ZigString.init("Error while printing code").toErrorInstance(global);
+            return (ZigString.init("Error while printing code").toErrorInstance(global) catch return .zero).toJS();
         };
         return ZigString.init(arraylist.written()).toJS(global);
     }
@@ -968,7 +968,7 @@ pub const FFI = struct {
                 }
 
                 symbols.clearAndFree(allocator);
-                return ZigString.init("Error while printing code").toErrorInstance(global);
+                return (try ZigString.init("Error while printing code").toErrorInstance(global)).toJS();
             };
             strs.appendAssumeCapacity(bun.String.cloneUTF8(arraylist.written()));
         }
@@ -1068,7 +1068,7 @@ pub const FFI = struct {
                         .message = bun.String.cloneUTF8(msg),
                         .syscall = bun.String.cloneUTF8("dlopen"),
                     };
-                    return system_error.toErrorInstance(global);
+                    return (system_error.toErrorInstance(global) catch return .zero).toJS();
                 };
             };
         };
@@ -1121,10 +1121,10 @@ pub const FFI = struct {
                         other_function.deinit(global);
                     };
 
-                    const res = ZigString.init(err.msg).toErrorInstance(global);
+                    const res = ZigString.init(err.msg).toErrorInstance(global) catch return .zero;
                     symbols.clearAndFree(bun.default_allocator);
                     dylib.close();
-                    return res;
+                    return res.toJS();
                 },
                 .pending => {
                     for (symbols.values()) |*other_function| {
@@ -1132,7 +1132,7 @@ pub const FFI = struct {
                     }
                     symbols.clearAndFree(bun.default_allocator);
                     dylib.close();
-                    return ZigString.init("Failed to compile (nothing happend!)").toErrorInstance(global);
+                    return (ZigString.init("Failed to compile (nothing happend!)").toErrorInstance(global) catch return .zero).toJS();
                 },
                 .compiled => |*compiled| {
                     const str = ZigString.init(bun.asByteSlice(function_name));
@@ -1229,10 +1229,10 @@ pub const FFI = struct {
                         value.arg_types.clearAndFree(allocator);
                     }
 
-                    const res = ZigString.init(err.msg).toErrorInstance(global);
+                    const res = ZigString.init(err.msg).toErrorInstance(global) catch return .zero;
                     function.deinit(global);
                     symbols.clearAndFree(allocator);
-                    return res;
+                    return res.toJS();
                 },
                 .pending => {
                     for (symbols.values()) |*value| {
@@ -1240,7 +1240,7 @@ pub const FFI = struct {
                         value.arg_types.clearAndFree(allocator);
                     }
                     symbols.clearAndFree(allocator);
-                    return ZigString.static("Failed to compile (nothing happend!)").toErrorInstance(global);
+                    return (ZigString.static("Failed to compile (nothing happend!)").toErrorInstance(global) catch return .zero).toJS();
                 },
                 .compiled => |*compiled| {
                     const name = &ZigString.init(bun.asByteSlice(function_name));
@@ -1276,7 +1276,7 @@ pub const FFI = struct {
 
         if (try value.getOwn(global, "args")) |args| {
             if (args.isEmptyOrUndefinedOrNull() or !args.jsType().isArray()) {
-                return ZigString.static("Expected an object with \"args\" as an array").toErrorInstance(global);
+                return (try ZigString.static("Expected an object with \"args\" as an array").toErrorInstance(global)).toJS();
             }
 
             var array = try args.arrayIterator(global);
@@ -1285,7 +1285,7 @@ pub const FFI = struct {
             while (try array.next()) |val| {
                 if (val.isEmptyOrUndefinedOrNull()) {
                     abi_types.clearAndFree(allocator);
-                    return ZigString.static("param must be a string (type name) or number").toErrorInstance(global);
+                    return (try ZigString.static("param must be a string (type name) or number").toErrorInstance(global)).toJS();
                 }
 
                 if (val.isAnyInt()) {
@@ -1297,14 +1297,14 @@ pub const FFI = struct {
                         },
                         else => {
                             abi_types.clearAndFree(allocator);
-                            return ZigString.static("invalid ABI type").toErrorInstance(global);
+                            return (try ZigString.static("invalid ABI type").toErrorInstance(global)).toJS();
                         },
                     }
                 }
 
                 if (!val.jsType().isStringLike()) {
                     abi_types.clearAndFree(allocator);
-                    return ZigString.static("param must be a string (type name) or number").toErrorInstance(global);
+                    return (try ZigString.static("param must be a string (type name) or number").toErrorInstance(global)).toJS();
                 }
 
                 var type_name = try val.toSlice(global, allocator);
@@ -1334,7 +1334,7 @@ pub const FFI = struct {
                     },
                     else => {
                         abi_types.clearAndFree(allocator);
-                        return ZigString.static("invalid ABI type").toErrorInstance(global);
+                        return (try ZigString.static("invalid ABI type").toErrorInstance(global)).toJS();
                     },
                 }
             }
@@ -1349,17 +1349,17 @@ pub const FFI = struct {
 
         if (return_type == ABIType.napi_env) {
             abi_types.clearAndFree(allocator);
-            return ZigString.static("Cannot return napi_env to JavaScript").toErrorInstance(global);
+            return (try ZigString.static("Cannot return napi_env to JavaScript").toErrorInstance(global)).toJS();
         }
 
         if (return_type == .buffer) {
             abi_types.clearAndFree(allocator);
-            return ZigString.static("Cannot return a buffer to JavaScript (since byteLength and byteOffset are unknown)").toErrorInstance(global);
+            return (try ZigString.static("Cannot return a buffer to JavaScript (since byteLength and byteOffset are unknown)").toErrorInstance(global)).toJS();
         }
 
         if (function.threadsafe and return_type != ABIType.void) {
             abi_types.clearAndFree(allocator);
-            return ZigString.static("Threadsafe functions must return void").toErrorInstance(global);
+            return (try ZigString.static("Threadsafe functions must return void").toErrorInstance(global)).toJS();
         }
 
         function.* = Function{

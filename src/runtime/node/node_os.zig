@@ -50,7 +50,7 @@ pub fn cpus(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
             .message = bun.String.static("Failed to get CPU information"),
             .code = bun.String.static(@tagName(jsc.Node.ErrorCode.ERR_SYSTEM_ERROR)),
         };
-        return global.throwValue(err.toErrorInstance(global));
+        return global.throwValue((try err.toErrorInstance(global)).toJS());
     };
 }
 
@@ -290,7 +290,7 @@ pub fn getPriority(global: *jsc.JSGlobalObject, pid: i32) bun.JSError!i32 {
             },
             .syscall = bun.String.static("uv_os_getpriority"),
         };
-        return global.throwValue(err.toErrorInstanceWithInfoObject(global));
+        return global.throwValue((try err.toErrorInstanceWithInfoObject(global)).toJS());
     }
     return result;
 }
@@ -461,7 +461,7 @@ fn networkInterfacesPosix(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSVal
             .syscall = bun.String.static("getifaddrs"),
         };
 
-        return globalThis.throwValue(err.toErrorInstance(globalThis));
+        return globalThis.throwValue((try err.toErrorInstance(globalThis)).toJS());
     }
     defer c.freeifaddrs(interface_start);
 
@@ -642,7 +642,7 @@ fn networkInterfacesWindows(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSV
             .errno = err,
             .syscall = bun.String.static("uv_interface_addresses"),
         };
-        return globalThis.throwValue(sys_err.toErrorInstance(globalThis));
+        return globalThis.throwValue((try sys_err.toErrorInstance(globalThis)).toJS());
     }
     defer libuv.uv_free_interface_addresses(ifaces, count);
 
@@ -811,7 +811,7 @@ pub fn setPriority1(global: *jsc.JSGlobalObject, pid: i32, priority: i32) !void 
                 },
                 .syscall = bun.String.static("uv_os_getpriority"),
             };
-            return global.throwValue(err.toErrorInstanceWithInfoObject(global));
+            return global.throwValue((try err.toErrorInstanceWithInfoObject(global)).toJS());
         },
         .ACCES => {
             const err = jsc.SystemError{
@@ -823,7 +823,7 @@ pub fn setPriority1(global: *jsc.JSGlobalObject, pid: i32, priority: i32) !void 
                 },
                 .syscall = bun.String.static("uv_os_getpriority"),
             };
-            return global.throwValue(err.toErrorInstanceWithInfoObject(global));
+            return global.throwValue((try err.toErrorInstanceWithInfoObject(global)).toJS());
         },
         .PERM => {
             const err = jsc.SystemError{
@@ -835,7 +835,7 @@ pub fn setPriority1(global: *jsc.JSGlobalObject, pid: i32, priority: i32) !void 
                 },
                 .syscall = bun.String.static("uv_os_getpriority"),
             };
-            return global.throwValue(err.toErrorInstanceWithInfoObject(global));
+            return global.throwValue((try err.toErrorInstanceWithInfoObject(global)).toJS());
         },
         else => {
             // no other error codes can be emitted
@@ -885,7 +885,7 @@ pub fn uptime(global: *jsc.JSGlobalObject) bun.JSError!f64 {
                     .errno = err,
                     .syscall = bun.String.static("uv_uptime"),
                 };
-                return global.throwValue(sys_err.toErrorInstance(global));
+                return global.throwValue((try sys_err.toErrorInstance(global)).toJS());
             }
             return uptime_value;
         },

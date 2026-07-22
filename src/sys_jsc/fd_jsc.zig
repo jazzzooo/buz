@@ -46,8 +46,8 @@ pub fn toJS(any_fd: FD, global: *jsc.JSGlobalObject) JSValue {
         const err_instance = (jsc.SystemError{
             .message = bun.String.static("EMFILE, too many open files"),
             .code = bun.String.static("EMFILE"),
-        }).toErrorInstance(global);
-        return global.vm().throwError(global, err_instance) catch .zero;
+        }).toErrorInstance(global) catch return .zero;
+        return global.vm().throwError(global, err_instance.toJS()) catch .zero;
     };
     return JSValue.jsNumberFromInt32(uv_owned_fd.uv());
 }

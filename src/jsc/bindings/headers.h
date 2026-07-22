@@ -67,13 +67,13 @@ CPP_DECL void JSC__JSArray__putDirectIndex(JSC::JSArray* arg0, JSC::JSGlobalObje
 CPP_DECL JSC::EncodedJSValue ZigString__external(const ZigString* arg0, JSC::JSGlobalObject* arg1, void* arg2, void(* ArgFn3)(void* arg0, void* arg1, size_t arg2));
 CPP_DECL JSC::EncodedJSValue ZigString__to16BitValue(const ZigString* arg0, JSC::JSGlobalObject* arg1);
 CPP_DECL JSC::EncodedJSValue ZigString__toAtomicValue(const ZigString* arg0, JSC::JSGlobalObject* arg1);
-CPP_DECL JSC::EncodedJSValue ZigString__toErrorInstance(const ZigString* arg0, JSC::JSGlobalObject* arg1);
+CPP_DECL JSC::JSObject* ZigString__toErrorInstance(const ZigString* arg0, JSC::JSGlobalObject* arg1);
 CPP_DECL JSC::EncodedJSValue ZigString__toExternalU16(const uint16_t* arg0, size_t arg1, JSC::JSGlobalObject* arg2);
 CPP_DECL JSC::EncodedJSValue ZigString__toExternalValue(const ZigString* arg0, JSC::JSGlobalObject* arg1);
 CPP_DECL JSC::EncodedJSValue ZigString__toExternalValueWithCallback(const ZigString* arg0, JSC::JSGlobalObject* arg1, void(* ArgFn2)(void* arg0, void* arg1, size_t arg2));
-CPP_DECL JSC::EncodedJSValue ZigString__toRangeErrorInstance(const ZigString* arg0, JSC::JSGlobalObject* arg1);
-CPP_DECL JSC::EncodedJSValue ZigString__toSyntaxErrorInstance(const ZigString* arg0, JSC::JSGlobalObject* arg1);
-CPP_DECL JSC::EncodedJSValue ZigString__toTypeErrorInstance(const ZigString* arg0, JSC::JSGlobalObject* arg1);
+CPP_DECL JSC::JSObject* ZigString__toRangeErrorInstance(const ZigString* arg0, JSC::JSGlobalObject* arg1);
+CPP_DECL JSC::JSObject* ZigString__toSyntaxErrorInstance(const ZigString* arg0, JSC::JSGlobalObject* arg1);
+CPP_DECL JSC::JSObject* ZigString__toTypeErrorInstance(const ZigString* arg0, JSC::JSGlobalObject* arg1);
 CPP_DECL JSC::EncodedJSValue ZigString__toValueGC(const ZigString* arg0, JSC::JSGlobalObject* arg1);
 CPP_DECL WebCore::DOMURL* WebCore__DOMURL__cast_(JSC::EncodedJSValue JSValue0, JSC::VM* arg1);
 CPP_DECL BunString WebCore__DOMURL__fileSystemPath(WebCore::DOMURL* arg0, int* errorCode);
@@ -113,7 +113,7 @@ CPP_DECL bool WebCore__FetchHeaders__isEmpty(WebCore::FetchHeaders* arg0);
 CPP_DECL void WebCore__FetchHeaders__remove(WebCore::FetchHeaders* arg0, const ZigString* arg1, JSC::JSGlobalObject* arg2);
 CPP_DECL JSC::EncodedJSValue WebCore__FetchHeaders__toJS(WebCore::FetchHeaders* arg0, JSC::JSGlobalObject* arg1);
 CPP_DECL void WebCore__FetchHeaders__toUWSResponse(WebCore::FetchHeaders* arg0, UWSResponseKind kind, void* arg2);
-CPP_DECL JSC::EncodedJSValue SystemError__toErrorInstance(const SystemError* arg0, JSC::JSGlobalObject* arg1);
+CPP_DECL JSC::JSObject* SystemError__toErrorInstance(const SystemError* arg0, JSC::JSGlobalObject* arg1);
 
 #pragma mark - JSC::JSCell
 
@@ -224,10 +224,10 @@ CPP_DECL JSC::JSString* JSC__JSValue__asString(JSC::EncodedJSValue JSValue0);
 CPP_DECL int32_t JSC__JSValue__coerceToInt32(JSC::EncodedJSValue JSValue0, JSC::JSGlobalObject* arg1);
 CPP_DECL int64_t JSC__JSValue__coerceToInt64(JSC::EncodedJSValue JSValue0, JSC::JSGlobalObject* arg1);
 CPP_DECL JSC::EncodedJSValue JSC__JSValue__createInternalPromise(JSC::JSGlobalObject* arg0);
-CPP_DECL JSC::EncodedJSValue JSC__JSValue__createRangeError(const ZigString* arg0, const ZigString* arg1, JSC::JSGlobalObject* arg2);
+CPP_DECL JSC::JSObject* JSC__JSValue__createRangeError(const ZigString* arg0, const ZigString* arg1, JSC::JSGlobalObject* arg2);
 CPP_DECL JSC::EncodedJSValue JSC__JSValue__createRopeString(JSC::EncodedJSValue JSValue0, JSC::EncodedJSValue JSValue1, JSC::JSGlobalObject* arg2);
 CPP_DECL JSC::EncodedJSValue JSC__JSValue__createStringArray(JSC::JSGlobalObject* arg0, const ZigString* arg1, size_t arg2, bool arg3);
-CPP_DECL JSC::EncodedJSValue JSC__JSValue__createTypeError(const ZigString* arg0, const ZigString* arg1, JSC::JSGlobalObject* arg2);
+CPP_DECL JSC::JSObject* JSC__JSValue__createTypeError(const ZigString* arg0, const ZigString* arg1, JSC::JSGlobalObject* arg2);
 CPP_DECL JSC::EncodedJSValue JSC__JSValue__createUninitializedUint8Array(JSC::JSGlobalObject* arg0, size_t arg1);
 CPP_DECL bool JSC__JSValue__deepEquals(JSC::EncodedJSValue JSValue0, JSC::EncodedJSValue JSValue1, JSC::JSGlobalObject* arg2);
 CPP_DECL bool JSC__JSValue__eqlCell(JSC::EncodedJSValue JSValue0, JSC::JSCell* arg1);

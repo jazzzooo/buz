@@ -186,7 +186,9 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime ThisServer: type, 
 
                 Output.flush();
                 if (!globalThis.hasException()) {
-                    jsc.ConsoleObject.writeTrace(@TypeOf(writer), writer, globalThis);
+                    jsc.ConsoleObject.writeTrace(@TypeOf(writer), writer, globalThis) catch {
+                        _ = globalThis.clearExceptionExceptTermination();
+                    };
                 }
                 Output.flush();
             }
@@ -894,7 +896,8 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime ThisServer: type, 
                         .syscall = .read,
                     }).withPathLike(file.pathlike).toSystemError();
                     sys.message = bun.String.static("Cannot stream a directory as a response body");
-                    return this.runErrorHandler(sys.toErrorInstance(globalThis));
+                    const js_err = if (sys.toErrorInstance(globalThis)) |err| err.toJS() else |err| globalThis.takeException(err);
+                    return this.runErrorHandler(js_err);
                 }
                 break :brk .{ .file, false };
             };
@@ -1815,7 +1818,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime ThisServer: type, 
                                 .message = bun.String.static("Stream already used, please create a new one"),
                             };
                             stream.value.unprotect();
-                            const js_err = err.toErrorInstance(globalThis);
+                            const js_err = if (err.toErrorInstance(globalThis)) |error_object| error_object.toJS() else |js_err| globalThis.takeException(js_err);
                             this.runErrorHandler(js_err);
                             return;
                         }

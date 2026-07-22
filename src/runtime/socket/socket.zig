@@ -360,8 +360,8 @@ pub fn NewSocket(comptime ssl: bool) type {
 
                     // reject the promise on connect() error
                     const js_promise = promise.asPromise().?;
-                    const err_value = err.toErrorInstanceWithAsyncStack(globalObject, js_promise);
-                    try js_promise.reject(globalObject, err_value);
+                    const err_value = try err.toErrorInstanceWithAsyncStack(globalObject, js_promise);
+                    try js_promise.reject(globalObject, err_value.toJS());
                 }
 
                 return;
@@ -373,7 +373,7 @@ pub fn NewSocket(comptime ssl: bool) type {
             // callback returns. The on-stack `this_value` keeps it alive for the call.
             this.this_value.downgrade();
 
-            const err_value = err.toErrorInstance(globalObject);
+            const err_value = (try err.toErrorInstance(globalObject)).toJS();
             const result = callback.call(globalObject, this_value, &[_]JSValue{ this_value, err_value }) catch |e| globalObject.takeException(e);
 
             if (result.toError()) |err_val| {
@@ -383,8 +383,8 @@ pub fn NewSocket(comptime ssl: bool) type {
                 // They've defined a `connectError` callback
                 // The error is effectively handled, but we should still reject the promise.
                 var promise = val.asPromise().?;
-                const err_ = err.toErrorInstanceWithAsyncStack(globalObject, promise);
-                try promise.rejectAsHandled(globalObject, err_);
+                err_value.attachAsyncStackFromPromise(globalObject, promise);
+                try promise.rejectAsHandled(globalObject, err_value);
             }
         }
 
@@ -852,7 +852,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                 .message = bun.String.cloneUTF8(reason),
             };
 
-            return fallback.toErrorInstance(globalObject);
+            return (try fallback.toErrorInstance(globalObject)).toJS();
         }
 
         pub fn write(this: *This, globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {

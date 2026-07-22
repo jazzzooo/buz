@@ -1666,14 +1666,14 @@ pub const JSValue = enum(i64) {
     /// Alias for getIfPropertyExists
     pub const getIfPropertyExists = get;
 
-    extern fn JSC__JSValue__createTypeError(message: *const ZigString, code: *const ZigString, global: *JSGlobalObject) JSValue;
-    pub fn createTypeError(message: *const ZigString, code: *const ZigString, global: *JSGlobalObject) JSValue {
-        return JSC__JSValue__createTypeError(message, code, global);
+    extern fn JSC__JSValue__createTypeError(message: *const ZigString, code: *const ZigString, global: *JSGlobalObject) ?*JSObject;
+    pub fn createTypeError(message: *const ZigString, code: *const ZigString, global: *JSGlobalObject) JSError!*JSObject {
+        return (try bun.jsc.fromJSHostCallGeneric(global, @src(), JSC__JSValue__createTypeError, .{ message, code, global })) orelse unreachable;
     }
 
-    extern fn JSC__JSValue__createRangeError(message: *const ZigString, code: *const ZigString, global: *JSGlobalObject) JSValue;
-    pub fn createRangeError(message: *const ZigString, code: *const ZigString, global: *JSGlobalObject) JSValue {
-        return JSC__JSValue__createRangeError(message, code, global);
+    extern fn JSC__JSValue__createRangeError(message: *const ZigString, code: *const ZigString, global: *JSGlobalObject) ?*JSObject;
+    pub fn createRangeError(message: *const ZigString, code: *const ZigString, global: *JSGlobalObject) JSError!*JSObject {
+        return (try bun.jsc.fromJSHostCallGeneric(global, @src(), JSC__JSValue__createRangeError, .{ message, code, global })) orelse unreachable;
     }
 
     extern fn JSC__JSValue__isStrictEqual(JSValue, JSValue, *JSGlobalObject) bool;
