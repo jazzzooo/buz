@@ -88,7 +88,8 @@ pub const ThreadPool = struct {
             break :blk pool;
         };
         var this = initWithPool(v2, pool);
-        this.worker_pool_is_owned = false;
+        // TODO: Audit owned worker-pool lifetimes so teardown does not depend on process exit.
+        this.worker_pool_is_owned = worker_pool == null;
         return this;
     }
 
