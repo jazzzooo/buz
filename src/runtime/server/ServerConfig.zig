@@ -768,7 +768,9 @@ pub fn fromJS(
         }
         if (global.hasException()) return error.JSError;
 
-        if (try arg.getOptional(global, "port", jsc.JSValue)) |port_| {
+        if (try arg.getOptional(global, "port", jsc.JSValue)) |port_| parse_port: {
+            if (port_.isString() and !port_.toBoolean()) break :parse_port;
+
             args.address.tcp.port = @as(
                 u16,
                 @intCast(@min(
