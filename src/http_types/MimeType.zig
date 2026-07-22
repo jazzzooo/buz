@@ -226,7 +226,6 @@ pub const ico = MimeType.initComptime("image/vnd.microsoft.icon", .image);
 pub const html = MimeType.initComptime("text/html;charset=utf-8", .html);
 // we transpile json to javascript so that it is importable without import assertions.
 pub const json = MimeType.initComptime("application/json;charset=utf-8", .json);
-pub const transpiled_json = javascript;
 pub const text = MimeType.initComptime("text/plain;charset=utf-8", .html);
 pub const wasm = MimeType.initComptime(
     "application/wasm",

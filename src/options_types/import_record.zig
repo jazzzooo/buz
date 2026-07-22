@@ -207,13 +207,6 @@ pub const ImportRecord = struct {
             return @backingInt(this) >= @backingInt(Tag.runtime);
         }
     };
-
-    pub const PrintMode = enum {
-        normal,
-        import_path,
-        css,
-        napi_module,
-    };
 };
 
 const std = @import("std");

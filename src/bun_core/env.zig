@@ -47,7 +47,6 @@ pub const baseline = build_options.baseline;
 pub const enableSIMD: bool = !baseline and !zig_self_hosted_backend;
 pub const git_sha = build_options.sha;
 pub const git_sha_short = if (build_options.sha.len > 0) build_options.sha[0..9] else "";
-pub const git_sha_shorter = if (build_options.sha.len > 0) build_options.sha[0..6] else "";
 pub const is_canary = build_options.is_canary;
 pub const canary_revision = if (is_canary) build_options.canary_revision else "";
 pub const dump_source = isDebug and !isTest;

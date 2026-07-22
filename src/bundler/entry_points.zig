@@ -2,7 +2,6 @@ pub const FallbackEntryPoint = struct {
     code_buffer: [8192]u8 = undefined,
     path_buffer: bun.PathBuffer = undefined,
     source: logger.Source = undefined,
-    built_code: string = "",
 
     pub fn generate(
         entry: *FallbackEntryPoint,
@@ -244,7 +243,6 @@ pub const ServerEntryPoint = struct {
 // functions from C++. When that is resolved, we should remove this.
 pub const MacroEntryPoint = struct {
     code_buffer: [bun.MAX_PATH_BYTES * 2 + 500]u8 = undefined,
-    output_code_buffer: [bun.MAX_PATH_BYTES * 8 + 500]u8 = undefined,
     source: logger.Source = undefined,
 
     pub fn generateID(entry_path: string, function_name: string, buf: []u8, len: *u32) i32 {

@@ -1,17 +1,11 @@
 //! If you are adding feature-flags to this file, you are in the wrong spot. Go to env_var.zig
 //! instead.
 
-/// Enable breaking changes for the next major release of Bun
-// TODO: Make this a CLI flag / runtime var so that we can verify disabled code paths can compile
-pub const breaking_changes_1_4 = false;
-
 /// Store and reuse file descriptors during module resolution
 /// This was a ~5% performance improvement
 pub const store_file_descriptors = !env.isBrowser;
 
 pub const tracing = true;
-
-pub const css_supports_fence = true;
 
 pub const enable_entry_cache = true;
 

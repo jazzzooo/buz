@@ -120,7 +120,6 @@ pub const Ref = packed struct(u64) {
     }
 
     pub const ArrayHashCtx = RefHashCtx;
-    pub const HashCtx = RefCtx;
 
     pub fn isSourceIndexNull(this: anytype) bool {
         return this == std.math.maxInt(Int);

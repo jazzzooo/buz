@@ -92,9 +92,7 @@ pub const Opts = struct {
         /// `-I`, `--interactive=once`
         ///
         /// Once before removing more than three files, or when removing recursively.
-        once: struct {
-            removed_count: u32 = 0,
-        },
+        once: struct {},
 
         /// `-i`, `--interactive=always`
         ///

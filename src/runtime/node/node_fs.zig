@@ -3143,18 +3143,6 @@ pub const Arguments = struct {
         }
     };
 
-    pub const WriteEv = struct {
-        fd: FD,
-        buffers: []const ArrayBuffer,
-        position: ReadPosition,
-    };
-
-    pub const ReadEv = struct {
-        fd: FD,
-        buffers: []ArrayBuffer,
-        position: ReadPosition,
-    };
-
     pub const UnwatchFile = void;
 
     pub const Watch = Watcher.Arguments;

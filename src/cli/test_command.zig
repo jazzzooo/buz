@@ -73,9 +73,7 @@ pub fn writeTestStatusLine(comptime status: bun_test.Execution.Result, writer: a
 pub const JunitReporter = struct {
     contents: std.ArrayListUnmanaged(u8) = .empty,
     total_metrics: Metrics = .{},
-    testcases_metrics: Metrics = .{},
     offset_of_testsuites_value: usize = 0,
-    offset_of_testsuite_value: usize = 0,
     current_file: string = "",
     properties_list_to_repeat_in_every_test_suite: ?[]const u8 = null,
 
@@ -591,7 +589,6 @@ pub const CommandLineReporter = struct {
     io: std.Io,
     jest: TestRunner,
     last_dot: u32 = 0,
-    prev_file: u64 = 0,
     repeat_count: u32 = 1,
     last_printed_dot: bool = false,
 

@@ -171,17 +171,6 @@ pub const Fs = struct {
     }
 };
 
-pub const Css = struct {
-    pub const Entry = struct {};
-    pub const Result = struct {
-        ok: bool,
-        value: void,
-    };
-    pub fn parse(_: *@This(), _: *logger.Log, _: logger.Source) !Result {
-        Global.notimpl();
-    }
-};
-
 pub const JavaScript = struct {
     pub const Result = js_ast.Result;
 

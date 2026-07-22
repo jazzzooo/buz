@@ -24,13 +24,6 @@ started: bool = false,
 pub const ChildPtr = IOReaderChildPtr;
 pub const ReaderImpl = bun.io.BufferedReader;
 
-const InitFlags = packed struct(u8) {
-    pollable: bool = false,
-    nonblocking: bool = false,
-    socket: bool = false,
-    __unused: u5 = 0,
-};
-
 pub fn dupeRef(this: *IOReader) *IOReader {
     this.ref();
     return this;

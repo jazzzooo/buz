@@ -26,14 +26,6 @@ pub fn isPackagePathNotAbsolute(non_absolute_path: string) bool {
         true;
 }
 
-pub const SideEffectsData = struct {
-    source: *logger.Source,
-    range: logger.Range,
-
-    // If true, "sideEffects" was an array. If false, "sideEffects" was false.
-    is_side_effects_array_in_json: bool = false,
-};
-
 /// A temporary threadlocal buffer with a lifetime more than the current
 /// function call.
 ///
@@ -75,7 +67,6 @@ const Bufs = struct {
     remap_path_trailing_slash: bun.PathBuffer = undefined,
     path_in_global_disk_cache: bun.PathBuffer = undefined,
     abs_to_rel: bun.PathBuffer = undefined,
-    node_modules_paths_buf: bun.PathBuffer = undefined,
     import_path_for_standalone_module_graph: bun.PathBuffer = undefined,
 
     win32_normalized_dir_info_cache: if (Environment.isWindows) [bun.MAX_PATH_BYTES * 2]u8 else void = undefined,
@@ -159,8 +150,6 @@ pub const Result = struct {
     // This is the "type" field from "package.json"
     module_type: options.ModuleType = options.ModuleType.unknown,
 
-    debug_meta: ?DebugMeta = null,
-
     dirname_fd: FD = .invalid,
     file_fd: FD = .invalid,
     import_kind: ast.ImportKind = undefined,
@@ -218,19 +207,6 @@ pub const Result = struct {
     // Most NPM modules are CommonJS
     // If unspecified, assume CommonJS.
     // If internal app code, assume ESM.
-    pub const DebugMeta = struct {
-        notes: std.array_list.Managed(logger.Data),
-        suggestion_text: string = "",
-        suggestion_message: string = "",
-        suggestion_range: SuggestionRange,
-
-        pub const SuggestionRange = enum { full, end };
-
-        pub fn init(allocator: std.mem.Allocator) DebugMeta {
-            return DebugMeta{ .notes = std.array_list.Managed(logger.Data).init(allocator) };
-        }
-    };
-
     pub fn hash(this: *const Result, _: string, _: options.Loader) u32 {
         const module = this.path_pair.primary.text;
         const node_module_root = std.fs.path.sep_str ++ "node_modules" ++ std.fs.path.sep_str;
@@ -628,7 +604,6 @@ pub const Resolver = struct {
         }
     }
 
-    var tracing_start: i128 = if (FeatureFlags.tracing) 0 else undefined;
     pub fn resolveAndAutoInstall(
         r: *ThisResolver,
         source_dir: string,
@@ -1595,8 +1570,6 @@ pub const Resolver = struct {
     }
 
     // This is a fallback, hopefully not called often. It should be relatively quick because everything should be in the cache.
-    const node_module_root_string = std.fs.path.sep_str ++ "node_modules" ++ std.fs.path.sep_str;
-
     const dev = Output.scoped(.Resolver, .visible);
 
     /// Directory cache keys must follow the following rules. If the rules are broken,
@@ -4244,11 +4217,6 @@ pub const Dirname = struct {
 
         return path[0 .. end_index + 1];
     }
-};
-
-pub const RootPathPair = struct {
-    base_path: string,
-    package_json: *const PackageJSON,
 };
 
 pub const GlobalCache = @import("../options_types/GlobalCache.zig").GlobalCache;

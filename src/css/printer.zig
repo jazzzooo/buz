@@ -9,9 +9,6 @@ const PrintErr = css.PrintErr;
 pub const PrinterOptions = struct {
     /// Whether to minify the CSS, i.e. remove white space.
     minify: bool = false,
-    /// An optional reference to a source map to write mappings into.
-    /// (Available when the `sourcemap` feature is enabled.)
-    source_map: ?*sourcemap.SourceMap = null,
     /// An optional project root path, used to generate relative paths for sources used in CSS module hashes.
     project_root: ?[]const u8 = null,
     /// Targets to output the CSS for.
@@ -563,7 +560,6 @@ pub const Printer = struct {
 };
 
 const bun = @import("bun");
-const sourcemap = @import("./sourcemap.zig");
 
 const std = @import("std");
 const ArrayList = std.ArrayListUnmanaged;

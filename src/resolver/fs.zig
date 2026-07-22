@@ -739,9 +739,6 @@ pub const FileSystem = struct {
             };
         }
 
-        pub const ModKeyError = error{
-            Unusable,
-        };
         pub const ModKey = struct {
             inode: std.Io.File.INode = 0,
             size: u64 = 0,
@@ -808,7 +805,6 @@ pub const FileSystem = struct {
                     .mtime = mtime,
                 };
             }
-            pub const SafetyGap = 3;
         };
 
         pub const EntriesOption = union(Tag) {
@@ -1345,8 +1341,6 @@ pub fn nonUniqueNameString(path: string, allocator: std.mem.Allocator) !string {
     return MutableString.ensureValidIdentifier(nonUniqueNameStringBase(path), allocator);
 }
 
-threadlocal var normalize_buf: [1024]u8 = undefined;
-
 pub const Path = struct {
     /// The display path. In the bundler, this is relative to the current
     /// working directory. Since it can be emitted in bundles (and used
@@ -1359,10 +1353,8 @@ pub const Path = struct {
     is_disabled: bool = false,
     is_symlink: bool = false,
 
-    const ns_blob = "blob";
     const ns_bun = "bun";
     const ns_dataurl = "dataurl";
-    const ns_file = "file";
     const ns_macro = "macro";
 
     pub fn isFile(this: *const Path) bool {
@@ -1432,12 +1424,6 @@ pub const Path = struct {
     pub fn isMacro(this: *const Path) bool {
         return strings.eqlComptime(this.namespace, ns_macro);
     }
-
-    pub const PackageRelative = struct {
-        path: string,
-        name: string,
-        is_parent_package: bool = false,
-    };
 
     /// The bundler will hash path.pretty, so it needs to be consistent across platforms.
     /// This assertion might be a bit too forceful though.

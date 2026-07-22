@@ -104,7 +104,6 @@ pub const ZigStackFrameCode = @import("./ZigStackFrameCode.zig").ZigStackFrameCo
 
 pub const ErrorableResolvedSource = Errorable(ResolvedSource);
 pub const ErrorableZigString = Errorable(ZigString);
-pub const ErrorableJSValue = Errorable(JSValue);
 pub const ErrorableString = Errorable(bun.String);
 
 pub const ZigStackTrace = @import("./ZigStackTrace.zig").ZigStackTrace;

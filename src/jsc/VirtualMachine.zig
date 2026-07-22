@@ -241,8 +241,6 @@ pub fn getDevServerAsyncLocalStorage(this: *VirtualMachine) !?jsc.JSValue {
 pub const ProcessAutoKiller = @import("./ProcessAutoKiller.zig");
 pub const OnUnhandledRejection = fn (*VirtualMachine, globalObject: *JSGlobalObject, JSValue) void;
 
-pub const OnException = fn (*ZigException) void;
-
 pub fn allowAddons(this: *VirtualMachine) callconv(.c) bool {
     return if (this.transpiler.options.transform_options.allow_addons) |allow_addons| allow_addons else true;
 }
@@ -1198,10 +1196,6 @@ pub const Options = struct {
     graph: ?*bun.StandaloneModuleGraph = null,
     debugger: bun.cli.Command.Debugger = .{ .unspecified = {} },
     is_main_thread: bool = false,
-    /// Whether this VM should be destroyed after it exits, even if it is the main thread's VM.
-    /// Worker VMs are always destroyed on exit, regardless of this setting. Setting this to
-    /// true may expose bugs that would otherwise only occur using Workers.
-    destruct_main_thread_on_exit: bool = false,
 };
 
 pub var is_smol_mode = false;
@@ -3894,7 +3888,6 @@ pub const IPCInstance = struct {
     /// borrowed handle so the isolation swap can skip it.
     group: if (Environment.isPosix) *uws.SocketGroup else void,
     data: IPC.SendQueue,
-    has_disconnect_called: bool = false,
 
     const node_cluster_binding = @import("../runtime/node/node_cluster_binding.zig");
 

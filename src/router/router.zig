@@ -821,7 +821,6 @@ pub const Match = struct {
 const MockRequestContextType = struct {
     controlled: bool = false,
     url: URLPath,
-    match_file_path_buf: [1024]u8 = undefined,
 
     handle_request_called: bool = false,
     redirect_called: bool = false,

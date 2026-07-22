@@ -2741,12 +2741,6 @@ pub const BundlerCssRule = CssRule(BundlerAtRule);
 pub const BundlerLayerBlockRule = css_rules.layer.LayerBlockRule(BundlerAtRule);
 pub const BundlerSupportsRule = css_rules.supports.SupportsRule(BundlerAtRule);
 pub const BundlerMediaRule = css_rules.media.MediaRule(BundlerAtRule);
-pub const BundlerPrintResult = bun.css.PrintResult(BundlerAtRule);
-pub const BundlerTailwindState = struct {
-    source: []const u8,
-    index: bun.bundle_v2.Index,
-    output_from_tailwind: ?[]const u8 = null,
-};
 
 /// Additional data we don't want store
 /// on the stylesheet
@@ -2875,7 +2869,6 @@ pub fn StyleSheet(comptime AtRule: type) type {
         source_map_urls: ArrayList(?[]const u8),
         license_comments: ArrayList([]const u8),
         options: ParserOptions,
-        tailwind: if (AtRule == BundlerAtRule) ?*BundlerTailwindState else u0 = if (AtRule == BundlerAtRule) null else 0,
         layer_names: bun.BabyList(LayerName) = .{},
 
         /// Used when css modules is enabled.

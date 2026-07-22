@@ -106,11 +106,6 @@ pub const log = bun.Output.scoped(.SHELL, .visible);
 /// safely assume the stdout/stderr they are working with require IO.
 pub const OutputNeedsIOSafeGuard = enum(u0) { output_needs_io };
 
-/// Similar to `OutputNeedsIOSafeGuard` but to ensure a function is
-/// called at the "top" of the call-stack relative to the interpreter's
-/// execution.
-pub const CallstackGuard = enum(u0) { __i_know_what_i_am_doing };
-
 pub const ExitCode = u16;
 
 pub const StateKind = enum(u8) {
@@ -190,12 +185,6 @@ pub const CowFd = struct {
         this.__fd.close();
         bun.default_allocator.destroy(this);
     }
-};
-
-pub const CoroutineResult = enum {
-    /// it's okay for the caller to continue its execution
-    cont,
-    yield,
 };
 
 pub const RefCountedStr = @import("./RefCountedStr.zig");
@@ -1451,11 +1440,6 @@ pub const Interpreter = struct {
         return this.vm_args_utf8.items[idx].slice();
     }
 
-    const ExpansionOpts = struct {
-        for_spawn: bool = true,
-        single: bool = false,
-    };
-
     pub const Builtin = @import("./Builtin.zig");
 
     /// TODO: Investigate whether or not this can be removed now that we have
@@ -1743,11 +1727,6 @@ pub fn throwShellErr(e: *const bun.shell.ShellErr, event_loop: jsc.EventLoopHand
         .js => e.throwJS(event_loop.js.global),
     };
 }
-
-pub const ReadChunkAction = enum {
-    stop_listening,
-    cont,
-};
 
 pub const IOWriterChildPtr = Interpreter.IOWriter.ChildPtr;
 

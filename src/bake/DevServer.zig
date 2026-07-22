@@ -4461,7 +4461,6 @@ const PromiseEnsureRouteBundledCtx = struct {
     global: *jsc.JSGlobalObject,
     promise: ?jsc.JSPromise.Strong = null,
     p: ?*jsc.JSPromise = null,
-    already_loaded: bool = false,
     route_bundle_index: RouteBundle.Index,
 
     fn ensurePromise(this: *PromiseEnsureRouteBundledCtx) jsc.JSPromise.Strong {

@@ -293,9 +293,6 @@ pub const FieldType = enum(u8) {
 
 pub const Value = @import("../../sql_jsc/mysql/MySQLValue.zig").Value;
 
-pub const MySQLInt8 = int1;
-pub const MySQLInt16 = int2;
-pub const MySQLInt24 = int3;
 pub const MySQLInt32 = int4;
 pub const MySQLInt64 = int8;
 pub const int1 = u8;

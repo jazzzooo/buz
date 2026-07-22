@@ -151,11 +151,6 @@ pub const MacroContext = struct {
     }
 };
 
-pub const MacroResult = struct {
-    import_statements: []S.Import = &[_]S.Import{},
-    replacement: Expr,
-};
-
 resolver: *Resolver,
 vm: *JavaScript.VirtualMachine = undefined,
 

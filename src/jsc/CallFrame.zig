@@ -167,9 +167,6 @@ pub const CallFrame = opaque {
         };
     }
 
-    extern fn Bun__CallFrame__isFromBunMain(*const CallFrame, *const VM) bool;
-    pub const isFromBunMain = Bun__CallFrame__isFromBunMain;
-
     extern fn Bun__CallFrame__getCallerSrcLoc(*const CallFrame, *JSGlobalObject, *bun.String, *c_uint, *c_uint) void;
     pub const CallerSrcLoc = struct {
         str: bun.String,

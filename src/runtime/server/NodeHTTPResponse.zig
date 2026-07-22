@@ -798,7 +798,6 @@ fn onDataOrAborted(this: *NodeHTTPResponse, chunk: []const u8, last: bool, event
         });
     }
 }
-pub const BUN_DEBUG_REFCOUNT_NAME = "NodeHTTPServerResponse";
 pub fn onData(this: *NodeHTTPResponse, chunk: []const u8, last: bool) void {
     log("onData({d} bytes, is_last = {d})", .{ chunk.len, @intFromBool(last) });
 

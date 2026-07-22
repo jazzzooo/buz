@@ -652,11 +652,6 @@ pub const LineColumnOffset = struct {
     }
 };
 
-pub const SourceContent = struct {
-    value: []const u16 = &[_]u16{},
-    quoted: []const u8 = &[_]u8{},
-};
-
 pub fn find(
     this: *const SourceMap,
     line: bun.Ordinal,

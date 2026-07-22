@@ -20,14 +20,9 @@ pub const unreachableState = interpret.unreachableState;
 const GlobWalker = bun.glob.GlobWalker(null, true);
 // const GlobWalker = Glob.BunGlobWalker;
 
-pub const SUBSHELL_TODO_ERROR = "Subshells are not implemented, please open GitHub issue!";
-
 /// Using these instead of the file descriptor decl literals to make sure we use LivUV fds on Windows
 pub const STDIN_FD: bun.FD = .fromUV(0);
-pub const STDOUT_FD: bun.FD = .fromUV(1);
-pub const STDERR_FD: bun.FD = .fromUV(2);
 
-pub const POSIX_DEV_NULL: [:0]const u8 = "/dev/null";
 pub const WINDOWS_DEV_NULL: [:0]const u8 = "NUL";
 
 /// The strings in this type are allocated with event loop ctx allocator
@@ -733,9 +728,6 @@ pub const AST = struct {
             return .{ .idx = idx };
         }
     };
-
-    /// A Subprocess from JS
-    pub const JSProc = struct { idx: JSValue };
 
     pub const Assign = struct {
         label: []const u8,

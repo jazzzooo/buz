@@ -52,8 +52,6 @@ const IndexMapContext = struct {
 };
 
 pub const IndexMap = std.HashMapUnmanaged(HashKeyType, IndexType, IndexMapContext, 80);
-
-pub const IndexMapManaged = std.HashMap(HashKeyType, IndexType, IndexMapContext, 80);
 pub const Result = struct {
     hash: HashKeyType,
     index: IndexType,

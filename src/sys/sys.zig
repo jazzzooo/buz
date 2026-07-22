@@ -3383,15 +3383,6 @@ pub fn socketpairForShell(domain: socketpair_t, socktype: socketpair_t, protocol
     return socketpairImpl(domain, socktype, protocol, nonblocking_status, true);
 }
 
-pub const ShellSigpipeConfig = enum {
-    /// Only SO_NOSIGPIPE for the socket in the pair
-    /// that *we're* going to use, don't touch the one
-    /// we hand off to the subprocess
-    spawn,
-    /// off completely
-    pipeline,
-};
-
 pub fn socketpairImpl(domain: socketpair_t, socktype: socketpair_t, protocol: socketpair_t, nonblocking_status: NonblockingStatus, for_shell: bool) Maybe([2]bun.FD) {
     if (comptime !Environment.isPosix) @compileError("linux only!");
 

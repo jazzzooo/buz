@@ -2,20 +2,6 @@
 // The copy starts at offset 0, the initial offsets are preserved.
 // No metadata is transferred over.
 
-pub const CopyFileRangeError = error{
-    FileTooBig,
-    InputOutput,
-    /// `in` is not open for reading; or `out` is not open  for  writing;
-    /// or the  `O.APPEND`  flag  is  set  for `out`.
-    FilesOpenedWithWrongFlags,
-    IsDir,
-    OutOfMemory,
-    NoSpaceLeft,
-    Unseekable,
-    PermissionDenied,
-    FileBusy,
-} || posix.PReadError || posix.PWriteError || posix.UnexpectedError;
-
 const InputType = if (Environment.isWindows) bun.OSPathSliceZ else bun.FD;
 
 /// In a `bun install` with prisma, this reduces the system call count from ~18,000 to ~12,000

@@ -84,8 +84,6 @@ else if (builtin.os.tag.isDarwin())
 else
     FutexImpl;
 
-pub const ExternImpl = ReleaseImpl.Type;
-
 const DebugImpl = struct {
     locking_thread: std.atomic.Value(Thread.Id) = std.atomic.Value(Thread.Id).init(0), // 0 means it's not locked.
     impl: ReleaseImpl = .{},

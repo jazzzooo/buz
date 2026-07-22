@@ -367,12 +367,6 @@ pub const Transpiler = struct {
         Output.flush();
     }
 
-    pub const BuildResolveResultPair = struct {
-        written: usize,
-        input_fd: ?FD,
-        empty: bool = false,
-    };
-
     fn buildWithResolveResultEager(
         transpiler: *Transpiler,
         resolve_result: _resolver.Result,
@@ -1419,10 +1413,6 @@ pub const Transpiler = struct {
     }
 };
 
-pub const ServeResult = struct {
-    file: options.OutputFile,
-    mime_type: MimeType,
-};
 pub const ResolveResults = std.AutoHashMap(
     u64,
     void,

@@ -37,9 +37,7 @@ extern fn Bun__REPL__getCompletions(
 // ============================================================================
 
 const MAX_HISTORY_SIZE: usize = 1000;
-const MAX_LINE_LENGTH: usize = 16384;
 const HISTORY_FILENAME = ".bun_repl_history";
-const TAB_WIDTH: usize = 2;
 
 // ANSI escape codes
 const ESC = "\x1b";
@@ -67,8 +65,6 @@ const Cursor = struct {
     const restore = ESC ++ "8";
     const home = CSI ++ "H";
     const clear_line = CSI ++ "2K";
-    const clear_to_end = CSI ++ "0K";
-    const clear_to_start = CSI ++ "1K";
     const clear_screen = CSI ++ "2J";
     const clear_scrollback = CSI ++ "3J";
 };

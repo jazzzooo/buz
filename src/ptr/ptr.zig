@@ -8,7 +8,6 @@ pub const CowString = CowSlice(u8);
 pub const owned = @import("./owned.zig");
 pub const Owned = owned.Owned; // owned pointer allocated with default allocator
 pub const OwnedIn = owned.OwnedIn; // owned pointer allocated with specific type of allocator
-pub const DynamicOwned = owned.Dynamic; // owned pointer allocated with any `std.mem.Allocator`
 
 pub const shared = @import("./shared.zig");
 pub const Shared = shared.Shared;

@@ -5,12 +5,6 @@ const std = @import("std");
 pub const defines = @import("./defines.zig");
 pub const Define = defines.Define;
 
-pub const WriteDestination = enum {
-    stdout,
-    disk,
-    // eventually: wasm
-};
-
 pub fn validatePath(
     log: *logger.Log,
     _: *Fs.FileSystem.Implementation,
@@ -303,65 +297,6 @@ pub const ExternalModules = struct {
         "worker_threads",
         "zlib",
     };
-
-    pub const NodeBuiltinsMap = bun.ComptimeStringMap(void, .{
-        .{ "_http_agent", {} },
-        .{ "_http_client", {} },
-        .{ "_http_common", {} },
-        .{ "_http_incoming", {} },
-        .{ "_http_outgoing", {} },
-        .{ "_http_server", {} },
-        .{ "_stream_duplex", {} },
-        .{ "_stream_passthrough", {} },
-        .{ "_stream_readable", {} },
-        .{ "_stream_transform", {} },
-        .{ "_stream_wrap", {} },
-        .{ "_stream_writable", {} },
-        .{ "_tls_common", {} },
-        .{ "_tls_wrap", {} },
-        .{ "assert", {} },
-        .{ "async_hooks", {} },
-        .{ "buffer", {} },
-        .{ "child_process", {} },
-        .{ "cluster", {} },
-        .{ "console", {} },
-        .{ "constants", {} },
-        .{ "crypto", {} },
-        .{ "dgram", {} },
-        .{ "diagnostics_channel", {} },
-        .{ "dns", {} },
-        .{ "domain", {} },
-        .{ "events", {} },
-        .{ "fs", {} },
-        .{ "http", {} },
-        .{ "http2", {} },
-        .{ "https", {} },
-        .{ "inspector", {} },
-        .{ "module", {} },
-        .{ "net", {} },
-        .{ "os", {} },
-        .{ "path", {} },
-        .{ "perf_hooks", {} },
-        .{ "process", {} },
-        .{ "punycode", {} },
-        .{ "querystring", {} },
-        .{ "readline", {} },
-        .{ "repl", {} },
-        .{ "stream", {} },
-        .{ "string_decoder", {} },
-        .{ "sys", {} },
-        .{ "timers", {} },
-        .{ "tls", {} },
-        .{ "trace_events", {} },
-        .{ "tty", {} },
-        .{ "url", {} },
-        .{ "util", {} },
-        .{ "v8", {} },
-        .{ "vm", {} },
-        .{ "wasi", {} },
-        .{ "worker_threads", {} },
-        .{ "zlib", {} },
-    });
 };
 
 pub const BundlePackage = @import("../options_types/BundleEnums.zig").BundlePackage;
@@ -1267,9 +1202,6 @@ pub const JSX = struct {
             pub const Fragment = &[_]string{ "React", "Fragment" };
             pub const ImportSourceDev = "react/jsx-dev-runtime";
             pub const ImportSource = "react/jsx-runtime";
-            pub const JSXFunction = "jsx";
-            pub const JSXStaticFunction = "jsxs";
-            pub const JSXFunctionDev = "jsxDEV";
         };
 
         // "React.createElement" => ["React", "createElement"]
@@ -1342,10 +1274,6 @@ pub const JSX = struct {
 
 pub const DefaultUserDefines = struct {
     // This must be globally scoped so it doesn't disappear
-    pub const NodeEnv = struct {
-        pub const Key = "process.env.NODE_ENV";
-        pub const Value = "\"development\"";
-    };
     pub const ProcessBrowserDefine = struct {
         pub const Key = "process.browser";
         pub const Value = []string{ "false", "true" };
@@ -1655,8 +1583,6 @@ pub const BundleOptions = struct {
 
     output_dir: string = "out",
     root_dir: string = "",
-    node_modules_bundle_url: string = "",
-    node_modules_bundle_pretty_path: string = "",
 
     write: bool = false,
     preserve_symlinks: bool = false,
@@ -1665,8 +1591,6 @@ pub const BundleOptions = struct {
 
     // only used by bundle_v2
     output_format: Format = .esm,
-
-    append_package_version_in_query_string: bool = false,
 
     tsconfig_override: ?string = null,
     target: Target = Target.browser,
@@ -2075,7 +1999,6 @@ pub const TransformOptions = struct {
     origin: string = "",
     preserve_symlinks: bool = false,
     entry_point: Fs.File,
-    resolve_paths: bool = false,
     tsconfig_override: ?string = null,
 
     target: Target = Target.browser,

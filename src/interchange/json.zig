@@ -760,17 +760,6 @@ pub fn parseForMacro(source: *const logger.Source, log: *logger.Log, allocator: 
     return try parser.parseExpr(false, false);
 }
 
-pub const JSONParseResult = struct {
-    expr: Expr,
-    tag: Tag,
-
-    pub const Tag = enum {
-        expr,
-        ascii,
-        empty,
-    };
-};
-
 // threadlocal var env_json_auto_quote_buffer: MutableString = undefined;
 // threadlocal var env_json_auto_quote_buffer_loaded: bool = false;
 pub fn parseEnvJSON(source: *const logger.Source, log: *logger.Log, allocator: std.mem.Allocator) !Expr {

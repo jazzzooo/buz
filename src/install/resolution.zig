@@ -1,5 +1,4 @@
 pub const Resolution = ResolutionType(u64);
-pub const OldV2Resolution = ResolutionType(u32);
 
 pub fn ResolutionType(comptime SemverIntType: type) type {
     return extern struct {

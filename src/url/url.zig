@@ -19,7 +19,6 @@ pub const URL = struct {
     search: string = "",
     searchParams: ?QueryStringMap = null,
     username: string = "",
-    port_was_automatically_set: bool = false,
 
     pub fn isFile(this: *const URL) bool {
         return strings.eqlComptime(this.protocol, "file");

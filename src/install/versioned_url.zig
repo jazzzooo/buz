@@ -1,5 +1,4 @@
 pub const VersionedURL = VersionedURLType(u64);
-pub const OldV2VersionedURL = VersionedURLType(u32);
 
 pub fn VersionedURLType(comptime SemverIntType: type) type {
     return extern struct {

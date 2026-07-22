@@ -97,10 +97,6 @@ pub fn layout(this: *MySQLStatement, owner: ?JSValue, globalObject: *jsc.JSGloba
     return &this.result_layout;
 }
 pub const Param = @import("../../sql/mysql/MySQLParam.zig").Param;
-const _ParamUnused = struct {
-    type: types.FieldType,
-    flags: ColumnDefinition41.ColumnFlags,
-};
 const debug = bun.Output.scoped(.MySQLStatement, .hidden);
 
 const ResultLayout = @import("../shared/ResultLayout.zig");

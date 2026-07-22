@@ -181,7 +181,6 @@ fn onInitErrorNoop(err: InitError, opts: InitOpts) noreturn {
 pub const InitOpts = struct {
     ca: []stringZ = &.{},
     abs_ca_file_name: stringZ = &.{},
-    for_install: bool = false,
 
     onInitError: *const fn (err: InitError, opts: InitOpts) noreturn = &onInitErrorNoop,
 };

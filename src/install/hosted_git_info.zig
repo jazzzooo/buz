@@ -169,11 +169,6 @@ pub const HostedGitInfo = struct {
     /// Convert this HostedGitInfo to a JavaScript object
     pub const toJS = @import("../install_jsc/hosted_git_info_jsc.zig").hostedGitInfoToJS;
 
-    pub const StringPair = struct {
-        save_spec: []const u8,
-        fetch_spec: ?[]const u8,
-    };
-
     /// Given a URL-like (including shortcuts) string, parses it into a HostedGitInfo structure.
     /// The HostedGitInfo is valid only for as long as `git_url` is valid.
     pub fn fromUrl(

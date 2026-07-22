@@ -1430,8 +1430,6 @@ pub const FFI = struct {
         allocator: Allocator,
         io: std.Io = undefined,
 
-        pub var lib_dirZ: [*:0]const u8 = "";
-
         pub fn needsHandleScope(val: *const Function) bool {
             for (val.arg_types.items) |arg| {
                 if (arg == ABIType.napi_env or arg == ABIType.napi_value) {
@@ -2072,45 +2070,6 @@ pub const FFI = struct {
             .{ "napi_value", ABIType.napi_value },
         };
         pub const label = bun.ComptimeStringMap(ABIType, map);
-        const EnumMapFormatter = struct {
-            name: []const u8,
-            entry: ABIType,
-            pub fn format(self: EnumMapFormatter, writer: *std.Io.Writer) !void {
-                try writer.writeAll("['");
-                // these are not all valid identifiers
-                try writer.writeAll(self.name);
-                try writer.writeAll("']:");
-                try std.fmt.formatInt(@backingInt(self.entry), 10, .lower, .{}, writer);
-                try writer.writeAll(",'");
-                try std.fmt.formatInt(@backingInt(self.entry), 10, .lower, .{}, writer);
-                try writer.writeAll("':");
-                try std.fmt.formatInt(@backingInt(self.entry), 10, .lower, .{}, writer);
-            }
-        };
-        pub const map_to_js_object = brk: {
-            var count: usize = 2;
-            for (map, 0..) |item, i| {
-                const fmt = EnumMapFormatter{ .name = item.@"0", .entry = item.@"1" };
-                count += std.fmt.count("{}", .{fmt});
-                count += @intFromBool(i > 0);
-            }
-
-            var buf: [count]u8 = undefined;
-            buf[0] = '{';
-            buf[buf.len - 1] = '}';
-            var end: usize = 1;
-            for (map, 0..) |item, i| {
-                const fmt = EnumMapFormatter{ .name = item.@"0", .entry = item.@"1" };
-                if (i > 0) {
-                    buf[end] = ',';
-                    end += 1;
-                }
-                end += (std.fmt.bufPrint(buf[end..], "{}", .{fmt}) catch unreachable).len;
-            }
-
-            break :brk buf;
-        };
-
         pub fn isFloatingPoint(this: ABIType) bool {
             return switch (this) {
                 .double, .float => true,

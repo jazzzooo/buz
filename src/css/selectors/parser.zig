@@ -15,11 +15,6 @@ pub const Component = GenericComponent(impl.Selectors);
 pub const Selector = GenericSelector(impl.Selectors);
 pub const SelectorList = GenericSelectorList(impl.Selectors);
 
-pub const ToCssCtx = enum {
-    lightning,
-    servo,
-};
-
 /// The definition of whitespace per CSS Selectors Level 3 § 4.
 pub const SELECTOR_WHITESPACE: []const u8 = &[_]u8{ ' ', '\t', '\n', '\r', 0x0C };
 
@@ -184,15 +179,6 @@ pub const attrs = struct {
         pub fn hash(this: *const @This(), hasher: *std.hash.Wyhash) void {
             return css.implementHash(@This(), this, hasher);
         }
-    };
-
-    pub const AttrSelectorOperation = enum {
-        equal,
-        includes,
-        dash_match,
-        prefix,
-        substring,
-        suffix,
     };
 
     pub const ParsedCaseSensitivity = enum {

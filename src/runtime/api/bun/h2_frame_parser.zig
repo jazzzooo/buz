@@ -29,8 +29,6 @@ const MAX_FRAME_SIZE_F64: f64 = @floatFromInt(MAX_FRAME_SIZE);
 const HPACK_ENTRY_OVERHEAD = 32;
 // Maximum number of custom settings (same as Node.js MAX_ADDITIONAL_SETTINGS)
 const MAX_CUSTOM_SETTINGS = 10;
-// Maximum custom setting ID (0xFFFF per RFC 7540)
-const MAX_CUSTOM_SETTING_ID: f64 = 0xFFFF;
 
 const PaddingStrategy = enum {
     none,
@@ -635,7 +633,6 @@ pub const H2FrameParser = struct {
         } = .IDLE,
         jsContext: jsc.Strong.Optional = .empty,
         waitForTrailers: bool = false,
-        closeAfterDrain: bool = false,
         endAfterHeaders: bool = false,
         isWaitingMoreHeaders: bool = false,
         padding: ?u8 = null,

@@ -462,7 +462,6 @@ pub const TransformTask = struct {
     pub const new = bun.TrivialNew(@This());
 
     pub const AsyncTransformTask = jsc.ConcurrentPromiseTask(TransformTask);
-    pub const AsyncTransformEventLoopTask = AsyncTransformTask.EventLoopTask;
 
     pub fn create(transpiler: *JSTranspiler, input_code: bun.jsc.Node.StringOrBuffer, globalThis: *JSGlobalObject, loader: Loader) *AsyncTransformTask {
         var transform_task = TransformTask.new(.{

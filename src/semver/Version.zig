@@ -1,5 +1,4 @@
 pub const Version = VersionType(u64);
-pub const OldV2Version = VersionType(u32);
 
 pub fn VersionType(comptime IntType: type) type {
     return extern struct {

@@ -61,7 +61,6 @@ pub const Fallback = struct {
     }
 
     pub const version_hash = @import("build_options").fallback_html_version;
-    var version_hash_int: u32 = 0;
     pub fn version() string {
         return version_hash;
     }
@@ -320,10 +319,6 @@ pub const Runtime = struct {
                 };
             }
         };
-    };
-
-    pub const Names = struct {
-        pub const ActivateFunction = "activate";
     };
 
     // If you change this, remember to update "runtime.js"

@@ -48,16 +48,6 @@ const BaselineFormatter = struct {
     }
 };
 
-pub const DownloadError = error{
-    TargetNotFound,
-    NetworkError,
-    InvalidResponse,
-    ExtractionFailed,
-    InvalidTarget,
-    OutOfMemory,
-    NoSpaceLeft,
-};
-
 pub fn eql(this: *const CompileTarget, other: *const CompileTarget) bool {
     return this.os == other.os and this.arch == other.arch and this.baseline == other.baseline and this.version.eql(other.version) and this.libc == other.libc;
 }

@@ -135,13 +135,6 @@ pub const BuiltinIO = struct {
         blob: *Blob,
         ignore,
 
-        const FdOutput = struct {
-            writer: *IOWriter,
-            captured: ?*bun.ByteList = null,
-
-            // pub fn
-        };
-
         pub fn ref(this: *Output) *Output {
             switch (this.*) {
                 .fd => {

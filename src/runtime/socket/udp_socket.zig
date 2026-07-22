@@ -260,7 +260,6 @@ pub const UDPSocket = struct {
     globalThis: *JSGlobalObject,
     this_value: JSRef = JSRef.empty(),
 
-    jsc_ref: jsc.Ref = jsc.Ref.init(),
     poll_ref: Async.KeepAlive = Async.KeepAlive.init(),
     // if marked as closed the socket pointer may be stale
     closed: bool = false,

@@ -12,8 +12,6 @@ fn notimpl() noreturn {
     Output.panic("not implemented yet!", .{});
 }
 
-pub var emptyJavaScriptString = ([_]u16{0});
-
 pub const JSXPragma = struct {
     _jsx: js_ast.Span = .{},
     _jsxFrag: js_ast.Span = .{},

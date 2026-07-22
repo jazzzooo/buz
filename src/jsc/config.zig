@@ -1,12 +1,3 @@
-pub const DefaultBunDefines = struct {
-    pub const Keys = struct {
-        const window = "window";
-    };
-    pub const Values = struct {
-        const window = "undefined";
-    };
-};
-
 pub fn configureTransformOptionsForBunVM(allocator: std.mem.Allocator, _args: api.TransformOptions) !api.TransformOptions {
     var args = _args;
 

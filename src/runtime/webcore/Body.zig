@@ -277,7 +277,6 @@ pub const Value = union(Tag) {
         };
     }
 
-    pub const heap_breakdown_label = "BodyValue";
     pub const ValueError = union(enum) {
         AbortReason: jsc.CommonAbortReason,
         SystemError: jsc.SystemError,

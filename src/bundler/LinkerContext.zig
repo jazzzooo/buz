@@ -1421,11 +1421,6 @@ pub const LinkerContext = struct {
         };
     }
 
-    const SubstituteChunkFinalPathResult = struct {
-        j: StringJoiner,
-        shifts: []SourceMap.SourceMapShifts,
-    };
-
     pub fn mangleLocalCss(c: *LinkerContext) void {
         if (c.has_any_css_locals.load(.monotonic) == 0) return;
 

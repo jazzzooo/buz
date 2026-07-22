@@ -687,8 +687,6 @@ const ReactTailwindSpa = struct {
             .overwrite = false,
         },
     };
-
-    pub const init_files = &[_]TemplateFile{};
 };
 
 const shared_build_ts = @embedFile("projects/react-shadcn-spa/REPLACE_ME_WITH_YOUR_APP_FILE_NAME.build.ts");

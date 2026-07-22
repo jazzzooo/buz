@@ -522,6 +522,5 @@ const parser_mod = @import("./parser.zig");
 const Parser = parser_mod.Parser;
 
 const types = @import("./types.zig");
-const Attribute = types.Attribute;
 const Container = types.Container;
 const OFF = types.OFF;

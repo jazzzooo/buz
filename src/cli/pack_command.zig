@@ -17,8 +17,6 @@ pub const PackCommand = struct {
         const Stats = struct {
             unpacked_size: usize = 0,
             total_files: usize = 0,
-            ignored_files: usize = 0,
-            ignored_directories: usize = 0,
             packed_size: usize = 0,
             bundled_deps: usize = 0,
         };

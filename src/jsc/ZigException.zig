@@ -120,9 +120,6 @@ pub const ZigException = extern struct {
         }
     };
 
-    extern fn ZigException__fromException(*Exception) ZigException;
-    pub const fromException = ZigException__fromException;
-
     pub fn addToErrorList(
         this: *ZigException,
         error_list: *std.array_list.Managed(api.JsException),

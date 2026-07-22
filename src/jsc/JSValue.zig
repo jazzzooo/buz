@@ -2168,8 +2168,6 @@ pub const JSValue = enum(i64) {
         return out;
     }
 
-    pub const FromAnyLifetime = enum { allocated, temporary };
-
     /// Marshall a zig value into a JSValue using comptime reflection.
     ///
     /// - Primitives are converted to their JS equivalent.
@@ -2177,7 +2175,6 @@ pub const JSValue = enum(i64) {
     /// - Slices are converted to JS arrays
     /// - Enums are converted to 32-bit numbers.
     ///
-    /// `lifetime` describes the lifetime of `value`. If it must be copied, specify `temporary`.
     pub fn fromAny(
         globalObject: *jsc.JSGlobalObject,
         comptime T: type,

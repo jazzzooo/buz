@@ -4,7 +4,6 @@
 /// Since this field can be .unknown, it makes more sense to call `isEnabled`
 /// instead of processing this field directly.
 pub var enabled: enum { yes, no, unknown } = .unknown;
-pub var is_ci: enum { yes, no, unknown } = .unknown;
 
 pub fn isEnabled() bool {
     return switch (enabled) {

@@ -64,10 +64,7 @@ pub const Stream = struct {
         return this.reader_state.seek;
     }
 };
-pub const default_filename = "bun.lockb";
-
 pub const Scripts = struct {
-    const MAX_PARALLEL_PROCESSES = 10;
     pub const Entries = std.ArrayListUnmanaged(string);
 
     pub const names = [_]string{
@@ -413,11 +410,6 @@ pub fn loadFromBytes(this: *Lockfile, pm: ?*PackageManager, buf: []u8, allocator
         },
     };
 }
-
-pub const InstallResult = struct {
-    lockfile: *Lockfile,
-    summary: PackageInstall.Summary,
-};
 
 pub fn isResolvedDependencyDisabled(
     lockfile: *const Lockfile,

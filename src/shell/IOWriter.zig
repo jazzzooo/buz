@@ -51,11 +51,6 @@ pub const ChildPtr = IOWriterChildPtr;
 /// but if this never happens, we shrink `buf` when it exceeds this threshold
 const SHRINK_THRESHOLD = 1024 * 128;
 
-const CallstackChild = struct {
-    child: ChildPtr,
-    completed: bool = false,
-};
-
 pub const WriterImpl = bun.io.BufferedWriter(IOWriter, struct {
     pub const onWrite = IOWriter.onWritePollable;
     pub const onError = IOWriter.onError;

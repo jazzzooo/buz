@@ -4,7 +4,6 @@ pub const Condition = @import("./Condition.zig");
 pub const guarded = @import("./guarded.zig");
 pub const Guarded = guarded.Guarded;
 pub const GuardedBy = guarded.GuardedBy;
-pub const DebugGuarded = guarded.Debug;
 pub const WaitGroup = @import("./WaitGroup.zig");
 pub const ThreadPool = @import("./ThreadPool.zig");
 pub const Channel = @import("./channel.zig").Channel;

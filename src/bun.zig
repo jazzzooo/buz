@@ -20,12 +20,6 @@ pub const z_allocator: std.mem.Allocator = allocators.z_allocator;
 pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
 pub const callconv_inline: std.builtin.CallingConvention = if (builtin.mode == .Debug) .auto else .@"inline";
 
-/// In debug builds, this will catch memory leaks. In release builds, it is mimalloc.
-pub const debug_allocator: std.mem.Allocator = if (Environment.isNative and (Environment.isDebug or Environment.enable_asan))
-    debug_allocator_data.allocator
-else
-    default_allocator;
-
 pub const debug_allocator_data = struct {
     comptime {
         if (!Environment.isDebug) @compileError("only available in debug");
@@ -1115,7 +1109,6 @@ pub fn U32HashMap(comptime Type: type) type {
     return std.HashMap(u32, Type, U32HashMapContext, std.hash_map.default_max_load_percentage);
 }
 
-pub const copyFileErrnoConvert = CopyFile.copyFileErrorConvert;
 pub const copyFileRange = CopyFile.copyFileRange;
 pub const canUseCopyFileRangeSyscall = CopyFile.canUseCopyFileRangeSyscall;
 pub const disableCopyFileRangeSyscall = CopyFile.disableCopyFileRangeSyscall;
@@ -1274,38 +1267,6 @@ pub fn DebugOnlyDisabler(comptime Type: type) type {
         }
     };
 }
-
-const FailingAllocator = struct {
-    fn alloc(_: *anyopaque, _: usize, _: u8, _: usize) ?[*]u8 {
-        if (comptime Environment.allow_assert) {
-            unreachablePanic("FailingAllocator should never be reached. This means some memory was not defined", .{});
-        }
-        return null;
-    }
-
-    fn resize(_: *anyopaque, _: []u8, _: u8, _: usize, _: usize) bool {
-        if (comptime Environment.allow_assert) {
-            unreachablePanic("FailingAllocator should never be reached. This means some memory was not defined", .{});
-        }
-        return false;
-    }
-
-    fn free(
-        _: *anyopaque,
-        _: []u8,
-        _: u8,
-        _: usize,
-    ) void {
-        unreachable;
-    }
-};
-
-/// When we want to avoid initializing a value as undefined, we can use this allocator
-pub const failing_allocator = std.mem.Allocator{ .ptr = undefined, .vtable = &.{
-    .alloc = FailingAllocator.alloc,
-    .resize = FailingAllocator.resize,
-    .free = FailingAllocator.free,
-} };
 
 var __reload_in_progress__ = std.atomic.Value(bool).init(false);
 threadlocal var __reload_in_progress__on_current_thread = false;

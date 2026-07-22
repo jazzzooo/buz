@@ -486,10 +486,5 @@ inline fn skipGlobstars(glob: []const u8, glob_index: *u32) void {
     glob_index.* -= 2;
 }
 
-const BraceIndex = struct {
-    start: u32 = 0,
-    end: u32 = 0,
-};
-
 const bun = @import("bun");
 const std = @import("std");

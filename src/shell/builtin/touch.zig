@@ -9,7 +9,6 @@ state: union(enum) {
         tasks_done: usize = 0,
         output_done: usize = 0,
         output_waiting: usize = 0,
-        started_output_queue: bool = false,
         args: []const [*:0]const u8,
         err: ?jsc.SystemError = null,
     },

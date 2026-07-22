@@ -463,7 +463,6 @@ pub const Dependency = struct {
 
 pub const ExprList = std.array_list.Managed(Expr);
 pub const StmtList = std.array_list.Managed(Stmt);
-pub const BindingList = std.array_list.Managed(Binding);
 
 // Each file is made up of multiple parts, and each part consists of one or
 // more top-level statements. Parts are used for tree shaking and code

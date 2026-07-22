@@ -27,23 +27,6 @@ const Config = struct {
     diff_edit_cost: u16 = 4,
     /// Number of bytes in each string needed to trigger a line-based diff
     diff_check_lines_over: u64 = 100,
-
-    /// At what point is no match declared (0.0 = perfection, 1.0 = very loose).
-    match_threshold: f32 = 0.5,
-    /// How far to search for a match (0 = exact location, 1000+ = broad match).
-    /// A match this many characters away from the expected location will add
-    /// 1.0 to the score (0.0 is a perfect match).
-    match_distance: u32 = 1000,
-    /// The number of bits in an int.
-    match_max_bits: u16 = 32,
-
-    /// When deleting a large block of text (over ~64 characters), how close
-    /// do the contents have to be to match the expected contents. (0.0 =
-    /// perfection, 1.0 = very loose).  Note that Match_Threshold controls
-    /// how closely the end points of a delete need to match.
-    patch_delete_threshold: f32 = 0.5,
-    /// Chunk size for context length.
-    patch_margin: u16 = 4,
 };
 
 pub fn DMP(comptime Unit: type) type {

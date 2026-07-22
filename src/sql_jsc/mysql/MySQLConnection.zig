@@ -20,7 +20,6 @@ character_set: CharacterSet = CharacterSet.default,
 status_flags: StatusFlags = .{},
 
 auth_plugin: ?AuthMethod = null,
-auth_state: AuthState = .{ .pending = {} },
 
 auth_data: std.array_list.Managed(u8) = std.array_list.Managed(u8).init(bun.default_allocator),
 database: []const u8 = "",
@@ -86,19 +85,6 @@ pub inline fn hasBackpressure(this: *const @This()) bool {
 pub inline fn resetBackpressure(this: *@This()) void {
     this.flags.has_backpressure = false;
 }
-pub const AuthState = union(enum) {
-    pending: void,
-    native_password: void,
-    caching_sha2: CachingSha2,
-    ok: void,
-
-    pub const CachingSha2 = union(enum) {
-        fast_auth,
-        full_auth,
-        waiting_key,
-    };
-};
-
 pub inline fn canFlush(this: *const @This()) bool {
     return !this.flags.has_backpressure and // if has backpressure we need to wait for onWritable event
         this.status == .connected and //and we need to be connected

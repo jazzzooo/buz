@@ -1,17 +1,3 @@
-const Globals = struct {
-    pub const Undefined = js_ast.E.Undefined{};
-    pub const UndefinedPtr = &Globals.Undefined;
-
-    pub const NaN = js_ast.E.Number{ .value = std.math.nan(f64) };
-    pub const NanPtr = &Globals.NaN;
-
-    pub const Infinity = js_ast.E.Number{ .value = std.math.inf(f64) };
-    pub const InfinityPtr = &Globals.Infinity;
-    pub const UndefinedData = js_ast.Expr.Data{ .e_undefined = Globals.UndefinedPtr };
-    pub const NaNData = js_ast.Expr.Data{ .e_number = Globals.NanPtr };
-    pub const InfinityData = js_ast.Expr.Data{ .e_number = Globals.InfinityPtr };
-};
-
 const defines_path = fs.Path.initWithNamespace("defines.json", "internal");
 pub const RawDefines = bun.StringArrayHashMap(string);
 pub const UserDefines = bun.StringHashMap(DefineData);

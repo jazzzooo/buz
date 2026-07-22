@@ -261,7 +261,6 @@ pub const ThreadPool = struct {
 
         pub const WorkerData = struct {
             log: *Logger.Log,
-            estimated_input_lines_of_code: usize = 0,
             transpiler: Transpiler,
             other_transpiler: ?Transpiler = null,
         };

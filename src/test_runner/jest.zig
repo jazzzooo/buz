@@ -80,15 +80,10 @@ pub const TestRunner = struct {
     /// independent of which worker (and which prior files) ran it.
     randomize_seed: ?u32 = null,
     concurrent_test_glob: ?[]const []const u8 = null,
-    last_file: u64 = 0,
     bail: u32 = 0,
     max_concurrency: u32,
 
     allocator: std.mem.Allocator,
-
-    drainer: jsc.AnyTask = undefined,
-
-    has_pending_tests: bool = false,
 
     snapshots: Snapshots,
 

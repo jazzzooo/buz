@@ -75,8 +75,6 @@ pub const RunCommand = struct {
     const BUN_BIN_NAME = if (Environment.isDebug) "bun-debug" else "bun";
     const BUN_RUN = std.fmt.comptimePrint("{s} run", .{BUN_BIN_NAME});
 
-    const BUN_RUN_USING_BUN = std.fmt.comptimePrint("{s} --bun run", .{BUN_BIN_NAME});
-
     // Look for invocations of any:
     // - yarn run
     // - yarn $cmdName

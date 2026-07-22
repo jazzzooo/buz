@@ -184,10 +184,6 @@ pub const Features = struct {
     };
 
     pub const tarball = npm;
-
-    pub const npm_manifest = Features{
-        .optional_dependencies = true,
-    };
 };
 
 pub const PreinstallState = enum(u4) {

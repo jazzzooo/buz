@@ -19,22 +19,10 @@ pub const DependencyMap = struct {
 };
 
 pub const PackageJSON = struct {
-    pub const LoadFramework = enum {
-        none,
-        development,
-        production,
-    };
-
     pub const new = bun.TrivialNew(@This());
     pub const deinit = bun.TrivialDeinit(@This());
 
     const node_modules_path = std.fs.path.sep_str ++ "node_modules" ++ std.fs.path.sep_str;
-
-    pub const FrameworkRouterPair = struct {
-        framework: *options.Framework,
-        router: *options.RouteConfig,
-        loaded_routes: bool = false,
-    };
 
     name: string = "",
     source: logger.Source,

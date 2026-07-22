@@ -959,18 +959,13 @@ pub fn substring(self: anytype, start: ?usize, stop: ?usize) @TypeOf(self) {
 pub const ascii_vector_size = if (Environment.isWasm) 8 else 16;
 pub const ascii_u16_vector_size = if (Environment.isWasm) 4 else 8;
 pub const AsciiVectorInt = @Int(.unsigned, ascii_vector_size);
-pub const AsciiVectorIntU16 = @Int(.unsigned, ascii_u16_vector_size);
 pub const max_16_ascii: @Vector(ascii_vector_size, u8) = @splat(@as(u8, 127));
 pub const min_16_ascii: @Vector(ascii_vector_size, u8) = @splat(@as(u8, 0x20));
 pub const max_u16_ascii: @Vector(ascii_u16_vector_size, u16) = @splat(@as(u16, 127));
-pub const min_u16_ascii: @Vector(ascii_u16_vector_size, u16) = @splat(@as(u16, 0x20));
 pub const AsciiVector = @Vector(ascii_vector_size, u8);
-pub const AsciiVectorSmall = @Vector(8, u8);
 pub const AsciiVectorU1 = @Vector(ascii_vector_size, u1);
-pub const AsciiVectorU1Small = @Vector(8, u1);
 pub const AsciiVectorU16U1 = @Vector(ascii_u16_vector_size, u1);
 pub const AsciiU16Vector = @Vector(ascii_u16_vector_size, u16);
-pub const max_4_ascii: @Vector(4, u8) = @splat(@as(u8, 127));
 
 pub fn firstNonASCII(slice: []const u8) ?u32 {
     const result = bun.simdutf.validate.with_errors.ascii(slice);
@@ -1706,11 +1701,6 @@ pub fn NewGlobLengthSorter(comptime Type: type, comptime field: string) type {
 pub const ExactSizeMatcher = @import("./immutable/exact_size_matcher.zig").ExactSizeMatcher;
 
 pub const unicode_replacement = 0xFFFD;
-pub const unicode_replacement_str = brk: {
-    var out: [std.unicode.utf8CodepointSequenceLength(unicode_replacement) catch unreachable]u8 = undefined;
-    _ = std.unicode.utf8Encode(unicode_replacement, &out) catch unreachable;
-    break :brk out;
-};
 
 pub fn isIPAddress(input: []const u8) bool {
     var max_ip_address_buffer: [512]u8 = undefined;

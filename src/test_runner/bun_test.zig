@@ -1046,13 +1046,6 @@ pub const TestScheduleEntry = union(enum) {
         }
     }
 };
-pub const RunOneResult = union(enum) {
-    done,
-    execute: struct {
-        timeout: bun.timespec = .epoch,
-    },
-};
-
 pub const FakeTimers = @import("./timers/FakeTimers.zig");
 
 pub const Execution = @import("./Execution.zig");

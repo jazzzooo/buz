@@ -33,16 +33,6 @@ pub const Parser = struct {
     current_block: ?usize = null,
     current_block_lines: std.ArrayListUnmanaged(VerbatimLine) = .empty,
 
-    // Opener stacks
-    opener_stacks: [types.NUM_OPENER_STACKS]types.OpenerStack =
-        @splat(.{}),
-
-    // Linked lists through marks
-    unresolved_link_head: i32 = -1,
-    unresolved_link_tail: i32 = -1,
-    table_cell_boundaries_head: i32 = -1,
-    table_cell_boundaries_tail: i32 = -1,
-
     // HTML block tracking
     html_block_type: u8 = 0,
     // Fenced code block indent

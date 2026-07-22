@@ -365,39 +365,6 @@ pub const FD = packed struct(backing_int) {
         };
     }
 
-    pub const HashMapContext = struct {
-        pub fn hash(_: @This(), fd: FD) u64 {
-            // a file descriptor is i32 on linux, u64 on windows
-            // the goal here is to do zero work and widen the 32 bit type to 64
-            return @as(if (backing_int == u64) u64 else u32, @bitCast(fd));
-        }
-
-        pub fn eql(_: @This(), a: FD, b: FD) bool {
-            return a == b;
-        }
-
-        pub fn pre(input: FD) Prehashed {
-            return Prehashed{
-                .value = hash(.{}, input),
-                .input = input,
-            };
-        }
-
-        pub const Prehashed = struct {
-            value: u64,
-            input: FD,
-
-            pub fn hash(ctx: @This(), fd: FD) u64 {
-                if (fd == ctx.input) return ctx.value;
-                return fd;
-            }
-
-            pub fn eql(_: @This(), a: FD, b: FD) bool {
-                return a == b;
-            }
-        };
-    };
-
     pub fn format(fd: FD, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         if (!fd.isValid()) {
             try writer.writeAll("[invalid_fd]");
@@ -505,7 +472,6 @@ pub const FD = packed struct(backing_int) {
     // where it is relevant. These functions all take FD as the first argument,
     // so that makes them Zig methods, even when declared in a separate file.
     pub const chmod = bun.sys.fchmod;
-    pub const chmodat = bun.sys.fchmodat;
     pub const chown = bun.sys.fchown;
     pub const directoryExistsAt = bun.sys.directoryExistsAt;
     pub const dup = bun.sys.dup;

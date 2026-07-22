@@ -1,9 +1,5 @@
 // This file is the old linker, used by Bun.Transpiler.
 
-pub const CSSResolveError = error{ResolveMessage};
-
-pub const OnImportCallback = *const fn (resolve_result: *const Resolver.Result, import_record: *ImportRecord, origin: URL) void;
-
 pub const Linker = struct {
     const HashedFileNameMap = std.AutoHashMap(u64, string);
     const ThisLinker = @This();
@@ -14,24 +10,12 @@ pub const Linker = struct {
     resolve_queue: *ResolveQueue,
     resolver: *ResolverType,
     resolve_results: *_transpiler.ResolveResults,
-    any_needs_runtime: bool = false,
-    runtime_import_record: ?ImportRecord = null,
     hashed_filenames: HashedFileNameMap,
     import_counter: usize = 0,
-    tagged_resolutions: TaggedResolution = TaggedResolution{},
 
     plugin_runner: ?*PluginRunner = null,
 
     pub const runtime_source_path = "bun:wrap";
-
-    pub const TaggedResolution = struct {
-        react_refresh: ?Resolver.Result = null,
-
-        // These tags cannot safely be used
-        // Projects may use different JSX runtimes across folders
-        // jsx_import: ?Resolver.Result = null,
-        // jsx_classic: ?Resolver.Result = null,
-    };
 
     pub fn init(
         allocator: std.mem.Allocator,

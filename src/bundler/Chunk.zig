@@ -628,8 +628,6 @@ pub const Chunk = struct {
         }
     };
 
-    pub const OutputPieceIndex = OutputPiece.Query;
-
     pub const EntryPoint = packed struct(u64) {
         /// Index into `Graph.input_files`
         source_index: u32 = 0,
@@ -675,12 +673,6 @@ pub const Chunk = struct {
         /// When we go through the `prepareCssAstsForChunk()` step, each import will
         /// create a shallow copy of the file's AST (just dereferencing the pointer).
         asts: []bun.css.BundlerStyleSheet,
-    };
-
-    const CssImportKind = enum {
-        source_index,
-        external_path,
-        import_layers,
     };
 
     pub const CssImportOrder = struct {

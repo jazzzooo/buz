@@ -37,8 +37,6 @@ const bun_exe = @import("src/build/exe.zig");
 const bun_webkit = @import("src/build/webkit.zig");
 const bun_icu = @import("src/build/icu.zig");
 
-const pathRel = fs.path.relative;
-
 const zero_sha = "0000000000000000000000000000000000000000";
 
 const BunBuildOptions = struct {

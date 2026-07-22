@@ -548,11 +548,6 @@ pub const Object = struct {
         });
     }
 
-    pub const RopeQuery = struct {
-        expr: Expr,
-        rope: *const Rope,
-    };
-
     // this is terribly, shamefully slow
     pub fn setRope(self: *Object, rope: *const Rope, allocator: std.mem.Allocator, value: Expr) SetError!void {
         if (self.get(rope.head.data.e_string.data)) |existing| {

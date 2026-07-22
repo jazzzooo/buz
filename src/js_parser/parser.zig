@@ -404,27 +404,6 @@ pub const ExprIn = struct {
     //
     has_chain_parent: bool = false,
 
-    // If our parent is an ECall node with an OptionalChain value of
-    // OptionalChainStart, then we will need to store the value for the "this" of
-    // that call somewhere if the current expression is an optional chain that
-    // ends in a property access. That's because the value for "this" will be
-    // used twice: once for the inner optional chain and once for the outer
-    // optional chain.
-    //
-    // Example:
-    //
-    //   // Original
-    //   a?.b?.();
-    //
-    //   // Lowered
-    //   var _a;
-    //   (_a = a == null ? void 0 : a.b) == null ? void 0 : _a.call(a);
-    //
-    // In the example above we need to store "a" as the value for "this" so we
-    // can substitute it back in when we call "_a" if "_a" is indeed present.
-    // See also "thisArgFunc" and "thisArgWrapFunc" in "exprOut".
-    store_this_arg_for_parent_optional_chain: bool = false,
-
     // Certain substitutions of identifiers are disallowed for assignment targets.
     // For example, we shouldn't transform "undefined = 1" into "void 0 = 1". This
     // isn't something real-world code would do but it matters for conformance
@@ -472,7 +451,6 @@ pub const TempRef = struct {
 
 pub const ImportNamespaceCallOrConstruct = struct {
     ref: Ref,
-    is_construct: bool = false,
 };
 
 pub const ThenCatchChain = struct {
@@ -653,12 +631,9 @@ pub const FnOnlyDataVisit = struct {
     // otherwise.
     arguments_ref: ?Ref = null,
 
-    // Arrow functions don't capture the value of "this" and "arguments". Instead,
-    // the values are inherited from the surrounding context. If arrow functions
-    // are turned into regular functions due to lowering, we will need to generate
-    // local variables to capture these values so they are preserved correctly.
+    // Arrow functions inherit "this" from the surrounding context. If an arrow
+    // function is lowered to a regular function, this captures that value.
     this_capture_ref: ?Ref = null,
-    arguments_capture_ref: ?Ref = null,
 
     /// This is a reference to the enclosing class name if there is one. It's used
     /// to implement "this" and "super" references. A name is automatically generated
@@ -748,7 +723,6 @@ pub const PropertyOpts = struct {
 
 pub const ScanPassResult = struct {
     pub const ParsePassSymbolUse = struct { ref: Ref, used: bool = false, import_record_index: u32 };
-    pub const NamespaceCounter = struct { count: u16, import_record_index: u32 };
     pub const ParsePassSymbolUsageMap = bun.StringArrayHashMap(ParsePassSymbolUse);
     import_records: ListManaged(ImportRecord),
     named_imports: js_ast.Ast.NamedImports,
@@ -821,26 +795,6 @@ pub const ParseStatementOptions = struct {
 };
 
 pub const Prefill = struct {
-    pub const HotModuleReloading = struct {
-        pub var DebugEnabledArgs = [_]Expr{
-            Expr{ .data = .{ .e_boolean = E.Boolean{ .value = true } }, .loc = logger.Loc.Empty },
-        };
-        pub var DebugDisabled = [_]Expr{
-            Expr{ .data = .{ .e_boolean = E.Boolean{ .value = false } }, .loc = logger.Loc.Empty },
-        };
-        pub var ActivateString = E.String{
-            .data = "activate",
-        };
-        pub var ActivateIndex = E.Index{
-            .index = .{
-                .data = .{
-                    .e_string = &ActivateString,
-                },
-                .loc = logger.Loc.Empty,
-            },
-            .target = undefined,
-        };
-    };
     pub const StringLiteral = struct {
         pub const Key = [3]u8{ 'k', 'e', 'y' };
         pub const Children = [_]u8{ 'c', 'h', 'i', 'l', 'd', 'r', 'e', 'n' };
@@ -849,7 +803,6 @@ pub const Prefill = struct {
         pub const ColumnNumber = [_]u8{ 'c', 'o', 'l', 'u', 'm', 'n', 'N', 'u', 'm', 'b', 'e', 'r' };
     };
     pub const Value = struct {
-        pub const EThis = E.This{};
         pub const Zero = E.Number{ .value = 0.0 };
     };
     pub const String = struct {
@@ -889,14 +842,6 @@ pub const Prefill = struct {
         pub const This = Expr.Data{ .e_this = E.This{} };
         pub const Zero = Expr.Data{ .e_number = Value.Zero };
     };
-};
-
-const ReactJSX = struct {
-    hoisted_elements: std.array_hash_map.Custom(Ref, G.Decl, bun.ArrayIdentityContext, false) = .empty,
-};
-
-pub const ImportOrRequireScanResults = struct {
-    import_records: List(ImportRecord),
 };
 
 pub const JSXTransformType = enum {
@@ -1212,7 +1157,6 @@ const ImportRecord = importRecord.ImportRecord;
 
 pub const RuntimeFeatures = _runtime.Runtime.Features;
 pub const RuntimeImports = _runtime.Runtime.Imports;
-pub const RuntimeNames = _runtime.Runtime.Names;
 
 pub const NewParser_ = @import("./ast/P.zig").NewParser_;
 

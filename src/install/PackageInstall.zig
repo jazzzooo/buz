@@ -19,8 +19,6 @@ pub const PackageInstall = struct {
     node_modules: *const PackageManager.PackageInstaller.NodeModulesFolder,
     lockfile: *Lockfile,
 
-    const ThisPackageInstall = @This();
-
     pub const Patch = struct {
         path: string,
         contents_hash: u64,
