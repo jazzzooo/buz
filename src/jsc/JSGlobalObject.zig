@@ -370,12 +370,6 @@ pub const JSGlobalObject = opaque {
         }
     }
 
-    pub fn createRangeError(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) bun.JSError!*jsc.JSObject {
-        const err = try createErrorInstance(this, fmt, args);
-        err.putDirect(this, ZigString.static("code"), ZigString.static(@tagName(jsc.Node.ErrorCode.ERR_OUT_OF_RANGE)).toJS(this));
-        return err;
-    }
-
     pub fn createInvalidArgs(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) JSValue {
         return jsc.Error.INVALID_ARG_TYPE.fmt(this, fmt, args);
     }
