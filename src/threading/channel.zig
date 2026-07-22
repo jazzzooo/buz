@@ -60,24 +60,12 @@ pub fn Channel(
             self.getters.broadcast();
         }
 
-        pub fn tryWriteItem(self: *Self, item: T) !bool {
-            const wrote = try self.write(&[1]T{item});
-            return wrote == 1;
-        }
-
         pub fn writeItem(self: *Self, item: T) !void {
             return self.writeAll(&[1]T{item});
         }
 
         pub fn write(self: *Self, items: []const T) !usize {
             return self.writeItems(items, false);
-        }
-
-        pub fn tryReadItem(self: *Self) !?T {
-            var items: [1]T = undefined;
-            if ((try self.read(&items)) != 1)
-                return null;
-            return items[0];
         }
 
         pub fn readItem(self: *Self) !T {

@@ -284,12 +284,6 @@ pub fn waitForAll(self: *ThreadPool) void {
     self.wait_group.wait();
 }
 
-/// Wait for all tasks to complete, then shut down and deinit the thread pool.
-pub fn waitAndDeinit(self: *ThreadPool) void {
-    self.waitForAll();
-    self.deinit();
-}
-
 fn forceSpawn(self: *ThreadPool) void {
     // Try to notify a thread
     const is_waking = false;

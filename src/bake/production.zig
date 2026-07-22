@@ -807,16 +807,6 @@ extern fn BakeRenderRoutesForProdStatic(
 
 /// The result of this function is a JSValue that wont be garbage collected, as
 /// it will always have at least one reference by the module loader.
-fn BakeRegisterProductionChunk(global: *jsc.JSGlobalObject, key: bun.String, source_code: bun.String) bun.JSError!JSValue {
-    const f = @extern(*const fn (*jsc.JSGlobalObject, bun.String, bun.String) callconv(.c) JSValue, .{
-        .name = "BakeRegisterProductionChunk",
-    });
-    const result: JSValue = f(global, key, source_code);
-    if (result == .zero) return error.JSError;
-    bun.assert(result.isString());
-    return result;
-}
-
 pub export fn BakeToWindowsPath(input: bun.String) callconv(.c) bun.String {
     if (comptime bun.Environment.isPosix) {
         @panic("This code should not be called on POSIX systems.");

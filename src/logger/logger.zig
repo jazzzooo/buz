@@ -503,42 +503,6 @@ pub const Msg = struct {
             try note.writeFormat(to, .note, msg.redact_sensitive_information, enable_ansi_colors);
         }
     }
-
-    pub fn formatWriter(
-        msg: *const Msg,
-        comptime Writer: type,
-        writer: Writer,
-        comptime _: bool,
-    ) !void {
-        if (msg.data.location) |location| {
-            try writer.print("{s}: {s}\n{s}\n{s}:{}:{} ({d})", .{
-                msg.kind.string(),
-                msg.data.text,
-                location.line_text orelse "",
-                location.file,
-                location.line,
-                location.column,
-                location.offset,
-            });
-        } else {
-            try writer.print("{s}: {s}", .{
-                msg.kind.string(),
-                msg.data.text,
-            });
-        }
-    }
-
-    pub fn formatNoWriter(msg: *const Msg, comptime formatterFunc: @TypeOf(Output.panic)) void {
-        formatterFunc("\n\n{s}: {s}\n{s}\n{s}:{}:{} ({d})", .{
-            msg.kind.string(),
-            msg.data.text,
-            msg.data.location.?.line_text,
-            msg.data.location.?.file,
-            msg.data.location.?.line,
-            msg.data.location.?.column,
-            msg.data.location.?.offset,
-        });
-    }
 };
 
 // Do not mark these as packed
@@ -671,16 +635,6 @@ pub const Log = struct {
     pub inline fn addDebugFmt(log: *Log, source: ?*const Source, l: Loc, allocator: std.mem.Allocator, comptime text: string, args: anytype) OOM!void {
         if (!Kind.shouldPrint(.debug, log.level)) return;
         return log.addFormattedMsg(.debug, source, .{ .loc = l }, try allocPrint(allocator, text, args), &.{}, true, false);
-    }
-
-    pub fn addVerbose(log: *Log, source: ?*const Source, loc: Loc, text: string) OOM!void {
-        if (Kind.shouldPrint(.verbose, log.level)) {
-            @branchHint(.cold);
-            try log.addMsg(.{
-                .kind = .verbose,
-                .data = rangeData(source, Range{ .loc = loc }, text),
-            });
-        }
     }
 
     pub const toJS = @import("../logger_jsc/logger_jsc.zig").logToJS;
@@ -1145,17 +1099,6 @@ pub const Log = struct {
         });
     }
 
-    pub fn addRangeWarningWithNotes(log: *Log, source: ?*const Source, r: Range, text: string, notes: []Data) OOM!void {
-        @branchHint(.cold);
-        if (!Kind.shouldPrint(.warn, log.level)) return;
-        log.warnings += 1;
-        try log.addMsg(.{
-            .kind = .warning,
-            .data = rangeData(source, r, text),
-            .notes = notes,
-        });
-    }
-
     pub fn addMsg(self: *Log, msg: Msg) OOM!void {
         try self.msgs.append(msg);
     }
@@ -1372,18 +1315,6 @@ pub const Source = struct {
         }
 
         return Range{ .loc = loc, .len = 0 };
-    }
-
-    pub fn rangeOfOperatorAfter(self: *const Source, loc: Loc, op: string) Range {
-        const text = self.contents[loc.i()..];
-        const index = strings.index(text, op);
-        if (index >= 0) {
-            return Range{ .loc = Loc{
-                .start = loc.start + index,
-            }, .len = op.len };
-        }
-
-        return Range{ .loc = loc };
     }
 
     pub fn initErrorPosition(self: *const Source, offset_loc: Loc) ErrorPosition {

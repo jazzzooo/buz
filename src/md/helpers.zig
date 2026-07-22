@@ -16,11 +16,6 @@ pub inline fn isNewline(c: u8) bool {
     return c == '\n' or c == '\r';
 }
 
-/// Check if a byte is a newline or NUL (used for end-of-line detection).
-pub inline fn isNewlineOrNul(c: u8) bool {
-    return c == '\n' or c == '\r' or c == 0;
-}
-
 /// Check if byte is ASCII alphanumeric.
 pub inline fn isAlphaNum(c: u8) bool {
     return std.ascii.isAlphanumeric(c);
@@ -81,16 +76,6 @@ fn isUnicodePunctuationExtended(codepoint: u21) bool {
     for (unicode_punctuation_ranges) |range| {
         if (codepoint >= range[0] and codepoint <= range[1]) return true;
         if (codepoint < range[0]) return false;
-    }
-    return false;
-}
-
-/// Check if a character at a given offset matches any character in the set.
-pub inline fn isAnyOf(text: []const u8, off: OFF, chars: []const u8) bool {
-    if (off >= text.len) return false;
-    const c = text[off];
-    for (chars) |ch| {
-        if (c == ch) return true;
     }
     return false;
 }

@@ -51,10 +51,6 @@ pub const SmolStr = packed struct(u128) {
             return @constCast(this).ptr()[0..this.__len];
         }
 
-        pub fn sliceMut(this: *Inlined) []u8 {
-            return this.ptr()[0..this.__len];
-        }
-
         pub fn allChars(this: *Inlined) *[max_len]u8 {
             return this.ptr()[0..max_len];
         }

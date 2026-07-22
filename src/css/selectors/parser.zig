@@ -663,39 +663,6 @@ fn parse_relative_selector(
     return .{ .result = selector };
 }
 
-pub fn ValidSelectorParser(comptime T: type) type {
-    ValidSelectorImpl(T.SelectorParser.Impl);
-
-    // Whether to parse the `::slotted()` pseudo-element.
-    _ = T.SelectorParser.parseSlotted;
-
-    _ = T.SelectorParser.parsePart;
-
-    _ = T.SelectorParser.parseIsAndWhere;
-
-    _ = T.SelectorParser.isAndWhereErrorRecovery;
-
-    _ = T.SelectorParser.parseAnyPrefix;
-
-    _ = T.SelectorParser.parseHost;
-
-    _ = T.SelectorParser.parseNonTsPseudoClass;
-
-    _ = T.SelectorParser.parseNonTsFunctionalPseudoClass;
-
-    _ = T.SelectorParser.parsePseudoElement;
-
-    _ = T.SelectorParser.parseFunctionalPseudoElement;
-
-    _ = T.SelectorParser.defaultNamespace;
-
-    _ = T.SelectorParser.namespaceForPrefix;
-
-    _ = T.SelectorParser.isNestingAllowed;
-
-    _ = T.SelectorParser.deepCombinatorEnabled;
-}
-
 /// The [:dir()](https://drafts.csswg.org/selectors-4/#the-dir-pseudo) pseudo class.
 pub const Direction = enum {
     /// Left to right
@@ -1882,14 +1849,6 @@ pub fn GenericComponent(comptime Impl: type) type {
 
         const This = @This();
 
-        /// If css mdules is enabled these will be locally scoped
-        pub fn isLocallyScoped(this: *const @This()) bool {
-            return switch (this.*) {
-                .id, .class => true,
-                else => false,
-            };
-        }
-
         pub fn asClass(this: *const @This()) ?Impl.SelectorImpl.LocalIdentifier {
             return switch (this.*) {
                 inline .class => |v| v,
@@ -2531,14 +2490,6 @@ pub const NthType = enum {
 
     pub fn isOnly(self: NthType) bool {
         return self == NthType.only_child or self == NthType.only_of_type;
-    }
-
-    pub fn isOfType(self: NthType) bool {
-        return self == NthType.of_type or self == NthType.last_of_type or self == NthType.only_of_type;
-    }
-
-    pub fn isFromEnd(self: NthType) bool {
-        return self == NthType.last_child or self == NthType.last_of_type or self == NthType.last_col;
     }
 
     pub fn allowsOfSelector(self: NthType) bool {

@@ -683,10 +683,6 @@ pub const SourceMapPieces = struct {
         };
     }
 
-    pub fn hasContent(this: *SourceMapPieces) bool {
-        return (this.prefix.items.len + this.mappings.items.len + this.suffix.items.len) > 0;
-    }
-
     pub fn finalize(this: *SourceMapPieces, allocator: std.mem.Allocator, _shifts: []SourceMapShifts) ![]const u8 {
         var shifts = _shifts;
         var start_of_run: usize = 0;
@@ -838,24 +834,6 @@ pub fn appendSourceMapChunk(
     j.pushStatic(source_map);
 }
 
-pub fn appendSourceMappingURLRemote(
-    origin: URL,
-    source: *const Logger.Source,
-    asset_prefix_path: []const u8,
-    comptime Writer: type,
-    writer: Writer,
-) !void {
-    try writer.writeAll("\n//# sourceMappingURL=");
-    try writer.writeAll(strings.withoutTrailingSlash(origin.href));
-    if (asset_prefix_path.len > 0)
-        try writer.writeAll(asset_prefix_path);
-    if (source.path.pretty.len > 0 and source.path.pretty[0] != '/') {
-        try writer.writeAll("/");
-    }
-    try writer.writeAll(source.path.pretty);
-    try writer.writeAll(".map");
-}
-
 /// This function is extremely hot.
 pub fn appendMappingToBuffer(buffer: *MutableString, last_byte: u8, prev_state: SourceMapState, current_state: SourceMapState) void {
     const needs_comma = last_byte != 0 and last_byte != ';' and last_byte != '"';
@@ -928,6 +906,5 @@ const bun = @import("bun");
 const Logger = bun.logger;
 const MutableString = bun.MutableString;
 const StringJoiner = bun.StringJoiner;
-const URL = bun.URL;
 const assert = bun.assert;
 const strings = bun.strings;

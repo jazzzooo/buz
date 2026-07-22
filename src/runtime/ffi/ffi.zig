@@ -2278,30 +2278,6 @@ pub const FFI = struct {
         pub fn paramTypename(this: ABIType, writer: anytype) !void {
             try writer.writeAll(this.typenameLabel());
         }
-
-        pub fn paramTypenameLabel(this: ABIType) []const u8 {
-            return switch (this) {
-                .function, .cstring, .ptr => "void*",
-                .bool => "bool",
-                .int8_t => "int8_t",
-                .uint8_t => "uint8_t",
-                .int16_t => "int16_t",
-                .uint16_t => "uint16_t",
-                // see the comment in ffi.ts about why `uint32_t` acts as `int32_t`
-                .int32_t,
-                .uint32_t,
-                => "int32_t",
-                .i64_fast, .int64_t => "int64_t",
-                .u64_fast, .uint64_t => "uint64_t",
-                .double => "double",
-                .float => "float",
-                .char => "char",
-                .void => "void",
-                .napi_env => "napi_env",
-                .napi_value => "napi_value",
-                .buffer => "buffer",
-            };
-        }
     };
 };
 

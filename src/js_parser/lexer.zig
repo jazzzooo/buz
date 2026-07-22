@@ -2021,10 +2021,6 @@ fn NewLexer_(
             return 0;
         }
         // TODO: implement this
-        pub fn removeMultilineCommentIndent(_: *LexerType, _: string, text: string) string {
-            return text;
-        }
-
         pub fn range(self: *LexerType) logger.Range {
             return logger.Range{
                 .loc = logger.usize2Loc(self.start),

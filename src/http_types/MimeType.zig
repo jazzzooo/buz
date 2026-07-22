@@ -61,17 +61,6 @@ pub fn createHashTable(allocator: std.mem.Allocator) !Map {
     return map;
 }
 
-pub fn canOpenInEditor(this: MimeType) bool {
-    if (this.category == .text or this.category.isCode())
-        return true;
-
-    if (this.category == .image) {
-        return strings.eqlComptime(this.value, "image/svg+xml");
-    }
-
-    return false;
-}
-
 pub const Category = enum {
     none,
     image,
@@ -364,20 +353,6 @@ pub fn init(str_: string, allocator: ?std.mem.Allocator, allocated: ?*bool) Mime
 }
 
 // TODO: improve this
-pub fn byLoader(loader: Loader, ext: string) MimeType {
-    switch (loader) {
-        .tsx, .ts, .js, .jsx, .json => {
-            return javascript;
-        },
-        .css => {
-            return css;
-        },
-        else => {
-            return byExtension(ext);
-        },
-    }
-}
-
 pub fn byExtension(ext_without_leading_dot: string) MimeType {
     return byExtensionNoDefault(ext_without_leading_dot) orelse MimeType.other;
 }

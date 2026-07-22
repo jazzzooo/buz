@@ -152,14 +152,6 @@ pub const ErrorLocation = struct {
     /// The column number, starting from 1.
     column: u32,
 
-    pub fn withFilename(this: ErrorLocation, filename: []const u8) ErrorLocation {
-        return ErrorLocation{
-            .filename = filename,
-            .line = this.line,
-            .column = this.column,
-        };
-    }
-
     pub fn format(this: *const @This(), writer: *std.Io.Writer) !void {
         try writer.print("{s}:{d}:{d}", .{ this.filename, this.line, this.column });
     }
@@ -272,16 +264,6 @@ pub const BasicParseError = struct {
     kind: BasicParseErrorKind,
     /// Location where this error occurred
     location: css.SourceLocation,
-
-    pub fn intoParseError(
-        this: @This(),
-        comptime T: type,
-    ) ParseError(T) {
-        return ParseError(T){
-            .kind = .{ .basic = this.kind },
-            .location = this.location,
-        };
-    }
 
     pub inline fn intoDefaultParseError(
         this: @This(),

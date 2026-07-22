@@ -70,22 +70,6 @@ pub const AstBuilder = struct {
         return ab;
     }
 
-    pub fn pushScope(p: *AstBuilder, kind: Scope.Kind) *js_ast.Scope {
-        try p.scopes.ensureUnusedCapacity(p.allocator, 1);
-        try p.current_scope.children.ensureUnusedCapacity(p.allocator, 1);
-        const scope = try p.allocator.create(Scope);
-        scope.* = .{
-            .kind = kind,
-            .label_ref = null,
-            .parent = p.current_scope,
-            .generated = .{},
-        };
-        p.current_scope.children.appendAssumeCapacity(scope);
-        p.scopes.appendAssumeCapacity(p.current_scope);
-        p.current_scope = scope;
-        return scope;
-    }
-
     pub fn popScope(p: *AstBuilder) void {
         p.current_scope = p.scopes.pop();
     }

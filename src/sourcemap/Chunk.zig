@@ -30,16 +30,6 @@ pub fn deinit(this: *Chunk) void {
     this.buffer.deinit();
 }
 
-pub fn printSourceMapContents(
-    chunk: Chunk,
-    source: *const Logger.Source,
-    mutable: *MutableString,
-    include_sources_contents: bool,
-    comptime ascii_only: bool,
-) !void {
-    try printSourceMapContentsJSON(source, mutable, include_sources_contents, chunk.buffer.list.items, ascii_only);
-}
-
 /// `chunk.buffer` holds an InternalSourceMap blob (the runtime path). Re-encode
 /// to a standard VLQ "mappings" string before emitting JSON.
 pub fn printSourceMapContentsFromInternal(

@@ -95,21 +95,6 @@ pub const Editor = enum(u8) {
     }
 
     const which = @import("../which/which.zig").which;
-    pub fn byPATH(env: *DotEnv.Loader, buf: *bun.PathBuffer, cwd: string, out: *[]const u8) ?Editor {
-        const PATH = env.get("PATH") orelse return null;
-
-        inline for (default_preference_list) |editor| {
-            if (bin_name.get(editor)) |path| {
-                if (which(buf, PATH, cwd, path)) |bin| {
-                    out.* = bun.asByteSlice(bin);
-                    return editor;
-                }
-            }
-        }
-
-        return null;
-    }
-
     pub fn byPATHForEditor(env: *DotEnv.Loader, editor: Editor, buf: *bun.PathBuffer, cwd: string, out: *[]const u8) bool {
         const PATH = env.get("PATH") orelse return false;
 

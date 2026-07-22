@@ -385,21 +385,6 @@ pub fn AllocationScopeIn(comptime Allocator: type) type {
             return .{ .parent_allocator = new_parent, .state = state };
         }
 
-        /// Converts an `std.mem.Allocator` into a borrowed allocation scope, with a given parent
-        /// allocator.
-        ///
-        /// Requirements:
-        ///
-        /// * `std_alloc` must have come from `AllocationScopeIn(Allocator).allocator` (or the
-        ///   equivalent method on a `Borrowed` instance).
-        ///
-        /// * `parent_alloc` must be equivalent to the (borrowed) parent allocator of the original
-        ///   allocation scope (that is, the return value of `AllocationScopeIn(Allocator).parent`).
-        ///   In particular, `bun.allocators.asStd` must return the same value for each allocator.
-        pub fn downcastIn(std_alloc: std.mem.Allocator, parent_alloc: BorrowedAllocator) Self {
-            return downcastImpl(std_alloc, parent_alloc);
-        }
-
         /// Converts an `std.mem.Allocator` into a borrowed allocation scope.
         ///
         /// Requirements:

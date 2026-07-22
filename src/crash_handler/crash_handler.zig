@@ -1350,14 +1350,6 @@ const StackLine = struct {
             line.object orelse "",
         });
     }
-
-    pub fn writeDecoded(self: ?StackLine, writer: anytype) !void {
-        const known = self orelse {
-            try writer.print("???", .{});
-            return;
-        };
-        try known.format("", .{}, writer);
-    }
 };
 
 fn stackTraceFromErrorReturnTrace(trace: *const std.builtin.StackTrace) std.debug.StackTrace {

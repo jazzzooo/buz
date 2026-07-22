@@ -114,17 +114,6 @@ pub inline fn realname(this: *const Dependency) String {
     };
 }
 
-pub inline fn isAliased(this: *const Dependency, buf: []const u8) bool {
-    return switch (this.version.tag) {
-        .npm => !this.version.value.npm.name.eql(this.name, buf, buf),
-        .dist_tag => !this.version.value.dist_tag.name.eql(this.name, buf, buf),
-        .git => !this.version.value.git.package_name.eql(this.name, buf, buf),
-        .github => !this.version.value.github.package_name.eql(this.name, buf, buf),
-        .tarball => !this.version.value.tarball.package_name.eql(this.name, buf, buf),
-        else => false,
-    };
-}
-
 pub fn toDependency(
     this: External,
     ctx: Context,

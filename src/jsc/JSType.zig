@@ -742,10 +742,6 @@ pub const JSType = enum(u8) {
         return this == .StringObject;
     }
 
-    pub inline fn isDerivedStringObject(this: JSType) bool {
-        return this == .DerivedStringObject;
-    }
-
     pub inline fn isStringObjectLike(this: JSType) bool {
         return this == .StringObject or this == .DerivedStringObject;
     }

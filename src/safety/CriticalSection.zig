@@ -180,12 +180,6 @@ pub fn begin(self: *Self) void {
     if (comptime enabled) self.internal_state.lockExclusive();
 }
 
-/// Marks the beginning of a critical section which performs read-only accesses on shared data.
-/// Calls to this function can be nested; each must be paired with a call to `end`.
-pub fn beginReadOnly(self: *Self) void {
-    if (comptime enabled) self.internal_state.lockShared();
-}
-
 /// Marks the end of a critical section started by `begin` or `beginReadOnly`.
 pub fn end(self: *Self) void {
     if (comptime enabled) self.internal_state.unlock();

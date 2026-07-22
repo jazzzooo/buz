@@ -143,13 +143,6 @@ pub const ParseError = error{
     Lex,
 };
 
-extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: i32) i32;
-
-fn setEnv(name: [*:0]const u8, value: [*:0]const u8) void {
-    // TODO: windows
-    _ = setenv(name, value, 1);
-}
-
 /// [0] => read end
 /// [1] => write end
 pub const Pipe = [2]bun.FD;
@@ -207,14 +200,6 @@ pub const GlobalJS = struct {
         return this.globalThis.bunVM().transpiler.env.map.createNullDelimitedEnvMap(alloc);
     }
 
-    pub inline fn getAllocator(this: @This()) Allocator {
-        return this.globalThis.bunVM().allocator;
-    }
-
-    pub inline fn enqueueTaskConcurrentWaitPid(this: @This(), task: anytype) void {
-        this.globalThis.bunVMConcurrently().enqueueTaskConcurrent(jsc.ConcurrentTask.create(jsc.Task.init(task)));
-    }
-
     pub inline fn topLevelDir(this: @This()) []const u8 {
         return this.globalThis.bunVM().transpiler.fs.top_level_dir;
     }
@@ -226,10 +211,6 @@ pub const GlobalJS = struct {
     pub inline fn platformEventLoop(this: @This()) *jsc.PlatformEventLoop {
         const loop = jsc.AbstractVM(this.eventLoopCtx());
         return loop.platformEventLoop();
-    }
-
-    pub inline fn actuallyThrow(this: @This(), shellerr: ShellErr) void {
-        shellerr.throwJS(this.globalThis);
     }
 };
 
@@ -279,16 +260,6 @@ pub const GlobalMini = struct {
         return this.mini.env.?.map.createNullDelimitedEnvMap(alloc);
     }
 
-    pub inline fn getAllocator(this: @This()) Allocator {
-        return this.mini.allocator;
-    }
-
-    pub inline fn enqueueTaskConcurrentWaitPid(this: @This(), task: anytype) void {
-        var anytask = bun.handleOom(bun.default_allocator.create(jsc.AnyTaskWithExtraContext));
-        _ = anytask.from(task, "runFromMainThreadMini");
-        this.mini.enqueueTaskConcurrent(anytask);
-    }
-
     pub inline fn topLevelDir(this: @This()) []const u8 {
         return this.mini.top_level_dir;
     }
@@ -298,10 +269,6 @@ pub const GlobalMini = struct {
         return .{
             .custom = str,
         };
-    }
-
-    pub inline fn actuallyThrow(_: @This(), shellerr: ShellErr) void {
-        shellerr.throwMini();
     }
 
     pub inline fn platformEventLoop(this: @This()) *jsc.PlatformEventLoop {
@@ -742,19 +709,6 @@ pub const AST = struct {
 
         pub const Tag = enum { cmd, assigns };
 
-        pub fn to_pipeline_item(this: CmdOrAssigns, alloc: Allocator) PipelineItem {
-            switch (this) {
-                .cmd => |cmd| {
-                    const cmd_ptr = try alloc.create(Cmd);
-                    cmd_ptr.* = cmd;
-                    return .{ .cmd = cmd_ptr };
-                },
-                .assigns => |assigns| {
-                    return .{ .assign = assigns };
-                },
-            }
-        }
-
         pub fn to_expr(this: CmdOrAssigns, alloc: Allocator) !Expr {
             switch (this) {
                 .cmd => |cmd| {
@@ -981,17 +935,6 @@ pub const AST = struct {
 
         pub fn new_simple(atom: SimpleAtom) Atom {
             return .{ .simple = atom };
-        }
-
-        pub fn is_compound(self: *const Atom) bool {
-            switch (self.*) {
-                .compound => return true,
-                .simple => return false,
-            }
-        }
-
-        pub fn has_expansions(self: *const Atom) bool {
-            return self.has_glob_expansion() or self.has_brace_expansion();
         }
 
         pub fn has_glob_expansion(self: *const Atom) bool {
@@ -3332,33 +3275,6 @@ pub fn NewLexer(comptime encoding: StringEncoding) type {
             }
         }
 
-        fn eat_slice(self: *@This(), comptime CodepointType: type, comptime N: usize) ?[N]CodepointType {
-            var slice: [N]CodepointType = @splat(0);
-            var i: usize = 0;
-            while (self.peek()) |result| {
-                // If we passed in codepoint range that is equal to the source
-                // string, or is greater than the codepoint range of source string than an int cast
-                // will not panic
-                if (CodepointType == Chars.CodepointType or std.math.maxInt(CodepointType) >= std.math.maxInt(Chars.CodepointType)) {
-                    slice[i] = @intCast(result.char);
-                } else {
-                    // Otherwise the codepoint range is smaller than the source, so we need to check that the chars are valid
-                    if (result.char > std.math.maxInt(CodepointType)) {
-                        return null;
-                    }
-                    slice[i] = @intCast(result.char);
-                }
-
-                i += 1;
-                _ = self.eat();
-                if (i == N) {
-                    return slice;
-                }
-            }
-
-            return null;
-        }
-
         fn peek(self: *@This()) ?InputChar {
             return self.chars.peek();
         }
@@ -4401,10 +4317,6 @@ pub fn SmolList(comptime T: type, comptime INLINED_MAX: comptime_int) type {
 
         pub fn last(this: *@This()) ?*T {
             if (this.len() == 0) return null;
-            return this.get(this.len() - 1);
-        }
-
-        pub fn lastUnchecked(this: *@This()) *T {
             return this.get(this.len() - 1);
         }
 

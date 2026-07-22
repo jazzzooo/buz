@@ -110,12 +110,6 @@ pub fn putOrIncrementRefCount(assets: *Assets, content_hash: u64, ref_count: u32
     }
 }
 
-pub fn unrefByHash(assets: *Assets, content_hash: u64, dec_count: u32) void {
-    const index = assets.files.getIndex(content_hash) orelse
-        Output.panic("Asset double unref: {x}", .{std.mem.asBytes(&content_hash)});
-    assets.unrefByIndex(.init(@intCast(index)), dec_count);
-}
-
 pub fn unrefByIndex(assets: *Assets, index: EntryIndex, dec_count: u32) void {
     defer assert(assets.files.count() == assets.refs.items.len);
     assert(dec_count > 0);

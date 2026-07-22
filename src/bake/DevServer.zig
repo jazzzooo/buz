@@ -3226,35 +3226,6 @@ fn onRequest(dev: *DevServer, req: *Request, resp: anytype) void {
 }
 
 // TODO: path params
-pub fn handleRenderRedirect(
-    dev: *DevServer,
-    saved_request: bun.jsc.API.SavedRequest,
-    render_path: []const u8,
-    resp: AnyResponse,
-) !void {
-    // Match the render path against the router
-    var params: FrameworkRouter.MatchedParams = undefined;
-    if (dev.router.matchSlow(render_path, &params)) |route_index| {
-        var ctx = RequestEnsureRouteBundledCtx{
-            .dev = dev,
-            .req = .{ .saved = saved_request },
-            .resp = resp,
-            .kind = .server_handler,
-            .route_bundle_index = bun.handleOom(dev.getOrPutRouteBundle(.{ .framework = route_index })),
-        };
-        // Found a matching route, bundle it and handle the request
-        try dev.ensureRouteIsBundled(
-            ctx.route_bundle_index,
-            RequestEnsureRouteBundledCtx,
-            &ctx,
-        );
-        return;
-    }
-
-    // No matching route found - render 404
-    sendBuiltInNotFound(resp);
-}
-
 pub fn respondForHTMLBundle(dev: *DevServer, html: *HTMLBundle.HTMLBundleRoute, req: *uws.Request, resp: AnyResponse) bun.OOM!void {
     var ctx = RequestEnsureRouteBundledCtx{
         .dev = dev,
@@ -3472,13 +3443,6 @@ pub const FileKind = enum(u2) {
     /// `code` is the URL where the CSS file is to be fetched from, ex.
     /// '/_bun/css/0000000000000000.css'
     css,
-
-    pub fn hasInlineJsCodeChunk(self: @This()) bool {
-        return switch (self) {
-            .js, .asset => true,
-            else => false,
-        };
-    }
 };
 
 pub const IncrementalGraph = @import("./DevServer/IncrementalGraph.zig").IncrementalGraph;

@@ -170,25 +170,6 @@ pub fn NewCodePointIterator(comptime CodePointType_: type, comptime zeroValue: c
             }
         }
 
-        pub fn scanUntilQuotedValueOrEOF(iter: *Iterator, comptime quote: CodePointType) usize {
-            while (iter.c > -1) {
-                if (!switch (iter.nextCodepoint()) {
-                    quote => false,
-                    '\\' => brk: {
-                        if (iter.nextCodepoint() == quote) {
-                            continue;
-                        }
-                        break :brk true;
-                    },
-                    else => true,
-                }) {
-                    return iter.i + 1;
-                }
-            }
-
-            return iter.i;
-        }
-
         pub fn nextCodepoint(it: *Iterator) CodePointType {
             const slice = it.nextCodepointSlice();
 

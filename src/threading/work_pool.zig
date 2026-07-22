@@ -21,10 +21,6 @@ pub const WorkPool = struct {
         return &pool;
     }
 
-    pub fn scheduleBatch(batch: ThreadPool.Batch) void {
-        get().schedule(batch);
-    }
-
     pub fn schedule(task: *ThreadPool.Task) void {
         get().schedule(ThreadPool.Batch.from(task));
     }

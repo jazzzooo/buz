@@ -413,11 +413,6 @@ pub const Map = struct {
         return Map{ .symbols_for_source = symbols_for_source };
     }
 
-    pub fn initWithOneList(list: List) Map {
-        const baby_list = BabyList(List).fromBorrowedSliceDangerous((&list)[0..1]);
-        return initList(baby_list);
-    }
-
     pub fn initList(list: NestedList) Map {
         return Map{ .symbols_for_source = list };
     }
@@ -426,14 +421,6 @@ pub const Map = struct {
         var symbol: *Symbol = symbols.get(ref) orelse return null;
         if (symbol.hasLink()) {
             return symbols.get(symbol.link) orelse symbol;
-        }
-        return symbol;
-    }
-
-    pub fn getWithLinkConst(symbols: *Map, ref: Ref) ?*const Symbol {
-        var symbol: *const Symbol = symbols.getConst(ref) orelse return null;
-        if (symbol.hasLink()) {
-            return symbols.getConst(symbol.link) orelse symbol;
         }
         return symbol;
     }

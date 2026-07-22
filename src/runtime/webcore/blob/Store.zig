@@ -270,18 +270,6 @@ pub const File = struct {
             .fd => jsc.JSPromise.resolvedPromiseValue(globalThis, globalThis.createInvalidArgs("Is not possible to unlink a file descriptor", .{})),
         };
     }
-    pub fn isSeekable(this: *const File) ?bool {
-        if (this.seekable) |seekable| {
-            return seekable;
-        }
-
-        if (this.mode != 0) {
-            return bun.isRegularFile(this.mode);
-        }
-
-        return null;
-    }
-
     pub fn init(pathlike: jsc.Node.PathOrFileDescriptor, mime_type: ?MimeType) File {
         return .{ .pathlike = pathlike, .mime_type = mime_type orelse MimeType.other };
     }
@@ -296,10 +284,6 @@ pub const S3 = struct {
     acl: ?bun.S3.ACL = null,
     storage_class: ?bun.S3.StorageClass = null,
     request_payer: bool = false,
-
-    pub fn isSeekable(_: *const @This()) ?bool {
-        return true;
-    }
 
     pub fn getCredentials(this: *const @This()) *S3Credentials {
         bun.assert(this.credentials != null);
@@ -546,17 +530,6 @@ pub const Bytes = struct {
         this.ptr = null;
         this.len = 0;
         this.cap = 0;
-    }
-
-    pub fn asArrayList(this: Bytes) std.ArrayListUnmanaged(u8) {
-        return this.asArrayListLeak();
-    }
-
-    pub fn asArrayListLeak(this: Bytes) std.ArrayListUnmanaged(u8) {
-        return .{
-            .items = this.ptr[0..this.len],
-            .capacity = this.cap,
-        };
     }
 };
 

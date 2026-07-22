@@ -1310,36 +1310,6 @@ pub const PackageManifest = struct {
         return external.slice(self.string_buf);
     }
 
-    pub fn reportSize(this: *const PackageManifest) void {
-        Output.prettyErrorln(
-            \\ Versions count:            {d}
-            \\ External Strings count:    {d}
-            \\ Package Versions count:    {d}
-            \\
-            \\ Bytes:
-            \\
-            \\  Versions:   {d}
-            \\  External:   {d}
-            \\  Packages:   {d}
-            \\  Strings:    {d}
-            \\  Total:      {d}
-        , .{
-            this.versions.len,
-            this.external_strings.len,
-            this.package_versions.len,
-
-            std.mem.sliceAsBytes(this.versions).len,
-            std.mem.sliceAsBytes(this.external_strings).len,
-            std.mem.sliceAsBytes(this.package_versions).len,
-            std.mem.sliceAsBytes(this.string_buf).len,
-            std.mem.sliceAsBytes(this.versions).len +
-                std.mem.sliceAsBytes(this.external_strings).len +
-                std.mem.sliceAsBytes(this.package_versions).len +
-                std.mem.sliceAsBytes(this.string_buf).len,
-        });
-        Output.flush();
-    }
-
     pub const FindResult = struct {
         version: Semver.Version,
         package: *const PackageVersion,

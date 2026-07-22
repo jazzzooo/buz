@@ -568,18 +568,6 @@ pub const ShellRmTask = struct {
             }
         }
 
-        fn handleErr(this: *DirTask, err: Syscall.Error) void {
-            debug("[handleErr] DirTask({x}) failed: {s}: {s}", .{ @intFromPtr(this), @tagName(err.getErrno()), err.path });
-            this.task_manager.err_mutex.lock();
-            defer this.task_manager.err_mutex.unlock();
-            if (this.task_manager.err == null) {
-                this.task_manager.err = err;
-                this.task_manager.error_signal.store(true, .seq_cst);
-            } else {
-                this.task_manager.err.?.deinit();
-            }
-        }
-
         pub fn postRun(this: *DirTask) void {
             debug("DirTask(0x{x}, path={s}) postRun", .{ @intFromPtr(this), this.path });
             // // This is true if the directory has subdirectories

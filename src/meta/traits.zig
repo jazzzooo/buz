@@ -57,22 +57,12 @@ pub inline fn isContainer(comptime T: type) bool {
     };
 }
 
-pub inline fn isSingleItemPtr(comptime T: type) bool {
-    const info = @typeInfo(T);
-    return info == .pointer and info.pointer.size == .one;
-}
-
 pub fn isExternContainer(comptime T: type) bool {
     return switch (@typeInfo(T)) {
         .@"struct" => |s| s.layout == .@"extern",
         .@"union" => |u| u.layout == .@"extern",
         else => false,
     };
-}
-
-pub fn isConstPtr(comptime T: type) bool {
-    const info = @typeInfo(T);
-    return info == .pointer and info.pointer.attrs.@"const";
 }
 
 pub fn isIndexable(comptime T: type) bool {

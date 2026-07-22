@@ -1158,10 +1158,6 @@ pub const StreamBuffer = struct {
         return this.list.ensureUnusedCapacity(capacity);
     }
 
-    pub fn writeTypeAsBytes(this: *StreamBuffer, comptime T: type, data: *const T) OOM!void {
-        _ = try this.write(std.mem.asBytes(data));
-    }
-
     pub fn writeTypeAsBytesAssumeCapacity(this: *StreamBuffer, comptime T: type, data: T) void {
         var byte_list = bun.ByteList.moveFromList(&this.list);
         defer this.list = byte_list.moveToListManaged(this.list.allocator);

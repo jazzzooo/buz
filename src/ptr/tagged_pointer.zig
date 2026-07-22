@@ -151,10 +151,6 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
             this.* = @This().init(_ptr);
         }
 
-        pub inline fn isValidPtr(_ptr: ?*anyopaque) bool {
-            return This.isValid(This.from(_ptr));
-        }
-
         pub inline fn isValid(this: This) bool {
             return switch (this.repr.data) {
                 @backingInt(
@@ -171,11 +167,6 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
         }
 
         pub inline fn ptr(this: This) *anyopaque {
-            return this.repr.to();
-        }
-
-        pub inline fn ptrUnsafe(this: This) *anyopaque {
-            @setRuntimeSafety(false);
             return this.repr.to();
         }
 

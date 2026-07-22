@@ -456,10 +456,6 @@ pub fn onConnectError(
     client.fail(error.ConnectionRefused);
 }
 
-pub inline fn getAllocator() std.mem.Allocator {
-    return default_allocator;
-}
-
 const max_tls_record_size = 16 * 1024;
 
 /// Get the buffer we use to write data to the network.

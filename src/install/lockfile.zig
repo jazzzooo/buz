@@ -434,51 +434,6 @@ pub fn isResolvedDependencyDisabled(
     return dep.behavior.isBundled() or !dep.behavior.isEnabled(features);
 }
 
-/// This conditionally clones the lockfile with root packages marked as non-resolved
-/// that do not satisfy `Features`. The package may still end up installed even
-/// if it was e.g. in "devDependencies" and its a production install. In that case,
-/// it would be installed because another dependency or transient dependency needed it.
-///
-/// Warning: This potentially modifies the existing lockfile in-place. That is
-/// safe to do because at this stage, the lockfile has already been saved to disk.
-/// Our in-memory representation is all that's left.
-pub fn maybeCloneFilteringRootPackages(
-    old: *Lockfile,
-    manager: *PackageManager,
-    features: Features,
-    exact_versions: bool,
-    log_level: PackageManager.Options.LogLevel,
-) !*Lockfile {
-    const old_packages = old.packages.slice();
-    const old_dependencies_lists = old_packages.items(.dependencies);
-    const old_resolutions_lists = old_packages.items(.resolutions);
-    const old_resolutions = old_packages.items(.resolution);
-    var any_changes = false;
-    const end: PackageID = @truncate(old.packages.len);
-
-    // set all disabled dependencies of workspaces to `invalid_package_id`
-    for (0..end) |package_id| {
-        if (package_id != 0 and old_resolutions[package_id].tag != .workspace) continue;
-
-        const old_workspace_dependencies_list = old_dependencies_lists[package_id];
-        var old_workspace_resolutions_list = old_resolutions_lists[package_id];
-
-        const old_workspace_dependencies = old_workspace_dependencies_list.get(old.buffers.dependencies.items);
-        const old_workspace_resolutions = old_workspace_resolutions_list.mut(old.buffers.resolutions.items);
-
-        for (old_workspace_dependencies, old_workspace_resolutions) |dependency, *resolution| {
-            if (!dependency.behavior.isEnabled(features) and resolution.* < end) {
-                resolution.* = invalid_package_id;
-                any_changes = true;
-            }
-        }
-    }
-
-    if (!any_changes) return old;
-
-    return try old.clean(manager, &.{}, exact_versions, log_level);
-}
-
 fn preprocessUpdateRequests(old: *Lockfile, manager: *PackageManager, updates: []PackageManager.UpdateRequest, exact_versions: bool) !void {
     const workspace_package_id = manager.root_package_id.get(old, manager.workspace_name_hash);
     const root_deps_list: Lockfile.DependencySlice = old.packages.items(.dependencies)[workspace_package_id];
@@ -1658,32 +1613,6 @@ pub const StringBuilder = struct {
     }
 
     // SlicedString is not supported due to inline strings.
-    pub fn appendWithoutPool(this: *StringBuilder, comptime Type: type, slice: string, hash: u64) Type {
-        if (String.canInline(slice)) {
-            return switch (Type) {
-                String => String.init(this.lockfile.buffers.string_bytes.items, slice),
-                ExternalString => ExternalString.init(this.lockfile.buffers.string_bytes.items, slice, hash),
-                else => @compileError("Invalid type passed to StringBuilder"),
-            };
-        }
-        if (comptime Environment.allow_assert) {
-            assert(this.len <= this.cap); // didn't count everything
-            assert(this.ptr != null); // must call allocate first
-        }
-
-        bun.copy(u8, this.ptr.?[this.len..this.cap], slice);
-        const final_slice = this.ptr.?[this.len..this.cap][0..slice.len];
-        this.len += slice.len;
-
-        if (comptime Environment.allow_assert) assert(this.len <= this.cap);
-
-        return switch (Type) {
-            String => String.init(this.lockfile.buffers.string_bytes.items, final_slice),
-            ExternalString => ExternalString.init(this.lockfile.buffers.string_bytes.items, final_slice, hash),
-            else => @compileError("Invalid type passed to StringBuilder"),
-        };
-    }
-
     pub fn appendWithHash(this: *StringBuilder, comptime Type: type, slice: string, hash: u64) Type {
         if (String.canInline(slice)) {
             return switch (Type) {

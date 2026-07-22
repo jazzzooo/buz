@@ -27,14 +27,6 @@ pub const Reader = struct {
         return slice;
     }
 
-    pub inline fn readAs(this: *Self, comptime T: type) !T {
-        if (!std.meta.hasUniqueRepresentation(T)) {
-            @compileError(@typeName(T) ++ " must have unique representation.");
-        }
-
-        return std.mem.bytesAsValue(T, try this.read(@sizeOf(T)));
-    }
-
     pub inline fn readByte(this: *Self) !u8 {
         return (try this.read(1))[0];
     }

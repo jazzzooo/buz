@@ -224,8 +224,6 @@ const FutexImpl = struct {
     pub const Type = u32;
 };
 
-pub fn spinCycle() void {}
-
 // These have to be a size known to C.
 export fn Bun__lock(ptr: *ReleaseImpl) void {
     ptr.lock();

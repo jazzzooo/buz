@@ -129,10 +129,6 @@ pub const T = enum(u8) {
         return @backingInt(self) >= @backingInt(T.t_ampersand_ampersand_equals) and @backingInt(self) <= @backingInt(T.t_slash_equals);
     }
 
-    pub fn isReservedWord(self: T) bool {
-        return @backingInt(self) >= @backingInt(T.t_break) and @backingInt(self) <= @backingInt(T.t_with);
-    }
-
     pub fn isString(self: T) bool {
         switch (self) {
             T.t_no_substitution_template_literal, T.t_string_literal, T.t_template_head, T.t_template_middle, T.t_template_tail => {

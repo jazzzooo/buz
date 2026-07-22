@@ -70,63 +70,6 @@ pub const YarnLock = struct {
             return unquoted;
         }
 
-        pub fn getVersionFromSpec(spec: []const u8) ?[]const u8 {
-            const unquoted = if (spec[0] == '"' and spec[spec.len - 1] == '"')
-                spec[1 .. spec.len - 1]
-            else
-                spec;
-
-            if (unquoted[0] == '@') {
-                if (strings.indexOfChar(unquoted[1..], '@')) |second_at_pos| {
-                    const version_start = second_at_pos + "@".len + 1;
-                    const version_part = unquoted[version_start..];
-
-                    if (strings.hasPrefixComptime(version_part, "npm:") and version_part.len > 4) {
-                        return version_part["npm:".len..];
-                    }
-                    return version_part;
-                }
-                return null;
-            } else if (strings.indexOf(unquoted, "@npm:")) |npm_idx| {
-                const after_npm = npm_idx + "npm:".len + 1;
-                if (after_npm < unquoted.len) {
-                    return unquoted[after_npm..];
-                }
-                return null;
-            } else if (strings.indexOf(unquoted, "@https://")) |url_idx| {
-                const after_at = url_idx + '@'.len;
-                if (after_at < unquoted.len) {
-                    return unquoted[after_at..];
-                }
-                return null;
-            } else if (strings.indexOf(unquoted, "@git+")) |git_idx| {
-                const after_at = git_idx + '@'.len;
-                if (after_at < unquoted.len) {
-                    return unquoted[after_at..];
-                }
-                return null;
-            } else if (strings.indexOf(unquoted, "@github:")) |gh_idx| {
-                const after_at = gh_idx + '@'.len;
-                if (after_at < unquoted.len) {
-                    return unquoted[after_at..];
-                }
-                return null;
-            } else if (strings.indexOf(unquoted, "@file:")) |file_idx| {
-                const after_at = file_idx + '@'.len;
-                if (after_at < unquoted.len) {
-                    return unquoted[after_at..];
-                }
-                return null;
-            } else if (strings.indexOf(unquoted, "@")) |idx| {
-                const after_at = idx + '@'.len;
-                if (after_at < unquoted.len) {
-                    return unquoted[after_at..];
-                }
-                return null;
-            }
-            return null;
-        }
-
         pub fn isGitDependency(version: []const u8) bool {
             return strings.hasPrefixComptime(version, "git+") or
                 strings.hasPrefixComptime(version, "git://") or

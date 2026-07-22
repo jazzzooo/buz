@@ -155,15 +155,6 @@ pub const Value = union(Kind) {
 
 pub const SavedFile = @import("../bundler_jsc/output_file_jsc.zig").SavedFile;
 
-pub fn initPending(loader: Loader, pending: resolver.Result) OutputFile {
-    return .{
-        .loader = loader,
-        .src_path = pending.pathConst().?.*,
-        .size = 0,
-        .value = .{ .pending = pending },
-    };
-}
-
 pub fn initFile(file: std.Io.File, pathname: string, size: usize) OutputFile {
     return .{
         .loader = .file,
@@ -171,12 +162,6 @@ pub fn initFile(file: std.Io.File, pathname: string, size: usize) OutputFile {
         .size = size,
         .value = .{ .copy = FileOperation.fromFile(file.handle, pathname) },
     };
-}
-
-pub fn initFileWithDir(file: std.Io.File, pathname: string, size: usize, dir: std.Io.Dir) OutputFile {
-    var res = initFile(file, pathname, size);
-    res.value.copy.dir_handle = .fromStdDir(dir);
-    return res;
 }
 
 pub const Options = struct {

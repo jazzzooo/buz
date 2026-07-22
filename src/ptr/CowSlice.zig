@@ -111,17 +111,6 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
             return str.flags.len;
         }
 
-        /// Mutably borrow this `Cow`'s slice.
-        ///
-        /// Borrowed `Cow`s will be automatically converted to owned, incurring
-        /// an allocation.
-        pub fn sliceMut(str: *Self, allocator: Allocator) Allocator.Error!SliceMut {
-            if (!str.isOwned()) {
-                str.intoOwned(allocator);
-            }
-            return str.ptr[0..str.flags.len];
-        }
-
         /// Mutably borrow this `Cow`'s slice, assuming it already owns its data.
         /// Calling this on a borrowed `Cow` invokes safety-checked Illegal Behavior.
         pub fn sliceMutUnsafe(str: *Self) SliceMut {
@@ -251,18 +240,6 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
             if (str.flags.is_owned) {
                 allocator.free(str.slice());
             }
-        }
-
-        /// Does not include debug safety checks.
-        pub fn initUnchecked(data: Slice, is_owned: bool) Self {
-            return .{
-                .ptr = @constCast(data.ptr),
-                .flags = .{
-                    .is_owned = is_owned,
-                    .len = @intCast(data.len),
-                },
-                .debug = if (cow_str_assertions) null,
-            };
         }
     };
 }

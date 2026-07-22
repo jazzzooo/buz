@@ -1438,30 +1438,6 @@ pub const LABColor = union(enum) {
     /// An `oklch()` color.
     oklch: OKLCH,
 
-    pub fn newLAB(l: f32, a: f32, b: f32, alpha: f32) LABColor {
-        return LABColor{
-            .lab = LAB.new(l, a, b, alpha),
-        };
-    }
-
-    pub fn newOKLAB(l: f32, a: f32, b: f32, alpha: f32) LABColor {
-        return LABColor{
-            .lab = OKLAB.new(l, a, b, alpha),
-        };
-    }
-
-    pub fn newLCH(l: f32, a: f32, b: f32, alpha: f32) LABColor {
-        return LABColor{
-            .lab = LCH.new(l, a, b, alpha),
-        };
-    }
-
-    pub fn newOKLCH(l: f32, a: f32, b: f32, alpha: f32) LABColor {
-        return LABColor{
-            .lab = LCH.new(l, a, b, alpha),
-        };
-    }
-
     pub fn hash(this: *const @This(), hasher: *std.hash.Wyhash) void {
         return css.implementHash(@This(), this, hasher);
     }

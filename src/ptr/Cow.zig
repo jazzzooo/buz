@@ -50,13 +50,6 @@ pub fn Cow(comptime T: type, comptime VTable: type) type {
             };
         }
 
-        pub inline fn innerMut(this: *@This()) ?*T {
-            return switch (this.*) {
-                .borrowed => null,
-                .owned => &this.owned,
-            };
-        }
-
         pub fn toOwned(this: *@This(), allocator: Allocator) *T {
             switch (this.*) {
                 .borrowed => {

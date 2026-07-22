@@ -539,20 +539,6 @@ pub const NumberRenamer = struct {
         return renamer;
     }
 
-    pub fn assignNamesRecursive(r: *NumberRenamer, scope: *js_ast.Scope, source_index: u32, parent: ?*NumberScope, sorted: *std.array_list.Managed(u32)) void {
-        var s = r.number_scope_pool.get();
-        s.* = NumberScope{
-            .parent = parent,
-            .name_counts = .{},
-        };
-        defer {
-            s.deinit(r.temp_allocator);
-            r.number_scope_pool.put(s);
-        }
-
-        assignNamesRecursiveWithNumberScope(r, s, scope, source_index, sorted);
-    }
-
     fn assignNamesInScope(
         r: *NumberRenamer,
         s: *NumberScope,

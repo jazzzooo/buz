@@ -121,10 +121,6 @@ pub fn parse(buf: []const u8) Error!UUID {
 pub const zero: UUID = .{ .bytes = @splat(0) };
 
 // Convenience function to return a new v4 UUID.
-pub fn newV4() UUID {
-    return UUID.init();
-}
-
 /// # --- 48 ---   -- 4 --   - 12 -   -- 2 --   - 62 -
 /// # unix_ts_ms | version | rand_a | variant | rand_b
 pub const UUID7 = struct {

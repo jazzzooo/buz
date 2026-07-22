@@ -329,17 +329,6 @@ pub const ArrayBuffer = extern struct {
     /// ```
     pub const slice = byteSlice;
 
-    pub inline fn asU16(this: *const @This()) []u16 {
-        return @alignCast(this.asU16Unaligned());
-    }
-
-    pub inline fn asU16Unaligned(this: *const @This()) []align(1) u16 {
-        if (this.isDetached()) {
-            return &.{};
-        }
-        return @ptrCast(this.ptr.?[0 .. this.byte_len / @sizeOf(u16) * @sizeOf(u16)]);
-    }
-
     pub inline fn asU32(this: *const @This()) []u32 {
         return @alignCast(this.asU32Unaligned());
     }

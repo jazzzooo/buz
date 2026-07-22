@@ -249,13 +249,6 @@ pub const String = extern struct {
         }
     };
 
-    pub fn hashContext(l_lockfile: *Lockfile, r_lockfile: ?*Lockfile) HashContext {
-        return .{
-            .arg_buf = l_lockfile.buffers.string_bytes.items,
-            .existing_buf = if (r_lockfile) |r| r.buffers.string_bytes.items else l_lockfile.buffers.string_bytes.items,
-        };
-    }
-
     pub const ArrayHashContext = struct {
         arg_buf: []const u8,
         existing_buf: []const u8,
@@ -549,40 +542,6 @@ pub const String = extern struct {
         }
 
         // SlicedString is not supported due to inline strings.
-        pub fn appendWithoutPool(this: *Builder, comptime Type: type, slice_: string, hash: u64) Type {
-            if (slice_.len <= String.max_inline_len) {
-                switch (Type) {
-                    String => {
-                        return String.init(this.allocatedSlice(), slice_);
-                    },
-                    ExternalString => {
-                        return ExternalString.init(this.allocatedSlice(), slice_, hash);
-                    },
-                    else => @compileError("Invalid type passed to StringBuilder"),
-                }
-            }
-            if (comptime Environment.allow_assert) {
-                assert(this.len <= this.cap); // didn't count everything
-                assert(this.ptr != null); // must call allocate first
-            }
-
-            bun.copy(u8, this.ptr.?[this.len..this.cap], slice_);
-            const final_slice = this.ptr.?[this.len..this.cap][0..slice_.len];
-            this.len += slice_.len;
-
-            if (comptime Environment.allow_assert) assert(this.len <= this.cap);
-
-            switch (Type) {
-                String => {
-                    return String.init(this.allocatedSlice(), final_slice);
-                },
-                ExternalString => {
-                    return ExternalString.init(this.allocatedSlice(), final_slice, hash);
-                },
-                else => @compileError("Invalid type passed to StringBuilder"),
-            }
-        }
-
         pub fn appendWithHash(this: *Builder, comptime Type: type, slice_: string, hash: u64) Type {
             if (slice_.len <= String.max_inline_len) {
                 switch (Type) {

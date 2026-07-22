@@ -308,10 +308,6 @@ pub const Flags = struct {
         .permissive_www_autolinks = true,
         .permissive_email_autolinks = true,
     };
-
-    pub fn permissiveAutolinks(self: Flags) bool {
-        return self.permissive_url_autolinks or self.permissive_www_autolinks or self.permissive_email_autolinks;
-    }
 };
 
 /// Number of opener stacks used during inline analysis.

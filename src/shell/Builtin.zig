@@ -694,19 +694,6 @@ pub fn deinit(this: *Builtin) void {
     // this.arena.deinit();
 }
 
-/// If the stdout/stderr is supposed to be captured then get the bytelist associated with that
-pub fn stdBufferedBytelist(this: *Builtin, comptime io_kind: @EnumLiteral()) ?*bun.ByteList {
-    if (comptime io_kind != .stdout and io_kind != .stderr) {
-        @compileError("Bad IO" ++ @tagName(io_kind));
-    }
-
-    const io: *BuiltinIO = &@field(this, @tagName(io_kind));
-    return switch (io.*) {
-        .captured => if (comptime io_kind == .stdout) this.parentCmd().base.shell.buffered_stdout() else this.parentCmd().base.shell.buffered_stderr(),
-        else => null,
-    };
-}
-
 pub fn readStdinNoIO(this: *Builtin) []const u8 {
     return switch (this.stdin) {
         .arraybuf => |buf| buf.buf.slice(),

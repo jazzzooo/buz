@@ -610,12 +610,6 @@ pub const StrictModeKind = enum(u4) {
     }
 };
 
-pub fn printmem(comptime format: string, args: anytype) void {
-    defer Output.flush();
-    Output.initTest();
-    Output.print(format, args);
-}
-
 pub const ToJSError = error{
     @"Cannot convert argument type to JS",
     @"Cannot convert identifier to JS. Try a statically-known value",

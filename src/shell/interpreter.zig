@@ -169,10 +169,6 @@ pub const CowFd = struct {
         return this.dup();
     }
 
-    pub fn doneUsing(this: *CowFd) void {
-        this.being_used = false;
-    }
-
     pub fn ref(this: *CowFd) void {
         this.refcount += 1;
     }
@@ -1618,16 +1614,6 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
         pub inline fn as(this: @This(), comptime Type: type) *Type {
             return this.ptr.as(Type);
         }
-    };
-}
-
-pub fn MaybeChild(comptime T: type) type {
-    return switch (@typeInfo(T)) {
-        .array => |info| info.child,
-        .vector => |info| info.child,
-        .pointer => |info| info.child,
-        .optional => |info| info.child,
-        else => T,
     };
 }
 

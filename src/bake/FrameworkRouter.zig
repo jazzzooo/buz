@@ -207,13 +207,6 @@ pub const EncodedPattern = struct {
         return .{ .pattern = p, .offset = 0 };
     }
 
-    pub fn partAt(pattern: EncodedPattern, byte_offset: usize) ?Part {
-        return (Iterator{
-            .pattern = pattern,
-            .offset = byte_offset,
-        }).peek();
-    }
-
     const Iterator = struct {
         pattern: EncodedPattern,
         offset: usize,

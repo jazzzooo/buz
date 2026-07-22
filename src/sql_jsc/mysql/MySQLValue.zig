@@ -467,15 +467,6 @@ pub const Value = union(enum) {
             };
         }
 
-        pub fn toUnixTimestamp(this: *const Time) i64 {
-            var total_ms: i64 = 0;
-            total_ms +|= @as(i64, this.days) *| 86400000;
-            total_ms +|= @as(i64, this.hours) *| 3600000;
-            total_ms +|= @as(i64, this.minutes) *| 60000;
-            total_ms +|= @as(i64, this.seconds) *| 1000;
-            return total_ms;
-        }
-
         pub fn fromData(data: *const Data) !Time {
             return fromBinary(data.slice());
         }

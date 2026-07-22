@@ -103,17 +103,6 @@ pub fn HiveArray(comptime T: type, comptime capacity: u16) type {
                 return bun.handleOom(self.allocator.create(T));
             }
 
-            pub fn getAndSeeIfNew(self: *This, new: *bool) *T {
-                if (comptime capacity > 0) {
-                    if (self.hive.get()) |value| {
-                        new.* = false;
-                        return value;
-                    }
-                }
-
-                return bun.handleOom(self.allocator.create(T));
-            }
-
             pub fn tryGet(self: *This) OOM!*T {
                 if (comptime capacity > 0) {
                     if (self.hive.get()) |value| {

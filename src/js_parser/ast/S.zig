@@ -202,10 +202,6 @@ pub const Local = struct {
         pub fn isUsing(self: Kind) bool {
             return self == .k_using or self == .k_await_using;
         }
-
-        pub fn isReassignable(kind: Kind) bool {
-            return kind == .k_var or kind == .k_let;
-        }
     };
 };
 

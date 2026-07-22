@@ -873,28 +873,6 @@ pub const String = extern struct {
         }
     }
 
-    pub fn indexOfComptimeWithCheckLen(this: String, comptime values: []const []const u8, comptime check_len: usize) ?usize {
-        if (this.is8Bit()) {
-            const bytes = this.byteSlice();
-            for (values, 0..) |val, i| {
-                if (bun.strings.eqlComptimeCheckLenWithType(u8, bytes, val, check_len)) {
-                    return i;
-                }
-            }
-
-            return null;
-        }
-
-        const u16_bytes = this.byteSlice();
-        inline for (values, 0..) |val, i| {
-            if (bun.strings.eqlComptimeCheckLenWithType(u16, u16_bytes, comptime bun.strings.toUTF16Literal(val), check_len)) {
-                return i;
-            }
-        }
-
-        return null;
-    }
-
     pub fn indexOfComptimeArrayAssumeSameLength(this: String, comptime values: []const []const u8) ?usize {
         if (this.is8Bit()) {
             const bytes = this.byteSlice();
@@ -999,17 +977,6 @@ pub const String = extern struct {
 
         if (this.tag == .WTFStringImpl) {
             bun.cpp.BunString__toThreadSafe(this);
-        }
-    }
-
-    /// Like `toThreadSafe`, but leaves the result with one extra ref compared
-    /// to before the call (i.e. the caller wants `toThreadSafe` + `ref`).
-    pub fn toThreadSafeEnsureRef(this: *String) void {
-        jsc.markBinding(@src());
-
-        if (this.tag == .WTFStringImpl) {
-            bun.cpp.BunString__toThreadSafe(this);
-            this.value.WTFStringImpl.ref();
         }
     }
 

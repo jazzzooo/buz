@@ -166,13 +166,6 @@ pub const Platform = enum {
         };
     }
 
-    pub inline fn separatorString(comptime platform: Platform) []const u8 {
-        return switch (platform) {
-            .posix => std.fs.path.sep_str_posix,
-            .nt, .windows => std.fs.path.sep_str_windows,
-        };
-    }
-
     pub inline fn pathType(comptime platform: Platform) std.fs.path.PathType {
         return switch (platform) {
             .nt, .windows => .windows,

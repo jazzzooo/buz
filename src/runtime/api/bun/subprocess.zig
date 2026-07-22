@@ -101,14 +101,6 @@ pub const StdioKind = enum {
             .stderr => .stderr(),
         };
     }
-
-    pub fn toNum(this: @This()) c_int {
-        return switch (this) {
-            .stdin => 0,
-            .stdout => 1,
-            .stderr => 2,
-        };
-    }
 };
 
 pub fn onAbortSignal(subprocess_ctx: ?*anyopaque, _: jsc.JSValue) callconv(.c) void {

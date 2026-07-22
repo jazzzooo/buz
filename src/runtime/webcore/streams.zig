@@ -1352,13 +1352,6 @@ pub const NetworkSink = struct {
 
     const log = bun.Output.scoped(.NetworkSink, .visible);
 
-    fn getHighWaterMark(this: *@This()) Blob.SizeType {
-        if (this.task) |task| {
-            return task.partSizeInBytes();
-        }
-        return this.highWaterMark;
-    }
-
     pub fn path(this: *@This()) ?[]const u8 {
         if (this.task) |task| {
             return task.path;

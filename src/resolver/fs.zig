@@ -436,24 +436,6 @@ pub const FileSystem = struct {
         return path_handler.joinAbsStringBufZ(f.top_level_dir, buf, parts, .auto);
     }
 
-    pub fn printLimits() void {
-        const LIMITS = [_]std.posix.rlimit_resource{ std.posix.rlimit_resource.STACK, std.posix.rlimit_resource.NOFILE };
-        Output.print("{{\n", .{});
-
-        inline for (LIMITS, 0..) |limit_type, i| {
-            const limit = std.posix.getrlimit(limit_type) catch return;
-
-            if (i == 0) {
-                Output.print("  \"stack\": [{d}, {d}],\n", .{ limit.cur, limit.max });
-            } else if (i == 1) {
-                Output.print("  \"files\": [{d}, {d}]\n", .{ limit.cur, limit.max });
-            }
-        }
-
-        Output.print("}}\n", .{});
-        Output.flush();
-    }
-
     pub const RealFS = struct {
         entries_mutex: Mutex = .{},
         entries: *EntriesOption.Map,
@@ -844,20 +826,6 @@ pub const FileSystem = struct {
             pub const SafetyGap = 3;
         };
 
-        pub fn modKeyWithFile(fs: *RealFS, io: std.Io, path: string, file: anytype) anyerror!ModKey {
-            return try ModKey.generate(fs, io, path, file);
-        }
-
-        pub fn modKey(fs: *RealFS, io: std.Io, path: string) anyerror!ModKey {
-            const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
-            defer {
-                if (fs.needToCloseFiles()) {
-                    file.close(io);
-                }
-            }
-            return try fs.modKeyWithFile(io, path, file);
-        }
-
         pub const EntriesOption = union(Tag) {
             entries: *DirEntry,
             err: DirEntry.Err,
@@ -1075,27 +1043,6 @@ pub const FileSystem = struct {
 
         fn readFileError(_: *RealFS, _: string, _: anyerror) void {}
 
-        pub fn readFileWithHandle(
-            fs: *RealFS,
-            path: string,
-            _size: ?usize,
-            file: std.Io.File,
-            comptime use_shared_buffer: bool,
-            shared_buffer: *MutableString,
-            comptime stream: bool,
-        ) !PathContentsPair {
-            return readFileWithHandleAndAllocator(
-                fs,
-                bun.default_allocator,
-                path,
-                _size,
-                file,
-                use_shared_buffer,
-                shared_buffer,
-                stream,
-            );
-        }
-
         pub fn readFileWithHandleAndAllocator(
             fs: *RealFS,
             allocator: std.mem.Allocator,
@@ -1242,58 +1189,6 @@ pub const FileSystem = struct {
             }
 
             return PathContentsPair{ .path = Path.init(path), .contents = file_contents };
-        }
-
-        pub fn kindFromAbsolute(
-            fs: *RealFS,
-            absolute_path: [:0]const u8,
-            existing_fd: FD,
-            store_fd: bool,
-        ) !Entry.Cache {
-            var outpath: bun.PathBuffer = undefined;
-
-            const stat = try bun.sys.lstat_absolute(absolute_path);
-            const is_symlink = stat.kind == std.Io.File.Kind.sym_link;
-            var _kind = stat.kind;
-            var cache = Entry.Cache{
-                .kind = Entry.Kind.file,
-                .symlink = PathString.empty,
-            };
-            var symlink: []const u8 = "";
-
-            if (is_symlink) {
-                var file: bun.FD = if (existing_fd.unwrapValid()) |valid|
-                    valid
-                else if (store_fd)
-                    try bun.sys.openA(absolute_path, bun.O.RDONLY, 0).unwrap()
-                else
-                    .fromStdFile(try bun.openFileForPath(absolute_path));
-                setMaxFd(file.native());
-
-                defer {
-                    if ((!store_fd or fs.needToCloseFiles()) and !existing_fd.isValid()) {
-                        file.close();
-                    } else if (comptime FeatureFlags.store_file_descriptors) {
-                        cache.fd = file;
-                    }
-                }
-
-                symlink = try file.getFdPath(&outpath);
-                _kind = try bun.sys.File.from(file).kind().unwrap();
-            }
-
-            bun.assert(_kind != .sym_link);
-
-            if (_kind == .directory) {
-                cache.kind = .dir;
-            } else {
-                cache.kind = .file;
-            }
-            if (symlink.len > 0) {
-                cache.symlink = PathString.init(try FilenameStore.instance.append([]const u8, symlink));
-            }
-
-            return cache;
         }
 
         pub fn kind(
@@ -1499,14 +1394,6 @@ pub const Path = struct {
         hasher.update("::::::::");
         hasher.update(this.text);
         return hasher.final();
-    }
-
-    /// This hash is used by the hot-module-reloading client in order to
-    /// identify modules. Since that code is JavaScript, the hash must remain in
-    /// range [-MAX_SAFE_INTEGER, MAX_SAFE_INTEGER] or else information is lost
-    /// due to floating-point precision.
-    pub fn hashForKit(path: Path) u52 {
-        return @truncate(path.hashKey());
     }
 
     pub fn packageName(this: *const Path) ?string {

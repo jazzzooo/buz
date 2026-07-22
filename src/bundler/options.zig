@@ -616,20 +616,6 @@ pub const Loader = enum(u8) {
         };
     }
 
-    pub fn disableHTML(this: Loader) Loader {
-        return switch (this) {
-            .html => .file,
-            else => this,
-        };
-    }
-
-    pub inline fn isSQLite(this: Loader) bool {
-        return switch (this) {
-            .sqlite, .sqlite_embedded => true,
-            else => false,
-        };
-    }
-
     pub fn shouldCopyForBundling(this: Loader) bool {
         return switch (this) {
             .file,
@@ -873,13 +859,6 @@ pub const Loader = enum(u8) {
 
             else => false,
         };
-    }
-
-    pub fn forFileName(filename: string, obj: anytype) ?Loader {
-        const ext = std.fs.path.extension(filename);
-        if (ext.len == 0 or (ext.len == 1 and ext[0] == '.')) return null;
-
-        return obj.get(ext);
     }
 
     pub fn sideEffects(this: Loader) bun.resolver.SideEffects {
@@ -1253,12 +1232,6 @@ pub const JSX = struct {
             return str;
         }
 
-        pub fn isReactLike(pragma: *const Pragma) bool {
-            return strings.eqlComptime(pragma.package_name, "react") or
-                strings.eqlComptime(pragma.package_name, "@emotion/jsx") or
-                strings.eqlComptime(pragma.package_name, "@emotion/react");
-        }
-
         pub fn setImportSource(pragma: *Pragma, allocator: std.mem.Allocator) void {
             strings.concatIfNeeded(
                 allocator,
@@ -1517,28 +1490,6 @@ const default_loader_ext = [_]string{
 
 // Only set it for browsers by default.
 const default_loader_ext_browser = [_]string{
-    ".html",
-};
-
-const node_modules_default_loader_ext = [_]string{
-    ".jsx",
-    ".js",
-    ".cjs",
-    ".mjs",
-    ".ts",
-    ".mts",
-    ".toml",
-    ".yaml",
-    ".yml",
-    ".txt",
-    ".json",
-    ".jsonc",
-    ".json5",
-    ".css",
-    ".tsx",
-    ".cts",
-    ".wasm",
-    ".text",
     ".html",
 };
 
@@ -1858,10 +1809,6 @@ pub const BundleOptions = struct {
         }
     }
 
-    pub fn areDefinesUnset(this: *const BundleOptions) bool {
-        return !this.defines_loaded;
-    }
-
     pub fn loadDefines(this: *BundleOptions, allocator: std.mem.Allocator, loader_: ?*DotEnv.Loader, env: ?*const Env) !void {
         if (this.defines_loaded) {
             return;
@@ -2133,40 +2080,6 @@ pub const TransformOptions = struct {
 
     target: Target = Target.browser,
     main_fields: []string = Target.DefaultMainFields.get(Target.browser),
-
-    pub fn initUncached(allocator: std.mem.Allocator, entryPointName: string, code: string) !TransformOptions {
-        assert(entryPointName.len > 0);
-
-        const entryPoint = Fs.File{
-            .path = Fs.Path.init(entryPointName),
-            .contents = code,
-        };
-
-        var cwd: string = "/";
-        if (Environment.isWasi or Environment.isWindows) {
-            cwd = try bun.getcwdAlloc(allocator);
-        }
-
-        var define = bun.StringHashMap(string).init(allocator);
-        try define.ensureTotalCapacity(1);
-
-        define.putAssumeCapacity("process.env.NODE_ENV", "development");
-
-        var loader = Loader.file;
-        if (defaultLoaders.get(std.fs.path.extension(entryPoint.path.text))) |defaultLoader| {
-            loader = defaultLoader;
-        }
-        assert(code.len > 0);
-
-        return TransformOptions{
-            .entry_point = entryPoint,
-            .define = define,
-            .loader = loader,
-            .resolve_dir = std.fs.path.dirname(entryPoint.path.text) orelse ".",
-            .main_fields = Target.DefaultMainFields.get(Target.browser),
-            .jsx = if (Loader.isJSX(loader)) JSX.Pragma{} else null,
-        };
-    }
 };
 
 pub const OutputFile = @import("./OutputFile.zig");
@@ -2274,19 +2187,6 @@ pub const Env = struct {
         }
     }
 
-    pub fn setFromLoaded(this: *Env, config: api.LoadedEnvConfig, allocator: std.mem.Allocator) !void {
-        this.allocator = allocator;
-        this.behavior = switch (config.dotenv) {
-            api.DotEnvBehavior.prefix => api.DotEnvBehavior.prefix,
-            api.DotEnvBehavior.load_all => api.DotEnvBehavior.load_all,
-            else => api.DotEnvBehavior.disable,
-        };
-
-        this.prefix = config.prefix;
-
-        try this.setDefaultsMap(config.defaults);
-    }
-
     pub fn toAPI(this: *const Env) api.LoadedEnvConfig {
         var slice = this.defaults.slice();
 
@@ -2364,17 +2264,6 @@ pub const EntryPoint = struct {
         }
     }
 
-    pub fn fromLoaded(
-        this: *EntryPoint,
-        framework_entry_point: api.FrameworkEntryPoint,
-        allocator: std.mem.Allocator,
-        kind: Kind,
-    ) !void {
-        this.path = framework_entry_point.path;
-        this.kind = kind;
-        this.env.setFromLoaded(framework_entry_point.env, allocator) catch {};
-    }
-
     pub fn fromAPI(
         this: *EntryPoint,
         framework_entry_point: api.FrameworkEntryPointMessage,
@@ -2430,17 +2319,6 @@ pub const RouteConfig = struct {
             .extensions = DefaultExtensions[0..],
             .static_dir = DefaultStaticDir,
             .routes_enabled = false,
-        };
-    }
-
-    pub fn fromLoadedRoutes(loaded: api.LoadedRouteConfig) RouteConfig {
-        return RouteConfig{
-            .extensions = loaded.extensions,
-            .dir = loaded.dir,
-            .asset_prefix_path = loaded.asset_prefix,
-            .static_dir = loaded.static_dir,
-            .routes_enabled = loaded.dir.len > 0,
-            .static_dir_enabled = loaded.static_dir.len > 0,
         };
     }
 

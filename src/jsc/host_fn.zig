@@ -324,13 +324,6 @@ pub const DOMEffect = struct {
         };
     }
 
-    pub fn forWrite(read: ID) DOMEffect {
-        return DOMEffect{
-            .writes = .{ read, ID.Heap, ID.Heap, ID.Heap },
-            .reads = .{ ID.Heap, ID.Heap, ID.Heap, ID.Heap },
-        };
-    }
-
     pub const pure = DOMEffect{};
 
     pub fn isPure(this: DOMEffect) bool {

@@ -283,10 +283,6 @@ pub fn close(fd: FD) ?bun.sys.Error {
     return fd.closeAllowingBadFileDescriptor(@returnAddress());
 }
 
-pub fn closeAllowingStdoutAndStderr(fd: FD) ?bun.sys.Error {
-    return fd.closeAllowingStandardIo(@returnAddress());
-}
-
 /// Maximum number of iovec buffers that can be passed to uv_fs_read/uv_fs_write.
 /// libuv uses c_uint for nbufs, so we must not exceed its maximum value.
 const max_iovec_count: usize = std.math.maxInt(c_uint);

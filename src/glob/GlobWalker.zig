@@ -1601,28 +1601,6 @@ pub fn GlobWalker_(
             return component;
         }
 
-        /// Build an ad-hoc glob pattern. Useful when you don't need to traverse
-        /// a directory.
-        pub fn buildPattern(
-            arena: *Arena,
-            patternComponents: *ArrayList(Component),
-            pattern: []const u8,
-            has_relative_patterns: *bool,
-            end_byte_of_basename_excluding_special_syntax: ?*u32,
-            basename_excluding_special_syntax_component_idx: ?*u32,
-        ) !void {
-            // in case the consumer doesn't care about some outputs.
-            const scratchpad: [3]u32 = @splat(0);
-            return buildPatternComponents(
-                arena,
-                patternComponents,
-                pattern,
-                has_relative_patterns,
-                end_byte_of_basename_excluding_special_syntax orelse scratchpad[1],
-                basename_excluding_special_syntax_component_idx orelse scratchpad[2],
-            );
-        }
-
         fn buildPatternComponents(
             arena: *Arena,
             patternComponents: *ArrayList(Component),

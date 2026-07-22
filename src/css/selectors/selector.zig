@@ -1469,16 +1469,6 @@ pub const tocss_servo = struct {
             .pseudo_element, .part, .slot_assignment => return,
         }
     }
-
-    pub fn toCss_PseudoElement(
-        pseudo_element: *const parser.PseudoElement,
-        dest: *Printer,
-    ) PrintErr!void {
-        switch (pseudo_element.*) {
-            .before => try dest.writeStr("::before"),
-            .after => try dest.writeStr("::after"),
-        }
-    }
 };
 
 pub fn shouldUnwrapIs(selectors: []const parser.Selector) bool {

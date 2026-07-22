@@ -1495,13 +1495,6 @@ pub fn normalizeWindowsT(comptime T: type, path: []const T, buf: []T) []const T 
     return buf[0..bufSize];
 }
 
-pub fn normalizeT(comptime T: type, path: []const T, buf: []T) []const T {
-    return switch (Environment.os) {
-        .windows => normalizeWindowsT(T, path, buf),
-        else => normalizePosixT(T, path, buf),
-    };
-}
-
 pub fn normalizePosixJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, path: []const T, buf: []T) bun.JSError!jsc.JSValue {
     return bun.String.createUTF8ForJS(globalObject, normalizePosixT(T, path, buf));
 }

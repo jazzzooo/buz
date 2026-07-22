@@ -166,13 +166,6 @@ pub fn RefCount(T: type, field_name: []const u8, destructor: anytype, options: O
             return count.raw_count;
         }
 
-        pub fn dumpActiveRefs(count: *@This()) void {
-            if (enable_debug) {
-                const ptr: *T = @fieldParentPtr(field_name, count);
-                count.debug.dump(@typeName(T), ptr, count.raw_count);
-            }
-        }
-
         /// The count is 0 after the destructor is called.
         pub fn assertNoRefs(count: *const @This()) void {
             if (comptime bun.Environment.ci_assert) {
@@ -281,13 +274,6 @@ pub fn ThreadSafeRefCount(T: type, field_name: []const u8, destructor: fn (*T) v
         pub fn hasOneRef(count: *const @This()) bool {
             if (enable_debug) count.debug.assertValid();
             return count.get() == 1;
-        }
-
-        pub fn dumpActiveRefs(count: *@This()) void {
-            if (enable_debug) {
-                const ptr: *T = @alignCast(@fieldParentPtr(field_name, count));
-                count.debug.dump(@typeName(T), ptr, count.raw_count.load(.seq_cst));
-            }
         }
 
         /// The count is 0 after the destructor is called.
@@ -424,18 +410,6 @@ pub fn RefPtr(T: type) type {
                 self.data = undefined;
             }
             return ptr;
-        }
-
-        /// This will assert that ALL references are cleaned up by the time the allocation scope ends.
-        pub fn newTracked(scope: *AllocationScope, init_data: T) @This() {
-            const ptr: @This() = .new(init_data);
-            ptr.trackImpl(scope, @returnAddress());
-            return ptr;
-        }
-
-        /// This will assert that ALL references are cleaned up by the time the allocation scope ends.
-        pub fn trackAll(ref: @This(), scope: *AllocationScope) void {
-            ref.trackImpl(scope, @returnAddress());
         }
 
         fn trackImpl(ref: @This(), scope: *AllocationScope, ret_addr: usize) void {

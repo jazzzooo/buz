@@ -19,10 +19,6 @@ pub const VM = opaque {
         return JSC__VM__setControlFlowProfiler(vm, enabled);
     }
 
-    pub fn isJITEnabled() bool {
-        return bun.cpp.JSC__VM__isJITEnabled();
-    }
-
     extern fn JSC__VM__hasExecutionTimeLimit(vm: *VM) bool;
     pub fn hasExecutionTimeLimit(vm: *VM) bool {
         return JSC__VM__hasExecutionTimeLimit(vm);
@@ -94,16 +90,6 @@ pub const VM = opaque {
     extern fn JSC__VM__setExecutionForbidden(vm: *VM, forbidden: bool) void;
     pub fn setExecutionForbidden(vm: *VM, forbidden: bool) void {
         JSC__VM__setExecutionForbidden(vm, forbidden);
-    }
-
-    extern fn JSC__VM__setExecutionTimeLimit(vm: *VM, timeout: f64) void;
-    pub fn setExecutionTimeLimit(vm: *VM, timeout: f64) void {
-        return JSC__VM__setExecutionTimeLimit(vm, timeout);
-    }
-
-    extern fn JSC__VM__clearExecutionTimeLimit(vm: *VM) void;
-    pub fn clearExecutionTimeLimit(vm: *VM) void {
-        return JSC__VM__clearExecutionTimeLimit(vm);
     }
 
     extern fn JSC__VM__executionForbidden(vm: *VM) bool;

@@ -469,13 +469,6 @@ pub fn flowLabel(this: *const SocketAddress) ?u32 {
     }
 }
 
-pub fn socklen(this: *const SocketAddress) inet.socklen_t {
-    switch (this._addr.family) {
-        AF.INET => return @sizeOf(inet.sockaddr_in),
-        AF.INET6 => return @sizeOf(inet.sockaddr_in6),
-    }
-}
-
 pub fn estimatedSize(this: *SocketAddress) usize {
     return @sizeOf(SocketAddress) + this._presentation.estimatedSize();
 }

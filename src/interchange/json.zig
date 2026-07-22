@@ -771,20 +771,6 @@ pub const JSONParseResult = struct {
     };
 };
 
-pub fn parseForBundling(source: *const logger.Source, log: *logger.Log, allocator: std.mem.Allocator) !JSONParseResult {
-    if (parseFastPath(source.contents)) |result| return .{
-        .expr = result.expr,
-        .tag = if (result.is_empty) .empty else .expr,
-    };
-
-    var parser = try JSONParser.init(allocator, source.*, log);
-    const result = try parser.parseExpr(false, true);
-    return JSONParseResult{
-        .tag = if (!LEXER_DEBUGGER_WORKAROUND and parser.lexer.is_ascii_only) JSONParseResult.Tag.ascii else JSONParseResult.Tag.expr,
-        .expr = result,
-    };
-}
-
 // threadlocal var env_json_auto_quote_buffer: MutableString = undefined;
 // threadlocal var env_json_auto_quote_buffer_loaded: bool = false;
 pub fn parseEnvJSON(source: *const logger.Source, log: *logger.Log, allocator: std.mem.Allocator) !Expr {

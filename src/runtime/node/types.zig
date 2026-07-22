@@ -376,13 +376,6 @@ pub const Encoding = enum(u8) {
         .{ "base64url", Encoding.base64url },
     });
 
-    pub fn isBinaryToText(this: Encoding) bool {
-        return switch (this) {
-            .hex, .base64, .base64url => true,
-            else => false,
-        };
-    }
-
     pub fn fromJS(value: jsc.JSValue, global: *jsc.JSGlobalObject) JSError!?Encoding {
         return map.fromJSCaseInsensitive(global, value);
     }

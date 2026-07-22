@@ -125,14 +125,6 @@ fn isPoisoned(ptr: *const anyopaque) bool {
     return c.isPoisoned(ptr);
 }
 
-pub fn assertPoisoned(ptr: *const anyopaque) void {
-    if (!comptime enabled) return;
-    if (!isPoisoned(ptr)) {
-        c.describe(ptr);
-        @panic("Address is not poisoned");
-    }
-}
-
 pub fn assertUnpoisoned(ptr: *const anyopaque) void {
     if (!comptime enabled) return;
     if (isPoisoned(ptr)) {

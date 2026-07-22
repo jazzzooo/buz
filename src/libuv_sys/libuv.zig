@@ -802,10 +802,6 @@ pub const Loop = extern struct {
         log("unrefCount({d})", .{count});
         this.active_handles -|= @as(u32, @intCast(count));
     }
-
-    pub fn dumpActiveHandles(this: *Loop, stream: ?*FILE) void {
-        uv_print_active_handles(this, stream);
-    }
 };
 pub const struct_uv__work = extern struct {
     work: ?*const fn ([*c]struct_uv__work) callconv(.c) void,
@@ -1497,10 +1493,6 @@ pub const Pipe = extern struct {
             return .{ .err = err };
         }
         return .success;
-    }
-
-    pub fn setPendingInstancesCount(this: *@This(), count: i32) void {
-        uv_pipe_pending_instances(this, count);
     }
 
     pub fn asStream(this: *@This()) *uv_stream_t {

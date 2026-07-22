@@ -202,12 +202,6 @@ pub const Call = struct {
 
     // Used when printing to generate the source prop on the fly
     was_jsx_element: bool = false,
-
-    pub fn hasSameFlagsAs(a: *Call, b: *Call) bool {
-        return (a.optional_chain == b.optional_chain and
-            a.is_direct_eval == b.is_direct_eval and
-            a.can_be_unwrapped_if_unused == b.can_be_unwrapped_if_unused);
-    }
 };
 
 pub const CallUnwrap = enum(u2) {
@@ -231,22 +225,12 @@ pub const Dot = struct {
     // unwrapped if the resulting value is unused. Unwrapping means discarding
     // the call target but keeping any arguments with side effects.
     call_can_be_unwrapped_if_unused: CallUnwrap = .never,
-
-    pub fn hasSameFlagsAs(a: *Dot, b: *Dot) bool {
-        return (a.optional_chain == b.optional_chain and
-            a.is_direct_eval == b.is_direct_eval and
-            a.can_be_removed_if_unused == b.can_be_removed_if_unused and a.call_can_be_unwrapped_if_unused == b.call_can_be_unwrapped_if_unused);
-    }
 };
 
 pub const Index = struct {
     index: ExprNodeIndex,
     target: ExprNodeIndex,
     optional_chain: ?OptionalChain = null,
-
-    pub fn hasSameFlagsAs(a: *E.Index, b: *E.Index) bool {
-        return (a.optional_chain == b.optional_chain);
-    }
 };
 
 pub const Arrow = struct {
@@ -983,14 +967,6 @@ pub const String = struct {
             .prefer_template = str.prefer_template,
             .is_utf16 = !str.isUTF8(),
         };
-    }
-
-    pub fn cloneSliceIfNecessary(str: *const String, allocator: std.mem.Allocator) ![]const u8 {
-        if (str.isUTF8()) {
-            return allocator.dupe(u8, str.string(allocator) catch unreachable);
-        }
-
-        return str.string(allocator);
     }
 
     pub fn javascriptLength(s: *const String) ?u32 {

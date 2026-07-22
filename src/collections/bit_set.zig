@@ -215,12 +215,6 @@ pub fn IntegerBitSet(comptime size: u16) type {
             return self.intersectWith(other).eql(self);
         }
 
-        /// Returns true iff the first bit set is the superset
-        /// of the second one.
-        pub fn supersetOf(self: Self, other: Self) bool {
-            return other.subsetOf(self);
-        }
-
         /// Returns the complement bit sets. Bits in the result
         /// are set if the corresponding bits were not set.
         pub fn complement(self: Self) Self {
@@ -244,24 +238,6 @@ pub fn IntegerBitSet(comptime size: u16) type {
         pub fn intersectWith(self: Self, other: Self) Self {
             var result = self;
             result.setIntersection(other);
-            return result;
-        }
-
-        /// Returns the xor of two bit sets. Bits in the
-        /// result are set if the corresponding bits were
-        /// not the same in both inputs.
-        pub fn xorWith(self: Self, other: Self) Self {
-            var result = self;
-            result.toggleSet(other);
-            return result;
-        }
-
-        /// Returns the difference of two bit sets. Bits in
-        /// the result are set if set in the first but not
-        /// set in the second set.
-        pub fn differenceWith(self: Self, other: Self) Self {
-            var result = self;
-            result.setIntersection(other.complement());
             return result;
         }
 
@@ -313,10 +289,6 @@ pub fn IntegerBitSet(comptime size: u16) type {
         fn maskBit(index: usize) MaskInt {
             if (MaskInt == u0) return 0;
             return @as(MaskInt, 1) << @as(ShiftInt, @intCast(index));
-        }
-        fn boolMaskBit(index: usize, value: bool) MaskInt {
-            if (MaskInt == u0) return 0;
-            return @as(MaskInt, @intFromBool(value)) << @as(ShiftInt, @intCast(index));
         }
     };
 }
@@ -592,12 +564,6 @@ pub fn ArrayBitSet(comptime MaskIntType: type, comptime size: usize) type {
             return self.intersectWith(other).eql(self);
         }
 
-        /// Returns true iff the first bit set is the superset
-        /// of the second one.
-        pub fn supersetOf(self: *const Self, other: *const Self) bool {
-            return other.subsetOf(self);
-        }
-
         /// Returns the complement bit sets. Bits in the result
         /// are set if the corresponding bits were not set.
         pub fn complement(self: *const Self) Self {
@@ -632,24 +598,6 @@ pub fn ArrayBitSet(comptime MaskIntType: type, comptime size: usize) type {
             return false;
         }
 
-        /// Returns the xor of two bit sets. Bits in the
-        /// result are set if the corresponding bits were
-        /// not the same in both inputs.
-        pub fn xorWith(self: *const Self, other: *const Self) Self {
-            var result = self.*;
-            result.toggleSet(other);
-            return result;
-        }
-
-        /// Returns the difference of two bit sets. Bits in
-        /// the result are set if set in the first but not
-        /// set in the second set.
-        pub fn differenceWith(self: *const Self, other: *const Self) Self {
-            var result = self.*;
-            result.setIntersection(&other.complement());
-            return result;
-        }
-
         /// Iterates through the items in the set, according to the options.
         /// The default options (.{}) will iterate indices of set bits in
         /// ascending order.  Modifications to the underlying bit set may
@@ -667,9 +615,6 @@ pub fn ArrayBitSet(comptime MaskIntType: type, comptime size: usize) type {
         }
         fn maskIndex(index: usize) callconv(bun.callconv_inline) usize {
             return index >> @bitSizeOf(ShiftInt);
-        }
-        fn boolMaskBit(index: usize, value: bool) callconv(bun.callconv_inline) MaskInt {
-            return @as(MaskInt, @intFromBool(value)) << @as(ShiftInt, @intCast(index));
         }
     };
 }
@@ -1058,15 +1003,6 @@ pub const DynamicBitSetUnmanaged = struct {
         }
     }
 
-    pub fn setExcludeTwo(self: *Self, other: Self, third: Self) void {
-        if (comptime Environment.allow_assert) bun.assert(other.bit_length == self.bit_length);
-        const num_masks = numMasks(self.bit_length);
-        for (self.masks[0..num_masks], other.masks[0..num_masks], third.masks[0..num_masks]) |*mask, other_mask, third_mask| {
-            mask.* &= ~other_mask;
-            mask.* &= ~third_mask;
-        }
-    }
-
     pub fn setExclude(self: *Self, other: Self) void {
         if (comptime Environment.allow_assert) bun.assert(other.bit_length == self.bit_length);
         const num_masks = numMasks(self.bit_length);
@@ -1133,21 +1069,6 @@ pub const DynamicBitSetUnmanaged = struct {
         } else true;
     }
 
-    /// Returns true iff the first bit set is the superset
-    /// of the second one.
-    pub fn supersetOf(self: Self, other: Self) bool {
-        if (self.bit_length != other.bit_length) {
-            return false;
-        }
-        const num_masks = numMasks(self.bit_length);
-        var i: usize = 0;
-        return while (i < num_masks) : (i += 1) {
-            if (self.masks[i] & other.masks[i] != other.masks[i]) {
-                break false;
-            }
-        } else true;
-    }
-
     /// Iterates through the items in the set, according to the options.
     /// The default options (.{}) will iterate indices of set bits in
     /// ascending order.  Modifications to the underlying bit set may
@@ -1169,9 +1090,6 @@ pub const DynamicBitSetUnmanaged = struct {
     }
     fn maskIndex(index: usize) usize {
         return index >> @bitSizeOf(ShiftInt);
-    }
-    fn boolMaskBit(index: usize, value: bool) MaskInt {
-        return @as(MaskInt, @intFromBool(value)) << @as(ShiftInt, @intCast(index));
     }
     fn numMasks(bit_length: usize) usize {
         return (bit_length + (@bitSizeOf(MaskInt) - 1)) / @bitSizeOf(MaskInt);
@@ -1601,349 +1519,8 @@ pub const Range = struct {
     end: usize,
 };
 
-// ---------------- Tests -----------------
-
-fn testEql(empty: anytype, full: anytype, len: usize) !void {
-    try testing.expect(empty.eql(empty));
-    try testing.expect(full.eql(full));
-    switch (len) {
-        0 => {
-            try testing.expect(empty.eql(full));
-            try testing.expect(full.eql(empty));
-        },
-        else => {
-            try testing.expect(!empty.eql(full));
-            try testing.expect(!full.eql(empty));
-        },
-    }
-}
-
-fn testSubsetOf(empty: anytype, full: anytype, even: anytype, odd: anytype, len: usize) !void {
-    try testing.expect(empty.subsetOf(empty));
-    try testing.expect(empty.subsetOf(full));
-    try testing.expect(full.subsetOf(full));
-    switch (len) {
-        0 => {
-            try testing.expect(even.subsetOf(odd));
-            try testing.expect(odd.subsetOf(even));
-        },
-        1 => {
-            try testing.expect(!even.subsetOf(odd));
-            try testing.expect(odd.subsetOf(even));
-        },
-        else => {
-            try testing.expect(!even.subsetOf(odd));
-            try testing.expect(!odd.subsetOf(even));
-        },
-    }
-}
-
-fn testSupersetOf(empty: anytype, full: anytype, even: anytype, odd: anytype, len: usize) !void {
-    try testing.expect(full.supersetOf(full));
-    try testing.expect(full.supersetOf(empty));
-    try testing.expect(empty.supersetOf(empty));
-    switch (len) {
-        0 => {
-            try testing.expect(even.supersetOf(odd));
-            try testing.expect(odd.supersetOf(even));
-        },
-        1 => {
-            try testing.expect(even.supersetOf(odd));
-            try testing.expect(!odd.supersetOf(even));
-        },
-        else => {
-            try testing.expect(!even.supersetOf(odd));
-            try testing.expect(!odd.supersetOf(even));
-        },
-    }
-}
-
-fn testBitSet(a: anytype, b: anytype, len: usize) !void {
-    try testing.expectEqual(len, a.capacity());
-    try testing.expectEqual(len, b.capacity());
-    const needs_ptr = @hasField(std.meta.Child(@TypeOf(a)), "masks") and @typeInfo(@TypeOf(@field(a, "masks"))) != .pointer;
-
-    {
-        for (0..len) |i| {
-            a.setValue(i, i & 1 == 0);
-            b.setValue(i, i & 2 == 0);
-        }
-    }
-
-    try testing.expectEqual((len + 1) / 2, a.count());
-    try testing.expectEqual((len + 3) / 4 + (len + 2) / 4, b.count());
-
-    {
-        var iter = a.iterator(.{});
-        var i: usize = 0;
-        while (i < len) : (i += 2) {
-            try testing.expectEqual(@as(?usize, i), iter.next());
-        }
-        try testing.expectEqual(@as(?usize, null), iter.next());
-        try testing.expectEqual(@as(?usize, null), iter.next());
-        try testing.expectEqual(@as(?usize, null), iter.next());
-    }
-    a.toggleAll();
-    {
-        var iter = a.iterator(.{});
-        var i: usize = 1;
-        while (i < len) : (i += 2) {
-            try testing.expectEqual(@as(?usize, i), iter.next());
-        }
-        try testing.expectEqual(@as(?usize, null), iter.next());
-        try testing.expectEqual(@as(?usize, null), iter.next());
-        try testing.expectEqual(@as(?usize, null), iter.next());
-    }
-
-    {
-        var iter = b.iterator(.{ .kind = .unset });
-        var i: usize = 2;
-        while (i < len) : (i += 4) {
-            try testing.expectEqual(@as(?usize, i), iter.next());
-            if (i + 1 < len) {
-                try testing.expectEqual(@as(?usize, i + 1), iter.next());
-            }
-        }
-        try testing.expectEqual(@as(?usize, null), iter.next());
-        try testing.expectEqual(@as(?usize, null), iter.next());
-        try testing.expectEqual(@as(?usize, null), iter.next());
-    }
-
-    {
-        for (0..len) |i| {
-            try testing.expectEqual(i & 1 != 0, a.isSet(i));
-            try testing.expectEqual(i & 2 == 0, b.isSet(i));
-        }
-    }
-
-    if (comptime needs_ptr) {
-        a.setUnion(b);
-    } else {
-        a.setUnion(b.*);
-    }
-
-    {
-        var i: usize = 0;
-        while (i < len) : (i += 1) {
-            try testing.expectEqual(i & 1 != 0 or i & 2 == 0, a.isSet(i));
-            try testing.expectEqual(i & 2 == 0, b.isSet(i));
-        }
-
-        i = len;
-        var set = a.iterator(.{ .direction = .reverse });
-        var unset = a.iterator(.{ .kind = .unset, .direction = .reverse });
-        while (i > 0) {
-            i -= 1;
-            if (i & 1 != 0 or i & 2 == 0) {
-                try testing.expectEqual(@as(?usize, i), set.next());
-            } else {
-                try testing.expectEqual(@as(?usize, i), unset.next());
-            }
-        }
-        try testing.expectEqual(@as(?usize, null), set.next());
-        try testing.expectEqual(@as(?usize, null), set.next());
-        try testing.expectEqual(@as(?usize, null), set.next());
-        try testing.expectEqual(@as(?usize, null), unset.next());
-        try testing.expectEqual(@as(?usize, null), unset.next());
-        try testing.expectEqual(@as(?usize, null), unset.next());
-    }
-
-    if (comptime needs_ptr) {
-        a.toggleSet(b);
-    } else {
-        a.toggleSet(b.*);
-    }
-    {
-        try testing.expectEqual(len / 4, a.count());
-
-        for (0..len) |i| {
-            try testing.expectEqual(i & 1 != 0 and i & 2 != 0, a.isSet(i));
-            try testing.expectEqual(i & 2 == 0, b.isSet(i));
-            if (i & 1 == 0) {
-                a.set(i);
-            } else {
-                a.unset(i);
-            }
-        }
-    }
-
-    if (comptime needs_ptr) {
-        a.setIntersection(b);
-    } else {
-        a.setIntersection(b.*);
-    }
-    {
-        try testing.expectEqual((len + 3) / 4, a.count());
-
-        for (0..len) |i| {
-            try testing.expectEqual(i & 1 == 0 and i & 2 == 0, a.isSet(i));
-            try testing.expectEqual(i & 2 == 0, b.isSet(i));
-        }
-    }
-
-    if (comptime needs_ptr) {
-        a.toggleSet(a);
-    } else {
-        a.toggleSet(a.*);
-    }
-    {
-        var iter = a.iterator(.{});
-        try testing.expectEqual(@as(?usize, null), iter.next());
-        try testing.expectEqual(@as(?usize, null), iter.next());
-        try testing.expectEqual(@as(?usize, null), iter.next());
-        try testing.expectEqual(@as(usize, 0), a.count());
-    }
-    {
-        var iter = a.iterator(.{ .direction = .reverse });
-        try testing.expectEqual(@as(?usize, null), iter.next());
-        try testing.expectEqual(@as(?usize, null), iter.next());
-        try testing.expectEqual(@as(?usize, null), iter.next());
-        try testing.expectEqual(@as(usize, 0), a.count());
-    }
-
-    const test_bits = [_]usize{
-        0,  1,  2,   3,   4,   5,    6, 7, 9, 10, 11, 22, 31, 32, 63, 64,
-        66, 95, 127, 160, 192, 1000,
-    };
-    for (test_bits) |i| {
-        if (i < a.capacity()) {
-            a.set(i);
-        }
-    }
-
-    for (test_bits) |i| {
-        if (i < a.capacity()) {
-            try testing.expectEqual(@as(?usize, i), a.findFirstSet());
-            try testing.expectEqual(@as(?usize, i), a.toggleFirstSet());
-        }
-    }
-    try testing.expectEqual(@as(?usize, null), a.findFirstSet());
-    try testing.expectEqual(@as(?usize, null), a.toggleFirstSet());
-    try testing.expectEqual(@as(?usize, null), a.findFirstSet());
-    try testing.expectEqual(@as(?usize, null), a.toggleFirstSet());
-    try testing.expectEqual(@as(usize, 0), a.count());
-
-    a.setRangeValue(.{ .start = 0, .end = len }, false);
-    try testing.expectEqual(@as(usize, 0), a.count());
-
-    a.setRangeValue(.{ .start = 0, .end = len }, true);
-    try testing.expectEqual(len, a.count());
-
-    a.setRangeValue(.{ .start = 0, .end = len }, false);
-    a.setRangeValue(.{ .start = 0, .end = 0 }, true);
-    try testing.expectEqual(@as(usize, 0), a.count());
-
-    a.setRangeValue(.{ .start = len, .end = len }, true);
-    try testing.expectEqual(@as(usize, 0), a.count());
-
-    if (len >= 1) {
-        a.setRangeValue(.{ .start = 0, .end = len }, false);
-        a.setRangeValue(.{ .start = 0, .end = 1 }, true);
-        try testing.expectEqual(@as(usize, 1), a.count());
-        try testing.expect(a.isSet(0));
-
-        a.setRangeValue(.{ .start = 0, .end = len }, false);
-        a.setRangeValue(.{ .start = 0, .end = len - 1 }, true);
-        try testing.expectEqual(len - 1, a.count());
-        try testing.expect(!a.isSet(len - 1));
-
-        a.setRangeValue(.{ .start = 0, .end = len }, false);
-        a.setRangeValue(.{ .start = 1, .end = len }, true);
-        try testing.expectEqual(@as(usize, len - 1), a.count());
-        try testing.expect(!a.isSet(0));
-
-        a.setRangeValue(.{ .start = 0, .end = len }, false);
-        a.setRangeValue(.{ .start = len - 1, .end = len }, true);
-        try testing.expectEqual(@as(usize, 1), a.count());
-        try testing.expect(a.isSet(len - 1));
-
-        if (len >= 4) {
-            a.setRangeValue(.{ .start = 0, .end = len }, false);
-            a.setRangeValue(.{ .start = 1, .end = len - 2 }, true);
-            try testing.expectEqual(@as(usize, len - 3), a.count());
-            try testing.expect(!a.isSet(0));
-            try testing.expect(a.isSet(1));
-            try testing.expect(a.isSet(len - 3));
-            try testing.expect(!a.isSet(len - 2));
-            try testing.expect(!a.isSet(len - 1));
-        }
-    }
-}
-
-fn fillEven(set: anytype, len: usize) void {
-    for (0..len) |i| {
-        set.setValue(i, i & 1 == 0);
-    }
-}
-
-fn fillOdd(set: anytype, len: usize) void {
-    for (0..len) |i| {
-        set.setValue(i, i & 1 == 1);
-    }
-}
-
-fn testPureBitSet(comptime Set: type) !void {
-    var empty_ = Set.initEmpty();
-    var full_ = Set.initFull();
-    const needs_ptr = @hasField(Set, "masks") and @typeInfo(@TypeOf(empty_.masks)) != .pointer;
-
-    var even_ = even: {
-        var bit_set = Set.initEmpty();
-        fillEven(&bit_set, Set.bit_length);
-        break :even bit_set;
-    };
-
-    var odd_ = odd: {
-        var bit_set = Set.initEmpty();
-        fillOdd(&bit_set, Set.bit_length);
-        break :odd bit_set;
-    };
-
-    var empty = if (needs_ptr) &empty_ else empty_;
-    var full = if (needs_ptr) &full_ else full_;
-    var even = if (needs_ptr) &even_ else even_;
-    var odd = if (needs_ptr) &odd_ else odd_;
-
-    try testSubsetOf(empty, full, even, odd, Set.bit_length);
-    try testSupersetOf(empty, full, even, odd, Set.bit_length);
-
-    try testing.expect(empty.complement().eql(full));
-    try testing.expect(full.complement().eql(empty));
-    try testing.expect(even.complement().eql(odd));
-    try testing.expect(odd.complement().eql(even));
-
-    try testing.expect(empty.unionWith(empty).eql(empty));
-    try testing.expect(empty.unionWith(full).eql(full));
-    try testing.expect(full.unionWith(full).eql(full));
-    try testing.expect(full.unionWith(empty).eql(full));
-    try testing.expect(even.unionWith(odd).eql(full));
-    try testing.expect(odd.unionWith(even).eql(full));
-
-    try testing.expect(empty.intersectWith(empty).eql(empty));
-    try testing.expect(empty.intersectWith(full).eql(empty));
-    try testing.expect(full.intersectWith(full).eql(full));
-    try testing.expect(full.intersectWith(empty).eql(empty));
-    try testing.expect(even.intersectWith(odd).eql(empty));
-    try testing.expect(odd.intersectWith(even).eql(empty));
-
-    try testing.expect(empty.xorWith(empty).eql(empty));
-    try testing.expect(empty.xorWith(full).eql(full));
-    try testing.expect(full.xorWith(full).eql(empty));
-    try testing.expect(full.xorWith(empty).eql(full));
-    try testing.expect(even.xorWith(odd).eql(full));
-    try testing.expect(odd.xorWith(even).eql(full));
-
-    try testing.expect(empty.differenceWith(empty).eql(empty));
-    try testing.expect(empty.differenceWith(full).eql(empty));
-    try testing.expect(full.differenceWith(full).eql(empty));
-    try testing.expect(full.differenceWith(empty).eql(full));
-    try testing.expect(full.differenceWith(odd).eql(even));
-    try testing.expect(full.differenceWith(even).eql(odd));
-}
-
 const bun = @import("bun");
 const Environment = bun.Environment;
 
 const std = @import("std");
-const testing = std.testing;
 const Allocator = std.mem.Allocator;

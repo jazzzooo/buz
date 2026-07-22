@@ -988,38 +988,6 @@ pub fn mkdir(file_path: [:0]const u8, flags: mode_t) Maybe(void) {
     };
 }
 
-pub fn mkdirA(file_path: []const u8, flags: mode_t) Maybe(void) {
-    if (comptime Environment.isMac or Environment.isFreeBSD) {
-        return Maybe(void).errnoSysP(syscall.mkdir(&(std.posix.toPosixPath(file_path) catch return Maybe(void){
-            .err = .{
-                .errno = @backingInt(E.NOMEM),
-                .syscall = .open,
-            },
-        }), flags), .mkdir, file_path) orelse .success;
-    }
-
-    if (comptime Environment.isLinux) {
-        return Maybe(void).errnoSysP(linux.mkdir(&(std.posix.toPosixPath(file_path) catch return Maybe(void){
-            .err = .{
-                .errno = @backingInt(E.NOMEM),
-                .syscall = .open,
-            },
-        }), flags), .mkdir, file_path) orelse .success;
-    }
-
-    if (comptime Environment.isWindows) {
-        const wbuf = bun.w_path_buffer_pool.get();
-        defer bun.w_path_buffer_pool.put(wbuf);
-        const wpath = bun.strings.toKernel32Path(wbuf, file_path);
-
-        return Maybe(void).errnoSysP(
-            c.CreateDirectoryW(wpath.ptr, null),
-            .mkdir,
-            file_path,
-        ) orelse .success;
-    }
-}
-
 pub fn mkdirOSPath(file_path: bun.OSPathSliceZ, flags: mode_t) Maybe(void) {
     return switch (Environment.os) {
         else => mkdir(file_path, flags),
@@ -1962,20 +1930,6 @@ pub fn openat(dirfd: bun.FD, file_path: [:0]const u8, flags: i32, perm: bun.Mode
         return openatWindowsT(u8, dirfd, file_path, flags, perm);
     } else {
         return openatOSPath(dirfd, file_path, flags, perm);
-    }
-}
-
-pub fn openatFileWithLibuvFlags(dirfd: bun.FD, file_path: [:0]const u8, flags: bun.jsc.Node.FileSystemFlags, perm: bun.Mode) Maybe(bun.FD) {
-    if (comptime Environment.isWindows) {
-        const f = flags.toWindows() catch return .{ .err = .{
-            .errno = @backingInt(E.INVAL),
-            .syscall = .open,
-            .path = file_path,
-        } };
-        // TODO: pass f.share
-        return openFileAtWindowsT(u8, dirfd, file_path, f.access, f.disposition, f.attributes);
-    } else {
-        return openatOSPath(dirfd, file_path, flags.asPosix(), perm);
     }
 }
 
@@ -3595,74 +3549,6 @@ pub fn memfd_create(name: [:0]const u8, flags_: MemfdFlags) Maybe(bun.FD) {
         return .{ .result = .fromNative(@intCast(rc)) };
     }
     unreachable;
-}
-
-pub fn setPipeCapacityOnLinux(fd: bun.FD, capacity: usize) Maybe(usize) {
-    if (comptime !Environment.isLinux) @compileError("Linux-only");
-    bun.assert(capacity > 0);
-
-    // In  Linux  versions  before 2.6.11, the capacity of a
-    // pipe was the same as the system page size (e.g., 4096
-    // bytes on i386).  Since Linux 2.6.11, the pipe
-    // capacity is 16 pages (i.e., 65,536 bytes in a system
-    // with a page size of 4096 bytes).  Since Linux 2.6.35,
-    // the default pipe capacity is 16 pages, but the
-    // capacity can be queried  and  set  using  the
-    // fcntl(2) F_GETPIPE_SZ and F_SETPIPE_SZ operations.
-    // See fcntl(2) for more information.
-    //:# define F_SETPIPE_SZ    1031    /* Set pipe page size array.
-    const F_SETPIPE_SZ = 1031;
-    const F_GETPIPE_SZ = 1032;
-
-    // We don't use glibc here
-    // It didn't work. Always returned 0.
-    const pipe_len = switch (fcntl(fd, F_GETPIPE_SZ, 0)) {
-        .result => |result| result,
-        .err => |err| return err,
-    };
-    if (pipe_len == 0) return Maybe(usize){ .result = 0 };
-    if (pipe_len >= capacity) return Maybe(usize){ .result = pipe_len };
-
-    const new_pipe_len = switch (fcntl(fd, F_SETPIPE_SZ, capacity)) {
-        .result => |result| result,
-        .err => |err| return err,
-    };
-    return Maybe(usize){ .result = new_pipe_len };
-}
-
-pub fn getMaxPipeSizeOnLinux() usize {
-    return @as(
-        usize,
-        @intCast(bun.once(struct {
-            fn once() c_int {
-                const strings = bun.strings;
-                const default_out_size = 512 * 1024;
-                const pipe_max_size_fd = switch (open("/proc/sys/fs/pipe-max-size", bun.O.RDONLY, 0)) {
-                    .result => |fd2| fd2,
-                    .err => |err| {
-                        log("Failed to open /proc/sys/fs/pipe-max-size: {d}\n", .{err.errno});
-                        return default_out_size;
-                    },
-                };
-                defer pipe_max_size_fd.close();
-                var max_pipe_size_buf: [128]u8 = undefined;
-                const max_pipe_size = switch (read(pipe_max_size_fd, max_pipe_size_buf[0..])) {
-                    .result => |bytes_read| std.fmt.parseInt(i64, strings.trim(max_pipe_size_buf[0..bytes_read], "\n"), 10) catch |err| {
-                        log("Failed to parse /proc/sys/fs/pipe-max-size: {s}\n", .{@errorName(err)});
-                        return default_out_size;
-                    },
-                    .err => |err| {
-                        log("Failed to read /proc/sys/fs/pipe-max-size: {d}\n", .{err.errno});
-                        return default_out_size;
-                    },
-                };
-
-                // we set the absolute max to 8 MB because honestly that's a huge pipe
-                // my current linux machine only goes up to 1 MB, so that's very unlikely to be hit
-                return @min(@as(c_int, @truncate(max_pipe_size -| 32)), 1024 * 1024 * 8);
-            }
-        }.once, c_int)),
-    );
 }
 
 pub const WindowsFileAttributes = packed struct(windows.DWORD) {

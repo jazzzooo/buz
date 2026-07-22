@@ -214,21 +214,6 @@ pub fn WithOptions(comptime Pointer: type, comptime options: Options) type {
             return data.strongCount(.acquire);
         }
 
-        /// Gets the number of weak pointers that point to the shared data.
-        ///
-        /// Be careful about using this method with `AtomicShared` pointers. Another thread can
-        /// change the reference count at any time. By the time you do something with the return
-        /// value, the count may have changed.
-        pub fn weakCount(self: Self) Count {
-            const data = if (comptime info.isOptional())
-                self.getData() orelse return null
-            else
-                self.getData();
-            // `- 1` because this part of the weak count is not actually a weak pointer; it simply
-            // indicates that strong pointers exist.
-            return data.rawWeakCount(.acquire) - 1;
-        }
-
         fn allocImpl(allocator: Allocator, value: Child) !Self {
             const data = try Data.alloc(allocator, value);
             return .{ .pointer = &data.value };
@@ -245,14 +230,6 @@ pub fn WithOptions(comptime Pointer: type, comptime options: Options) type {
         pub fn leak(self: *Self) Pointer {
             defer self.* = undefined;
             return self.pointer;
-        }
-
-        /// Creates a shared pointer from a raw pointer returned by `leak`.
-        ///
-        /// `pointer` must have been previously returned by `leak`. `adoptRawUnsafe` should not be
-        /// called again on this pointer.
-        pub fn adoptRawUnsafe(pointer: Pointer) Self {
-            return .{ .pointer = pointer };
         }
 
         /// Clones a shared pointer, given a raw pointer that originally came from a shared pointer.
@@ -351,25 +328,6 @@ fn Weak(comptime Pointer: type, comptime options: Options) type {
             return data.strongCount(.acquire);
         }
 
-        /// Gets the number of weak pointers that point to the shared data.
-        ///
-        /// Be careful about using this method with `AtomicShared` pointers. Another thread can
-        /// change the reference count at any time. By the time you do something with the return
-        /// value, the count may have changed. Additionally, in concurrent code, this value can be
-        /// off by one.
-        pub fn weakCount(self: Self) Count {
-            const data = if (comptime info.isOptional())
-                self.getData() orelse return null
-            else
-                self.getData();
-            const raw_weak = data.rawWeakCount(.acquire);
-            // .monotonic because we just want to see if the strong count was > 0 when we read the
-            // weak count. The .acquire load of the weak count, plus the fact that the strong count
-            // never changes once it reaches 0, is sufficient.
-            const strong = data.strongCount(.monotonic);
-            return if (strong > 0) raw_weak - 1 else raw_weak;
-        }
-
         fn getData(self: Self) if (info.isOptional()) ?*Data else *Data {
             return .fromValuePtr(self.pointer);
         }
@@ -413,11 +371,6 @@ fn FullData(comptime Child: type, comptime options: Options) type {
 
         pub fn strongCount(self: Self, comptime order: AtomicOrder) usize {
             return self.strong_count.get(order);
-        }
-
-        /// Will be 1 greater than the actual number of weak pointers if any strong pointers exist.
-        pub fn rawWeakCount(self: Self, comptime order: AtomicOrder) usize {
-            return if (comptime options.allow_weak) self.weak_count.get(order) else 1;
         }
 
         pub fn incrementStrong(self: *Self) void {

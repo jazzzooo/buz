@@ -803,136 +803,6 @@ pub fn NewParser_(
             }
         }
 
-        pub fn treeShake(noalias p: *P, parts: *[]js_ast.Part, merge: bool) void {
-            var parts_: []js_ast.Part = parts.*;
-            defer {
-                if (merge and parts_.len > 1) {
-                    var first_none_part: usize = parts_.len;
-                    var stmts_count: usize = 0;
-                    for (parts_, 0..) |part, i| {
-                        if (part.tag == .none) {
-                            stmts_count += part.stmts.len;
-                            first_none_part = @min(i, first_none_part);
-                        }
-                    }
-
-                    if (first_none_part < parts_.len) {
-                        const stmts_list = p.allocator.alloc(Stmt, stmts_count) catch unreachable;
-                        var stmts_remain = stmts_list;
-
-                        for (parts_) |part| {
-                            if (part.tag == .none) {
-                                bun.copy(Stmt, stmts_remain, part.stmts);
-                                stmts_remain = stmts_remain[part.stmts.len..];
-                            }
-                        }
-
-                        parts_[first_none_part].stmts = stmts_list;
-
-                        parts_ = parts_[0 .. first_none_part + 1];
-                    }
-                }
-
-                parts.* = parts_;
-            }
-            const default_export_ref =
-                if (p.named_exports.get("default")) |default_| default_.ref else Ref.None;
-
-            while (parts_.len > 1) {
-                var parts_end: usize = 0;
-                const last_end = parts_.len;
-
-                for (parts_) |part| {
-                    const is_dead = part.can_be_removed_if_unused and can_remove_part: {
-                        for (part.stmts) |stmt| {
-                            switch (stmt.data) {
-                                .s_local => |local| {
-                                    if (local.is_export) break :can_remove_part false;
-                                    for (local.decls.slice()) |decl| {
-                                        if (isBindingUsed(p, decl.binding, default_export_ref))
-                                            break :can_remove_part false;
-                                    }
-                                },
-                                .s_if => |if_statement| {
-                                    const result = SideEffects.toBoolean(p, if_statement.test_.data);
-                                    if (!(result.ok and result.side_effects == .no_side_effects and !result.value)) {
-                                        break :can_remove_part false;
-                                    }
-                                },
-                                .s_while => |while_statement| {
-                                    const result = SideEffects.toBoolean(p, while_statement.test_.data);
-                                    if (!(result.ok and result.side_effects == .no_side_effects and !result.value)) {
-                                        break :can_remove_part false;
-                                    }
-                                },
-                                .s_for => |for_statement| {
-                                    if (for_statement.test_) |expr| {
-                                        const result = SideEffects.toBoolean(p, expr.data);
-                                        if (!(result.ok and result.side_effects == .no_side_effects and !result.value)) {
-                                            break :can_remove_part false;
-                                        }
-                                    }
-                                },
-                                .s_function => |func| {
-                                    if (func.func.flags.contains(.is_export)) break :can_remove_part false;
-                                    if (func.func.name) |name| {
-                                        const symbol: *const Symbol = &p.symbols.items[name.ref.?.innerIndex()];
-
-                                        if (name.ref.?.eql(default_export_ref) or
-                                            symbol.use_count_estimate > 0 or
-                                            p.named_exports.contains(symbol.original_name) or
-                                            p.named_imports.contains(name.ref.?) or
-                                            p.is_import_item.get(name.ref.?) != null)
-                                        {
-                                            break :can_remove_part false;
-                                        }
-                                    }
-                                },
-                                .s_import,
-                                .s_export_clause,
-                                .s_export_from,
-                                .s_export_default,
-                                => break :can_remove_part false,
-
-                                .s_class => |class| {
-                                    if (class.is_export) break :can_remove_part false;
-                                    if (class.class.class_name) |name| {
-                                        const symbol: *const Symbol = &p.symbols.items[name.ref.?.innerIndex()];
-
-                                        if (name.ref.?.eql(default_export_ref) or
-                                            symbol.use_count_estimate > 0 or
-                                            p.named_exports.contains(symbol.original_name) or
-                                            p.named_imports.contains(name.ref.?) or
-                                            p.is_import_item.get(name.ref.?) != null)
-                                        {
-                                            break :can_remove_part false;
-                                        }
-                                    }
-                                },
-
-                                else => break :can_remove_part false,
-                            }
-                        }
-                        break :can_remove_part true;
-                    };
-
-                    if (is_dead) {
-                        p.clearSymbolUsagesFromDeadPart(&part);
-
-                        continue;
-                    }
-
-                    parts_[parts_end] = part;
-                    parts_end += 1;
-                }
-
-                parts_.len = parts_end;
-                if (last_end == parts_.len) {
-                    break;
-                }
-            }
-        }
-
         const ImportTransposer = ExpressionTransposer(P, *const TransposeState, P.transposeImport);
         const RequireTransposer = ExpressionTransposer(P, *const TransposeState, P.transposeRequire);
         const RequireResolveTransposer = ExpressionTransposer(P, Expr, P.transposeRequireResolve);
@@ -2225,13 +2095,6 @@ pub fn NewParser_(
             const static_symbol = generatedSymbolName("__require");
             p.runtime_imports.__require = bun.handleOom(declareSymbolMaybeGenerated(p, .other, logger.Loc.Empty, static_symbol, true));
             p.runtime_imports.put("__require", p.runtime_imports.__require.?);
-        }
-
-        pub fn resolveCommonJSSymbols(p: *P) void {
-            if (!p.options.features.allow_runtime)
-                return;
-
-            p.ensureRequireSymbol();
         }
 
         fn willUseRenamer(p: *P) bool {
@@ -5624,15 +5487,6 @@ pub fn NewParser_(
             return res;
         }
 
-        fn keepStmtSymbolName(p: *P, loc: logger.Loc, ref: Ref, name: string) Stmt {
-            _ = p;
-            _ = loc;
-            _ = ref;
-            _ = name;
-            // TODO:
-            @compileError("not implemented");
-        }
-
         fn runtimeIdentifierRef(p: *P, loc: logger.Loc, comptime name: string) Ref {
             p.has_called_runtime = true;
 
@@ -6847,11 +6701,8 @@ var s_missing = S.Empty{};
 var nullExprData = Expr.Data{ .e_missing = e_missing_data };
 var nullStmtData = Stmt.Data{ .s_empty = s_missing };
 
-var keyExprData = Expr.Data{ .e_string = &Prefill.String.Key };
 var nullExprValueData = E.Null{};
-var falseExprValueData = E.Boolean{ .value = false };
 var nullValueExpr = Expr.Data{ .e_null = nullExprValueData };
-var falseValueExpr = Expr.Data{ .e_boolean = E.Boolean{ .value = false } };
 
 const string = []const u8;
 

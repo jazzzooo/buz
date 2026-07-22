@@ -860,10 +860,6 @@ pub const JSValue = enum(i64) {
         return int;
     }
 
-    pub fn canBeStrictInt32(value: f64) bool {
-        return tryConvertToStrictInt32(value) != null;
-    }
-
     const has_fjcvtzs = bun.Environment.isAarch64 and
         std.Target.aarch64.featureSetHas(@import("builtin").cpu.features, .jsconv);
 

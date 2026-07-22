@@ -174,17 +174,6 @@ pub const ImportRule = struct {
         };
     }
 
-    pub fn fromConditionsAndUrl(url: []const u8, conds: ImportConditions) This {
-        return ImportRule{
-            .url = url,
-            .layer = if (conds.layer) |layer| if (layer.v) |ly| .{ .v = ly } else .{ .v = null } else null,
-            .supports = conds.supports,
-            .media = conds.media,
-            .import_record_idx = std.math.maxInt(u32),
-            .loc = Location.dummy(),
-        };
-    }
-
     pub fn conditions(this: *const @This()) *const ImportConditions {
         return @ptrCast(&this.layer);
     }

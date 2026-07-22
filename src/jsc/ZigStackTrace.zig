@@ -87,10 +87,6 @@ pub const ZigStackTrace = extern struct {
         return this.frames_ptr[0..this.frames_len];
     }
 
-    pub fn framesMutable(this: *ZigStackTrace) []ZigStackFrame {
-        return this.frames_ptr[0..this.frames_len];
-    }
-
     pub const SourceLineIterator = struct {
         trace: *const ZigStackTrace,
         i: i32,

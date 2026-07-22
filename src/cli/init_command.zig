@@ -922,12 +922,6 @@ const Template = enum {
         contents: [:0]const u8,
         can_skip_if_exists: bool = false,
     };
-    pub fn shouldUseSourceFileProjectGenerator(this: Template) bool {
-        return switch (this) {
-            .blank, .typescript_library => false,
-            else => true,
-        };
-    }
     pub fn isReact(this: Template) bool {
         return switch (this) {
             .react_blank, .react_tailwind, .react_tailwind_shadcn => true,

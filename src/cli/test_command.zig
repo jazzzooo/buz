@@ -620,8 +620,6 @@ pub const CommandLineReporter = struct {
         break :brk map;
     };
 
-    pub fn handleUpdateCount(_: *TestRunner.Callback, _: u32, _: u32) void {}
-
     pub fn handleTestStart(_: *TestRunner.Callback, _: Test.ID) void {}
 
     fn printTestLine(

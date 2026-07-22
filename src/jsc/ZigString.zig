@@ -62,37 +62,6 @@ pub const ZigString = extern struct {
         return ZigString__toValueGC(this, ctx);
     }
 
-    /// This function is not optimized!
-    pub fn eqlCaseInsensitive(this: ZigString, other: ZigString) bool {
-        var fallback_buffer: [1024]u8 = undefined;
-        var fallback: std.heap.BufferFirstAllocator = .init(&fallback_buffer, bun.default_allocator);
-        const fallback_allocator = fallback.allocator();
-
-        var utf16_slice = this.toSliceLowercase(fallback_allocator);
-        var latin1_slice = other.toSliceLowercase(fallback_allocator);
-        defer utf16_slice.deinit();
-        defer latin1_slice.deinit();
-        return strings.eqlLong(utf16_slice.slice(), latin1_slice.slice(), true);
-    }
-
-    pub fn toSliceLowercase(this: ZigString, allocator: std.mem.Allocator) Slice {
-        if (this.len == 0)
-            return Slice.empty;
-        var fallback_buffer: [512]u8 = undefined;
-        var fallback: std.heap.BufferFirstAllocator = .init(&fallback_buffer, allocator);
-        const fallback_allocator = fallback.allocator();
-
-        const uppercase_buffer = this.toOwnedSlice(fallback_allocator) catch unreachable;
-        const buffer = allocator.alloc(u8, uppercase_buffer.len) catch unreachable;
-        const out = strings.copyLowercase(uppercase_buffer, buffer);
-
-        return Slice{
-            .allocator = NullableAllocator.init(allocator),
-            .ptr = out.ptr,
-            .len = @as(u32, @truncate(out.len)),
-        };
-    }
-
     pub fn indexOfAny(this: ZigString, comptime chars: []const u8) ?strings.OptionalUsize {
         if (this.is16Bit()) {
             return strings.indexOfAny16(this.utf16SliceAligned(), chars);
@@ -159,17 +128,6 @@ pub const ZigString = extern struct {
         return BunString__toURL(&this, globalThis);
     }
 
-    pub fn hasPrefixChar(this: ZigString, char: u8) bool {
-        if (this.len == 0)
-            return false;
-
-        if (this.is16Bit()) {
-            return this.utf16SliceAligned()[0] == char;
-        }
-
-        return this.slice()[0] == char;
-    }
-
     pub fn substringWithLen(this: ZigString, start_index: usize, end_index: usize) ZigString {
         if (this.is16Bit()) {
             return ZigString.from16SliceMaybeGlobal(this.utf16SliceAligned()[start_index..end_index], this.isGloballyAllocated());
@@ -189,18 +147,6 @@ pub const ZigString = extern struct {
 
     pub fn substring(this: ZigString, start_index: usize) ZigString {
         return this.substringWithLen(@min(this.len, start_index), this.len);
-    }
-
-    pub fn maxUTF8ByteLength(this: ZigString) usize {
-        if (this.isUTF8())
-            return this.len;
-
-        if (this.is16Bit()) {
-            return this.utf16SliceAligned().len * 3;
-        }
-
-        // latin1
-        return this.len * 2;
     }
 
     pub fn utf16ByteLength(this: ZigString) usize {
@@ -301,10 +247,6 @@ pub const ZigString = extern struct {
         }
 
         return this.slice();
-    }
-
-    pub fn markStatic(this: *ZigString) void {
-        this._unsafe_ptr_do_not_use = @as([*]const u8, @ptrFromInt(@intFromPtr(this._unsafe_ptr_do_not_use) | (1 << 60)));
     }
 
     pub fn isStatic(this: *const ZigString) bool {
@@ -463,13 +405,6 @@ pub const ZigString = extern struct {
         return this.len == 0;
     }
 
-    pub fn fromStringPointer(ptr: StringPointer, buf: string, to: *ZigString) void {
-        to.* = ZigString{
-            .len = ptr.length,
-            ._unsafe_ptr_do_not_use = buf[ptr.offset..][0..ptr.length].ptr,
-        };
-    }
-
     pub fn sortDesc(slice_: []ZigString) void {
         std.sort.block(ZigString, slice_, {}, cmpDesc);
     }
@@ -616,10 +551,6 @@ pub const ZigString = extern struct {
         return (@intFromPtr(this._unsafe_ptr_do_not_use) & (1 << 62)) != 0;
     }
 
-    pub inline fn deinitGlobal(this: ZigString) void {
-        bun.default_allocator.free(this.slice());
-    }
-
     pub inline fn markGlobal(this: *ZigString) void {
         if (comptime bun.Environment.isWasm) {
             this.wasm_flags |= wasm_global;
@@ -663,24 +594,6 @@ pub const ZigString = extern struct {
         }
 
         return untagged(this._unsafe_ptr_do_not_use)[0..@min(this.len, std.math.maxInt(u32))];
-    }
-
-    pub fn toSliceFast(this: ZigString, allocator: std.mem.Allocator) Slice {
-        if (this.len == 0)
-            return Slice.empty;
-        if (is16Bit(&this)) {
-            const buffer = bun.handleOom(this.toOwnedSlice(allocator));
-            return Slice{
-                .allocator = NullableAllocator.init(allocator),
-                .ptr = buffer.ptr,
-                .len = @as(u32, @truncate(buffer.len)),
-            };
-        }
-
-        return Slice{
-            .ptr = untagged(this._unsafe_ptr_do_not_use),
-            .len = @as(u32, @truncate(this.len)),
-        };
     }
 
     /// This function checks if the input is latin1 non-ascii
@@ -730,10 +643,6 @@ pub const ZigString = extern struct {
 
     pub inline fn full(this: *const ZigString) []const u8 {
         return untagged(this._unsafe_ptr_do_not_use)[0..this.len];
-    }
-
-    pub fn trimmedSlice(this: *const ZigString) []const u8 {
-        return strings.trim(this.full(), " \r\n");
     }
 
     inline fn assertGlobal(this: *const ZigString) void {
@@ -798,17 +707,6 @@ pub const ZigString = extern struct {
         var out = this.*;
         out.setOutputEncoding();
         return out;
-    }
-
-    pub fn toJSStringRef(this: *const ZigString) C_API.JSStringRef {
-        if (comptime @hasDecl(@import("bun"), "bindgen")) {
-            return undefined;
-        }
-
-        return if (this.is16Bit())
-            C_API.JSStringCreateWithCharactersNoCopy(@as([*]const u16, @ptrCast(@alignCast(untagged(this._unsafe_ptr_do_not_use)))), this.len)
-        else
-            C_API.JSStringCreateStatic(untagged(this._unsafe_ptr_do_not_use), this.len);
     }
 
     extern fn ZigString__toErrorInstance(this: *const ZigString, global: *JSGlobalObject) JSValue;

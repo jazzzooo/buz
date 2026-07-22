@@ -452,10 +452,6 @@ pub inline fn isStdoutTTY() bool {
     return bun_stdio_tty[1] != 0;
 }
 
-pub inline fn isStderrTTY() bool {
-    return bun_stdio_tty[2] != 0;
-}
-
 pub inline fn isStdinTTY() bool {
     return bun_stdio_tty[0] != 0;
 }
@@ -578,11 +574,6 @@ pub fn errorWriterBuffered() *std.Io.Writer {
 }
 
 // TODO: investigate returning the buffered_error_stream
-pub fn errorStream() *std.Io.Writer {
-    bun.debugAssert(source_set);
-    return source.error_stream;
-}
-
 pub fn rawWriter() Source.StreamType {
     bun.debugAssert(source_set);
     return source.raw_stream;
@@ -683,10 +674,6 @@ inline fn printElapsedToWithCtx(elapsed: f64, comptime printerFn: anytype, compt
     }
 }
 
-pub inline fn printElapsedTo(elapsed: f64, comptime printerFn: anytype, ctx: anytype) void {
-    printElapsedToWithCtx(elapsed, printerFn, true, ctx);
-}
-
 pub fn printElapsed(elapsed: f64) void {
     printElapsedToWithCtx(elapsed, prettyError, false, {});
 }
@@ -719,12 +706,6 @@ pub fn printStartEnd(start: i128, end: i128) void {
 pub fn printStartEndStdout(start: i128, end: i128) void {
     const elapsed = @divTrunc(@as(i64, @truncate(end - start)), @as(i64, std.time.ns_per_ms));
     printElapsedStdout(@as(f64, @floatFromInt(elapsed)));
-}
-
-pub fn printTimer(timer: *SystemTimer) void {
-    if (comptime Environment.isWasm) return;
-    const elapsed = @divTrunc(timer.read(), @as(u64, std.time.ns_per_ms));
-    printElapsed(@as(f64, @floatFromInt(elapsed)));
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -786,10 +767,6 @@ inline fn printTo(dest: Destination, comptime fmt: string, args: anytype) void {
     destWriter(dest).print(fmt, args) catch {};
 }
 
-pub inline fn printErrorable(comptime fmt: string, args: anytype) !void {
-    printTo(.stdout, fmt, args);
-}
-
 /// Print to stdout
 /// This will appear in the terminal, including in production.
 /// Text automatically buffers
@@ -804,11 +781,6 @@ pub fn debug(comptime fmt: string, args: anytype) void {
     if (!Environment.isDebug) return;
     prettyErrorln("<d>DEBUG:<r> " ++ fmt, args);
     flush();
-}
-
-pub inline fn _debug(comptime fmt: string, args: anytype) void {
-    bun.debugAssert(source_set);
-    println(fmt, args);
 }
 
 pub inline fn print(comptime fmt: string, args: anytype) void {
@@ -1131,14 +1103,6 @@ inline fn prettyTo(dest: Destination, comptime fmt: string, args: anytype) void 
         printTo(dest, comptime prettyFmt(fmt, true), args);
     } else {
         printTo(dest, comptime prettyFmt(fmt, false), args);
-    }
-}
-
-pub inline fn prettyWithPrinter(comptime fmt: string, args: anytype, comptime printer: anytype, comptime l: Destination) void {
-    if (enableColorFor(l)) {
-        printer(comptime prettyFmt(fmt, true), args);
-    } else {
-        printer(comptime prettyFmt(fmt, false), args);
     }
 }
 

@@ -26,19 +26,6 @@ pub fn deepClone(this: Expr, allocator: std.mem.Allocator) OOM!Expr {
     };
 }
 
-pub fn wrapInArrow(this: Expr, allocator: std.mem.Allocator) !Expr {
-    var stmts = try allocator.alloc(Stmt, 1);
-    stmts[0] = Stmt.alloc(S.Return, S.Return{ .value = this }, this.loc);
-
-    return Expr.init(E.Arrow, E.Arrow{
-        .args = &.{},
-        .body = .{
-            .loc = this.loc,
-            .stmts = stmts,
-        },
-    }, this.loc);
-}
-
 pub fn canBeInlinedFromPropertyAccess(this: Expr) bool {
     return switch (this.data) {
         // if the array has a spread we must keep it
@@ -702,11 +689,6 @@ pub fn extractStringValues(left: Expr.Data, right: Expr.Data, allocator: std.mem
 }
 
 pub var icount: usize = 0;
-
-// We don't need to dynamically allocate booleans
-var true_bool = E.Boolean{ .value = true };
-var false_bool = E.Boolean{ .value = false };
-var bool_values = [_]*E.Boolean{ &false_bool, &true_bool };
 
 /// When the lifetime of an Expr.Data's pointer must exist longer than reset() is called, use this function.
 /// Be careful to free the memory (or use an allocator that does it for you)
@@ -1618,16 +1600,6 @@ pub const Tag = enum {
             },
         }
     }
-    pub fn isThis(self: Tag) bool {
-        switch (self) {
-            .e_this => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
     pub fn isClass(self: Tag) bool {
         switch (self) {
             .e_class => {
@@ -1640,16 +1612,6 @@ pub const Tag = enum {
     }
     pub fn isBoolean(self: Tag) bool {
         return self == .e_boolean or self == .e_branch_boolean;
-    }
-    pub fn isSuper(self: Tag) bool {
-        switch (self) {
-            .e_super => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
     }
     pub fn isNull(self: Tag) bool {
         switch (self) {
@@ -1681,49 +1643,9 @@ pub const Tag = enum {
             },
         }
     }
-    pub fn isNewTarget(self: Tag) bool {
-        switch (self) {
-            .e_new_target => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
     pub fn isFunction(self: Tag) bool {
         switch (self) {
             .e_function => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
-    pub fn isImportMeta(self: Tag) bool {
-        switch (self) {
-            .e_import_meta => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
-    pub fn isCall(self: Tag) bool {
-        switch (self) {
-            .e_call => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
-    pub fn isDot(self: Tag) bool {
-        switch (self) {
-            .e_dot => {
                 return true;
             },
             else => {
@@ -1741,49 +1663,9 @@ pub const Tag = enum {
             },
         }
     }
-    pub fn isArrow(self: Tag) bool {
-        switch (self) {
-            .e_arrow => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
     pub fn isIdentifier(self: Tag) bool {
         switch (self) {
             .e_identifier => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
-    pub fn isImportIdentifier(self: Tag) bool {
-        switch (self) {
-            .e_import_identifier => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
-    pub fn isPrivateIdentifier(self: Tag) bool {
-        switch (self) {
-            .e_private_identifier => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
-    pub fn isJsxElement(self: Tag) bool {
-        switch (self) {
-            .e_jsx_element => {
                 return true;
             },
             else => {
@@ -1831,16 +1713,6 @@ pub const Tag = enum {
             },
         }
     }
-    pub fn isSpread(self: Tag) bool {
-        switch (self) {
-            .e_spread => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
     pub fn isString(self: Tag) bool {
         switch (self) {
             .e_string => {
@@ -1852,69 +1724,9 @@ pub const Tag = enum {
         }
     }
 
-    pub fn isTemplate(self: Tag) bool {
-        switch (self) {
-            .e_template => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
     pub fn isRegExp(self: Tag) bool {
         switch (self) {
             .e_reg_exp => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
-    pub fn isAwait(self: Tag) bool {
-        switch (self) {
-            .e_await => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
-    pub fn isYield(self: Tag) bool {
-        switch (self) {
-            .e_yield => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
-    pub fn isIf(self: Tag) bool {
-        switch (self) {
-            .e_if => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
-    pub fn isRequireResolveString(self: Tag) bool {
-        switch (self) {
-            .e_require_resolve_string => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
-    pub fn isImport(self: Tag) bool {
-        switch (self) {
-            .e_import => {
                 return true;
             },
             else => {
@@ -3200,14 +3012,6 @@ pub const Data = union(Tag) {
         return @as(Expr.Tag, self) == .e_string;
     }
 };
-
-pub fn StoredData(tag: Tag) type {
-    const T = @FieldType(Data, tag);
-    return switch (@typeInfo(T)) {
-        .pointer => |ptr| ptr.child,
-        else => T,
-    };
-}
 
 fn stringToEquivalentNumberValue(str: []const u8) f64 {
     // +"" -> 0

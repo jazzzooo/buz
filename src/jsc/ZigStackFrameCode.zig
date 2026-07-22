@@ -25,16 +25,4 @@ pub const ZigStackFrameCode = enum(u8) {
             else => ' ',
         };
     }
-
-    pub fn ansiColor(this: ZigStackFrameCode) []const u8 {
-        return switch (this) {
-            .Eval => "\x1b[31m",
-            .Module => "\x1b[36m",
-            .Function => "\x1b[32m",
-            .Global => "\x1b[35m",
-            .Wasm => "\x1b[37m",
-            .Constructor => "\x1b[33m",
-            else => "",
-        };
-    }
 };

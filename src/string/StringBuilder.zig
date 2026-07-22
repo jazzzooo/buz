@@ -34,11 +34,6 @@ pub fn deinit(this: *StringBuilder, allocator: Allocator) void {
     allocator.free(this.ptr.?[0..this.cap]);
 }
 
-pub fn count16(this: *StringBuilder, slice: []const u16) void {
-    const result = bun.simdutf.length.utf8.from.utf16.le(slice);
-    this.cap += result;
-}
-
 pub fn count16Z(this: *StringBuilder, slice: [:0]const u16) void {
     const result = bun.strings.elementLengthUTF16IntoUTF8(slice);
     this.cap += result + 1;
@@ -175,25 +170,6 @@ pub fn fmt(this: *StringBuilder, comptime str: []const u8, args: anytype) []cons
     if (comptime Environment.allow_assert) assert(this.len <= this.cap);
 
     return out;
-}
-
-pub fn fmtAppendCount(this: *StringBuilder, comptime str: []const u8, args: anytype) bun.StringPointer {
-    if (comptime Environment.allow_assert) {
-        assert(this.len <= this.cap); // didn't count everything
-        assert(this.ptr != null); // must call allocate first
-    }
-
-    const buf = this.ptr.?[this.len..this.cap];
-    const out = std.fmt.bufPrint(buf, str, args) catch unreachable;
-    const off = this.len;
-    this.len += out.len;
-
-    if (comptime Environment.allow_assert) assert(this.len <= this.cap);
-
-    return bun.StringPointer{
-        .offset = @as(u32, @truncate(off)),
-        .length = @as(u32, @truncate(out.len)),
-    };
 }
 
 pub fn fmtAppendCountZ(this: *StringBuilder, comptime str: []const u8, args: anytype) bun.StringPointer {

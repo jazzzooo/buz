@@ -215,29 +215,9 @@ pub const Result = struct {
 
     // remember: non-node_modules can have package.json
     // checking package.json may not be relevant
-    pub fn isLikelyNodeModule(this: *const Result) bool {
-        const path_ = this.pathConst() orelse return false;
-        return this.flags.is_from_node_modules or strings.indexOf(path_.text, "/node_modules/") != null;
-    }
-
     // Most NPM modules are CommonJS
     // If unspecified, assume CommonJS.
     // If internal app code, assume ESM.
-    pub fn shouldAssumeCommonJS(r: *const Result, kind: ast.ImportKind) bool {
-        switch (r.module_type) {
-            .esm => return false,
-            .cjs => return true,
-            else => {
-                if (kind == .require or kind == .require_resolve) {
-                    return true;
-                }
-
-                // If we rely just on isPackagePath, we mess up tsconfig.json baseUrl paths.
-                return r.isLikelyNodeModule();
-            },
-        }
-    }
-
     pub const DebugMeta = struct {
         notes: std.array_list.Managed(logger.Data),
         suggestion_text: string = "",
@@ -248,24 +228,6 @@ pub const Result = struct {
 
         pub fn init(allocator: std.mem.Allocator) DebugMeta {
             return DebugMeta{ .notes = std.array_list.Managed(logger.Data).init(allocator) };
-        }
-
-        pub fn logErrorMsg(m: *DebugMeta, log: *logger.Log, _source: ?*const logger.Source, r: logger.Range, comptime fmt: string, args: anytype) !void {
-            if (_source != null and m.suggestion_message.len > 0) {
-                const suggestion_range = if (m.suggestion_range == .end)
-                    logger.Range{ .loc = logger.Loc{ .start = r.endI() - 1 } }
-                else
-                    r;
-                const data = logger.rangeData(_source.?, suggestion_range, m.suggestion_message);
-                data.location.?.suggestion = m.suggestion_text;
-                try m.notes.append(data);
-            }
-
-            try log.addMsg(Msg{
-                .kind = .err,
-                .data = logger.rangeData(_source, r, std.fmt.allocPrint(m.notes.allocator, fmt, args)),
-                .notes = try m.toOwnedSlice(),
-            });
         }
     };
 
@@ -1633,83 +1595,7 @@ pub const Resolver = struct {
     }
 
     // This is a fallback, hopefully not called often. It should be relatively quick because everything should be in the cache.
-    pub fn packageJSONForResolvedNodeModule(
-        r: *ThisResolver,
-        result: *const Result,
-    ) ?*const PackageJSON {
-        const primary_dir = std.fs.path.dirname(result.path_pair.primary.text) orelse return null;
-        var dir_info = (r.dirInfoCached(primary_dir) catch null) orelse return null;
-        while (true) {
-            if (dir_info.package_json) |pkg| {
-                // if it doesn't have a name, assume it's something just for adjusting the main fields (react-bootstrap does this)
-                // In that case, we really would like the top-level package that you download from NPM
-                // so we ignore any unnamed packages
-                return pkg;
-            }
-
-            dir_info = dir_info.getParent() orelse return null;
-        }
-
-        unreachable;
-    }
     const node_module_root_string = std.fs.path.sep_str ++ "node_modules" ++ std.fs.path.sep_str;
-
-    pub fn rootNodeModulePackageJSON(
-        r: *ThisResolver,
-        result: *const Result,
-    ) ?RootPathPair {
-        const path = (result.pathConst() orelse return null);
-        var absolute = path.text;
-        // /foo/node_modules/@babel/standalone/index.js
-        //     ^------------^
-        var end = strings.lastIndexOf(absolute, node_module_root_string) orelse brk: {
-            // try non-symlinked version
-            if (path.pretty.len != absolute.len) {
-                absolute = path.pretty;
-                break :brk strings.lastIndexOf(absolute, node_module_root_string);
-            }
-
-            break :brk null;
-        } orelse return null;
-        end += node_module_root_string.len;
-
-        const is_scoped_package = absolute[end] == '@';
-        end += strings.indexOfChar(absolute[end..], std.fs.path.sep) orelse return null;
-
-        // /foo/node_modules/@babel/standalone/index.js
-        //                   ^
-        if (is_scoped_package) {
-            end += 1;
-            end += strings.indexOfChar(absolute[end..], std.fs.path.sep) orelse return null;
-        }
-
-        end += 1;
-
-        // /foo/node_modules/@babel/standalone/index.js
-        //                                    ^
-        const slice = absolute[0 .. end - 1];
-
-        // Try to avoid the hash table lookup whenever possible
-        // That can cause filesystem lookups in parent directories and it requires a lock
-        if (result.package_json) |pkg| {
-            if (std.fs.path.dirname(pkg.source.path.text)) |package_dir| {
-                if (strings.eql(slice, package_dir)) {
-                    return RootPathPair{
-                        .package_json = pkg,
-                        .base_path = slice,
-                    };
-                }
-            }
-        }
-
-        {
-            const dir_info = (r.dirInfoCached(slice) catch null) orelse return null;
-            return RootPathPair{
-                .base_path = slice,
-                .package_json = dir_info.package_json orelse return null,
-            };
-        }
-    }
 
     const dev = Output.scoped(.Resolver, .visible);
 

@@ -37,15 +37,6 @@ pub fn SinglyLinkedList(comptime T: type) type {
                 return next_node;
             }
 
-            /// Iterate over the singly-linked list from this node, until the final node is found.
-            /// This operation is O(N).
-            pub fn findLast(node: *Node) *Node {
-                var it = node;
-                while (true) {
-                    it = it.next orelse return it;
-                }
-            }
-
             /// Iterate over each next node, returning the count of all nodes except the starting one.
             /// This operation is O(N).
             pub fn countChildren(node: *const Node) usize {

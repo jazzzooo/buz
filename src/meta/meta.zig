@@ -1,11 +1,3 @@
-pub fn OptionalChild(comptime T: type) type {
-    const tyinfo = @typeInfo(T);
-    if (tyinfo != .pointer) @compileError("OptionalChild(T) requires that T be a pointer to an optional type.");
-    const child = @typeInfo(tyinfo.pointer.child);
-    if (child != .optional) @compileError("OptionalChild(T) requires that T be a pointer to an optional type.");
-    return child.optional.child;
-}
-
 pub fn EnumInfo(comptime T: type) std.builtin.Type.Enum {
     const tyinfo = @typeInfo(T);
     return switch (tyinfo) {
@@ -15,30 +7,6 @@ pub fn EnumInfo(comptime T: type) std.builtin.Type.Enum {
             @compileError("Used `EnumInfo(T)` on a type that is not an `enum` or a `union(enum)`");
         },
     };
-}
-
-pub fn ReturnOfMaybe(comptime function: anytype) type {
-    const Func = @TypeOf(function);
-    const typeinfo: std.builtin.Type.Fn = @typeInfo(Func).@"fn";
-    const MaybeType = typeinfo.return_type orelse @compileError("Expected the function to have a return type");
-    return MaybeResult(MaybeType);
-}
-
-pub fn MaybeResult(comptime MaybeType: type) type {
-    const maybe_ty_info = @typeInfo(MaybeType);
-
-    const maybe = maybe_ty_info.@"union";
-    if (maybe.field_names.len != 2) @compileError("Expected the Maybe type to be a union(enum) with two variants");
-
-    if (!std.mem.eql(u8, maybe.field_names[0], "err")) {
-        @compileError("Expected the first field of the Maybe type to be \"err\", got: " ++ maybe.field_names[0]);
-    }
-
-    if (!std.mem.eql(u8, maybe.field_names[1], "result")) {
-        @compileError("Expected the second field of the Maybe type to be \"result\"" ++ maybe.field_names[1]);
-    }
-
-    return maybe.field_types[1];
 }
 
 pub fn ReturnOf(comptime function: anytype) type {
@@ -119,22 +87,6 @@ pub fn Item(comptime T: type) type {
     }
 }
 
-/// Returns .{a, ...args_}
-pub fn ConcatArgs1(
-    comptime func: anytype,
-    a: anytype,
-    args_: anytype,
-) std.meta.ArgsTuple(@TypeOf(func)) {
-    var args: std.meta.ArgsTuple(@TypeOf(func)) = undefined;
-    args[0] = a;
-
-    inline for (args_, 1..) |arg, i| {
-        args[i] = arg;
-    }
-
-    return args;
-}
-
 /// Returns .{a, b, ...args_}
 pub inline fn ConcatArgs2(
     comptime func: anytype,
@@ -147,28 +99,6 @@ pub inline fn ConcatArgs2(
     args[1] = b;
 
     inline for (args_, 2..) |arg, i| {
-        args[i] = arg;
-    }
-
-    return args;
-}
-
-/// Returns .{a, b, c, d, ...args_}
-pub inline fn ConcatArgs4(
-    comptime func: anytype,
-    a: anytype,
-    b: anytype,
-    c: anytype,
-    d: anytype,
-    args_: anytype,
-) std.meta.ArgsTuple(@TypeOf(func)) {
-    var args: std.meta.ArgsTuple(@TypeOf(func)) = undefined;
-    args[0] = a;
-    args[1] = b;
-    args[2] = c;
-    args[3] = d;
-
-    inline for (args_, 4..) |arg, i| {
         args[i] = arg;
     }
 
@@ -243,17 +173,6 @@ pub fn isSimpleCopyType(comptime T: type) bool {
     };
 }
 
-pub fn isScalar(comptime T: type) bool {
-    return switch (T) {
-        i32, u32, i64, u64, f32, f64, bool => true,
-        else => {
-            const tyinfo = @typeInfo(T);
-            if (tyinfo == .@"enum") return true;
-            return false;
-        },
-    };
-}
-
 pub fn isSimpleEqlType(comptime T: type) bool {
     const tyinfo = @typeInfo(T);
     return switch (tyinfo) {
@@ -304,24 +223,12 @@ pub fn Tagged(comptime U: type, comptime T: type) type {
     return @Union(.auto, T, info.field_names, info.field_types[0..], info.field_attrs[0..]);
 }
 
-pub fn SliceChild(comptime T: type) type {
-    const tyinfo = @typeInfo(T);
-    if (tyinfo == .pointer and tyinfo.pointer.size == .slice) {
-        return tyinfo.pointer.child;
-    }
-    return T;
-}
-
 /// userland implementation of https://github.com/ziglang/zig/issues/21879
 pub fn useAllFields(comptime T: type, _: VoidFields(T)) void {}
 
 fn VoidFields(comptime T: type) type {
     const field_names = @typeInfo(T).@"struct".field_names;
     return @Struct(.auto, null, field_names, &@splat(void), &@splat(.{}));
-}
-
-pub fn voidFieldTypeDiscardHelper(data: anytype) void {
-    _ = data;
 }
 
 pub fn hasDecl(comptime T: type, comptime name: []const u8) bool {

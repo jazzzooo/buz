@@ -33,13 +33,6 @@ pub const TextCodec = opaque {
         jsc.markBinding(@src());
         return Bun__isEncodingSupported(encoding.ptr, encoding.len);
     }
-
-    pub fn getCanonicalEncodingName(encoding: []const u8) ?[]const u8 {
-        jsc.markBinding(@src());
-        var len: usize = 0;
-        const name = Bun__getCanonicalEncodingName(encoding.ptr, encoding.len, &len) orelse return null;
-        return name[0..len];
-    }
 };
 
 const bun = @import("bun");

@@ -126,14 +126,6 @@ pub fn BoundedArrayAligned(
         }
 
         /// Resize the slice, adding `n` new elements, which have `undefined` values.
-        /// The return value is a pointer to the array of uninitialized elements.
-        pub fn addManyAsArray(self: *Self, comptime n: usize) error{Overflow}!*align(alignment.toByteUnits()) [n]T {
-            const prev_len = self.len;
-            try self.resize(@as(usize, self.len) + n);
-            return self.slice()[prev_len..][0..n];
-        }
-
-        /// Resize the slice, adding `n` new elements, which have `undefined` values.
         /// The return value is a slice pointing to the uninitialized elements.
         pub fn addManyAsSlice(self: *Self, n: usize) error{Overflow}![]align(alignment.toByteUnits()) T {
             const prev_len = self.len;

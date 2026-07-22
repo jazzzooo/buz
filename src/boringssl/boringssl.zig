@@ -20,21 +20,6 @@ pub fn load() void {
     }
 }
 
-var ctx_store: ?*boring.SSL_CTX = null;
-pub fn initClient() *boring.SSL {
-    if (ctx_store != null) _ = boring.SSL_CTX_up_ref(ctx_store.?);
-
-    const ctx = ctx_store orelse brk: {
-        ctx_store = boring.SSL_CTX.init().?;
-        break :brk ctx_store.?;
-    };
-
-    var ssl = boring.SSL.init(ctx);
-    ssl.setIsClient(true);
-
-    return ssl;
-}
-
 // void*, OPENSSL_memory_alloc, (size_t size)
 // void, OPENSSL_memory_free, (void *ptr)
 // size_t, OPENSSL_memory_get_size, (void *ptr)

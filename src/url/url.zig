@@ -62,14 +62,6 @@ pub const URL = struct {
         return fromString(allocator, bun.String.borrowUTF8(input));
     }
 
-    pub fn isLocalhost(this: *const URL) bool {
-        return this.hostname.len == 0 or strings.eqlComptime(this.hostname, "localhost") or strings.eqlComptime(this.hostname, "0.0.0.0");
-    }
-
-    pub inline fn isUnix(this: *const URL) bool {
-        return strings.hasPrefixComptime(this.protocol, "unix");
-    }
-
     pub fn displayProtocol(this: *const URL) string {
         if (this.protocol.len > 0) {
             return this.protocol;
@@ -116,10 +108,6 @@ pub const URL = struct {
             .port = if (this.port.len > 0) this.getPort() else null,
             .is_https = this.isHTTPS(),
         };
-    }
-
-    pub fn hasHTTPLikeProtocol(this: *const URL) bool {
-        return strings.eqlComptime(this.protocol, "http") or strings.eqlComptime(this.protocol, "https");
     }
 
     pub fn getPort(this: *const URL) ?u16 {

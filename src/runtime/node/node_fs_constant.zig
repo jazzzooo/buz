@@ -28,12 +28,6 @@ pub const Copyfile = enum(i32) {
     pub inline fn shouldntOverwrite(this: Copyfile) bool {
         return (@backingInt(this) & COPYFILE_EXCL) != 0;
     }
-
-    pub inline fn canUseClone(this: Copyfile) bool {
-        _ = this;
-        return Environment.isMac;
-        // return (@intFromEnum(this) | COPYFILE_FICLONE) != 0;
-    }
 };
 
 /// Constant for fs.copyFile. Flag indicating the destination file should not be overwritten if it already exists.

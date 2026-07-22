@@ -22,12 +22,6 @@ pub const UseDirective = enum(u2) {
         return true;
     }
 
-    pub fn boundering(this: UseDirective, other: UseDirective) ?Boundering {
-        if (this == other or other == .none)
-            return null;
-        return @fromBackingInt(@intCast(@backingInt(other)));
-    }
-
     pub fn parse(contents: []const u8) ?UseDirective {
         const truncated = std.mem.trimStart(u8, contents, " \t\n\r;");
 

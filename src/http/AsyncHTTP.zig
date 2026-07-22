@@ -63,11 +63,6 @@ pub fn loadEnv(allocator: std.mem.Allocator, logger: *Log, env: *DotEnv.Loader) 
     }
 }
 
-pub fn signalHeaderProgress(this: *AsyncHTTP) void {
-    var progress = this.signals.header_progress orelse return;
-    progress.store(true, .release);
-}
-
 pub fn enableResponseBodyStreaming(this: *AsyncHTTP) void {
     var stream = this.signals.response_body_streaming orelse return;
     stream.store(true, .release);

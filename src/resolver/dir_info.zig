@@ -53,11 +53,6 @@ pub const Flags = enum {
     pub const Set = std.enums.EnumSet(Flags);
 };
 
-pub fn hasParentPackage(this: *const DirInfo) bool {
-    const parent = this.getParent() orelse return false;
-    return !parent.isNodeModules();
-}
-
 pub fn getFileDescriptor(dirinfo: *const DirInfo) FD {
     if (FeatureFlags.store_file_descriptors)
         if (dirinfo.getEntries(0)) |entries|

@@ -144,12 +144,6 @@ pub const FetchHeaders = opaque {
         return result;
     }
 
-    pub fn createFromPicoHeaders_(
-        pico_headers: *const anyopaque,
-    ) *FetchHeaders {
-        return WebCore__FetchHeaders__createFromPicoHeaders_(pico_headers);
-    }
-
     pub fn append(
         this: *FetchHeaders,
         name_: *const ZigString,

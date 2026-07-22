@@ -383,29 +383,6 @@ pub const Data = union(Tag) {
     };
 };
 
-pub fn StoredData(tag: Tag) type {
-    const T = @FieldType(Data, tag);
-    return switch (@typeInfo(T)) {
-        .pointer => |ptr| ptr.child,
-        else => T,
-    };
-}
-
-pub fn caresAboutScope(self: *Stmt) bool {
-    return switch (self.data) {
-        .s_block, .s_empty, .s_debugger, .s_expr, .s_if, .s_for, .s_for_in, .s_for_of, .s_do_while, .s_while, .s_with, .s_try, .s_switch, .s_return, .s_throw, .s_break, .s_continue, .s_directive => {
-            return false;
-        },
-
-        .s_local => |local| {
-            return local.kind != .k_var;
-        },
-        else => {
-            return true;
-        },
-    };
-}
-
 const string = []const u8;
 
 const std = @import("std");

@@ -371,13 +371,6 @@ pub const ShellCpTask = struct {
         return out;
     }
 
-    pub fn ensureDest(nodefs: *jsc.Node.fs.NodeFS, dest: bun.OSPathSliceZ) Maybe(void) {
-        return switch (nodefs.mkdirRecursiveOSPath(dest, jsc.Node.Arguments.Mkdir.DefaultMode, false)) {
-            .err => |err| Maybe(void){ .err = err },
-            .result => .success,
-        };
-    }
-
     pub fn hasTrailingSep(path: [:0]const u8) bool {
         if (path.len == 0) return false;
         return ResolvePath.Platform.auto.isSeparator(path[path.len - 1]);

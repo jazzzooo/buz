@@ -256,15 +256,6 @@ pub fn indexAnyComptime(target: string, comptime chars: string) ?usize {
     return null;
 }
 
-pub fn indexAnyComptimeT(comptime T: type, target: []const T, comptime chars: []const T) ?usize {
-    for (target, 0..) |parent, i| {
-        inline for (chars) |char| {
-            if (char == parent) return i;
-        }
-    }
-    return null;
-}
-
 pub fn indexEqualAny(in: anytype, target: string) ?usize {
     for (in, 0..) |str, i| if (eqlLong(str, target, true)) return i;
     return null;
@@ -285,11 +276,6 @@ pub fn indexOfCharNeg(self: string, char: u8) i32 {
         if (c == char) return @as(i32, @intCast(i));
     }
     return -1;
-}
-
-pub fn indexOfSigned(self: string, str: string) i32 {
-    const i = std.mem.indexOf(u8, self, str) orelse return -1;
-    return @as(i32, @intCast(i));
 }
 
 /// Returns last index of `char` before a character `before`.
@@ -624,14 +610,6 @@ pub fn startsWithCaseInsensitiveAscii(self: string, prefix: string) bool {
     return self.len >= prefix.len and eqlCaseInsensitiveASCII(self[0..prefix.len], prefix, false);
 }
 
-pub fn startsWithGeneric(comptime T: type, self: []const T, str: []const T) bool {
-    if (str.len > self.len) {
-        return false;
-    }
-
-    return eqlLong(bun.reinterpretSlice(u8, self[0..str.len]), bun.reinterpretSlice(u8, str[0..str.len]), false);
-}
-
 pub fn endsWith(self: string, str: string) callconv(bun.callconv_inline) bool {
     return str.len == 0 or @call(bun.callmod_inline, std.mem.endsWith, .{ u8, self, str });
 }
@@ -661,30 +639,6 @@ pub fn endsWithAny(self: string, str: string) bool {
     }
 
     return false;
-}
-
-pub fn quotedAlloc(allocator: std.mem.Allocator, self: string) !string {
-    var count: usize = 0;
-    for (self) |char| {
-        count += @intFromBool(char == '"');
-    }
-
-    if (count == 0) {
-        return allocator.dupe(u8, self);
-    }
-
-    var i: usize = 0;
-    var out = try allocator.alloc(u8, self.len + count);
-    for (self) |char| {
-        if (char == '"') {
-            out[i] = '\\';
-            i += 1;
-        }
-        out[i] = char;
-        i += 1;
-    }
-
-    return out;
 }
 
 pub fn eqlAnyComptime(self: string, comptime list: []const string) bool {
@@ -899,19 +853,6 @@ pub fn hasPrefixCaseInsensitiveT(comptime T: type, str: []const T, prefix: []con
 
 pub fn hasPrefixCaseInsensitive(str: []const u8, prefix: []const u8) bool {
     return hasPrefixCaseInsensitiveT(u8, str, prefix);
-}
-
-pub fn eqlLongT(comptime T: type, a_str: []const T, b_str: []const T, comptime check_len: bool) bool {
-    if (comptime check_len) {
-        const len = b_str.len;
-        if (len == 0) {
-            return a_str.len == 0;
-        }
-        if (a_str.len != len) {
-            return false;
-        }
-    }
-    return eqlLong(bun.reinterpretSlice(u8, a_str), bun.reinterpretSlice(u8, b_str), false);
 }
 
 pub fn eqlLong(a_str: string, b_str: string, comptime check_len: bool) bool {
@@ -1663,10 +1604,6 @@ pub fn trim(slice: anytype, comptime values_to_strip: []const u8) @TypeOf(slice)
     return slice[begin..end];
 }
 
-pub fn trimSpaces(slice: anytype) @TypeOf(slice) {
-    return trim(slice, &whitespace_chars);
-}
-
 pub fn isAllWhitespace(slice: []const u8) bool {
     var begin: usize = 0;
     while (begin < slice.len and std.mem.indexOfScalar(u8, &whitespace_chars, slice[begin]) != null) : (begin += 1) {}
@@ -1674,15 +1611,6 @@ pub fn isAllWhitespace(slice: []const u8) bool {
 }
 
 pub const whitespace_chars = [_]u8{ ' ', '\t', '\n', '\r', std.ascii.control_code.vt, std.ascii.control_code.ff };
-
-pub fn lengthOfLeadingWhitespaceASCII(slice: string) usize {
-    brk: for (slice) |*c| {
-        inline for (whitespace_chars) |wc| if (c.* == wc) continue :brk;
-        return @intFromPtr(c) - @intFromPtr(slice.ptr);
-    }
-
-    return slice.len;
-}
 
 pub fn join(slices: []const string, delimiter: string, allocator: std.mem.Allocator) !string {
     return try std.mem.join(allocator, delimiter, slices);
@@ -1747,15 +1675,6 @@ pub fn toASCIIHexValue(character: u8) u8 {
     };
 }
 
-pub fn NewLengthSorter(comptime Type: type, comptime field: string) type {
-    return struct {
-        const LengthSorter = @This();
-        pub fn lessThan(_: LengthSorter, lhs: Type, rhs: Type) bool {
-            return @field(lhs, field).len < @field(rhs, field).len;
-        }
-    };
-}
-
 pub fn NewGlobLengthSorter(comptime Type: type, comptime field: string) type {
     return struct {
         const GlobLengthSorter = @This();
@@ -1796,58 +1715,6 @@ pub fn NewGlobLengthSorter(comptime Type: type, comptime field: string) type {
             return false;
         }
     };
-}
-
-/// Update all strings in a struct pointing to "from" to point to "to".
-pub fn moveAllSlices(comptime Type: type, container: *Type, from: string, to: string) void {
-    const fields_we_care_about = comptime brk: {
-        const info = @typeInfo(Type).@"struct";
-        var count: usize = 0;
-        for (info.field_types) |FieldType| {
-            if (bun.trait.isSlice(FieldType) and std.meta.Child(FieldType) == u8) {
-                count += 1;
-            }
-        }
-
-        var fields: [count][]const u8 = undefined;
-        count = 0;
-        for (info.field_names, info.field_types) |field_name, FieldType| {
-            if (bun.trait.isSlice(FieldType) and std.meta.Child(FieldType) == u8) {
-                fields[count] = field_name;
-                count += 1;
-            }
-        }
-        break :brk fields;
-    };
-
-    inline for (fields_we_care_about) |name| {
-        const slice = @field(container, name);
-        if ((@intFromPtr(from.ptr) + from.len) >= @intFromPtr(slice.ptr) + slice.len and
-            (@intFromPtr(from.ptr) <= @intFromPtr(slice.ptr)))
-        {
-            @field(container, name) = moveSlice(slice, from, to);
-        }
-    }
-}
-
-pub fn moveSlice(slice: string, from: string, to: string) string {
-    if (comptime Environment.allow_assert) {
-        bun.unsafeAssert(from.len <= to.len and from.len >= slice.len);
-        // assert we are in bounds
-        bun.unsafeAssert(
-            (@intFromPtr(from.ptr) + from.len) >=
-                @intFromPtr(slice.ptr) + slice.len and
-                (@intFromPtr(from.ptr) <= @intFromPtr(slice.ptr)),
-        );
-        bun.unsafeAssert(eqlLong(from, to[0..from.len], false)); // data should be identical
-    }
-
-    const ptr_offset = @intFromPtr(slice.ptr) - @intFromPtr(from.ptr);
-    const result = to[ptr_offset..][0..slice.len];
-
-    if (comptime Environment.allow_assert) assert(eqlLong(slice, result, false)); // data should be identical
-
-    return result;
 }
 
 pub const ExactSizeMatcher = @import("./immutable/exact_size_matcher.zig").ExactSizeMatcher;
@@ -2054,11 +1921,6 @@ pub fn indexOfScalar(input: anytype, scalar: std.meta.Child(@TypeOf(input))) cal
     }
 }
 
-/// Generic. Works on []const u8, []const u16, etc
-pub fn containsScalar(input: anytype, item: std.meta.Child(@TypeOf(input))) bool {
-    return indexOfScalar(input, item) != null;
-}
-
 pub fn withoutSuffixComptime(input: []const u8, comptime suffix: []const u8) []const u8 {
     if (hasSuffixComptime(input, suffix)) {
         return input[0 .. input.len - suffix.len];
@@ -2067,13 +1929,6 @@ pub fn withoutSuffixComptime(input: []const u8, comptime suffix: []const u8) []c
 }
 
 pub fn withoutPrefixComptime(input: []const u8, comptime prefix: []const u8) []const u8 {
-    if (hasPrefixComptime(input, prefix)) {
-        return input[prefix.len..];
-    }
-    return input;
-}
-
-pub fn withoutPrefixComptimeZ(input: [:0]const u8, comptime prefix: []const u8) [:0]const u8 {
     if (hasPrefixComptime(input, prefix)) {
         return input[prefix.len..];
     }

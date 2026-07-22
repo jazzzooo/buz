@@ -137,14 +137,6 @@ pub fn redactedNpmUrl(str: string) RedactedNpmUrlFormatter {
     };
 }
 
-pub const RedactedSourceFormatter = SourceRedactor.Formatter;
-
-pub fn redactedSource(str: string) RedactedSourceFormatter {
-    return .{
-        .text = str,
-    };
-}
-
 // https://github.com/npm/cli/blob/63d6a732c3c0e9c19fd4d147eaa5cc27c29b168d/node_modules/npm-package-arg/lib/npa.js#L163
 pub const DependencyUrlFormatter = struct {
     url: string,
@@ -313,25 +305,6 @@ pub fn formatUTF16TypeWithPathOptions(slice_: []const u16, writer: *std.Io.Write
 pub inline fn utf16(slice_: []const u16) FormatUTF16 {
     return FormatUTF16{ .buf = slice_ };
 }
-
-/// Debug, this does not handle invalid utf32
-pub inline fn debugUtf32PathFormatter(path: []const u32) DebugUTF32PathFormatter {
-    return DebugUTF32PathFormatter{ .path = path };
-}
-
-pub const DebugUTF32PathFormatter = struct {
-    path: []const u32,
-    pub fn format(this: @This(), writer: *std.Io.Writer) !void {
-        var path_buf: bun.PathBuffer = undefined;
-        const result = bun.simdutf.convert.utf32.to.utf8.with_errors.le(this.path, &path_buf);
-        const converted = if (result.isSuccessful())
-            path_buf[0..result.count]
-        else
-            "Invalid UTF32!";
-
-        try writer.writeAll(converted);
-    }
-};
 
 pub const FormatUTF16 = struct {
     buf: []const u16,
@@ -890,11 +863,6 @@ pub fn HexIntFormatter(comptime Int: type, comptime lower: bool) type {
     };
 }
 
-pub fn HexInt(comptime Int: type, comptime lower: std.fmt.Case, value: Int) HexIntFormatter(Int, lower == .lower) {
-    const Formatter = HexIntFormatter(Int, lower == .lower);
-    return Formatter{ .value = value };
-}
-
 pub fn hexIntLower(value: anytype) HexIntFormatter(@TypeOf(value), true) {
     const Formatter = HexIntFormatter(@TypeOf(value), true);
     return Formatter{ .value = value };
@@ -1195,6 +1163,5 @@ const js_lexer = bun.js_lexer;
 const sha = bun.sha;
 const strings = bun.strings;
 
-const SourceRedactor = @import("SourceRedactor.zig");
 const std = @import("std");
 const fmt = std.fmt;

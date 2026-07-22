@@ -200,15 +200,6 @@ pub fn ExpressionTransposer(
     };
 }
 
-pub fn locAfterOp(e: E.Binary) logger.Loc {
-    if (e.left.loc.start < e.right.loc.start) {
-        return e.right.loc;
-    } else {
-        // handle the case when we have transposed the operands
-        return e.left.loc;
-    }
-}
-
 pub const TransposeState = struct {
     is_await_target: bool = false,
     is_then_catch_target: bool = false,

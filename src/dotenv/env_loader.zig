@@ -1325,17 +1325,6 @@ pub const Map = struct {
         }
     }
 
-    pub inline fn putAllocKey(this: *Map, allocator: std.mem.Allocator, key: string, value: string) OOM!void {
-        const gop = try this.map.getOrPut(this.allocator, key);
-        gop.value_ptr.* = .{
-            .value = value,
-            .conditional = false,
-        };
-        if (!gop.found_existing) {
-            gop.key_ptr.* = try allocator.dupe(u8, key);
-        }
-    }
-
     pub inline fn putAllocValue(this: *Map, allocator: std.mem.Allocator, key: string, value: string) OOM!void {
         try this.map.put(this.allocator, key, .{
             .value = try allocator.dupe(u8, value),

@@ -270,17 +270,6 @@ pub const Printer = struct {
         return this.addNoImportRecordError();
     }
 
-    pub fn printImportRecord(this: *This, import_record_idx: u32) PrintErr!void {
-        if (this.import_info) |info| {
-            const import_record = info.import_records.at(import_record_idx);
-            const a, const b = bun.bundle_v2.cheapPrefixNormalizer(this.public_path, import_record.path.text);
-            try this.writeStr(a);
-            try this.writeStr(b);
-            return;
-        }
-        return this.addNoImportRecordError();
-    }
-
     pub inline fn importRecord(this: *Printer, import_record_idx: u32) PrintErr!*const bun.ImportRecord {
         if (this.import_info) |info| return info.import_records.at(import_record_idx);
         return this.addNoImportRecordError();

@@ -30,13 +30,6 @@ pub const Id = enum(u64) {
         return @fromBackingInt(@intCast(hasher.final()));
     }
 
-    pub fn forBinLink(package_id: PackageID) Id {
-        var hasher = bun.Wyhash11.init(0);
-        hasher.update("bin-link:");
-        hasher.update(std.mem.asBytes(&package_id));
-        return @fromBackingInt(@intCast(hasher.final()));
-    }
-
     pub fn forManifest(name: string) Id {
         var hasher = bun.Wyhash11.init(0);
         hasher.update("manifest:");

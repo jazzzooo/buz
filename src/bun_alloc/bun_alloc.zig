@@ -62,10 +62,6 @@ pub const Result = struct {
     pub fn hasCheckedIfExists(r: *const Result) bool {
         return r.index.index != Unassigned.index;
     }
-
-    pub fn isOverflowing(r: *const Result, comptime count: usize) bool {
-        return r.index >= count;
-    }
 };
 
 pub const NotFound = IndexType{
@@ -274,10 +270,6 @@ pub fn BSSList(comptime ValueType: type, comptime _count: anytype) type {
             loaded = false;
         }
 
-        pub fn isOverflowing() bool {
-            return instance.used >= @as(u16, count);
-        }
-
         pub fn exists(_: *Self, value: ValueType) bool {
             return isSliceInBuffer(value, instance.backing_buf);
         }
@@ -366,25 +358,13 @@ pub fn BSSStringList(comptime _count: usize, comptime _item_length: usize) type 
             loaded = false;
         }
 
-        pub inline fn isOverflowing() bool {
-            return instance.slice_buf_used >= @as(u16, count);
-        }
-
         pub fn exists(self: *const Self, value: ValueType) bool {
             return isSliceInBuffer(value, &self.backing_buf);
-        }
-
-        pub fn editableSlice(slice: []const u8) []u8 {
-            return @constCast(slice);
         }
 
         pub fn appendMutable(self: *Self, comptime AppendType: type, _value: AppendType) OOM![]u8 {
             const appended = try @call(bun.callmod_inline, append, .{ self, AppendType, _value });
             return @constCast(appended);
-        }
-
-        pub fn getMutable(self: *Self, len: usize) ![]u8 {
-            return try self.appendMutable(EmptyType, EmptyType{ .len = len });
         }
 
         pub fn printWithType(self: *Self, comptime fmt: []const u8, comptime Args: type, args: Args) OOM![]const u8 {
@@ -553,10 +533,6 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
             loaded = false;
         }
 
-        pub fn isOverflowing() bool {
-            return instance.backing_buf_used >= @as(u16, count);
-        }
-
         pub fn getOrPut(self: *Self, denormalized_key: []const u8) !Result {
             const key = if (comptime remove_trailing_slashes) std.mem.trimEnd(u8, denormalized_key, std.fs.path.sep_str) else denormalized_key;
             const _key = bun.hash(key);
@@ -717,9 +693,6 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
             instance_loaded = false;
         }
 
-        pub fn isOverflowing() bool {
-            return instance.map.backing_buf_used >= count;
-        }
         pub fn getOrPut(self: *Self, key: []const u8) !Result {
             return try self.map.getOrPut(key);
         }
@@ -729,19 +702,6 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
 
         pub fn atIndex(self: *Self, index: IndexType) ?*ValueType {
             return @call(bun.callmod_inline, BSSMapType.atIndex, .{ self.map, index });
-        }
-
-        pub fn keyAtIndex(_: *Self, index: IndexType) ?[]const u8 {
-            return switch (index.index) {
-                Unassigned.index, NotFound.index => null,
-                else => {
-                    if (!index.is_overflow) {
-                        return instance.key_list_slices[index.index];
-                    } else {
-                        return instance.key_list_overflow.items[index.index];
-                    }
-                },
-            };
         }
 
         pub fn put(self: *Self, key: anytype, comptime store_key: bool, result: *Result, value: ValueType) !*ValueType {

@@ -380,10 +380,6 @@ pub fn computeIsContinuousIntegration(this: *PackageManager) bool {
     return this.env.isCI();
 }
 
-pub inline fn isContinuousIntegration(this: *PackageManager) bool {
-    return this.ci_mode.get();
-}
-
 pub const WakeHandler = struct {
     // handler: fn (ctx: *anyopaque, pm: *PackageManager) void = undefined,
     // onDependencyError: fn (ctx: *anyopaque, Dependency, PackageID, anyerror) void = undefined,

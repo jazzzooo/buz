@@ -32,10 +32,6 @@ pub inline fn contains(comptime T: type, lhs: T, rhs: T) bool {
     return (asInt(T, lhs) & asInt(T, rhs)) != 0;
 }
 
-pub inline fn maskOut(comptime T: type, lhs: *T, rhs: T) T {
-    return @"and"(T, lhs, invert(T, rhs));
-}
-
 pub inline fn remove(comptime T: type, lhs: *T, rhs: T) void {
     lhs.* = @"and"(T, lhs.*, invert(T, rhs));
 }

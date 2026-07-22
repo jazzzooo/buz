@@ -136,13 +136,6 @@ pub const ThreadPool = struct {
         return false;
     }
 
-    /// Shut down the IO pool, if and only if no `ThreadPool`s exist right now.
-    /// If a `ThreadPool` exists, this function is a no-op and returns false.
-    /// Blocks until the IO pool is shut down.
-    pub fn shutdownIOPool() bool {
-        return if (usesIOPool()) IOThreadPool.shutdown() else true;
-    }
-
     pub fn scheduleWithOptions(this: *ThreadPool, parse_task: *ParseTask, is_inside_thread_pool: bool) void {
         if (parse_task.contents_or_fd == .contents and parse_task.stage == .needs_source_code) {
             parse_task.stage = .{

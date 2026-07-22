@@ -180,10 +180,6 @@ const BufferedIoClosed = struct {
         }
     }
 
-    fn isBuffered(this: *BufferedIoClosed, comptime io: enum { stdout, stderr, stdin }) bool {
-        return @field(this, @tagName(io)) != null;
-    }
-
     fn fromStdio(io: *const [3]bun.shell.subproc.Stdio) BufferedIoClosed {
         return .{
             .stdin = if (io[stdin_no].isPiped()) false else null,
@@ -207,10 +203,6 @@ pub const ChildPtr = StatePtrUnion(.{
     Assigns,
     Expansion,
 });
-
-pub fn isSubproc(this: *Cmd) bool {
-    return this.exec == .subproc;
-}
 
 /// If starting a command results in an error (failed to find executable in path for example)
 /// then it should write to the stderr of the entire shell script process
@@ -657,27 +649,6 @@ fn setStdioFromRedirect(stdio: *[3]shell.subproc.Stdio, flags: ast.RedirectFlags
         if (flags.stderr) {
             stdio.*[stderr_no] = val;
         }
-    }
-}
-
-/// Returns null if stdout is buffered
-pub fn stdoutSlice(this: *Cmd) ?[]const u8 {
-    switch (this.exec) {
-        .none => return null,
-        .subproc => {
-            if (this.exec.subproc.buffered_closed.stdout != null and this.exec.subproc.buffered_closed.stdout.?.state == .closed) {
-                return this.exec.subproc.buffered_closed.stdout.?.state.closed.slice();
-            }
-            return null;
-        },
-        .bltn => {
-            switch (this.exec.bltn.stdout) {
-                .buf => return this.exec.bltn.stdout.buf.items[0..],
-                .arraybuf => return this.exec.bltn.stdout.arraybuf.buf.slice(),
-                .blob => return this.exec.bltn.stdout.blob.sharedView(),
-                else => return null,
-            }
-        },
     }
 }
 

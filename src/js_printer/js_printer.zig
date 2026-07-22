@@ -20,12 +20,6 @@ fn formatUnsignedIntegerBetween(comptime len: u16, buf: *[len]u8, val: u64) void
     }
 }
 
-pub fn writeModuleId(comptime Writer: type, writer: Writer, module_id: u32) void {
-    bun.assert(module_id != 0); // either module_id is forgotten or it should be disabled
-    _ = writer.writeAll("$") catch unreachable;
-    std.fmt.formatInt(module_id, 16, .lower, .{}, writer) catch unreachable;
-}
-
 pub fn canPrintWithoutEscape(comptime CodePointType: type, c: CodePointType, comptime ascii_only: bool) bool {
     if (c <= last_ascii) {
         return c >= first_ascii and c != '\\' and c != '"' and c != '\'' and c != '`' and c != '$';
@@ -520,10 +514,6 @@ const ExprFlag = enum {
         return Set.init(.{ .forbid_call = true });
     }
 
-    pub fn ForbidAnd() ExprFlag.Set {
-        return Set.init(.{ .forbid_and = true });
-    }
-
     pub fn HasNonOptionalChainParent() ExprFlag.Set {
         return Set.init(.{ .has_non_optional_chain_parent = true });
     }
@@ -858,13 +848,6 @@ fn NewPrinter(
             }
         }
 
-        pub fn writeBytesNTimes(self: *Printer, bytes: []const u8, n: usize) anyerror!void {
-            var i: usize = 0;
-            while (i < n) : (i += 1) {
-                try self.writeAll(bytes);
-            }
-        }
-
         fn fmt(p: *Printer, comptime str: string, args: anytype) !void {
             const len = @call(
                 bun.callmod_inline,
@@ -880,10 +863,6 @@ fn NewPrinter(
             ) catch unreachable;
 
             p.writer.advance(written.len);
-        }
-
-        pub fn printBuffer(p: *Printer, str: []const u8) void {
-            p.writer.print([]const u8, str);
         }
 
         pub fn print(p: *Printer, str: anytype) void {
@@ -1170,21 +1149,6 @@ fn NewPrinter(
             p.print("}");
 
             p.needs_semicolon = false;
-        }
-
-        pub fn printTwoBlocksInOne(p: *Printer, loc: logger.Loc, stmts: []const Stmt, prepend: []const Stmt) void {
-            p.addSourceMapping(loc);
-            p.print("{");
-            p.printNewline();
-
-            p.indent();
-            p.printBlockBody(prepend, TopLevel.init(.no));
-            p.printBlockBody(stmts, TopLevel.init(.no));
-            p.unindent();
-            p.needs_semicolon = false;
-
-            p.printIndent();
-            p.print("}");
         }
 
         pub fn printDecls(p: *Printer, comptime keyword: string, decls_: []G.Decl, flags: ExprFlag.Set, tlm: TopLevelAndIsExport) void {
@@ -4842,129 +4806,8 @@ fn NewPrinter(
             }
         }
 
-        pub fn printBundledImport(p: *Printer, record: ImportRecord, s: *S.Import) void {
-            if (record.flags.is_internal) {
-                return;
-            }
-
-            const import_record = p.importRecord(s.import_record_index);
-            const is_disabled = import_record.path.is_disabled;
-            const module_id = import_record.module_id;
-
-            // If the bundled import was disabled and only imported for side effects
-            // we can skip it
-
-            if (record.path.is_disabled) {
-                if (p.symbols().get(s.namespace_ref) == null)
-                    return;
-            }
-
-            switch (ImportVariant.determine(&record, s)) {
-                .path_only => {
-                    if (!is_disabled) {
-                        p.printCallModuleID(module_id);
-                        p.printSemicolonAfterStatement();
-                    }
-                },
-                .import_items_and_default, .import_default => {
-                    if (!is_disabled) {
-                        p.print("var $");
-                        p.printModuleId(module_id);
-                        p.@"print = "();
-                        p.printLoadFromBundle(s.import_record_index);
-
-                        if (s.default_name) |default_name| {
-                            p.print(", ");
-                            p.printSymbol(default_name.ref.?);
-                            p.print(" = (($");
-                            p.printModuleId(module_id);
-
-                            p.print(" && \"default\" in $");
-                            p.printModuleId(module_id);
-                            p.print(") ? $");
-                            p.printModuleId(module_id);
-                            p.print(".default : $");
-                            p.printModuleId(module_id);
-                            p.print(")");
-                        }
-                    } else {
-                        if (s.default_name) |default_name| {
-                            p.print("var ");
-                            p.printSymbol(default_name.ref.?);
-                            p.@"print = "();
-                            p.printDisabledImport();
-                        }
-                    }
-
-                    p.printSemicolonAfterStatement();
-                },
-                .import_star_and_import_default => {
-                    p.print("var ");
-                    p.printSymbol(s.namespace_ref);
-                    p.@"print = "();
-                    p.printLoadFromBundle(s.import_record_index);
-
-                    if (s.default_name) |default_name| {
-                        p.print(",");
-                        p.printSpace();
-                        p.printSymbol(default_name.ref.?);
-                        p.@"print = "();
-
-                        if (!is_bun_platform) {
-                            p.print("(");
-                            p.printSymbol(s.namespace_ref);
-                            p.printWhitespacer(ws(" && \"default\" in "));
-                            p.printSymbol(s.namespace_ref);
-                            p.printWhitespacer(ws(" ? "));
-                            p.printSymbol(s.namespace_ref);
-                            p.printWhitespacer(ws(".default : "));
-                            p.printSymbol(s.namespace_ref);
-                            p.print(")");
-                        } else {
-                            p.printSymbol(s.namespace_ref);
-                        }
-                    }
-                    p.printSemicolonAfterStatement();
-                },
-                .import_star => {
-                    p.print("var ");
-                    p.printSymbol(s.namespace_ref);
-                    p.@"print = "();
-                    p.printLoadFromBundle(s.import_record_index);
-                    p.printSemicolonAfterStatement();
-                },
-
-                else => {
-                    p.print("var $");
-                    p.printModuleIdAssumeEnabled(module_id);
-                    p.@"print = "();
-                    p.printLoadFromBundle(s.import_record_index);
-                    p.printSemicolonAfterStatement();
-                },
-            }
-        }
-        pub fn printLoadFromBundle(p: *Printer, import_record_index: u32) void {
-            p.printLoadFromBundleWithoutCall(import_record_index);
-            p.print("()");
-        }
-
         inline fn printDisabledImport(p: *Printer) void {
             p.printWhitespacer(ws("(() => ({}))"));
-        }
-
-        pub fn printLoadFromBundleWithoutCall(p: *Printer, import_record_index: u32) void {
-            const record = p.importRecord(import_record_index);
-            if (record.path.is_disabled) {
-                p.printDisabledImport();
-                return;
-            }
-
-            @call(bun.callmod_inline, printModuleId, .{ p, p.importRecord(import_record_index).module_id });
-        }
-
-        pub fn printCallModuleID(p: *Printer, module_id: u32) void {
-            printModuleId(p, module_id);
-            p.print("()");
         }
 
         inline fn printModuleId(p: *Printer, module_id: u32) void {
@@ -4975,17 +4818,6 @@ fn NewPrinter(
         inline fn printModuleIdAssumeEnabled(p: *Printer, module_id: u32) void {
             p.print("$");
             std.fmt.formatInt(module_id, 16, .lower, .{}, p) catch unreachable;
-        }
-
-        pub fn printBundledRexport(p: *Printer, name: string, import_record_index: u32) void {
-            p.print("Object.defineProperty(");
-            p.printModuleExportSymbol();
-            p.print(",");
-            p.printStringLiteralUTF8(name, true);
-
-            p.printWhitespacer(ws(",{get: () => ("));
-            p.printLoadFromBundle(import_record_index);
-            p.printWhitespacer(ws("), enumerable: true, configurable: true})"));
         }
 
         // We must use Object.defineProperty() to handle re-exports from ESM -> CJS
@@ -5645,10 +5477,6 @@ pub fn NewWriter(
             for (data[0 .. data.len - 1]) |bytes| self.print([]const u8, bytes);
             for (0..splat) |_| self.print([]const u8, data[data.len - 1]);
             return std.Io.Writer.countSplat(data, splat);
-        }
-
-        pub fn isCopyFileRangeSupported() bool {
-            return comptime std.meta.hasFn(ContextType, "copyFileRange");
         }
 
         pub fn copyFileRange(ctx: ContextType, in_file: FD, start: usize, end: usize) !void {

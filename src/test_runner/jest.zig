@@ -137,10 +137,6 @@ pub const TestRunner = struct {
         }
     };
 
-    pub fn hasTestFilter(this: *const TestRunner) bool {
-        return this.filter_regex != null;
-    }
-
     pub fn shouldFileRunConcurrently(this: *const TestRunner, file_id: File.ID) bool {
         // Check if global concurrent flag is set
         if (this.concurrent) return true;

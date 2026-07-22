@@ -271,11 +271,6 @@ pub fn platformIOVecConstCreate(input: []const u8) PlatformIOVecConst {
     return .{ .len = @truncate(input.len), .base = @constCast(input.ptr) };
 }
 
-pub fn platformIOVecToSlice(iovec: PlatformIOVec) []u8 {
-    if (Environment.isWindows) return windows.libuv.uv_buf_t.slice(iovec);
-    return iovec.base[0..iovec.len];
-}
-
 pub const libarchive = @import("./libarchive/libarchive.zig");
 
 pub const paths = @import("./paths/paths.zig");
@@ -510,14 +505,6 @@ pub fn DebugOnly(comptime Type: type) type {
     return void;
 }
 
-pub fn DebugOnlyDefault(comptime val: anytype) if (Environment.isDebug) @TypeOf(val) else void {
-    if (comptime Environment.isDebug) {
-        return val;
-    }
-
-    return {};
-}
-
 pub inline fn range(comptime min: anytype, comptime max: anytype) [max - min]usize {
     return comptime brk: {
         var slice: [max - min]usize = undefined;
@@ -667,15 +654,6 @@ pub fn csprng(bytes: []u8) void {
 
 pub const ObjectPool = @import("./collections/pool.zig").ObjectPool;
 
-pub fn assertNonBlocking(fd: anytype) void {
-    assert((std.posix.fcntl(fd, std.posix.F.GETFL, 0) catch unreachable) & O.NONBLOCK != 0);
-}
-
-pub fn ensureNonBlocking(fd: anytype) void {
-    const current = std.posix.fcntl(fd, std.posix.F.GETFL, 0) catch 0;
-    _ = std.posix.fcntl(fd, std.posix.F.SETFL, current | O.NONBLOCK) catch 0;
-}
-
 const global_scope_log = sys.syslog;
 pub fn isReadable(fd: FD) PollFlag {
     if (comptime Environment.isWindows) {
@@ -764,10 +742,6 @@ pub inline fn unreachablePanic(comptime fmts: []const u8, args: anytype) noretur
     std.debug.panic(fmts, args);
 }
 
-pub fn StringEnum(comptime Type: type, comptime Map: anytype, value: []const u8) ?Type {
-    return ComptimeStringMap(Type, Map).get(value);
-}
-
 pub const Bunfig = @import("./cli/bunfig.zig").Bunfig;
 
 pub const HTTPThread = @import("./http/http.zig").HTTPThread;
@@ -776,33 +750,6 @@ pub const http = @import("./http/http.zig");
 pub const ptr = @import("./ptr/ptr.zig");
 pub const TaggedPointer = ptr.TaggedPointer;
 pub const TaggedPointerUnion = ptr.TaggedPointerUnion;
-
-pub fn onceUnsafe(comptime function: anytype, comptime ReturnType: type) ReturnType {
-    const Result = struct {
-        var value: ReturnType = undefined;
-        var ran = false;
-
-        pub fn execute() ReturnType {
-            if (ran) return value;
-            ran = true;
-            value = function();
-            return value;
-        }
-    };
-
-    return Result.execute();
-}
-
-pub fn isHeapMemory(mem: anytype) bool {
-    if (comptime use_mimalloc) {
-        const Memory = @TypeOf(mem);
-        if (comptime trait.isSingleItemPtr(Memory)) {
-            return mimalloc.mi_is_in_heap_region(mem);
-        }
-        return mimalloc.mi_is_in_heap_region(std.mem.sliceAsBytes(mem).ptr);
-    }
-    return false;
-}
 
 pub const memory = @import("./bun_alloc/memory.zig");
 pub const allocators = @import("./bun_alloc/bun_alloc.zig");
@@ -814,27 +761,6 @@ pub const MaxHeapAllocator = allocators.MaxHeapAllocator;
 
 pub const isSliceInBuffer = allocators.isSliceInBuffer;
 pub const isSliceInBufferT = allocators.isSliceInBufferT;
-
-pub inline fn sliceInBuffer(stable: []const u8, value: []const u8) []const u8 {
-    if (allocators.sliceRange(stable, value)) |_| {
-        return value;
-    }
-    if (strings.indexOf(stable, value)) |index| {
-        return stable[index..][0..value.len];
-    }
-    return value;
-}
-
-pub fn rangeOfSliceInBuffer(slice: []const u8, buffer: []const u8) ?[2]u32 {
-    if (!isSliceInBuffer(slice, buffer)) return null;
-    const r = [_]u32{
-        @as(u32, @truncate(@intFromPtr(slice.ptr) -| @intFromPtr(buffer.ptr))),
-        @as(u32, @truncate(slice.len)),
-    };
-    if (comptime Environment.allow_assert)
-        assert(strings.eqlLong(slice, buffer[r[0]..][0..r[1]], false));
-    return r;
-}
 
 // TODO: prefer .invalid decl literal over this
 // Please prefer `bun.FD.Optional.none` over this
@@ -1185,10 +1111,6 @@ pub fn StringHashMapUnmanaged(comptime Type: type) type {
     return std.HashMapUnmanaged([]const u8, Type, StringHashMapContext, std.hash_map.default_max_load_percentage);
 }
 
-pub fn FDHashMap(comptime Type: type) type {
-    return std.HashMap(FD, Type, FD.HashMapContext, std.hash_map.default_max_load_percentage);
-}
-
 pub fn U32HashMap(comptime Type: type) type {
     return std.HashMap(u32, Type, U32HashMapContext, std.hash_map.default_max_load_percentage);
 }
@@ -1211,26 +1133,6 @@ pub fn parseDouble(input: []const u8) !f64 {
 }
 
 pub const SignalCode = @import("./sys/SignalCode.zig").SignalCode;
-
-pub fn isMissingIOUring() bool {
-    if (comptime !Environment.isLinux)
-        // it is not missing when it was not supposed to be there in the first place
-        return false;
-
-    // cache the boolean value
-    const Missing = struct {
-        pub var is_missing_io_uring: ?bool = null;
-    };
-
-    return Missing.is_missing_io_uring orelse brk: {
-        const kernel = analytics.GenerateHeader.GeneratePlatform.kernelVersion();
-        // io_uring was introduced in earlier versions of Linux, but it was not
-        // really usable for us until 5.3
-        const result = kernel.major < 5 or (kernel.major == 5 and kernel.minor < 3);
-        Missing.is_missing_io_uring = result;
-        break :brk result;
-    };
-}
 
 pub const cli = @import("./cli/cli.zig");
 
@@ -3252,14 +3154,6 @@ pub fn GenericIndex(backing_int: type, uid: anytype) type {
             return @fromBackingInt(@intCast(oi.get()));
         }
 
-        pub fn sortFnAsc(_: void, a: @This(), b: @This()) bool {
-            return a.get() < b.get();
-        }
-
-        pub fn sortFnDesc(_: void, a: @This(), b: @This()) bool {
-            return a.get() < b.get();
-        }
-
         pub fn format(this: @This(), writer: *std.Io.Writer) !void {
             return writer.print("{d}", .{@backingInt(this)});
         }
@@ -3299,16 +3193,6 @@ pub fn splitAtMut(comptime T: type, slice: []T, mid: usize) struct { []T, []T } 
     bun.assert(mid <= slice.len);
 
     return .{ slice[0..mid], slice[mid..] };
-}
-
-/// Reverse of the slice index operator.
-/// Given `&slice[index] == item`, returns the `index` needed.
-/// The item must be in the slice.
-pub fn indexOfPointerInSlice(comptime T: type, slice: []const T, item: *const T) usize {
-    bun.assert(isSliceInBufferT(T, item[0..1], slice));
-    const offset = @intFromPtr(item) - @intFromPtr(slice.ptr);
-    const index = @divExact(offset, @sizeOf(T));
-    return index;
 }
 
 pub fn getThreadCount() u16 {
@@ -3443,10 +3327,6 @@ pub inline fn writeAnyToHasher(hasher: anytype, thing: anytype) void {
 pub const perf = @import("./perf/perf.zig");
 pub inline fn isComptimeKnown(x: anytype) bool {
     return comptime @typeInfo(@TypeOf(.{x})).@"struct".field_attrs[0].@"comptime";
-}
-
-pub inline fn itemOrNull(comptime T: type, slice: []const T, index: usize) ?T {
-    return if (index < slice.len) slice[index] else null;
 }
 
 pub const Maybe = jsc.Node.Maybe;

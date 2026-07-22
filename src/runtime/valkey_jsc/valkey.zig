@@ -73,13 +73,6 @@ pub const Protocol = enum {
             else => false,
         };
     }
-
-    pub fn isUnix(self: Protocol) bool {
-        return switch (self) {
-            .standalone_unix, .standalone_tls_unix => true,
-            else => false,
-        };
-    }
 };
 
 pub const TLS = union(enum) {

@@ -132,10 +132,6 @@ pub const PendingValue = struct {
 
         return false;
     }
-    pub fn isStreamingOrBuffering(this: *PendingValue) bool {
-        return this.readable.held.has() or (this.promise != null and !this.promise.?.isEmptyOrUndefinedOrNull());
-    }
-
     pub fn toAnyBlobAllowPromise(this: *PendingValue) ?AnyBlob {
         var stream = if (this.readable.get(this.global)) |readable| readable else return null;
 
@@ -419,28 +415,6 @@ pub const Value = union(Tag) {
             .Locked => this.Locked.sizeHint(),
             // .InlineBlob => this.InlineBlob.sliceConst().len,
             else => 0,
-        };
-    }
-
-    pub fn createBlobValue(data: []u8, allocator: std.mem.Allocator, was_string: bool) Value {
-        // if (data.len <= InlineBlob.available_bytes) {
-        //     var _blob = InlineBlob{
-        //         .bytes = undefined,
-        //         .was_string = was_string,
-        //         .len = @truncate(InlineBlob.IntSize, data.len),
-        //     };
-        //     @memcpy(&_blob.bytes, data.ptr, data.len);
-        //     allocator.free(data);
-        //     return Value{
-        //         .InlineBlob = _blob,
-        //     };
-        // }
-
-        return Value{
-            .InternalBlob = InternalBlob{
-                .bytes = std.array_list.Managed(u8).fromOwnedSlice(allocator, data),
-                .was_string = was_string,
-            },
         };
     }
 
@@ -1634,76 +1608,6 @@ pub const ValueBufferer = struct {
             log("handleResolveStream no sink", .{});
             sink.onFinishedBuffering(sink.ctx, "", null, is_async);
         }
-    }
-
-    fn createJSSink(sink: *@This(), stream: jsc.WebCore.ReadableStream) !void {
-        stream.value.ensureStillAlive();
-        var allocator = sink.allocator;
-        var buffer_stream = try allocator.create(ArrayBufferSink.JSSink);
-        var globalThis = sink.global;
-        buffer_stream.* = ArrayBufferSink.JSSink{
-            .sink = ArrayBufferSink{
-                .bytes = bun.ByteList.empty,
-                .allocator = allocator,
-                .next = null,
-            },
-        };
-        var signal = &buffer_stream.sink.signal;
-        sink.js_sink = buffer_stream;
-
-        signal.* = ArrayBufferSink.JSSink.SinkSignal.init(JSValue.zero);
-
-        // explicitly set it to a dead pointer
-        // we use this memory address to disable signals being sent
-        signal.clear();
-        assert(signal.isDead());
-
-        const assignment_result: JSValue = ArrayBufferSink.JSSink.assignToStream(
-            globalThis,
-            stream.value,
-            buffer_stream,
-            @as(**anyopaque, @ptrCast(&signal.ptr)),
-        );
-
-        assignment_result.ensureStillAlive();
-
-        // assert that it was updated
-        assert(!signal.isDead());
-
-        if (assignment_result.isError()) {
-            return error.PipeFailed;
-        }
-
-        if (!assignment_result.isEmptyOrUndefinedOrNull()) {
-            assignment_result.ensureStillAlive();
-            // it returns a Promise when it goes through ReadableStreamDefaultReader
-            if (assignment_result.asAnyPromise()) |promise| {
-                switch (promise.status()) {
-                    .Pending => {
-                        const cell = bun.api.NativePromiseContext.create(globalThis, sink);
-                        assignment_result.thenWithValue(
-                            globalThis,
-                            cell,
-                            onResolveStream,
-                            onRejectStream,
-                        ) catch {};
-                    },
-                    .Fulfilled => {
-                        defer stream.value.unprotect();
-
-                        sink.handleResolveStream(false);
-                    },
-                    .Rejected => {
-                        defer stream.value.unprotect();
-
-                        sink.handleRejectStream(promise.result(globalThis.vm()), false);
-                    },
-                }
-                return;
-            }
-        }
-
-        return error.PipeFailed;
     }
 
     fn bufferLockedBodyValue(sink: *@This(), value: *jsc.WebCore.Body.Value, owned_readable_stream: ?jsc.WebCore.ReadableStream) !void {

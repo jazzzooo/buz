@@ -31,10 +31,6 @@ pub const ParseResult = struct {
             };
         }
 
-        pub fn isBytecode(this: AlreadyBundled) bool {
-            return this == .bytecode or this == .bytecode_cjs;
-        }
-
         pub fn isCommonJS(this: AlreadyBundled) bool {
             return this == .source_code_cjs or this == .bytecode_cjs;
         }

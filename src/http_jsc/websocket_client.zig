@@ -1545,10 +1545,6 @@ const ReceiveState = enum {
     pong,
     close,
     fail,
-
-    pub fn needControlFrame(this: ReceiveState) bool {
-        return this != .need_body;
-    }
 };
 const DataType = enum {
     none,

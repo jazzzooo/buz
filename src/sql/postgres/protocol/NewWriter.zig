@@ -56,10 +56,6 @@ pub fn NewWriterWrap(
             try this.write(std.mem.asBytes(&@byteSwap(value)));
         }
 
-        pub fn sint4(this: @This(), value: i32) !void {
-            try this.write(std.mem.asBytes(&@byteSwap(value)));
-        }
-
         pub fn @"f64"(this: @This(), value: f64) !void {
             try this.write(std.mem.asBytes(&@byteSwap(@as(u64, @bitCast(value)))));
         }

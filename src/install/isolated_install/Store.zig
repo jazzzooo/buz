@@ -37,10 +37,6 @@ pub const Store = struct {
             pub fn tryGet(id: @This()) ?u32 {
                 return if (id == .invalid) null else @backingInt(id);
             }
-
-            pub fn getOr(id: @This(), default: u32) u32 {
-                return if (id == .invalid) default else @backingInt(id);
-            }
         };
     }
 
@@ -301,42 +297,6 @@ pub const Store = struct {
         };
 
         pub const Id = NewId(Entry);
-
-        pub fn debugPrintList(list: *const List, lockfile: *Lockfile) void {
-            const string_buf = lockfile.buffers.string_bytes.items;
-
-            const pkgs = lockfile.packages.slice();
-            const pkg_names = pkgs.items(.name);
-            const pkg_resolutions = pkgs.items(.resolution);
-
-            for (0..list.len) |entry_id| {
-                const entry = list.get(entry_id);
-                const entry_pkg_name = pkg_names[entry.pkg_id].slice(string_buf);
-                log(
-                    \\entry ({d}): '{s}@{}'
-                    \\  dep_name: {s}
-                    \\  pkg_id: {d}
-                    \\  parent_id: {}
-                    \\  
-                , .{
-                    entry_id,
-                    entry_pkg_name,
-                    pkg_resolutions[entry.pkg_id].fmt(string_buf, .posix),
-                    entry.dep_name.slice(string_buf),
-                    entry.pkg_id,
-                    entry.parent_id,
-                });
-
-                log("  dependencies ({d}):\n", .{entry.dependencies.items.len});
-                for (entry.dependencies.items) |dep_entry_id| {
-                    const dep_entry = list.get(dep_entry_id.get());
-                    log("    {s}@{}\n", .{
-                        pkg_names[dep_entry.pkg_id].slice(string_buf),
-                        pkg_resolutions[dep_entry.pkg_id].fmt(string_buf, .posix),
-                    });
-                }
-            }
-        }
     };
 
     pub fn OrderedArraySet(comptime T: type, comptime Ctx: type) type {
@@ -470,102 +430,7 @@ pub const Store = struct {
 
         pub const List = bun.MultiArrayList(Node);
 
-        pub fn deinitList(list: *const List, allocator: std.mem.Allocator) void {
-            list.deinit(allocator);
-        }
-
-        pub fn debugPrint(this: *const Node, id: Id, lockfile: *const Lockfile) void {
-            const pkgs = lockfile.packages.slice();
-            const pkg_names = pkgs.items(.name);
-            const pkg_resolutions = pkgs.items(.resolution);
-
-            const string_buf = lockfile.buffers.string_bytes.items;
-            const deps = lockfile.buffers.dependencies.items;
-
-            const dep_name = if (this.dep_id == invalid_dependency_id) "root" else deps[this.dep_id].name.slice(string_buf);
-            const dep_version = if (this.dep_id == invalid_dependency_id) "root" else deps[this.dep_id].version.literal.slice(string_buf);
-
-            log(
-                \\node({d})
-                \\  deps: {s}@{s}
-                \\  res: {s}@{}
-                \\
-            , .{
-                id,
-                dep_name,
-                dep_version,
-                pkg_names[this.pkg_id].slice(string_buf),
-                pkg_resolutions[this.pkg_id].fmt(string_buf, .posix),
-            });
-        }
-
         pub const Id = NewId(Node);
-
-        pub fn debugPrintList(list: *const List, lockfile: *const Lockfile) void {
-            const string_buf = lockfile.buffers.string_bytes.items;
-            const dependencies = lockfile.buffers.dependencies.items;
-
-            const pkgs = lockfile.packages.slice();
-            const pkg_names = pkgs.items(.name);
-            const pkg_resolutions = pkgs.items(.resolution);
-
-            for (0..list.len) |node_id| {
-                const node = list.get(node_id);
-                const node_pkg_name = pkg_names[node.pkg_id].slice(string_buf);
-                log(
-                    \\node ({d}): '{s}'
-                    \\  dep_id: {d}
-                    \\  pkg_id: {d}
-                    \\  parent_id: {}
-                    \\
-                , .{
-                    node_id,
-                    node_pkg_name,
-                    node.dep_id,
-                    node.pkg_id,
-                    node.parent_id,
-                });
-
-                log("  dependencies ({d}):\n", .{node.dependencies.items.len});
-                for (node.dependencies.items) |ids| {
-                    const dep = dependencies[ids.dep_id];
-                    const dep_name = dep.name.slice(string_buf);
-
-                    const pkg_name = pkg_names[ids.pkg_id].slice(string_buf);
-                    const pkg_res = pkg_resolutions[ids.pkg_id];
-
-                    log("    {s}@{} ({s}@{s})\n", .{
-                        pkg_name,
-                        pkg_res.fmt(string_buf, .posix),
-                        dep_name,
-                        dep.version.literal.slice(string_buf),
-                    });
-                }
-
-                log("  nodes ({d}): ", .{node.nodes.items.len});
-                for (node.nodes.items, 0..) |id, i| {
-                    log("{d}", .{id.get()});
-                    if (i != node.nodes.items.len - 1) {
-                        log(",", .{});
-                    }
-                }
-
-                log("\n  peers ({d}):\n", .{node.peers.list.items.len});
-                for (node.peers.list.items) |ids| {
-                    const dep = dependencies[ids.dep_id];
-                    const dep_name = dep.name.slice(string_buf);
-                    const pkg_name = pkg_names[ids.pkg_id].slice(string_buf);
-                    const pkg_res = pkg_resolutions[ids.pkg_id];
-
-                    log("    {s}@{} ({s}@{s})\n", .{
-                        pkg_name,
-                        pkg_res.fmt(string_buf, .posix),
-                        dep_name,
-                        dep.version.literal.slice(string_buf),
-                    });
-                }
-            }
-        }
     };
 };
 
