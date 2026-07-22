@@ -1212,7 +1212,7 @@ pub const JSFrameworkRouter = struct {
                     })).toJS(),
                 );
             }
-            return global.throwValue(try global.createAggregateErrorWithArray(.static("Errors scanning routes"), arr.toJS()));
+            return global.throwValue((try global.createAggregateErrorWithArray(.static("Errors scanning routes"), arr)).toJS());
         }
 
         return jsfr;

@@ -2048,7 +2048,7 @@ pub fn processFetchLog(globalThis: *JSGlobalObject, specifier: bun.String, refer
 
             ret.* = ErrorableResolvedSource.err(
                 err,
-                globalThis.createAggregateError(
+                if (globalThis.createAggregateError(
                     errors,
                     &ZigString.init(
                         std.fmt.allocPrint(globalThis.allocator(), "{d} errors building \"{f}\"", .{
@@ -2056,7 +2056,7 @@ pub fn processFetchLog(globalThis: *JSGlobalObject, specifier: bun.String, refer
                             specifier,
                         }) catch unreachable,
                     ),
-                ) catch |e| globalThis.takeException(e),
+                )) |aggregate| aggregate.toJS() else |e| globalThis.takeException(e),
             );
         },
     }

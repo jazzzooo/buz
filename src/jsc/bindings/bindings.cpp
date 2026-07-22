@@ -3322,7 +3322,7 @@ CPP_DECL void JSC__JSArray__push(JSC::JSArray* array, JSC::JSGlobalObject* globa
     array->push(globalObject, JSC::JSValue::decode(encodedValue));
 }
 
-JSC::EncodedJSValue JSC__JSGlobalObject__createAggregateError(JSC::JSGlobalObject* globalObject,
+JSC::JSObject* JSC__JSGlobalObject__createAggregateError(JSC::JSGlobalObject* globalObject,
     const JSValue* errors, size_t errors_count,
     const ZigString* arg3)
 {
@@ -3346,19 +3346,23 @@ JSC::EncodedJSValue JSC__JSGlobalObject__createAggregateError(JSC::JSGlobalObjec
     }
     if (!array) {
         JSC::throwOutOfMemoryError(globalObject, scope);
-        return {};
+        return nullptr;
     }
 
     JSC::Structure* errorStructure = globalObject->errorStructure(JSC::ErrorType::AggregateError);
-
-    RELEASE_AND_RETURN(scope, JSC::JSValue::encode(JSC::createAggregateError(vm, errorStructure, array, message, cause, nullptr, JSC::TypeNothing, false)));
+    auto* result = JSC::createAggregateError(vm, errorStructure, array, message, cause, nullptr, JSC::TypeNothing, false);
+    RETURN_IF_EXCEPTION(scope, nullptr);
+    return result;
 }
-JSC::EncodedJSValue JSC__JSGlobalObject__createAggregateErrorWithArray(JSC::JSGlobalObject* global, JSC::JSArray* array, BunString message, JSValue cause)
+JSC::JSObject* JSC__JSGlobalObject__createAggregateErrorWithArray(JSC::JSGlobalObject* global, JSC::JSArray* array, BunString message)
 {
     auto& vm = JSC::getVM(global);
+    auto scope = DECLARE_THROW_SCOPE(vm);
     JSC::Structure* errorStructure = global->errorStructure(JSC::ErrorType::AggregateError);
     WTF::String messageString = message.toWTFString();
-    return JSC::JSValue::encode(JSC::createAggregateError(vm, errorStructure, array, messageString, cause, nullptr, JSC::TypeNothing, false));
+    auto* result = JSC::createAggregateError(vm, errorStructure, array, messageString, JSC::jsUndefined(), nullptr, JSC::TypeNothing, false);
+    RETURN_IF_EXCEPTION(scope, nullptr);
+    return result;
 }
 
 JSC::EncodedJSValue ZigString__toAtomicValue(const ZigString* arg0, JSC::JSGlobalObject* arg1)

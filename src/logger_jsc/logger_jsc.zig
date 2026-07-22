@@ -62,17 +62,17 @@ pub fn logToJS(this: Log, global: *jsc.JSGlobalObject, allocator: std.mem.Alloca
             }
             const out = jsc.ZigString.init(message);
             const agg = try global.createAggregateError(errors_stack[0..count], &out);
-            return agg;
+            return agg.toJS();
         },
     }
 }
 
 /// unlike toJS, this always produces an AggregateError object
 pub fn logToJSAggregateError(this: Log, global: *jsc.JSGlobalObject, message: bun.String) bun.JSError!jsc.JSValue {
-    return global.createAggregateErrorWithArray(message, try logToJSArray(this, global, bun.default_allocator));
+    return (try global.createAggregateErrorWithArray(message, try logToJSArray(this, global, bun.default_allocator))).toJS();
 }
 
-pub fn logToJSArray(this: Log, global: *jsc.JSGlobalObject, allocator: std.mem.Allocator) bun.JSError!jsc.JSValue {
+pub fn logToJSArray(this: Log, global: *jsc.JSGlobalObject, allocator: std.mem.Allocator) bun.JSError!*jsc.JSArray {
     const msgs: []const Msg = this.msgs.items;
 
     const arr = try jsc.JSArray.createEmpty(global, msgs.len);
@@ -80,7 +80,7 @@ pub fn logToJSArray(this: Log, global: *jsc.JSGlobalObject, allocator: std.mem.A
         try arr.putDirectIndex(global, @as(u32, @intCast(i)), try msgToJS(msg, global, allocator));
     }
 
-    return arr.toJS();
+    return arr;
 }
 
 const std = @import("std");

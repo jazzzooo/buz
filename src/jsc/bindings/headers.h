@@ -192,7 +192,7 @@ CPP_DECL JSC::EncodedJSValue Bun__REPL__formatValue(JSC::JSGlobalObject* globalO
 #pragma mark - JSC::JSGlobalObject
 
 CPP_DECL VirtualMachine* JSC__JSGlobalObject__bunVM(JSC::JSGlobalObject* arg0);
-CPP_DECL JSC::EncodedJSValue JSC__JSGlobalObject__createAggregateError(JSC::JSGlobalObject* arg0, const JSC::JSValue* arg1, size_t arg2, const ZigString* arg3);
+CPP_DECL JSC::JSObject* JSC__JSGlobalObject__createAggregateError(JSC::JSGlobalObject* arg0, const JSC::JSValue* arg1, size_t arg2, const ZigString* arg3);
 CPP_DECL void JSC__JSGlobalObject__createSyntheticModule_(JSC::JSGlobalObject* arg0, ZigString* arg1, size_t arg2, JSC::EncodedJSValue* arg3, size_t arg4);
 CPP_DECL void JSC__JSGlobalObject__deleteModuleRegistryEntry(JSC::JSGlobalObject* arg0, ZigString* arg1);
 CPP_DECL JSC::EncodedJSValue JSC__JSGlobalObject__generateHeapSnapshot(JSC::JSGlobalObject* arg0);

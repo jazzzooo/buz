@@ -26,7 +26,7 @@ pub fn toSatisfy(this: *Expect, globalThis: *JSGlobalObject, callFrame: *CallFra
     const result = predicate.call(globalThis, .js_undefined, &.{value}) catch |e| {
         const err = globalThis.takeException(e);
         const fmt = ZigString.init("toSatisfy() predicate threw an exception");
-        return globalThis.throwValue(try globalThis.createAggregateError(&.{err}, &fmt));
+        return globalThis.throwValue((try globalThis.createAggregateError(&.{err}, &fmt)).toJS());
     };
 
     const not = this.flags.not;

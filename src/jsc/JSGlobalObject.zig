@@ -489,19 +489,18 @@ pub const JSGlobalObject = opaque {
     }
     pub const ctx = ref;
 
-    extern fn JSC__JSGlobalObject__createAggregateError(*JSGlobalObject, [*]const JSValue, usize, *const ZigString) JSValue;
-    pub fn createAggregateError(globalObject: *JSGlobalObject, errors: []const JSValue, message: *const ZigString) bun.JSError!JSValue {
-        return bun.jsc.fromJSHostCall(globalObject, @src(), JSC__JSGlobalObject__createAggregateError, .{ globalObject, errors.ptr, errors.len, message });
+    extern fn JSC__JSGlobalObject__createAggregateError(*JSGlobalObject, [*]const JSValue, usize, *const ZigString) ?*jsc.JSObject;
+    pub fn createAggregateError(globalObject: *JSGlobalObject, errors: []const JSValue, message: *const ZigString) bun.JSError!*jsc.JSObject {
+        return (try bun.jsc.fromJSHostCallGeneric(globalObject, @src(), JSC__JSGlobalObject__createAggregateError, .{ globalObject, errors.ptr, errors.len, message })) orelse unreachable;
     }
 
-    extern fn JSC__JSGlobalObject__createAggregateErrorWithArray(*JSGlobalObject, JSValue, bun.String, JSValue) JSValue;
+    extern fn JSC__JSGlobalObject__createAggregateErrorWithArray(*JSGlobalObject, *jsc.JSArray, bun.String) ?*jsc.JSObject;
     pub fn createAggregateErrorWithArray(
         globalObject: *JSGlobalObject,
         message: bun.String,
-        error_array: JSValue,
-    ) bun.JSError!JSValue {
-        if (bun.Environment.allow_assert) bun.assert(error_array.isArray());
-        return bun.jsc.fromJSHostCall(globalObject, @src(), JSC__JSGlobalObject__createAggregateErrorWithArray, .{ globalObject, error_array, message, .js_undefined });
+        error_array: *jsc.JSArray,
+    ) bun.JSError!*jsc.JSObject {
+        return (try bun.jsc.fromJSHostCallGeneric(globalObject, @src(), JSC__JSGlobalObject__createAggregateErrorWithArray, .{ globalObject, error_array, message })) orelse unreachable;
     }
 
     extern fn JSC__JSGlobalObject__generateHeapSnapshot(*JSGlobalObject) JSValue;

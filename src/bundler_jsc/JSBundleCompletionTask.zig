@@ -447,9 +447,9 @@ pub const JSBundleCompletionTask = struct {
         build_result.putDirect(
             globalThis,
             jsc.ZigString.static("logs"),
-            this.log.toJSArray(globalThis, bun.default_allocator) catch |err| {
+            (this.log.toJSArray(globalThis, bun.default_allocator) catch |err| {
                 return promise.reject(globalThis, err);
-            },
+            }).toJS(),
         );
 
         const didHandleCallbacks = if (this.plugins) |plugin| blk: {
@@ -554,9 +554,9 @@ pub const JSBundleCompletionTask = struct {
                 build_output.putDirect(
                     globalThis,
                     jsc.ZigString.static("logs"),
-                    this.log.toJSArray(globalThis, bun.default_allocator) catch |err| {
+                    (this.log.toJSArray(globalThis, bun.default_allocator) catch |err| {
                         return promise.reject(globalThis, err);
-                    },
+                    }).toJS(),
                 );
 
                 // Add metafile if it was generated
