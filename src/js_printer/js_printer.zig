@@ -383,6 +383,7 @@ pub const Options = struct {
     source_map_allocator: ?std.mem.Allocator = null,
     source_map_handler: ?SourceMapHandler = null,
     source_map_builder: ?*bun.SourceMap.Chunk.Builder = null,
+    // TODO: Audit CSS import printing so this public behavior option affects emitted code.
     css_import_behavior: api.CssInJsBehavior = api.CssInJsBehavior.facade,
     target: options.Target = .browser,
 

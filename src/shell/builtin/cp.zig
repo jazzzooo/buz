@@ -603,6 +603,7 @@ pub const ShellCpTask = struct {
     }
 };
 
+// TODO: Audit -n against copy execution so accepting it cannot overwrite existing files.
 const Opts = packed struct(u16) {
     /// -f
     ///

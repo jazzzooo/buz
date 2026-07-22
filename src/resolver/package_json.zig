@@ -922,6 +922,7 @@ pub const ESModule = struct {
             token: logger.Range = logger.Range.None,
             // If the status is "UndefinedNoConditionsMatch", this is the set of
             // conditions that didn't match. This information is used for error messages.
+            // TODO: Audit condition-mismatch diagnostics so this context is surfaced to users.
             unmatched_conditions: []string = &[_]string{},
         };
     };

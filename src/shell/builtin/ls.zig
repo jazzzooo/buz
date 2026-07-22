@@ -574,6 +574,7 @@ pub const ShellLsTask = struct {
     }
 };
 
+// TODO: Audit accepted options against traversal, sorting, and formatting behavior.
 const Opts = struct {
     /// `-a`, `--all`
     /// Do not ignore entries starting with .

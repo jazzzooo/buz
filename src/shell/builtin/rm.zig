@@ -52,6 +52,7 @@ state: union(enum) {
 } = .idle,
 
 pub const Opts = struct {
+    // TODO: Audit preserve-root handling so the parsed policy governs recursive deletion.
     /// `--no-preserve-root` / `--preserve-root`
     ///
     /// If set to false, then allow the recursive removal of the root directory.

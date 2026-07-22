@@ -375,6 +375,7 @@ pub fn deinit(this: *Mv) void {
     }
 }
 
+// TODO: Audit -f, -h, -i, -n, and -v against move execution.
 const Opts = struct {
     /// `-f`
     ///

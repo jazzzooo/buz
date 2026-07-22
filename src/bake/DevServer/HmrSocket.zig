@@ -3,6 +3,7 @@ pub const HmrSocket = @This();
 dev: *DevServer,
 underlying: ?AnyWebSocket = null,
 subscriptions: HmrTopic.Bits,
+// TODO: Audit HMR message authorization so sensitive actions require a local connection.
 /// Allows actions which inspect or mutate sensitive DevServer state.
 is_from_localhost: bool,
 /// By telling DevServer the active route, this enables receiving detailed

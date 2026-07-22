@@ -5,6 +5,7 @@ _end: f32 = 1,
 increment: f32 = 1,
 separator: []const u8 = "\n",
 terminator: []const u8 = "",
+// TODO: Audit fixed-width formatting so accepting -w changes the generated sequence.
 fixed_width: bool = false,
 
 pub fn start(this: *@This()) Yield {

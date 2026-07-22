@@ -2209,6 +2209,7 @@ pub const EntryPoint = struct {
 
 pub const RouteConfig = struct {
     dir: string = "",
+    // TODO: Audit multi-directory routing so every configured directory participates in resolution.
     possible_dirs: []const string = &[_]string{},
 
     // Frameworks like Next.js (and others) use a special prefix for bundled/transpiled assets
