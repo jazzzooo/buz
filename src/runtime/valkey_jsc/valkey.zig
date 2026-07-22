@@ -1218,10 +1218,6 @@ pub const ValkeyClient = struct {
     pub fn onValkeyClose(this: *ValkeyClient) bun.JSTerminated!void {
         return this.parent().onValkeyClose();
     }
-
-    pub fn onValkeyTimeout(this: *ValkeyClient) void {
-        this.parent().onValkeyTimeout();
-    }
 };
 
 // Auto-pipelining

@@ -4,7 +4,6 @@ const c = if (bun.Environment.enable_asan) struct {
     extern fn __asan_unpoison_memory_region(ptr: *const anyopaque, size: usize) void;
     extern fn __asan_address_is_poisoned(ptr: *const anyopaque) bool;
     extern fn __asan_describe_address(ptr: *const anyopaque) void;
-    extern fn __asan_update_allocation_context(ptr: *const anyopaque) c_int;
     /// https://github.com/llvm/llvm-project/blob/main/compiler-rt/include/sanitizer/lsan_interface.h
     extern fn __lsan_register_root_region(ptr: *const anyopaque, size: usize) void;
     extern fn __lsan_unregister_root_region(ptr: *const anyopaque, size: usize) void;
@@ -21,9 +20,6 @@ const c = if (bun.Environment.enable_asan) struct {
     pub fn describe(ptr: *const anyopaque) void {
         __asan_describe_address(ptr);
     }
-    pub fn updateAllocationContext(ptr: *const anyopaque) c_int {
-        return __asan_update_allocation_context(ptr);
-    }
     pub fn registerRootRegion(ptr: *const anyopaque, size: usize) void {
         __lsan_register_root_region(ptr, size);
     }
@@ -37,9 +33,6 @@ const c = if (bun.Environment.enable_asan) struct {
         return false;
     }
     pub fn describe(_: *const anyopaque) void {}
-    pub fn updateAllocationContext(_: *const anyopaque) c_int {
-        return 0;
-    }
     pub fn registerRootRegion(_: *const anyopaque, _: usize) void {}
     pub fn unregisterRootRegion(_: *const anyopaque, _: usize) void {}
 };
@@ -67,13 +60,6 @@ fn __asan_default_options() callconv(.c) [*:0]const u8 {
     // detect_leaks: off by default everywhere (it defaults on for Linux only); CI
     // opts in via ASAN_OPTIONS with a suppressions file.
     return "detect_stack_use_after_return=0:detect_leaks=0";
-}
-
-/// Update allocation stack trace for the given allocation to the current stack
-/// trace
-pub fn updateAllocationContext(ptr: *const anyopaque) bool {
-    if (!comptime enabled) return false;
-    return c.updateAllocationContext(ptr) == 1;
 }
 
 /// Describes an address (prints out where it was allocated, freed, stacktraces,

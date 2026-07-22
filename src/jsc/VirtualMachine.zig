@@ -466,10 +466,6 @@ pub const UnhandledRejectionScope = struct {
     }
 };
 
-pub fn onQuietUnhandledRejectionHandler(this: *VirtualMachine, _: *JSGlobalObject, _: JSValue) void {
-    this.unhandled_error_counter += 1;
-}
-
 pub fn onQuietUnhandledRejectionHandlerCaptureValue(this: *VirtualMachine, _: *JSGlobalObject, value: JSValue) void {
     this.unhandled_error_counter += 1;
     value.ensureStillAlive();
@@ -853,13 +849,6 @@ pub inline fn rareData(this: *VirtualMachine) *jsc.RareData {
 
 pub inline fn eventLoop(this: *VirtualMachine) *EventLoop {
     return this.event_loop;
-}
-
-pub fn prepareLoop(_: *VirtualMachine) void {}
-
-pub fn enterUWSLoop(this: *VirtualMachine) void {
-    var loop = this.event_loop_handle.?;
-    loop.run();
 }
 
 pub fn onBeforeExit(this: *VirtualMachine) void {
@@ -1318,14 +1307,6 @@ pub fn init(opts: Options) !*VirtualMachine {
     vm.body_value_hive_allocator = Body.Value.HiveAllocator.init(bun.typedAllocator(jsc.WebCore.Body.Value));
 
     return vm;
-}
-
-pub inline fn assertOnJSThread(vm: *const VirtualMachine) void {
-    if (Environment.allow_assert) {
-        if (vm.debug_thread_id != std.Thread.getCurrentId()) {
-            std.debug.panic("Expected to be on the JS thread.", .{});
-        }
-    }
 }
 
 fn configureDebugger(this: *VirtualMachine, cli_flag: bun.cli.Command.Debugger) void {

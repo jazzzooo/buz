@@ -424,14 +424,6 @@ pub const FileSystemRouter = struct {
         return bun.String.static("nextjs").toJS(globalThis);
     }
 
-    pub fn getAssetPrefix(this: *FileSystemRouter, globalThis: *jsc.JSGlobalObject) JSValue {
-        if (this.asset_prefix) |asset_prefix| {
-            return jsc.ZigString.init(asset_prefix.slice()).withEncoding().toJS(globalThis);
-        }
-
-        return JSValue.jsNull();
-    }
-
     pub fn finalize(
         this: *FileSystemRouter,
     ) callconv(.c) void {
@@ -554,12 +546,6 @@ pub const MatchedRoute = struct {
 
     pub fn getPathname(this: *MatchedRoute, globalThis: *jsc.JSGlobalObject) JSValue {
         return ZigString.init(this.route.pathname)
-            .withEncoding()
-            .toJS(globalThis);
-    }
-
-    pub fn getRoute(this: *MatchedRoute, globalThis: *jsc.JSGlobalObject) JSValue {
-        return ZigString.init(this.route.name)
             .withEncoding()
             .toJS(globalThis);
     }

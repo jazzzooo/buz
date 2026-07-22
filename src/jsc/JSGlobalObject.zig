@@ -217,15 +217,6 @@ pub const JSGlobalObject = opaque {
         return this.ERR(.INVALID_ARG_TYPE, "The \"{s}\" argument must be one of type {s}. Received {f}", .{ argname, typename, actual_string_value }).throw();
     }
 
-    pub fn throwInvalidArgumentRangeValue(
-        this: *JSGlobalObject,
-        argname: []const u8,
-        typename: []const u8,
-        value: i64,
-    ) bun.JSError {
-        return this.ERR(.OUT_OF_RANGE, "The \"{s}\" is out of range. {s}. Received {f}", .{ argname, typename, value }).throw();
-    }
-
     pub fn throwInvalidPropertyTypeValue(
         this: *JSGlobalObject,
         field: []const u8,
@@ -706,10 +697,6 @@ pub const JSGlobalObject = opaque {
 
     pub fn makeNapiEnvForFFI(this: *JSGlobalObject) *napi.NapiEnv {
         return ZigGlobalObject__makeNapiEnvForFFI(this);
-    }
-
-    pub inline fn assertOnJSThread(this: *JSGlobalObject) void {
-        if (bun.Environment.allow_assert) this.bunVM().assertOnJSThread();
     }
 
     // returns false if it throws

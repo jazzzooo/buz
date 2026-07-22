@@ -2215,20 +2215,6 @@ pub fn getStream(
     return stream;
 }
 
-pub fn toStreamWithOffset(
-    globalThis: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-) bun.JSError!jsc.JSValue {
-    const this = callframe.this().as(Blob) orelse @panic("this is not a Blob");
-    const args = callframe.arguments_old(1).slice();
-
-    return jsc.WebCore.ReadableStream.fromFileBlobWithOffset(
-        globalThis,
-        this,
-        @intCast(args[0].toInt64()),
-    );
-}
-
 // Zig doesn't let you pass a function with a comptime argument to a runtime-knwon function.
 fn lifetimeWrap(comptime Fn: anytype, comptime lifetime: jsc.WebCore.Lifetime) fn (*Blob, *jsc.JSGlobalObject) jsc.JSValue {
     return struct {
@@ -2256,16 +2242,6 @@ pub fn getTextClone(
     return jsc.JSPromise.wrap(globalObject, lifetimeWrap(toString, .clone), .{ this, globalObject });
 }
 
-pub fn getTextTransfer(
-    this: *Blob,
-    globalObject: *jsc.JSGlobalObject,
-) jsc.JSValue {
-    const store = this.store;
-    if (store) |st| st.ref();
-    defer if (store) |st| st.deref();
-    return jsc.JSPromise.wrap(globalObject, lifetimeWrap(toString, .transfer), .{ this, globalObject });
-}
-
 pub fn getJSON(
     this: *Blob,
     globalThis: *jsc.JSGlobalObject,
@@ -2283,17 +2259,6 @@ pub fn getJSONShare(
     defer if (store) |st| st.deref();
     return jsc.JSPromise.wrap(globalObject, lifetimeWrap(toJSON, .share), .{ this, globalObject });
 }
-pub fn getArrayBufferTransfer(
-    this: *Blob,
-    globalThis: *jsc.JSGlobalObject,
-) jsc.JSValue {
-    const store = this.store;
-    if (store) |st| st.ref();
-    defer if (store) |st| st.deref();
-
-    return jsc.JSPromise.wrap(globalThis, lifetimeWrap(toArrayBuffer, .transfer), .{ this, globalThis });
-}
-
 pub fn getArrayBufferClone(
     this: *Blob,
     globalThis: *jsc.JSGlobalObject,
@@ -2328,16 +2293,6 @@ pub fn getBytes(
     _: *jsc.CallFrame,
 ) bun.JSError!JSValue {
     return this.getBytesClone(globalThis);
-}
-
-pub fn getBytesTransfer(
-    this: *Blob,
-    globalThis: *jsc.JSGlobalObject,
-) JSValue {
-    const store = this.store;
-    if (store) |st| st.ref();
-    defer if (store) |st| st.deref();
-    return jsc.JSPromise.wrap(globalThis, lifetimeWrap(toUint8Array, .transfer), .{ this, globalThis });
 }
 
 pub fn getFormData(
@@ -4839,10 +4794,6 @@ pub const Inline = extern struct {
 
     pub fn init(data: []const u8) Inline {
         return internalInit(data, false);
-    }
-
-    pub fn initString(data: []const u8) Inline {
-        return internalInit(data, true);
     }
 
     pub fn toStringOwned(this: *@This(), globalThis: *jsc.JSGlobalObject) JSValue {

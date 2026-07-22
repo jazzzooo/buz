@@ -51,16 +51,6 @@ pub const JSString = opaque {
         return str.toSliceClone(allocator);
     }
 
-    pub fn toSliceZ(
-        this: *JSString,
-        global: *JSGlobalObject,
-        allocator: std.mem.Allocator,
-    ) ZigString.Slice {
-        var str = ZigString.init("");
-        this.toZigString(global, &str);
-        return str.toSliceZ(allocator);
-    }
-
     pub fn eql(this: *const JSString, global: *JSGlobalObject, other: *JSString) bool {
         return JSC__JSString__eql(this, global, other);
     }

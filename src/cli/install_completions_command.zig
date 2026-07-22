@@ -1,6 +1,4 @@
 pub const InstallCompletionsCommand = struct {
-    pub fn testPath(_: string) !std.Io.Dir {}
-
     const bunx_name = if (Environment.isDebug) "bunx-debug" else "bunx";
 
     fn installBunxSymlinkPosix(io: std.Io, cwd: []const u8) !void {

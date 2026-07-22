@@ -211,18 +211,6 @@ pub fn wrap4(comptime func: anytype) @"return": {
     }.wrapped;
 }
 
-pub fn wrap5(comptime func: anytype) @"return": {
-    const p = checkWrapParams(func, 5);
-    break :@"return" fn (p[0].?, p[1].?, p[2].?, p[3].?, p[4].?) callconv(.c) JSValue;
-} {
-    const p = checkWrapParams(func, 5);
-    return struct {
-        pub fn wrapped(arg0: p[0].?, arg1: p[1].?, arg2: p[2].?, arg3: p[3].?, arg4: p[4].?) callconv(.c) JSValue {
-            return toJSHostCall(arg0, @src(), func, .{ arg0, arg1, arg2, arg3, arg4 });
-        }
-    }.wrapped;
-}
-
 fn checkWrapParams(comptime func: anytype, comptime expected_count: usize) []const ?type {
     const param_types = @typeInfo(@TypeOf(func)).@"fn".param_types;
     if (param_types.len != expected_count) {
@@ -325,10 +313,6 @@ pub const DOMEffect = struct {
     }
 
     pub const pure = DOMEffect{};
-
-    pub fn isPure(this: DOMEffect) bool {
-        return this.reads[0] == ID.InvalidAbstractHeap and this.writes[0] == ID.InvalidAbstractHeap;
-    }
 
     pub const ID = enum(u8) {
         InvalidAbstractHeap = 0,

@@ -584,16 +584,6 @@ pub const FileSystem = struct {
                 try bun.sys.moveFileZWithHandle(this.fd, this.dir_fd, std.mem.sliceTo(from_name, 0), bun.FD.cwd(), std.mem.sliceTo(name, 0));
                 this.close();
             }
-
-            pub fn closeAndDelete(this: *TmpfilePosix, name: [*:0]const u8) void {
-                this.close();
-
-                if (comptime !Environment.isLinux) {
-                    if (this.dir_fd == bun.invalid_fd) return;
-
-                    this.dir().deleteFileZ(name) catch {};
-                }
-            }
         };
 
         pub const TmpfileWindows = struct {
@@ -640,11 +630,6 @@ pub const FileSystem = struct {
                 if (!bun.windows.MoveFileExW(existing.ptr, new.ptr, bun.windows.MOVEFILE_COPY_ALLOWED | bun.windows.MOVEFILE_REPLACE_EXISTING | bun.windows.MOVEFILE_WRITE_THROUGH).toBool()) {
                     try bun.windows.Win32Error.get().unwrap();
                 }
-            }
-
-            pub fn closeAndDelete(this: *TmpfileWindows, name: [*:0]const u8) void {
-                _ = name;
-                this.close();
             }
         };
 

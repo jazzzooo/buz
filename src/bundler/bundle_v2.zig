@@ -4028,12 +4028,6 @@ pub const EntryPoint = struct {
         pub inline fn isEntryPoint(this: Kind) bool {
             return this != .none;
         }
-
-        pub inline fn isUserSpecifiedEntryPoint(this: Kind) bool {
-            return this == .user_specified;
-        }
-
-        // TODO: delete
     };
 };
 

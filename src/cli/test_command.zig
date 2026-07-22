@@ -620,8 +620,6 @@ pub const CommandLineReporter = struct {
         break :brk map;
     };
 
-    pub fn handleTestStart(_: *TestRunner.Callback, _: Test.ID) void {}
-
     fn printTestLine(
         comptime status: bun_test.Execution.Result,
         sequence: *bun_test.Execution.ExecutionSequence,

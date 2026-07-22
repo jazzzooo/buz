@@ -79,35 +79,6 @@ pub fn validateInteger(globalThis: *JSGlobalObject, value: JSValue, comptime nam
     return @intFromFloat(num);
 }
 
-pub fn validateIntegerOrBigInt(globalThis: *JSGlobalObject, value: JSValue, comptime name: string, min_value: ?i64, max_value: ?i64) bun.JSError!i64 {
-    const min = min_value orelse jsc.MIN_SAFE_INTEGER;
-    const max = max_value orelse jsc.MAX_SAFE_INTEGER;
-
-    if (value.isBigInt()) {
-        const num = value.to(i64);
-        if (num < min or num > max) {
-            return globalThis.throwRangeError(num, .{ .field_name = name, .min = min, .max = max });
-        }
-        return num;
-    }
-
-    if (!value.isNumber()) {
-        return globalThis.throwInvalidArgumentTypeValue(name, "number", value);
-    }
-
-    const num = value.asNumber();
-
-    if (!value.isAnyInt()) {
-        return globalThis.throwRangeError(num, .{ .field_name = name, .msg = "an integer" });
-    }
-
-    const int = value.asInt52();
-    if (int < min or int > max) {
-        return globalThis.throwRangeError(int, .{ .field_name = name, .min = min, .max = max });
-    }
-    return int;
-}
-
 pub fn validateInt32(globalThis: *JSGlobalObject, value: JSValue, comptime name_fmt: string, name_args: anytype, min_value: ?i32, max_value: ?i32) bun.JSError!i32 {
     const min = min_value orelse std.math.minInt(i32);
     const max = max_value orelse std.math.maxInt(i32);

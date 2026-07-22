@@ -121,13 +121,6 @@ pub const ZigString = extern struct {
         return ZigString__toJSONObject(&this, globalThis);
     }
 
-    extern fn BunString__toURL(this: *const ZigString, *jsc.JSGlobalObject) callconv(.c) jsc.JSValue;
-
-    pub fn toURL(this: ZigString, globalThis: *jsc.JSGlobalObject) JSValue {
-        jsc.markBinding(@src());
-        return BunString__toURL(&this, globalThis);
-    }
-
     pub fn substringWithLen(this: ZigString, start_index: usize, end_index: usize) ZigString {
         if (this.is16Bit()) {
             return ZigString.from16SliceMaybeGlobal(this.utf16SliceAligned()[start_index..end_index], this.isGloballyAllocated());
@@ -159,14 +152,6 @@ pub const ZigString = extern struct {
         }
 
         return jsc.WebCore.encoding.byteLengthU8(this.slice().ptr, this.slice().len, .utf16le);
-    }
-
-    pub fn latin1ByteLength(this: ZigString) usize {
-        if (this.isUTF8()) {
-            @panic("TODO");
-        }
-
-        return this.len;
     }
 
     /// Count the number of bytes in the UTF-8 version of the string.
@@ -663,19 +648,6 @@ pub const ZigString = extern struct {
         return bun.cpp.ZigString__toExternalValue(this, global);
     }
 
-    extern fn ZigString__toExternalValueWithCallback(
-        this: *const ZigString,
-        global: *JSGlobalObject,
-        callback: *const fn (ctx: ?*anyopaque, ptr: ?*anyopaque, len: usize) callconv(.c) void,
-    ) JSValue;
-    pub fn toExternalValueWithCallback(
-        this: *const ZigString,
-        global: *JSGlobalObject,
-        callback: *const fn (ctx: ?*anyopaque, ptr: ?*anyopaque, len: usize) callconv(.c) void,
-    ) JSValue {
-        return ZigString__toExternalValueWithCallback(this, global, callback);
-    }
-
     extern fn ZigString__external(
         this: *const ZigString,
         global: *JSGlobalObject,
@@ -695,12 +667,6 @@ pub const ZigString = extern struct {
         }
 
         return ZigString__external(this, global, ctx, callback);
-    }
-
-    extern fn ZigString__to16BitValue(this: *const ZigString, global: *JSGlobalObject) JSValue;
-    pub fn to16BitValue(this: *const ZigString, global: *JSGlobalObject) JSValue {
-        this.assertGlobal();
-        return ZigString__to16BitValue(this, global);
     }
 
     pub fn withEncoding(this: *const ZigString) ZigString {

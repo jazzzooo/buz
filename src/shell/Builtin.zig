@@ -83,10 +83,6 @@ pub const Kind = enum {
 
     pub const DISABLED_ON_POSIX: []const Kind = &.{ .cat, .cp };
 
-    pub fn parentType(this: Kind) type {
-        _ = this;
-    }
-
     pub fn usageString(this: Kind) []const u8 {
         return switch (this) {
             .cat => "usage: cat [-belnstuv] [file ...]\n",

@@ -82,12 +82,6 @@ pub const JSObject = opaque {
         obj.toJS().put(global, key, value);
     }
 
-    pub inline fn putAllFromStruct(obj: *JSObject, global: *JSGlobalObject, properties: anytype) !void {
-        inline for (comptime std.meta.fieldNames(@TypeOf(properties))) |field| {
-            try obj.put(global, field, @field(properties, field));
-        }
-    }
-
     /// When the GC sees a JSValue referenced in the stack, it knows not to free it
     /// This mimics the implementation in JavaScriptCore's C++
     pub inline fn ensureStillAlive(this: *JSObject) void {

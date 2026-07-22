@@ -1202,25 +1202,10 @@ pub const Source = struct {
     contents: string,
     contents_is_recycled: bool = false,
 
-    /// Lazily-generated human-readable identifier name that is non-unique
-    /// Avoid accessing this directly most of the  time
-    identifier_name: string = "",
-
     index: Index = Index.source(0),
 
     pub fn fmtIdentifier(this: *const Source) bun.fmt.FormatValidIdentifier {
         return fs.fmtIdentifier(this.path.text);
-    }
-
-    pub fn identifierName(this: *Source, allocator: std.mem.Allocator) !string {
-        if (this.identifier_name.len > 0) {
-            return this.identifier_name;
-        }
-
-        bun.assert(this.path.text.len > 0);
-        const name = try fs.nonUniqueNameString(this.path.text, allocator);
-        this.identifier_name = name;
-        return name;
     }
 
     pub fn rangeOfIdentifier(this: *const Source, loc: Loc) Range {

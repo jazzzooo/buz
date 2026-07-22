@@ -3,16 +3,6 @@ pub const Counter = struct {
     actual: u32 = 0,
 };
 
-/// Helper to retrieve matcher flags from a jsvalue of a class like ExpectAny, ExpectStringMatching, etc.
-pub fn getMatcherFlags(comptime T: type, value: JSValue) Expect.Flags {
-    if (T.flagsGetCached(value)) |flagsValue| {
-        if (!flagsValue.isEmpty()) {
-            return Expect.Flags.fromBitset(flagsValue.toInt32());
-        }
-    }
-    return .{};
-}
-
 /// https://jestjs.io/docs/expect
 // To support async tests, we need to track the test ID
 pub const Expect = struct {
@@ -1226,19 +1216,7 @@ pub const Expect = struct {
         return .js_undefined;
     }
 
-    pub fn notImplementedJSCFn(_: *Expect, globalThis: *JSGlobalObject, _: *CallFrame) bun.JSError!JSValue {
-        return globalThis.throw("Not implemented", .{});
-    }
-
     pub fn notImplementedStaticFn(globalThis: *JSGlobalObject, _: *CallFrame) bun.JSError!JSValue {
-        return globalThis.throw("Not implemented", .{});
-    }
-
-    pub fn notImplementedJSCProp(_: *Expect, _: JSValue, globalThis: *JSGlobalObject) bun.JSError!JSValue {
-        return globalThis.throw("Not implemented", .{});
-    }
-
-    pub fn notImplementedStaticProp(globalThis: *JSGlobalObject, _: JSValue, _: JSValue) bun.JSError!JSValue {
         return globalThis.throw("Not implemented", .{});
     }
 

@@ -203,13 +203,6 @@ pub const Category = enum {
         return .other;
     }
 
-    pub fn isCode(this: Category) bool {
-        return switch (this) {
-            .wasm, .json, .css, .html, .javascript => true,
-            else => false,
-        };
-    }
-
     pub fn isTextLike(this: Category) bool {
         return switch (this) {
             .javascript, .html, .text, .css, .json => true,

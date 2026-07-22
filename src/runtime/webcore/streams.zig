@@ -1429,11 +1429,6 @@ pub const NetworkSink = struct {
         // we are done flushing no backpressure
         return .{ .result = jsc.JSPromise.resolvedPromiseValue(globalThis, JSValue.jsNumber(0)) };
     }
-    pub fn finalizeAndDestroy(this: *@This()) void {
-        this.finalize();
-        bun.destroy(this);
-    }
-
     pub fn abort(this: *@This()) void {
         this.ended = true;
         this.done = true;

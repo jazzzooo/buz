@@ -1504,16 +1504,6 @@ pub const EnvironmentVariables = struct {
         bun.handleOom(vm.transpiler.env.map.put(slot.key, new_val.bytes));
     }
 
-    pub fn getEnvNames(globalObject: *jsc.JSGlobalObject, names: []ZigString) usize {
-        var vm = globalObject.bunVM();
-        const keys = vm.transpiler.env.map.map.keys();
-        const len = @min(names.len, keys.len);
-        for (keys[0..len], names[0..len]) |key, *name| {
-            name.* = ZigString.initUTF8(key);
-        }
-        return len;
-    }
-
     pub fn getEnvValue(globalObject: *jsc.JSGlobalObject, name: ZigString) ?ZigString {
         var vm = globalObject.bunVM();
         var sliced = name.toSlice(vm.allocator);

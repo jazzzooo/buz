@@ -41,11 +41,6 @@ pub const NapiEnv = opaque {
         napi_internal_check_gc(self);
     }
 
-    /// Return the Node-API version number declared by the module we are running code from
-    pub fn getVersion(self: *NapiEnv) u32 {
-        return napi_internal_get_version(self);
-    }
-
     pub fn getAndClearPendingException(self: *NapiEnv) ?JSValue {
         var exception: JSValue = undefined;
         if (NapiEnv__getAndClearPendingException(self, &exception)) {
@@ -57,7 +52,6 @@ pub const NapiEnv = opaque {
 
     extern fn NapiEnv__globalObject(*NapiEnv) *jsc.JSGlobalObject;
     extern fn NapiEnv__getAndClearPendingException(*NapiEnv, *JSValue) bool;
-    extern fn napi_internal_get_version(*NapiEnv) u32;
     extern fn NapiEnv__deref(*NapiEnv) void;
     extern fn NapiEnv__ref(*NapiEnv) void;
 
@@ -176,23 +170,6 @@ pub const napi_typedarray_type = enum(c_uint) {
     float64_array = 8,
     bigint64_array = 9,
     biguint64_array = 10,
-
-    pub fn fromJSType(this: jsc.JSValue.JSType) ?napi_typedarray_type {
-        return switch (this) {
-            .Int8Array => napi_typedarray_type.int8_array,
-            .Uint8Array => napi_typedarray_type.uint8_array,
-            .Uint8ClampedArray => napi_typedarray_type.uint8_clamped_array,
-            .Int16Array => napi_typedarray_type.int16_array,
-            .Uint16Array => napi_typedarray_type.uint16_array,
-            .Int32Array => napi_typedarray_type.int32_array,
-            .Uint32Array => napi_typedarray_type.uint32_array,
-            .Float32Array => napi_typedarray_type.float32_array,
-            .Float64Array => napi_typedarray_type.float64_array,
-            .BigInt64Array => napi_typedarray_type.bigint64_array,
-            .BigUint64Array => napi_typedarray_type.biguint64_array,
-            else => null,
-        };
-    }
 
     pub fn toJSType(this: napi_typedarray_type) jsc.JSValue.JSType {
         return switch (this) {

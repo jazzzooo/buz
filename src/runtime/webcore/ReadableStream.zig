@@ -351,37 +351,6 @@ pub fn fromBlobCopyRef(globalThis: *JSGlobalObject, blob: *const Blob, recommend
     }
 }
 
-pub fn fromFileBlobWithOffset(
-    globalThis: *JSGlobalObject,
-    blob: *const Blob,
-    offset: usize,
-) bun.JSError!jsc.JSValue {
-    jsc.markBinding(@src());
-    var store = blob.store orelse {
-        return ReadableStream.empty(globalThis);
-    };
-    switch (store.data) {
-        .file => {
-            var reader = webcore.FileReader.Source.new(.{
-                .globalThis = globalThis,
-                .context = .{
-                    .event_loop = jsc.EventLoopHandle.init(globalThis.bunVM().eventLoop()),
-                    .start_offset = offset,
-                    .lazy = .{
-                        .blob = store,
-                    },
-                },
-            });
-            store.ref();
-
-            return reader.toReadableStream(globalThis);
-        },
-        else => {
-            return globalThis.throw("Expected FileBlob", .{});
-        },
-    }
-}
-
 pub fn fromPipe(
     globalThis: *JSGlobalObject,
     parent: anytype,

@@ -241,10 +241,6 @@ pub inline fn statusCode(this: *const Response) u16 {
     return this.response_init.status_code;
 }
 
-pub fn redirectLocation(this: *const Response) ?[]const u8 {
-    return this.header(.Location);
-}
-
 pub fn header(this: *const Response, name: bun.webcore.FetchHeaders.HTTPHeaderName) ?[]const u8 {
     return if (try (this.response_init.headers orelse return null).fastGet(name)) |str|
         str.slice()

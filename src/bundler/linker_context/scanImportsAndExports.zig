@@ -428,10 +428,7 @@ pub fn scanImportsAndExports(this: *LinkerContext) ScanImportsAndExportsError!vo
                     }
                 }
 
-                const ident_fmt_len: usize = if (source.identifier_name.len > 0)
-                    source.identifier_name.len
-                else
-                    std.fmt.count("{f}", .{source.fmtIdentifier()});
+                const ident_fmt_len = std.fmt.count("{f}", .{source.fmtIdentifier()});
 
                 if (wrap == .esm and wrapper_refs[id].isValid()) {
                     count += "init_".len + ident_fmt_len;

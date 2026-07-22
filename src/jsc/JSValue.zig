@@ -414,16 +414,6 @@ pub const JSValue = enum(i64) {
 
         return buf[0..@as(usize, @intCast(count))];
     }
-    extern fn JSC__JSValue__DateNowISOString(*JSGlobalObject, f64) JSValue;
-    pub fn getDateNowISOString(globalObject: *jsc.JSGlobalObject, buf: *[28]u8) []const u8 {
-        const count = JSC__JSValue__DateNowISOString(globalObject, buf);
-        if (count < 0) {
-            return "";
-        }
-
-        return buf[0..@as(usize, @intCast(count))];
-    }
-
     /// Return the pointer to the wrapped object only if it is a direct instance of the type.
     /// If the object does not match the type, return null.
     /// If the object is a subclass of the type or has mutated the structure, return null.
@@ -542,11 +532,6 @@ pub const JSValue = enum(i64) {
     /// this must have been created by fromPtrAddress()
     pub fn asPromisePtr(this: JSValue, comptime T: type) *T {
         return @ptrFromInt(this.asPtrAddress());
-    }
-
-    extern fn JSC__JSValue__createRopeString(this: JSValue, rhs: JSValue, globalThis: *jsc.JSGlobalObject) JSValue;
-    pub fn createRopeString(this: JSValue, rhs: JSValue, globalThis: *jsc.JSGlobalObject) JSValue {
-        return JSC__JSValue__createRopeString(this, rhs, globalThis);
     }
 
     extern fn JSC__JSValue__getErrorsProperty(this: JSValue, globalObject: *JSGlobalObject) JSValue;
@@ -690,17 +675,6 @@ pub const JSValue = enum(i64) {
         return jsNumberWithType(@TypeOf(number), number);
     }
 
-    pub fn jsBigInt(number: anytype) JSValue {
-        const Number = @TypeOf(number);
-        return switch (comptime Number) {
-            u64 => JSValue.fromUInt64NoTruncate(number),
-            i64 => JSValue.fromInt64NoTruncate(number),
-            i32 => JSValue.fromInt64NoTruncate(number),
-            u32 => JSValue.fromUInt64NoTruncate(number),
-            else => @compileError("Expected u64, i64, u32 or i32, got " ++ @typeName(Number)),
-        };
-    }
-
     pub inline fn jsTDZValue() JSValue {
         return bun.cpp.JSC__JSValue__jsTDZValue();
     }
@@ -725,19 +699,6 @@ pub const JSValue = enum(i64) {
             &[_]jsc.JSValue{this},
             1,
         );
-    }
-
-    /// Create a JSValue string from a zig format-print (fmt + args)
-    pub fn printString(globalThis: *JSGlobalObject, comptime stack_buffer_size: usize, comptime fmt: []const u8, args: anytype) !JSValue {
-        var stack_fallback_buffer: [stack_buffer_size]u8 = undefined;
-        var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, globalThis.allocator());
-
-        var buf = try bun.MutableString.init(stack_fallback.allocator(), stack_buffer_size);
-        defer buf.deinit();
-
-        var writer = buf.writer();
-        writer.print(fmt, args) catch return error.OutOfMemory;
-        return String.init(buf.slice()).toJS(globalThis);
     }
 
     /// Create a JSValue string from a zig format-print (fmt + args), with pretty format
@@ -802,9 +763,6 @@ pub const JSValue = enum(i64) {
 
     pub fn jsDoubleNumber(i: f64) JSValue {
         return FFI.DOUBLE_TO_JSVALUE(i).asJSValue;
-    }
-    pub fn jsNumberFromChar(i: u8) JSValue {
-        return bun.cpp.JSC__JSValue__jsNumberFromChar(i);
     }
     pub fn jsNumberFromU16(i: u16) JSValue {
         return bun.cpp.JSC__JSValue__jsNumberFromU16(i);
@@ -1257,10 +1215,6 @@ pub const JSValue = enum(i64) {
         return str.toUTF8(allocator);
     }
 
-    pub inline fn toSliceZ(this: JSValue, global: *JSGlobalObject, allocator: std.mem.Allocator) ZigString.Slice {
-        return getZigString(this, global).toSliceZ(allocator);
-    }
-
     /// The returned slice is always owned by `allocator`.
     pub fn toUTF8Bytes(this: JSValue, global: *JSGlobalObject, allocator: std.mem.Allocator) JSError![]u8 {
         const str: bun.String = try .fromJS(this, global);
@@ -1358,11 +1312,6 @@ pub const JSValue = enum(i64) {
         return JSC__JSValue__eqlValue(this, other);
     }
 
-    extern fn JSC__JSValue__eqlCell(this: JSValue, other: *JSCell) bool;
-    pub fn eqlCell(this: JSValue, other: *JSCell) bool {
-        return JSC__JSValue__eqlCell(this, other);
-    }
-
     /// This must match the enum in C++ in src/jsc/bindings/bindings.cpp BuiltinNamesMap
     pub const BuiltinName = enum(u8) {
         method,
@@ -1399,14 +1348,6 @@ pub const JSValue = enum(i64) {
         }
     };
 
-    pub fn fastGetOrElse(this: JSValue, global: *JSGlobalObject, builtin_name: BuiltinName, alternate: ?jsc.JSValue) ?JSValue {
-        return (try this.fastGet(global, builtin_name)) orelse {
-            if (alternate) |alt| return alt.fastGet(global, builtin_name);
-
-            return null;
-        };
-    }
-
     // `this` must be known to be an object
     // intended to be more lightweight than ZigString.
     pub fn fastGet(this: JSValue, global: *JSGlobalObject, builtin_name: BuiltinName) JSError!?JSValue {
@@ -1425,31 +1366,7 @@ pub const JSValue = enum(i64) {
         };
     }
 
-    pub fn fastGetDirect(this: JSValue, global: *JSGlobalObject, builtin_name: BuiltinName) ?JSValue {
-        const result = fastGetDirect_(this, global, @backingInt(builtin_name));
-        if (result == .zero) {
-            return null;
-        }
-
-        return result;
-    }
-
     extern fn JSC__JSValue__fastGet(value: JSValue, global: *JSGlobalObject, builtin_id: u8) JSValue;
-    extern fn JSC__JSValue__fastGetOwn(value: JSValue, globalObject: *JSGlobalObject, property: BuiltinName) JSValue;
-    pub fn fastGetOwn(this: JSValue, global: *JSGlobalObject, builtin_name: BuiltinName) ?JSValue {
-        const result = JSC__JSValue__fastGetOwn(this, global, builtin_name);
-        if (result == .zero) {
-            return null;
-        }
-
-        return result;
-    }
-
-    extern fn JSC__JSValue__fastGetDirect_(this: JSValue, global: *JSGlobalObject, builtin_name: u8) JSValue;
-    pub fn fastGetDirect_(this: JSValue, global: *JSGlobalObject, builtin_name: u8) JSValue {
-        return JSC__JSValue__fastGetDirect_(this, global, builtin_name);
-    }
-
     extern fn JSC__JSValue__getIfPropertyExistsImpl(target: JSValue, global: *JSGlobalObject, ptr: [*]const u8, len: u32) JSValue;
     extern fn JSC__JSValue__getPropertyValue(target: JSValue, global: *JSGlobalObject, ptr: [*]const u8, len: u32) JSValue;
     extern fn JSC__JSValue__getIfPropertyExistsFromPath(this: JSValue, global: *JSGlobalObject, path: JSValue) JSValue;
@@ -1470,11 +1387,6 @@ pub const JSValue = enum(i64) {
     extern fn JSC__JSValue__symbolFor(global: *JSGlobalObject, str: *ZigString) JSValue;
     pub fn symbolFor(global: *JSGlobalObject, str: *ZigString) JSValue {
         return JSC__JSValue__symbolFor(global, str);
-    }
-
-    extern fn JSC__JSValue__symbolKeyFor(this: JSValue, global: *JSGlobalObject, str: *ZigString) bool;
-    pub fn symbolKeyFor(this: JSValue, global: *JSGlobalObject, str: *ZigString) bool {
-        return JSC__JSValue__symbolKeyFor(this, global, str);
     }
 
     extern fn JSC__JSValue___then(this: JSValue, global: *JSGlobalObject, ctx: JSValue, resolve: *const jsc.JSHostFn, reject: *const jsc.JSHostFn) void;
@@ -1611,15 +1523,6 @@ pub const JSValue = enum(i64) {
         return function.isCell() and function.isCallable();
     }
 
-    // TODO: replace calls to this function with `getOptional`
-    pub fn getOwnTruthyComptime(this: JSValue, global: *JSGlobalObject, comptime property: []const u8) ?JSValue {
-        if (comptime bun.ComptimeEnumMap(BuiltinName).has(property)) {
-            return fastGetOwn(this, global, @field(BuiltinName, property));
-        }
-
-        return getOwnTruthy(this, global, property);
-    }
-
     fn truthyPropertyValue(prop: JSValue) ?JSValue {
         return switch (prop) {
             .zero => unreachable,
@@ -1736,13 +1639,6 @@ pub const JSValue = enum(i64) {
         return toEnumFromMap(this, globalThis, property_name, Enum, Enum.Map);
     }
 
-    pub fn toOptionalEnum(this: JSValue, globalThis: *JSGlobalObject, comptime property_name: []const u8, comptime Enum: type) JSError!?Enum {
-        if (this.isEmptyOrUndefinedOrNull())
-            return null;
-
-        return toEnum(this, globalThis, property_name, Enum);
-    }
-
     pub fn getOptionalEnum(this: JSValue, globalThis: *JSGlobalObject, comptime property_name: []const u8, comptime Enum: type) JSError!?Enum {
         if (comptime BuiltinName.has(property_name)) {
             if (try fastGet(this, globalThis, @field(BuiltinName, property_name))) |prop| {
@@ -1754,24 +1650,6 @@ pub const JSValue = enum(i64) {
         }
 
         if (try get(this, globalThis, property_name)) |prop| {
-            if (prop.isEmptyOrUndefinedOrNull())
-                return null;
-            return try toEnum(prop, globalThis, property_name, Enum);
-        }
-        return null;
-    }
-
-    pub fn getOwnOptionalEnum(this: JSValue, globalThis: *JSGlobalObject, comptime property_name: []const u8, comptime Enum: type) JSError!?Enum {
-        if (comptime BuiltinName.has(property_name)) {
-            if (fastGetOwn(this, globalThis, @field(BuiltinName, property_name))) |prop| {
-                if (prop.isEmptyOrUndefinedOrNull())
-                    return null;
-                return try toEnum(prop, globalThis, property_name, Enum);
-            }
-            return null;
-        }
-
-        if (getOwn(this, globalThis, property_name)) |prop| {
             if (prop.isEmptyOrUndefinedOrNull())
                 return null;
             return try toEnum(prop, globalThis, property_name, Enum);
@@ -1821,18 +1699,6 @@ pub const JSValue = enum(i64) {
 
     pub fn getFunction(this: JSValue, globalThis: *JSGlobalObject, comptime property_name: []const u8) JSError!?JSValue {
         if (try this.getOptional(globalThis, property_name, JSValue)) |prop| {
-            if (!prop.isCell() or !prop.isCallable()) {
-                return globalThis.throwInvalidArguments(property_name ++ " must be a function", .{});
-            }
-
-            return prop;
-        }
-
-        return null;
-    }
-
-    pub fn getOwnFunction(this: JSValue, globalThis: *JSGlobalObject, comptime property_name: []const u8) JSError!?JSValue {
-        if (getOwnTruthy(this, globalThis, property_name)) |prop| {
             if (!prop.isCell() or !prop.isCallable()) {
                 return globalThis.throwInvalidArguments(property_name ++ " must be a function", .{});
             }
@@ -1904,19 +1770,6 @@ pub const JSValue = enum(i64) {
         return try globalThis.validateIntegerRange(value, Type, 0, .{ .min = min, .max = max, .field_name = property_name });
     }
 
-    pub fn getOwnOptional(this: JSValue, globalThis: *JSGlobalObject, comptime property_name: []const u8, comptime T: type) JSError!?T {
-        const prop = (if (comptime BuiltinName.has(property_name))
-            fastGetOwn(this, globalThis, @field(BuiltinName, property_name))
-        else
-            getOwn(this, globalThis, property_name)) orelse return null;
-
-        if (!prop.isEmptyOrUndefinedOrNull()) {
-            return coerceOptional(prop, globalThis, property_name, T);
-        }
-
-        return null;
-    }
-
     /// Alias for getIfPropertyExists
     pub const getIfPropertyExists = get;
 
@@ -1973,21 +1826,6 @@ pub const JSValue = enum(i64) {
         return bun.jsc.fromJSHostCallGeneric(global, @src(), JSC__JSValue__jestDeepMatch, .{ this, subset, global, replace_props_with_asymmetric_matchers });
     }
 
-    pub const DiffMethod = enum(u8) {
-        none,
-        character,
-        word,
-        line,
-    };
-
-    pub fn determineDiffMethod(this: JSValue, other: JSValue, global: *JSGlobalObject) DiffMethod {
-        if ((this.isString() and other.isString()) or (this.isBuffer(global) and other.isBuffer(global))) return .character;
-        if ((this.isRegExp() and other.isObject()) or (this.isObject() and other.isRegExp())) return .character;
-        if (this.isObject() and other.isObject()) return .line;
-
-        return .none;
-    }
-
     /// Static cast a value into a `JSC::JSString`. Casting a non-string results
     /// in safety-protected undefined behavior.
     ///
@@ -2006,12 +1844,6 @@ pub const JSValue = enum(i64) {
     /// Returns NaN if the value is not a `JSC::DateInstance` (`Date` in JS)
     pub fn getUnixTimestamp(this: JSValue) f64 {
         return JSC__JSValue__getUnixTimestamp(this);
-    }
-
-    extern fn JSC__JSValue__getUTCTimestamp(globalObject: *jsc.JSGlobalObject, this: JSValue) f64;
-    /// Calls getTime() - getUTCT
-    pub fn getUTCTimestamp(this: JSValue, globalObject: *jsc.JSGlobalObject) f64 {
-        return JSC__JSValue__getUTCTimestamp(globalObject, this);
     }
 
     pub const StringFormatter = struct {

@@ -101,22 +101,6 @@ const LockedState = struct {
         }
     }
 
-    fn assertUnowned(self: Self, ptr: anytype) void {
-        const cast_ptr: [*]const u8 = @ptrCast(switch (@typeInfo(@TypeOf(ptr)).pointer.size) {
-            .c, .one, .many => ptr,
-            .slice => if (ptr.len > 0) ptr.ptr else return,
-        });
-        if (self.history.allocations.getPtr(cast_ptr)) |owned| {
-            Output.warn("Owned pointer allocated here:");
-            bun.crash_handler.dumpStackTrace(
-                owned.allocated_at.trace(),
-                trace_limits,
-                trace_limits,
-            );
-            @panic("this pointer was owned by the allocation scope when it was not supposed to be");
-        }
-    }
-
     fn trackAllocation(self: Self, buf: []const u8, ret_addr: usize, extra: Extra) bun.OOM!void {
         const trace = StoredTrace.capture(ret_addr);
         try self.history.allocations.putNoClobber(self.parent, buf.ptr, .{
@@ -228,13 +212,6 @@ const State = struct {
         );
     }
 
-    fn trackExternalAllocation(self: *Self, ptr: []const u8, ret_addr: ?usize, extra: Extra) void {
-        const locked = self.lock();
-        defer self.unlock();
-        locked.trackAllocation(ptr, ret_addr orelse @returnAddress(), extra) catch |err|
-            bun.handleOom(err);
-    }
-
     fn trackExternalFree(self: *Self, slice: anytype, ret_addr: ?usize) FreeError!void {
         const invalidType = struct {
             fn invalidType() noreturn {
@@ -262,14 +239,6 @@ const State = struct {
         const locked = self.lock();
         defer self.unlock();
         return locked.trackFree(ptr, ret_addr orelse @returnAddress());
-    }
-
-    fn setPointerExtra(self: *Self, ptr: *anyopaque, extra: Extra) void {
-        const locked = self.lock();
-        defer self.unlock();
-        const allocation = locked.history.allocations.getPtr(@ptrCast(ptr)) orelse
-            @panic("Pointer not owned by allocation scope");
-        allocation.extra = extra;
     }
 };
 
@@ -324,28 +293,8 @@ pub fn AllocationScopeIn(comptime Allocator: type) type {
             state.assertOwned(ptr);
         }
 
-        pub fn assertUnowned(self: Self, ptr: anytype) void {
-            if (comptime !enabled) return;
-            const state = self.state.lock();
-            defer self.state.unlock();
-            state.assertUnowned(ptr);
-        }
-
-        pub fn trackExternalAllocation(
-            self: Self,
-            ptr: []const u8,
-            ret_addr: ?usize,
-            extra: Extra,
-        ) void {
-            if (comptime enabled) self.state.trackExternalAllocation(ptr, ret_addr, extra);
-        }
-
         pub fn trackExternalFree(self: Self, slice: anytype, ret_addr: ?usize) FreeError!void {
             return if (comptime enabled) self.state.trackExternalFree(slice, ret_addr);
-        }
-
-        pub fn setPointerExtra(self: Self, ptr: *anyopaque, extra: Extra) void {
-            if (comptime enabled) self.state.setPointerExtra(ptr, extra);
         }
 
         fn downcastImpl(
@@ -468,28 +417,8 @@ pub fn AllocationScopeIn(comptime Allocator: type) type {
             self.borrow().assertOwned(ptr);
         }
 
-        pub fn assertUnowned(self: Self, ptr: anytype) void {
-            self.borrow().assertUnowned(ptr);
-        }
-
-        /// Track an arbitrary pointer. Extra data can be stored in the allocation, which will be
-        /// printed when a leak is detected.
-        pub fn trackExternalAllocation(
-            self: Self,
-            ptr: []const u8,
-            ret_addr: ?usize,
-            extra: Extra,
-        ) void {
-            self.borrow().trackExternalAllocation(ptr, ret_addr, extra);
-        }
-
-        /// Call when the pointer from `trackExternalAllocation` is freed.
         pub fn trackExternalFree(self: Self, slice: anytype, ret_addr: ?usize) FreeError!void {
             return self.borrow().trackExternalFree(slice, ret_addr);
-        }
-
-        pub fn setPointerExtra(self: Self, ptr: *anyopaque, extra: Extra) void {
-            return self.borrow().setPointerExtra(ptr, extra);
         }
 
         pub fn leakSlice(self: Self, memory: anytype) void {

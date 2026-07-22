@@ -192,11 +192,6 @@ const JSC::ClassInfo JSS3FilePrototype::s_info = { "S3File"_s, &Base::s_info, nu
 const JSC::ClassInfo JSS3File::s_info = { "S3File"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSS3File) };
 
 extern "C" {
-SYSV_ABI EncodedJSValue BUN__createJSS3File(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callframe)
-{
-    return JSValue::encode(constructS3File(globalObject, callframe));
-};
-
 SYSV_ABI EncodedJSValue BUN__createJSS3FileUnsafely(JSC::JSGlobalObject* globalObject, void* ptr)
 {
     return JSValue::encode(constructS3FileInternal(globalObject, ptr));

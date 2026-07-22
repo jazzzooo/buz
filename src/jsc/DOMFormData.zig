@@ -2,7 +2,6 @@ pub const DOMFormData = opaque {
     extern fn WebCore__DOMFormData__cast_(JSValue0: JSValue, arg1: *VM) ?*DOMFormData;
     extern fn WebCore__DOMFormData__create(arg0: *JSGlobalObject) JSValue;
     extern fn WebCore__DOMFormData__createFromURLQuery(arg0: *JSGlobalObject, arg1: *ZigString) JSValue;
-    extern fn WebCore__DOMFormData__toQueryString(arg0: *DOMFormData, arg1: *anyopaque, arg2: *const fn (arg0: *anyopaque, *ZigString) callconv(.c) void) void;
     extern fn WebCore__DOMFormData__fromJS(JSValue0: JSValue) ?*DOMFormData;
     extern fn WebCore__DOMFormData__append(arg0: *DOMFormData, arg1: *ZigString, arg2: *ZigString) void;
     extern fn WebCore__DOMFormData__appendBlob(arg0: *DOMFormData, arg1: *JSGlobalObject, arg2: *ZigString, arg3: *anyopaque, arg4: *ZigString) void;
@@ -19,28 +18,6 @@ pub const DOMFormData = opaque {
         query: *ZigString,
     ) JSValue {
         return WebCore__DOMFormData__createFromURLQuery(global, query);
-    }
-
-    extern fn DOMFormData__toQueryString(
-        *DOMFormData,
-        ctx: *anyopaque,
-        callback: *const fn (ctx: *anyopaque, *ZigString) callconv(.c) void,
-    ) void;
-
-    pub fn toQueryString(
-        this: *DOMFormData,
-        comptime Ctx: type,
-        ctx: Ctx,
-        comptime callback: fn (ctx: Ctx, ZigString) callconv(.c) void,
-    ) void {
-        const Wrapper = struct {
-            const cb = callback;
-            pub fn run(c: *anyopaque, str: *ZigString) callconv(.c) void {
-                cb(@as(Ctx, @ptrCast(c)), str.*);
-            }
-        };
-
-        WebCore__DOMFormData__toQueryString(this, ctx, &Wrapper.run);
     }
 
     pub fn fromJS(value: JSValue) ?*DOMFormData {

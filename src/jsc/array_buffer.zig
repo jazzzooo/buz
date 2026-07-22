@@ -190,10 +190,6 @@ pub const ArrayBuffer = extern struct {
     }
 
     extern "c" fn JSArrayBuffer__fromDefaultAllocator(*jsc.JSGlobalObject, ptr: [*]u8, len: usize) jsc.JSValue;
-    pub fn toJSFromDefaultAllocator(globalThis: *jsc.JSGlobalObject, bytes: []u8) jsc.JSValue {
-        return JSArrayBuffer__fromDefaultAllocator(globalThis, bytes.ptr, bytes.len);
-    }
-
     pub fn fromDefaultAllocator(globalThis: *jsc.JSGlobalObject, bytes: []u8, comptime typed_array_type: jsc.JSValue.JSType) jsc.JSValue {
         return switch (typed_array_type) {
             .ArrayBuffer => JSArrayBuffer__fromDefaultAllocator(globalThis, bytes.ptr, bytes.len),

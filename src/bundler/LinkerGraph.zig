@@ -463,10 +463,6 @@ pub const File = struct {
         return this.entry_point_kind.isEntryPoint();
     }
 
-    pub fn isUserSpecifiedEntryPoint(this: *const File) bool {
-        return this.entry_point_kind.isUserSpecifiedEntryPoint();
-    }
-
     pub const List = MultiArrayList(File);
 };
 

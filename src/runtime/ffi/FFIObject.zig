@@ -596,22 +596,6 @@ pub fn toBuffer(
     }
 }
 
-pub fn toCStringBuffer(
-    globalThis: *JSGlobalObject,
-    value: JSValue,
-    byteOffset: ?JSValue,
-    valueLength: ?JSValue,
-) jsc.JSValue {
-    switch (getPtrSlice(globalThis, value, byteOffset, valueLength)) {
-        .err => |err| {
-            return err;
-        },
-        .slice => |slice| {
-            return jsc.JSValue.createBuffer(globalThis, slice, null);
-        },
-    }
-}
-
 pub fn getter(
     globalObject: *jsc.JSGlobalObject,
     _: *jsc.JSObject,

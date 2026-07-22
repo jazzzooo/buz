@@ -152,12 +152,6 @@ pub fn IntegerBitSet(comptime size: u16) type {
             self.mask ^= maskBit(index);
         }
 
-        /// Flips all bits in this bit set which are present
-        /// in the toggles bit set.
-        pub fn toggleSet(self: *Self, toggles: Self) void {
-            self.mask ^= toggles.mask;
-        }
-
         /// Flips every bit in the bit set.
         pub fn toggleAll(self: *Self) void {
             self.mask = ~self.mask;
@@ -193,16 +187,6 @@ pub fn IntegerBitSet(comptime size: u16) type {
             return @ctz(mask);
         }
 
-        /// Finds the index of the first set bit, and unsets it.
-        /// If no bits are set, returns null.
-        pub fn toggleFirstSet(self: *Self) ?usize {
-            const mask = self.mask;
-            if (mask == 0) return null;
-            const index = @ctz(mask);
-            self.mask = mask & (mask - 1);
-            return index;
-        }
-
         /// Returns true iff every corresponding bit in both
         /// bit sets are the same.
         pub fn eql(self: Self, other: Self) bool {
@@ -220,15 +204,6 @@ pub fn IntegerBitSet(comptime size: u16) type {
         pub fn complement(self: Self) Self {
             var result = self;
             result.toggleAll();
-            return result;
-        }
-
-        /// Returns the union of two bit sets. Bits in the
-        /// result are set if the corresponding bits were set
-        /// in either input.
-        pub fn unionWith(self: Self, other: Self) Self {
-            var result = self;
-            result.setUnion(other);
             return result;
         }
 
@@ -474,15 +449,6 @@ pub fn ArrayBitSet(comptime MaskIntType: type, comptime size: usize) type {
             self.masks[maskIndex(index)] ^= maskBit(index);
         }
 
-        /// Flips all bits in this bit set which are present
-        /// in the toggles bit set.
-        pub fn toggleSet(self: *Self, toggles: *const Self) void {
-            const other = &toggles.masks;
-            for (self.masks, other) |*mask, b| {
-                mask.* ^= b;
-            }
-        }
-
         /// Flips every bit in the bit set.
         pub fn toggleAll(self: *Self) void {
             for (self.masks) |*mask| {
@@ -534,19 +500,6 @@ pub fn ArrayBitSet(comptime MaskIntType: type, comptime size: usize) type {
             return offset + @ctz(mask);
         }
 
-        /// Finds the index of the first set bit, and unsets it.
-        /// If no bits are set, returns null.
-        pub fn toggleFirstSet(self: *Self) ?usize {
-            var offset: usize = 0;
-            const mask = for (&self.masks) |*mask| {
-                if (mask.* != 0) break mask;
-                offset += @bitSizeOf(MaskInt);
-            } else return null;
-            const index = @ctz(mask.*);
-            mask.* &= (mask.* - 1);
-            return offset + index;
-        }
-
         /// Returns true iff every corresponding bit in both
         /// bit sets are the same.
         pub fn eql(self: *const Self, other: *const Self) bool {
@@ -569,15 +522,6 @@ pub fn ArrayBitSet(comptime MaskIntType: type, comptime size: usize) type {
         pub fn complement(self: *const Self) Self {
             var result = self.*;
             result.toggleAll();
-            return result;
-        }
-
-        /// Returns the union of two bit sets. Bits in the
-        /// result are set if the corresponding bits were set
-        /// in either input.
-        pub fn unionWith(self: *const Self, other: *const Self) Self {
-            var result = self.*;
-            result.setUnion(other);
             return result;
         }
 
@@ -918,23 +862,6 @@ pub const DynamicBitSetUnmanaged = struct {
         self.masks[maskIndex(index)] ^= maskBit(index);
     }
 
-    /// Flips all bits in this bit set which are present
-    /// in the toggles bit set.  Both sets must have the
-    /// same bit_length.
-    pub fn toggleSet(self: *Self, toggles: Self) void {
-        if (comptime Environment.allow_assert) bun.assert(toggles.bit_length == self.bit_length);
-        const bit_length = self.bit_length;
-        if (bit_length == 0) return;
-        const num_masks = numMasks(self.bit_length);
-        for (self.masks[0..num_masks], toggles.masks[0..num_masks]) |*mask, other_mask| {
-            mask.* ^= other_mask;
-        }
-
-        const padding_bits = num_masks * @bitSizeOf(MaskInt) - bit_length;
-        const last_item_mask = (~@as(MaskInt, 0)) >> @as(ShiftInt, @intCast(padding_bits));
-        self.masks[num_masks - 1] &= last_item_mask;
-    }
-
     pub fn setAll(self: *Self, value: bool) void {
         const bit_length = self.bit_length;
         if (bit_length == 0) return;
@@ -1022,21 +949,6 @@ pub const DynamicBitSetUnmanaged = struct {
             offset += @bitSizeOf(MaskInt);
         } else return null;
         return offset + @ctz(mask[0]);
-    }
-
-    /// Finds the index of the first set bit, and unsets it.
-    /// If no bits are set, returns null.
-    pub fn toggleFirstSet(self: *Self) ?usize {
-        var offset: usize = 0;
-        var mask = self.masks;
-        while (offset < self.bit_length) {
-            if (mask[0] != 0) break;
-            mask += 1;
-            offset += @bitSizeOf(MaskInt);
-        } else return null;
-        const index = @ctz(mask[0]);
-        mask[0] &= (mask[0] - 1);
-        return offset + index;
     }
 
     /// Returns true iff every corresponding bit in both
@@ -1336,13 +1248,6 @@ pub const DynamicBitSet = struct {
         self.unmanaged.toggle(index);
     }
 
-    /// Flips all bits in this bit set which are present
-    /// in the toggles bit set.  Both sets must have the
-    /// same bit_length.
-    pub fn toggleSet(self: *Self, toggles: Self) void {
-        self.unmanaged.toggleSet(toggles.unmanaged);
-    }
-
     /// Flips every bit in the bit set.
     pub fn toggleAll(self: *Self) void {
         self.unmanaged.toggleAll();
@@ -1368,12 +1273,6 @@ pub const DynamicBitSet = struct {
     /// If no bits are set, returns null.
     pub fn findFirstSet(self: Self) ?usize {
         return self.unmanaged.findFirstSet();
-    }
-
-    /// Finds the index of the first set bit, and unsets it.
-    /// If no bits are set, returns null.
-    pub fn toggleFirstSet(self: *Self) ?usize {
-        return self.unmanaged.toggleFirstSet();
     }
 
     /// Returns true iff every corresponding bit in both

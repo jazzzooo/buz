@@ -59,10 +59,6 @@ pub const String = extern struct {
         return String{ .tag = .ZigString, .value = .{ .ZigString = ZigString.init(bytes) } };
     }
 
-    pub fn isGlobal(this: String) bool {
-        return this.tag == Tag.ZigString and this.value.ZigString.isGloballyAllocated();
-    }
-
     pub fn ensureHash(this: String) void {
         if (this.tag == .WTFStringImpl) this.value.WTFStringImpl.ensureHash();
     }
@@ -308,14 +304,6 @@ pub const String = extern struct {
         return switch (this.tag) {
             .WTFStringImpl => this.value.WTFStringImpl.utf16ByteLength(),
             .StaticZigString, .ZigString => this.value.ZigString.utf16ByteLength(),
-            .Dead, .Empty => 0,
-        };
-    }
-
-    pub fn latin1ByteLength(this: String) usize {
-        return switch (this.tag) {
-            .WTFStringImpl => this.value.WTFStringImpl.latin1ByteLength(),
-            .StaticZigString, .ZigString => this.value.ZigString.latin1ByteLength(),
             .Dead, .Empty => 0,
         };
     }
@@ -962,10 +950,6 @@ pub const String = extern struct {
 
     pub fn isWTFAllocator(this: std.mem.Allocator) bool {
         return this.vtable == StringImplAllocator.VTablePtr;
-    }
-
-    pub fn eqlBytes(this: String, value: []const u8) bool {
-        return bun.strings.eqlLong(this.byteSlice(), value, true);
     }
 
     /// Replace the underlying StringImpl with an isolated copy that is safe to

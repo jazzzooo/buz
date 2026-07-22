@@ -255,15 +255,6 @@ pub const CallFrame = opaque {
             };
         }
 
-        pub fn initAsync(vm: *jsc.VirtualMachine, slice: []const jsc.JSValue) ArgumentsSlice {
-            return ArgumentsSlice{
-                .remaining = bun.default_allocator.dupe(jsc.JSValue, slice),
-                .vm = vm,
-                .all = slice,
-                .arena = bun.ArenaAllocator.init(bun.default_allocator),
-            };
-        }
-
         pub inline fn len(slice: *const ArgumentsSlice) u16 {
             return @as(u16, @truncate(slice.remaining.len));
         }

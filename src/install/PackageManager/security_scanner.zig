@@ -688,7 +688,6 @@ fn attemptSecurityScanWithRetry(manager: *PackageManager, security_scanner: []co
         .code = try manager.allocator.dupe(u8, code.items),
         .json_data = try manager.allocator.dupe(u8, json_data),
         .ipc_data = undefined,
-        .stderr_data = undefined,
     });
 
     defer {
@@ -724,7 +723,6 @@ pub const SecurityScanSubprocess = struct {
     process: ?*bun.spawn.Process = null,
     ipc_reader: bun.io.BufferedReader = bun.io.BufferedReader.init(@This()),
     ipc_data: std.ArrayList(u8),
-    stderr_data: std.ArrayList(u8),
     has_process_exited: bool = false,
     has_received_ipc: bool = false,
     exit_status: ?bun.spawn.Status = null,
@@ -736,7 +734,6 @@ pub const SecurityScanSubprocess = struct {
 
     pub fn spawn(this: *SecurityScanSubprocess) !void {
         this.ipc_data = .empty;
-        this.stderr_data = .empty;
         this.ipc_reader.setParent(this);
 
         // Two extra pipes for communicating with the scanner subprocess:
@@ -945,19 +942,6 @@ pub const SecurityScanSubprocess = struct {
         this.remaining_fds -= 1;
     }
 
-    pub fn onStderrChunk(this: *SecurityScanSubprocess, chunk: []const u8) void {
-        bun.handleOom(this.stderr_data.appendSlice(this.manager.allocator, chunk));
-    }
-
-    pub fn getReadBuffer(this: *SecurityScanSubprocess) []u8 {
-        const available = this.ipc_data.unusedCapacitySlice();
-        if (available.len < 4096) {
-            bun.handleOom(this.ipc_data.ensureTotalCapacity(this.manager.allocator, this.ipc_data.capacity + 4096));
-            return this.ipc_data.unusedCapacitySlice();
-        }
-        return available;
-    }
-
     pub fn onReadChunk(this: *SecurityScanSubprocess, chunk: []const u8, hasMore: bun.io.ReadState) bool {
         _ = hasMore;
         bun.handleOom(this.ipc_data.appendSlice(this.manager.allocator, chunk));
@@ -977,10 +961,7 @@ pub const SecurityScanSubprocess = struct {
     pub fn handleResults(this: *SecurityScanSubprocess, package_paths: *std.array_hash_map.Auto(PackageID, PackagePath), start_time: i64, packages_scanned: usize, security_scanner: []const u8, security_scanner_pkg_id: ?PackageID, command_ctx: bun.cli.Command.Context, original_cwd: []const u8, is_retry: bool) !ScanAttemptResult {
         _ = command_ctx; // Reserved for future use
         _ = original_cwd; // Reserved for future use
-        defer {
-            this.ipc_data.deinit(this.manager.allocator);
-            this.stderr_data.deinit(this.manager.allocator);
-        }
+        defer this.ipc_data.deinit(this.manager.allocator);
 
         if (this.exit_status == null) {
             Output.errGeneric("Security scanner terminated without an exit status. This is a bug in Bun.", .{});

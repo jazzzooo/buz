@@ -69,10 +69,6 @@ pub const Entry = struct {
     /// entry. To compute the memory cost of DevServer, this cannot be used.
     overlapping_memory_cost: u32,
 
-    pub fn sourceContents(entry: Entry) []const bun.StringPointer {
-        return entry.source_contents[0..entry.file_paths.len];
-    }
-
     pub fn renderMappings(map: Entry, io: std.Io, kind: ChunkKind, arena: Allocator, gpa: Allocator) ![]u8 {
         var j: StringJoiner = .{ .allocator = arena };
         j.pushStatic("AAAA");

@@ -61,10 +61,6 @@ else if (Environment.isAarch64)
 else
     "unknown";
 
-pub inline fn getStartTime() i128 {
-    return bun.start_time;
-}
-
 extern "kernel32" fn SetThreadDescription(thread: std.os.windows.HANDLE, name: [*:0]const u16) callconv(.winapi) i32;
 
 pub fn setThreadName(name: [:0]const u8) void {

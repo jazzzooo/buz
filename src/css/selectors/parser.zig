@@ -2488,10 +2488,6 @@ pub const NthType = enum {
     col,
     last_col,
 
-    pub fn isOnly(self: NthType) bool {
-        return self == NthType.only_child or self == NthType.only_of_type;
-    }
-
     pub fn allowsOfSelector(self: NthType) bool {
         return self == NthType.child or self == NthType.last_child;
     }

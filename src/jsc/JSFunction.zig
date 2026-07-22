@@ -52,11 +52,6 @@ pub const JSFunction = opaque {
         );
     }
 
-    pub extern fn JSC__JSFunction__optimizeSoon(value: JSValue) void;
-    pub fn optimizeSoon(value: JSValue) void {
-        JSC__JSFunction__optimizeSoon(value);
-    }
-
     extern fn JSC__JSFunction__getSourceCode(value: JSValue, out: *ZigString) bool;
 
     pub fn getSourceCode(value: JSValue) ?bun.String {

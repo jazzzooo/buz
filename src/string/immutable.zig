@@ -924,20 +924,6 @@ pub fn append(allocator: std.mem.Allocator, self: string, other: string) callcon
     return buf;
 }
 
-pub fn concatAllocT(comptime T: type, allocator: std.mem.Allocator, strs: anytype) callconv(bun.callconv_inline) ![]T {
-    const buf = try allocator.alloc(T, len: {
-        var len: usize = 0;
-        inline for (strs) |s| {
-            len += s.len;
-        }
-        break :len len;
-    });
-
-    return concatBufT(T, buf, strs) catch |e| switch (e) {
-        error.NoSpaceLeft => unreachable, // exact size calculated
-    };
-}
-
 pub fn concatBufT(comptime T: type, out: []T, strs: anytype) callconv(bun.callconv_inline) ![]T {
     var remain = out;
     var n: usize = 0;

@@ -644,11 +644,7 @@ pub const exports = struct {
     pub const JSS3File__presign = jsc.toJSHostFnWithContext(Blob, getPresignUrl);
     pub const JSS3File__stat = jsc.toJSHostFnWithContext(Blob, getStat);
 };
-extern fn BUN__createJSS3File(*jsc.JSGlobalObject, *jsc.CallFrame) callconv(jsc.conv) JSValue;
 extern fn BUN__createJSS3FileUnsafely(*jsc.JSGlobalObject, *Blob) callconv(jsc.conv) JSValue;
-pub fn createJSS3File(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) callconv(jsc.conv) JSValue {
-    return BUN__createJSS3File(globalObject, callframe);
-}
 
 const S3Client = @import("./S3Client.zig");
 const S3Stat = @import("./S3Stat.zig").S3Stat;

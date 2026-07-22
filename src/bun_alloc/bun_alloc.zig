@@ -243,10 +243,6 @@ pub fn BSSList(comptime ValueType: type, comptime _count: anytype) type {
         pub var instance: *Self = undefined;
         pub var loaded = false;
 
-        pub inline fn blockIndex(index: u31) usize {
-            return index / ChunkSize;
-        }
-
         pub fn init(allocator: std.mem.Allocator) *Self {
             if (!loaded) {
                 instance = bun.handleOom(bun.default_allocator.create(Self));

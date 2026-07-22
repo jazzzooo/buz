@@ -586,32 +586,6 @@ pub const JSValkeyClient = struct {
         debug("removeSubscription: exiting", .{});
     }
 
-    pub fn getOrCreateSubscriptionCtx(
-        this: *JSValkeyClient,
-    ) bun.JSError!*SubscriptionCtx {
-        if (this._subscription_ctx) |*ctx| {
-            // If we already have a subscription context, return it
-            return ctx;
-        }
-
-        // Save the original flag values and create a new subscription context
-        this._subscription_ctx = try SubscriptionCtx.init(
-            this,
-            this.client.flags.enable_offline_queue,
-            this.client.flags.enable_auto_pipelining,
-        );
-
-        // We need to make sure we disable the offline queue, but we actually want to make sure that our HELLO message
-        // goes through first. Consequently, we only disable the offline queue if we're already connected.
-        if (this.client.status == .connected) {
-            this.client.flags.enable_offline_queue = false;
-        }
-
-        this.client.flags.enable_auto_pipelining = false;
-
-        return &(this._subscription_ctx.?);
-    }
-
     pub fn isSubscriber(this: *const JSValkeyClient) bool {
         return this._subscription_ctx.is_subscriber;
     }
@@ -1025,11 +999,6 @@ pub const JSValkeyClient = struct {
                 &[_]JSValue{error_value},
             ) catch |e| globalObject.reportActiveExceptionAsUnhandled(e);
         }
-    }
-
-    // Callback for when Valkey client times out
-    pub fn onValkeyTimeout(this: *JSValkeyClient) void {
-        this.clientFail("Connection timeout", protocol.RedisError.ConnectionClosed);
     }
 
     pub fn clientFail(this: *JSValkeyClient, message: []const u8, err: protocol.RedisError) bun.JSTerminated!void {

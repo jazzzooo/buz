@@ -204,12 +204,6 @@ pub const WTFStringImplStruct = extern struct {
         }
     }
 
-    pub fn latin1ByteLength(this: WTFStringImpl) usize {
-        // Not all UTF-16 characters fit are representable in latin1.
-        // Those get truncated?
-        return this.length();
-    }
-
     pub fn refCountAllocator(self: WTFStringImpl) std.mem.Allocator {
         return std.mem.Allocator{ .ptr = self, .vtable = StringImplAllocator.VTablePtr };
     }

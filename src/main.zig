@@ -86,9 +86,6 @@ pub fn copyBackwards(comptime T: type, dest: []T, source: []const T) void {
     }
     _bun.copy(T, dest[0..source.len], source);
 }
-pub fn eqlBytes(src: []const u8, dest: []const u8) bool {
-    return _bun.c.memcmp(src.ptr, dest.ptr, src.len) == 0;
-}
 // -- End Zig Standard Library Additions --
 
 // Claude thinks its @import("root").bun when it's @import("bun").

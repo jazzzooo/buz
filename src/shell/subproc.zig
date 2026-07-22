@@ -717,11 +717,6 @@ pub const ShellSubprocess = struct {
             return out;
         }
 
-        pub fn fillEnvFromProcess(this: *SpawnArgs, globalThis: *JSGlobalObject) void {
-            var env_iter = EnvMapIter.init(globalThis.bunVM().transpiler.env.map, this.arena.allocator());
-            return this.fillEnv(globalThis, &env_iter, false);
-        }
-
         /// `object_iter` should be a some type with the following fields:
         /// - `next() bool`
         pub fn fillEnv(

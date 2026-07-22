@@ -500,10 +500,6 @@ pub fn deinit(this: *Listener) void {
     vm.allocator.destroy(this);
 }
 
-pub fn getConnectionsCount(this: *Listener, _: *jsc.JSGlobalObject) JSValue {
-    return JSValue.jsNumber(this.handlers.active_connections);
-}
-
 pub fn getUnix(this: *Listener, globalObject: *jsc.JSGlobalObject) JSValue {
     if (this.connection != .unix) {
         return .js_undefined;

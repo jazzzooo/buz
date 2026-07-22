@@ -341,43 +341,6 @@ pub fn getArray(expr: *const Expr, name: string) ?ArrayIterator {
     return if (asProperty(expr, name)) |q| q.expr.asArray() else null;
 }
 
-pub fn getRope(self: *const Expr, rope: *const E.Object.Rope) ?E.Object.RopeQuery {
-    if (self.get(rope.head.data.e_string.data)) |existing| {
-        switch (existing.data) {
-            .e_array => |array| {
-                if (rope.next) |next| {
-                    if (array.items.last()) |end| {
-                        return end.getRope(next);
-                    }
-                }
-
-                return E.Object.RopeQuery{
-                    .expr = existing,
-                    .rope = rope,
-                };
-            },
-            .e_object => {
-                if (rope.next) |next| {
-                    if (existing.getRope(next)) |end| {
-                        return end;
-                    }
-                }
-
-                return E.Object.RopeQuery{
-                    .expr = existing,
-                    .rope = rope,
-                };
-            },
-            else => return E.Object.RopeQuery{
-                .expr = existing,
-                .rope = rope,
-            },
-        }
-    }
-
-    return null;
-}
-
 // Making this comptime bloats the binary and doesn't seem to impact runtime performance.
 pub fn asProperty(expr: *const Expr, name: string) ?Query {
     if (expr.data != .e_object) return null;
@@ -1573,16 +1536,6 @@ pub const Tag = enum {
     pub fn isArray(self: Tag) bool {
         switch (self) {
             .e_array => {
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
-    pub fn isUnary(self: Tag) bool {
-        switch (self) {
-            .e_unary => {
                 return true;
             },
             else => {
