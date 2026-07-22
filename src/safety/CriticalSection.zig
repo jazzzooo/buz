@@ -11,17 +11,9 @@
 //! *after* locking the mutex, and call `end` before releasing it, since it's the code that runs
 //! when the mutex is held that needs to be prevented from concurrent execution.
 //!
-//! In code that only *reads* the shared data, and does not write to it, `beginReadOnly` can be
-//! used instead. This allows multiple threads to read the data simultaneously, but will still
-//! error if a thread tries to modify it (via calling `begin`).
-//!
-//!     shared_data.critical_section.beginReadOnly();
-//!     defer shared_data.critical_section.end();
-//!     // (do *read-only* stuff with shared_data...)
-//!
 //! One use of this type could be to ensure that single-threaded containers aren't being used
 //! concurrently without appropriate synchronization. For example, each method in an `ArrayList`
-//! could start with a call to `begin` or `beginReadOnly` and end with a call to `end`. Then, an
+//! could start with a call to `begin` and end with a call to `end`. Then, an
 //! `ArrayList` used by only one thread, or one used by multiple threads but synchronized via a
 //! mutex, won't cause an error, but an `ArrayList` used by multiple threads concurrently without
 //! synchronization, assuming at least one thread is modifying the data, will cause an error.
@@ -56,12 +48,11 @@ const State = struct {
     /// the owner).
     owner_trace: if (traces_enabled) StoredTrace else void = if (traces_enabled) StoredTrace.empty,
 
-    /// Number of nested calls to `lockShared`/`lockExclusive` performed on the owner thread.
+    /// Number of nested calls to `lockExclusive` performed on the owner thread.
     /// Only accessed on the owner thread.
     owned_count: u32 = 0,
 
-    /// Number of (possibly nested) calls to `lockShared` performed on any thread except the
-    /// owner thread.
+    /// Set to `exclusive` while the owner holds the lock.
     count: std.atomic.Value(u32) = .init(0),
 
     /// If `count` is set to this value, it indicates that a thread has requested exclusive
@@ -92,21 +83,6 @@ const State = struct {
             self.owner_trace.trace(),
             .{ .frame_count = 10, .stop_at_jsc_llint = true },
         );
-    }
-
-    /// Acquire the lock for shared (read-only) access.
-    fn lockShared(self: *State) void {
-        const current_id = Thread.getCurrentId();
-        const owner_id = self.getOrBecomeOwner();
-        if (owner_id == current_id) {
-            self.owned_count += 1;
-        } else if (self.count.fetchAdd(1, .monotonic) == exclusive) {
-            self.showTrace();
-            std.debug.panic(
-                "race condition: thread {} tried to read data being modified by {}",
-                .{ current_id, OptionalThreadId.init(owner_id) },
-            );
-        }
     }
 
     /// Acquire the lock for exclusive (read/write) access.
@@ -180,7 +156,7 @@ pub fn begin(self: *Self) void {
     if (comptime enabled) self.internal_state.lockExclusive();
 }
 
-/// Marks the end of a critical section started by `begin` or `beginReadOnly`.
+/// Marks the end of a critical section started by `begin`.
 pub fn end(self: *Self) void {
     if (comptime enabled) self.internal_state.unlock();
 }

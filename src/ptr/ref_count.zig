@@ -140,7 +140,7 @@ pub fn RefCount(T: type, field_name: []const u8, destructor: anytype, options: O
             count.raw_count -= 1;
             if (count.raw_count == 0) {
                 if (enable_debug) {
-                    count.debug.deinit(std.mem.asBytes(self), @returnAddress());
+                    count.debug.deinit();
                 }
                 if (comptime options.destructor_ctx != null) {
                     destructor(self, ctx);
@@ -253,7 +253,7 @@ pub fn ThreadSafeRefCount(T: type, field_name: []const u8, destructor: fn (*T) v
             bun.debugAssert(old_count > 0);
             if (old_count == 1) {
                 if (enable_debug) {
-                    count.debug.deinit(std.mem.asBytes(self), @returnAddress());
+                    count.debug.deinit();
                 }
                 destructor(self);
             }
@@ -311,8 +311,6 @@ pub fn ThreadSafeRefCount(T: type, field_name: []const u8, destructor: fn (*T) v
 /// By using this, you gain the following memory debugging tools:
 ///
 /// - `T.ref_count.dump()` to dump all active references.
-/// - AllocationScope integration via `.newTracked()` and `.trackAll()`
-///
 /// If you want to enforce usage of RefPtr for memory management, you
 /// can remove the forwarded `ref` and `deref` methods from `RefCount`.
 ///
@@ -412,26 +410,10 @@ pub fn RefPtr(T: type) type {
             return ptr;
         }
 
-        fn trackImpl(ref: @This(), scope: *AllocationScope, ret_addr: usize) void {
-            if (!comptime enable_debug) return;
-            const debug = &ref.data.ref_count.debug;
-            debug.lock.lock();
-            defer debug.lock.unlock();
-            debug.allocation_scope = scope;
-            scope.trackExternalAllocation(
-                std.mem.asBytes(ref.data),
-                ret_addr,
-                .{ .ptr = debug, .vtable = debug.getScopeExtraVTable() },
-            );
-        }
-
         pub fn uncheckedAndUnsafeInit(raw_ptr: *T, ret_addr: ?usize) @This() {
             return .{
                 .data = raw_ptr,
-                .debug = if (enable_debug) raw_ptr.ref_count.debug.acquire(
-                    &raw_ptr.ref_count.raw_count,
-                    ret_addr orelse @returnAddress(),
-                ),
+                .debug = if (enable_debug) raw_ptr.ref_count.debug.acquire(ret_addr orelse @returnAddress()),
             };
         }
     };
@@ -453,16 +435,11 @@ const TrackedDeref = struct {
 pub fn DebugData(thread_safe: bool) type {
     return struct {
         const Debug = @This();
-        const Count = if (thread_safe) std.atomic.Value(u32) else u32;
-
         magic: enum(u128) { valid = 0x2f84e51d, _ } align(@alignOf(u32)),
         lock: if (thread_safe) std.debug.SafetyLock else bun.Mutex,
         next_id: u32,
         map: std.AutoHashMapUnmanaged(TrackedRef.Id, TrackedRef),
         frees: std.array_hash_map.Auto(TrackedRef.Id, TrackedDeref),
-        // Allocation Scope integration
-        allocation_scope: ?*AllocationScope,
-        count_pointer: ?*Count,
 
         pub const empty: @This() = .{
             .magic = .valid,
@@ -470,8 +447,6 @@ pub fn DebugData(thread_safe: bool) type {
             .next_id = 0,
             .map = .empty,
             .frees = .empty,
-            .allocation_scope = null,
-            .count_pointer = null,
         };
 
         fn assertValid(debug: *const @This()) void {
@@ -494,10 +469,9 @@ pub fn DebugData(thread_safe: bool) type {
             }
         }
 
-        fn acquire(debug: *@This(), count_pointer: *Count, return_address: usize) TrackedRef.Id {
+        fn acquire(debug: *@This(), return_address: usize) TrackedRef.Id {
             debug.lock.lock();
             defer debug.lock.unlock();
-            debug.count_pointer = count_pointer;
             const id = nextId(debug);
             debug.map.put(bun.default_allocator, id, .{
                 .acquired_at = .capture(return_address),
@@ -517,33 +491,14 @@ pub fn DebugData(thread_safe: bool) type {
             }) catch |err| bun.handleOom(err);
         }
 
-        fn deinit(debug: *@This(), data: []const u8, ret_addr: usize) void {
+        fn deinit(debug: *@This()) void {
             assertValid(debug);
             debug.magic = undefined;
             debug.lock.lock();
             defer debug.lock.unlock();
             debug.map.clearAndFree(bun.default_allocator);
             debug.frees.clearAndFree(bun.default_allocator);
-            if (debug.allocation_scope) |scope| {
-                scope.trackExternalFree(data, ret_addr) catch {};
-            }
         }
-
-        fn onAllocationLeak(ptr: *anyopaque, data: []u8) void {
-            const debug: *@This() = @ptrCast(@alignCast(ptr));
-            debug.lock.lock();
-            defer debug.lock.unlock();
-            const count = debug.count_pointer.?;
-            debug.dump(null, data.ptr, if (thread_safe) count.load(.seq_cst) else count.*);
-        }
-
-        fn getScopeExtraVTable(_: *@This()) *const allocation_scope.Extra.VTable {
-            return &scope_extra_vtable;
-        }
-
-        const scope_extra_vtable: allocation_scope.Extra.VTable = .{
-            .onAllocationLeak = onAllocationLeak,
-        };
     };
 }
 
@@ -599,5 +554,4 @@ const bun = @import("bun");
 const assert = bun.assert;
 const enable_debug = bun.Environment.isDebug;
 
-const allocation_scope = bun.allocators.allocation_scope;
-const AllocationScope = allocation_scope.AllocationScope;
+const AllocationScope = bun.allocators.allocation_scope.AllocationScope;

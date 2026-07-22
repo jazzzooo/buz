@@ -766,43 +766,6 @@ pub fn NewParser_(
             return p.options.features.unwrap_commonjs_to_esm;
         }
 
-        fn isBindingUsed(noalias p: *P, binding: Binding, default_export_ref: Ref) bool {
-            switch (binding.data) {
-                .b_identifier => |ident| {
-                    if (default_export_ref.eql(ident.ref)) return true;
-                    if (p.named_imports.contains(ident.ref))
-                        return true;
-
-                    for (p.named_exports.values()) |named_export| {
-                        if (named_export.ref.eql(ident.ref))
-                            return true;
-                    }
-
-                    const symbol: *const Symbol = &p.symbols.items[ident.ref.innerIndex()];
-                    return symbol.use_count_estimate > 0;
-                },
-                .b_array => |array| {
-                    for (array.items) |item| {
-                        if (isBindingUsed(p, item.binding, default_export_ref)) {
-                            return true;
-                        }
-                    }
-
-                    return false;
-                },
-                .b_object => |obj| {
-                    for (obj.properties) |prop| {
-                        if (isBindingUsed(p, prop.value, default_export_ref)) {
-                            return true;
-                        }
-                    }
-
-                    return false;
-                },
-                .b_missing => return false,
-            }
-        }
-
         const ImportTransposer = ExpressionTransposer(P, *const TransposeState, P.transposeImport);
         const RequireTransposer = ExpressionTransposer(P, *const TransposeState, P.transposeRequire);
         const RequireResolveTransposer = ExpressionTransposer(P, Expr, P.transposeRequireResolve);

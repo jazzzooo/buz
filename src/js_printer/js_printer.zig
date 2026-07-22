@@ -4810,16 +4810,6 @@ fn NewPrinter(
             p.printWhitespacer(ws("(() => ({}))"));
         }
 
-        inline fn printModuleId(p: *Printer, module_id: u32) void {
-            bun.assert(module_id != 0); // either module_id is forgotten or it should be disabled
-            p.printModuleIdAssumeEnabled(module_id);
-        }
-
-        inline fn printModuleIdAssumeEnabled(p: *Printer, module_id: u32) void {
-            p.print("$");
-            std.fmt.formatInt(module_id, 16, .lower, .{}, p) catch unreachable;
-        }
-
         // We must use Object.defineProperty() to handle re-exports from ESM -> CJS
         // Here is an example where a runtime error occurs when assigning directly to module.exports
         // > 24077 |   module.exports.init = init;
