@@ -3468,7 +3468,7 @@ fn printErrorInstance(
             .only_non_index_properties = true,
         });
         // SAFETY: error instances are always objects
-        const error_obj = error_instance.getObject().?;
+        const error_obj = error_instance.getObject() orelse unreachable;
         var iterator = try Iterator.init(this.global, error_obj);
         defer iterator.deinit();
         const longest_name = @min(iterator.getLongestPropertyName(), 10);

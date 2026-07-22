@@ -29,9 +29,8 @@ pub fn sendHelperChild(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFram
     if (!handle.isNull()) {
         return globalThis.throw("passing 'handle' not implemented yet", .{});
     }
-    if (!message.isObject()) {
+    const message_object = message.getObject() orelse
         return globalThis.throwInvalidArgumentTypeValue("message", "object", message);
-    }
     if (callback.isFunction()) {
         // TODO: remove this strong. This is expensive and would be an easy way to create a memory leak.
         // These sequence numbers shouldn't exist from JavaScript's perspective at all.
@@ -39,7 +38,7 @@ pub fn sendHelperChild(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFram
     }
 
     // sequence number for InternalMsgHolder
-    message.getObject().?.putDirect(globalThis, ZigString.static("seq"), jsc.JSValue.jsNumber(child_singleton.seq));
+    message_object.putDirect(globalThis, ZigString.static("seq"), jsc.JSValue.jsNumber(child_singleton.seq));
     child_singleton.seq +%= 1;
 
     // similar code as Bun__Process__send
@@ -186,15 +185,14 @@ pub fn sendHelperPrimary(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFr
     if (message.isUndefined()) {
         return globalThis.throwMissingArgumentsValue(&.{"message"});
     }
-    if (!message.isObject()) {
+    const message_object = message.getObject() orelse
         return globalThis.throwInvalidArgumentTypeValue("message", "object", message);
-    }
     if (callback.isFunction()) {
         bun.handleOom(ipc_data.internal_msg_queue.callbacks.put(bun.default_allocator, ipc_data.internal_msg_queue.seq, jsc.Strong.Optional.create(callback, globalThis)));
     }
 
     // sequence number for InternalMsgHolder
-    message.getObject().?.putDirect(globalThis, ZigString.static("seq"), jsc.JSValue.jsNumber(ipc_data.internal_msg_queue.seq));
+    message_object.putDirect(globalThis, ZigString.static("seq"), jsc.JSValue.jsNumber(ipc_data.internal_msg_queue.seq));
     ipc_data.internal_msg_queue.seq +%= 1;
 
     // similar code as bun.jsc.Subprocess.doSend

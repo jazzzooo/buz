@@ -5980,14 +5980,14 @@ extern "C" EncodedJSValue ExpectMatcherUtils__getSingleton(JSC::JSGlobalObject* 
     return JSValue::encode(globalObject->m_testMatcherUtilsObject.getInitializedOnMainThread(globalObject));
 }
 
-extern "C" EncodedJSValue Expect__getPrototype(JSC::JSGlobalObject* globalObject)
+extern "C" JSC::JSObject* Expect__getPrototype(JSC::JSGlobalObject* globalObject)
 {
-    return JSValue::encode(static_cast<Zig::GlobalObject*>(globalObject)->JSExpectPrototype());
+    return static_cast<Zig::GlobalObject*>(globalObject)->JSExpectPrototype();
 }
 
-extern "C" EncodedJSValue ExpectStatic__getPrototype(JSC::JSGlobalObject* globalObject)
+extern "C" JSC::JSObject* ExpectStatic__getPrototype(JSC::JSGlobalObject* globalObject)
 {
-    return JSValue::encode(static_cast<Zig::GlobalObject*>(globalObject)->JSExpectStaticPrototype());
+    return static_cast<Zig::GlobalObject*>(globalObject)->JSExpectStaticPrototype();
 }
 
 extern "C" JSC::JSFunction* JSFunction__createFromZig(

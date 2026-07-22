@@ -885,10 +885,8 @@ pub fn getsockname(this: *Listener, globalThis: *jsc.JSGlobalObject, callFrame: 
     }
 
     const out_value = callFrame.argumentsAsArray(1)[0];
-    if (!out_value.isObject()) {
+    const out = out_value.getObject() orelse
         return globalThis.throwInvalidArguments("Expected object", .{});
-    }
-    const out = out_value.getObject().?;
     const socket = this.listener.uws;
 
     var buf: [64]u8 = @splat(0);

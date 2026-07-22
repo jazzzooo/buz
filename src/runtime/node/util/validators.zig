@@ -160,7 +160,7 @@ pub fn validateBoolean(globalThis: *JSGlobalObject, value: JSValue, comptime nam
     return value.asBoolean();
 }
 
-pub fn validateObject(globalThis: *JSGlobalObject, value: JSValue, comptime name_fmt: string, name_args: anytype) bun.JSError!void {
+pub fn validateObject(globalThis: *JSGlobalObject, value: JSValue, comptime name_fmt: string, name_args: anytype) bun.JSError!*jsc.JSObject {
     if (value.isNull() or value.jsType().isArray()) {
         return throwErrInvalidArgType(globalThis, name_fmt, name_args, "object", value);
     }
@@ -168,6 +168,8 @@ pub fn validateObject(globalThis: *JSGlobalObject, value: JSValue, comptime name
     if (!value.isObject()) {
         return throwErrInvalidArgType(globalThis, name_fmt, name_args, "object", value);
     }
+
+    return value.getObject() orelse unreachable;
 }
 
 pub fn validateArray(globalThis: *JSGlobalObject, value: JSValue, comptime name_fmt: string, name_args: anytype, comptime min_length: ?i32) bun.JSError!void {

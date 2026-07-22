@@ -280,12 +280,11 @@ fn storeOption(globalThis: *JSGlobalObject, option_name: ValueRef, option_value:
 }
 
 fn parseOptionDefinitions(globalThis: *JSGlobalObject, options_obj: JSValue, option_definitions: *std.array_list.Managed(OptionDefinition)) bun.JSError!void {
-    try validators.validateObject(globalThis, options_obj, "options", .{});
+    const options = try validators.validateObject(globalThis, options_obj, "options", .{});
 
     var iter = try jsc.JSPropertyIterator(.{ .skip_empty_name = false, .include_value = true }).init(
         globalThis,
-        // SAFETY: validateObject ensures it's an object
-        options_obj.getObject().?,
+        options,
     );
     defer iter.deinit();
 
@@ -295,13 +294,13 @@ fn parseOptionDefinitions(globalThis: *JSGlobalObject, options_obj: JSValue, opt
         };
 
         const obj: JSValue = iter.value;
-        try validators.validateObject(globalThis, obj, "options.{f}", .{option.long_name});
+        const option_object = try validators.validateObject(globalThis, obj, "options.{f}", .{option.long_name});
 
         // type field is required
-        const option_type: JSValue = try obj.getOwn(globalThis, "type") orelse .js_undefined;
+        const option_type: JSValue = try option_object.getOwn(globalThis, "type") orelse .js_undefined;
         option.type = try validators.validateStringEnum(OptionValueType, globalThis, option_type, "options.{f}.type", .{option.long_name});
 
-        if (try obj.getOwn(globalThis, "short")) |short_option| {
+        if (try option_object.getOwn(globalThis, "short")) |short_option| {
             try validators.validateString(globalThis, short_option, "options.{f}.short", .{option.long_name});
             var short_option_str = try short_option.toBunString(globalThis);
             if (short_option_str.length() != 1) {
@@ -311,13 +310,13 @@ fn parseOptionDefinitions(globalThis: *JSGlobalObject, options_obj: JSValue, opt
             option.short_name = short_option_str;
         }
 
-        if (try obj.getOwn(globalThis, "multiple")) |multiple_value| {
+        if (try option_object.getOwn(globalThis, "multiple")) |multiple_value| {
             if (!multiple_value.isUndefined()) {
                 option.multiple = try validators.validateBoolean(globalThis, multiple_value, "options.{f}.multiple", .{option.long_name});
             }
         }
 
-        if (try obj.getOwn(globalThis, "default")) |default_value| {
+        if (try option_object.getOwn(globalThis, "default")) |default_value| {
             if (!default_value.isUndefined()) {
                 switch (option.type) {
                     .string => {

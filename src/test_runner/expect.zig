@@ -915,16 +915,16 @@ pub const Expect = struct {
     pub fn extend(globalThis: *JSGlobalObject, callFrame: *CallFrame) bun.JSError!JSValue {
         const args = callFrame.arguments_old(1).slice();
 
-        if (args.len == 0 or !args[0].isObject()) {
+        if (args.len == 0) {
             return globalThis.throwPretty("<d>expect.<r>extend<d>(<r>matchers<d>)<r>\n\nExpected an object containing matchers\n", .{});
         }
 
-        const expect_proto = Expect__getPrototype(globalThis).getObject().?;
-        const expect_constructor = Expect.js.getConstructor(globalThis).getObject().?;
-        const expect_static_proto = ExpectStatic__getPrototype(globalThis).getObject().?;
-
-        // SAFETY: already checked that args[0] is an object
-        const matchers_to_register = args[0].getObject().?;
+        const expect_proto = Expect__getPrototype(globalThis);
+        const expect_constructor = Expect.js.getConstructor(globalThis).getObject() orelse unreachable;
+        const expect_static_proto = ExpectStatic__getPrototype(globalThis);
+        const matchers_to_register = args[0].getObject() orelse {
+            return globalThis.throwPretty("<d>expect.<r>extend<d>(<r>matchers<d>)<r>\n\nExpected an object containing matchers\n", .{});
+        };
         {
             var iter = try jsc.JSPropertyIterator(.{
                 .skip_empty_name = false,
@@ -2109,8 +2109,8 @@ extern fn Bun__JSWrappingFunction__getWrappedFunction(this: JSValue, globalThis:
 
 extern fn ExpectMatcherUtils__getSingleton(globalThis: *JSGlobalObject) JSValue;
 
-extern fn Expect__getPrototype(globalThis: *JSGlobalObject) JSValue;
-extern fn ExpectStatic__getPrototype(globalThis: *JSGlobalObject) JSValue;
+extern fn Expect__getPrototype(globalThis: *JSGlobalObject) *jsc.JSObject;
+extern fn ExpectStatic__getPrototype(globalThis: *JSGlobalObject) *jsc.JSObject;
 
 comptime {
     @export(&ExpectMatcherUtils.createSingleton, .{ .name = "ExpectMatcherUtils_createSigleton" });

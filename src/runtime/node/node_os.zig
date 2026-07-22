@@ -54,6 +54,10 @@ pub fn cpus(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
     };
 }
 
+fn getCPUObject(values: *jsc.JSArray, globalThis: *jsc.JSGlobalObject, index: u32) !*jsc.JSObject {
+    return (try values.getIndex(globalThis, index)).getObject() orelse error.invalid_cpu_entry;
+}
+
 fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
     // Create the return array
     const values = try jsc.JSArray.createEmpty(globalThis, 0);
@@ -138,8 +142,8 @@ fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
         while (line_iter.next()) |line| {
             if (strings.hasPrefixComptime(line, key_processor)) {
                 if (!has_model_name) {
-                    const cpu = try values.getIndex(globalThis, cpu_index);
-                    cpu.getObject().?.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.static("unknown").withEncoding().toJS(globalThis));
+                    const cpu = try getCPUObject(values, globalThis, cpu_index);
+                    cpu.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.static("unknown").withEncoding().toJS(globalThis));
                 }
                 // If this line starts a new processor, parse the index from the line
                 const digits = std.mem.trim(u8, line[key_processor.len..], " \t\n");
@@ -149,26 +153,26 @@ fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
             } else if (strings.hasPrefixComptime(line, key_model_name)) {
                 // If this is the model name, extract it and store on the current cpu
                 const model_name = line[key_model_name.len..];
-                const cpu = try values.getIndex(globalThis, cpu_index);
-                cpu.getObject().?.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.init(model_name).withEncoding().toJS(globalThis));
+                const cpu = try getCPUObject(values, globalThis, cpu_index);
+                cpu.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.init(model_name).withEncoding().toJS(globalThis));
                 has_model_name = true;
             }
         }
         if (!has_model_name) {
-            const cpu = try values.getIndex(globalThis, cpu_index);
-            cpu.getObject().?.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.static("unknown").withEncoding().toJS(globalThis));
+            const cpu = try getCPUObject(values, globalThis, cpu_index);
+            cpu.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.static("unknown").withEncoding().toJS(globalThis));
         }
     } else |_| {
         // Initialize model name to "unknown"
-        var it = try values.iterator(globalThis);
-        while (try it.next()) |cpu| {
-            cpu.getObject().?.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.static("unknown").withEncoding().toJS(globalThis));
+        for (0..num_cpus) |cpu_index| {
+            const cpu = try getCPUObject(values, globalThis, @intCast(cpu_index));
+            cpu.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.static("unknown").withEncoding().toJS(globalThis));
         }
     }
 
     // Read /sys/devices/system/cpu/cpu{}/cpufreq/scaling_cur_freq to get current frequency (optional)
     for (0..num_cpus) |cpu_index| {
-        const cpu = (try values.getIndex(globalThis, @truncate(cpu_index))).getObject().?;
+        const cpu = try getCPUObject(values, globalThis, @truncate(cpu_index));
 
         var path_buf: [128]u8 = undefined;
         const path = try std.fmt.bufPrint(&path_buf, "/sys/devices/system/cpu/cpu{}/cpufreq/scaling_cur_freq", .{cpu_index});

@@ -281,8 +281,8 @@ const random = struct {
         if (args.len > 0) {
             const options = args[0];
             if (!options.isUndefined()) {
-                try validators.validateObject(global, options, "options", .{});
-                if (try options.get(global, "disableEntropyCache")) |disable_entropy_cache_value| {
+                const options_object = try validators.validateObject(global, options, "options", .{});
+                if (try options_object.get(global, "disableEntropyCache")) |disable_entropy_cache_value| {
                     disable_entropy_cache = try validators.validateBoolean(global, disable_entropy_cache_value, "options.disableEntropyCache", .{});
                 }
             }

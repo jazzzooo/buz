@@ -609,16 +609,14 @@ pub const FFI = struct {
         }
 
         const symbols_object: JSValue = try object.getOwn(globalThis, "symbols") orelse .js_undefined;
-        if (!globalThis.hasException() and (symbols_object == .zero or !symbols_object.isObject())) {
-            return globalThis.throwInvalidArgumentTypeValue("symbols", "object", symbols_object);
-        }
-
         if (globalThis.hasException()) {
             return error.JSError;
         }
 
-        // SAFETY: already checked that symbols_object is an object
-        if (try generateSymbols(globalThis, allocator, &compile_c.symbols.map, symbols_object.getObject().?)) |val| {
+        const symbols = symbols_object.getObject() orelse {
+            return globalThis.throwInvalidArgumentTypeValue("symbols", "object", symbols_object);
+        };
+        if (try generateSymbols(globalThis, allocator, &compile_c.symbols.map, symbols)) |val| {
             if (val != .zero and !globalThis.hasException())
                 return globalThis.throwValue(val);
             return error.JSError;
