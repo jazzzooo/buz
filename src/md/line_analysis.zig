@@ -370,7 +370,6 @@ pub fn isTableUnderline(self: *Parser, off: OFF) struct { is_underline: bool, co
     if (col_count == 0 or (!had_pipe and col_count < 2))
         return .{ .is_underline = false, .col_count = 0 };
 
-    self.table_col_count = col_count;
     return .{ .is_underline = true, .col_count = col_count };
 }
 

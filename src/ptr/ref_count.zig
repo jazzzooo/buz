@@ -348,7 +348,7 @@ pub fn RefPtr(T: type) type {
         ///  Decrement the reference count, and destroy the object if the count is 0.
         pub fn derefWithContext(self: *const @This(), ctx: (options.destructor_ctx orelse void)) void {
             if (enable_debug) {
-                self.data.ref_count.debug.release(self.debug, @returnAddress());
+                self.data.ref_count.debug.release(self.debug);
             }
             if (comptime options.destructor_ctx != null) {
                 RefCountMixin.derefWithContext(self.data, ctx);
@@ -402,7 +402,7 @@ pub fn RefPtr(T: type) type {
             const ptr = self.data;
             if (enable_debug) {
                 // mark debug tracking as released without actually derefing
-                self.data.ref_count.debug.release(self.debug, @returnAddress());
+                self.data.ref_count.debug.release(self.debug);
             }
             if (bun.Environment.isDebug) {
                 self.data = undefined;
@@ -426,11 +426,6 @@ const TrackedRef = struct {
     pub const Id = bun.GenericIndex(u32, TrackedRef);
 };
 
-const TrackedDeref = struct {
-    acquired_at: bun.crash_handler.StoredTrace,
-    released_at: bun.crash_handler.StoredTrace,
-};
-
 /// Provides Ref tracking. This is not generic over the pointer T to reduce analysis complexity.
 pub fn DebugData(thread_safe: bool) type {
     return struct {
@@ -439,14 +434,12 @@ pub fn DebugData(thread_safe: bool) type {
         lock: if (thread_safe) std.debug.SafetyLock else bun.Mutex,
         next_id: u32,
         map: std.AutoHashMapUnmanaged(TrackedRef.Id, TrackedRef),
-        frees: std.array_hash_map.Auto(TrackedRef.Id, TrackedDeref),
 
         pub const empty: @This() = .{
             .magic = .valid,
             .lock = .{},
             .next_id = 0,
             .map = .empty,
-            .frees = .empty,
         };
 
         fn assertValid(debug: *const @This()) void {
@@ -479,16 +472,10 @@ pub fn DebugData(thread_safe: bool) type {
             return id;
         }
 
-        fn release(debug: *@This(), id: TrackedRef.Id, return_address: usize) void {
+        fn release(debug: *@This(), id: TrackedRef.Id) void {
             debug.lock.lock(); // If this triggers ASAN, the RefCounted object is double-freed.
             defer debug.lock.unlock();
-            const entry = debug.map.fetchRemove(id) orelse {
-                return;
-            };
-            debug.frees.put(bun.default_allocator, id, .{
-                .acquired_at = entry.value.acquired_at,
-                .released_at = .capture(return_address),
-            }) catch |err| bun.handleOom(err);
+            _ = debug.map.fetchRemove(id);
         }
 
         fn deinit(debug: *@This()) void {
@@ -497,7 +484,6 @@ pub fn DebugData(thread_safe: bool) type {
             debug.lock.lock();
             defer debug.lock.unlock();
             debug.map.clearAndFree(bun.default_allocator);
-            debug.frees.clearAndFree(bun.default_allocator);
         }
     };
 }

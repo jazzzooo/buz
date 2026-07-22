@@ -117,10 +117,6 @@ pub fn isDone(this: *InternalState) bool {
 
 pub fn decompressBytes(this: *InternalState, buffer: []const u8, body_out_str: *MutableString, is_final_chunk: bool) !void {
     defer this.compressed_body.reset();
-    var gzip_timer: bun.SystemTimer = undefined;
-
-    if (bun.http.extremely_verbose)
-        gzip_timer = bun.SystemTimer.start() catch @panic("Timer failure");
 
     var still_needs_to_decompress = true;
 
@@ -185,9 +181,6 @@ pub fn decompressBytes(this: *InternalState, buffer: []const u8, body_out_str: *
             }
         };
     }
-
-    if (bun.http.extremely_verbose)
-        this.gzip_elapsed = gzip_timer.read();
 }
 
 pub fn decompress(this: *InternalState, buffer: MutableString, body_out_str: *MutableString, is_final_chunk: bool) !void {

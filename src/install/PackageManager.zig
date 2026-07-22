@@ -20,9 +20,6 @@ track_installed_bin: TrackInstalledBin = .{
     .none = {},
 },
 
-// progress bar stuff when not stack allocated
-root_progress_node: *Progress.Node = undefined,
-
 to_update: bool = false,
 
 subcommand: Subcommand,
@@ -78,7 +75,6 @@ lifecycle_script_time_log: LifecycleScriptTimeLog = .{},
 
 pending_lifecycle_script_tasks: std.atomic.Value(u32) = .init(0),
 finished_installing: std.atomic.Value(bool) = .init(false),
-total_scripts: usize = 0,
 
 root_lifecycle_scripts: ?Package.Scripts.List = null,
 
@@ -1031,7 +1027,7 @@ pub fn initWithRuntime(
     if (Output.enable_ansi_colors_stderr) {
         manager.progress = Progress{};
         manager.progress.supports_ansi_escape_codes = Output.enable_ansi_colors_stderr;
-        manager.root_progress_node = manager.progress.start(manager.io, "", 0);
+        _ = manager.progress.start(manager.io, "", 0);
     } else {
         manager.options.log_level = .default_no_progress;
     }

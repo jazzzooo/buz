@@ -822,18 +822,12 @@ const MockRequestContextType = struct {
     controlled: bool = false,
     url: URLPath,
 
-    handle_request_called: bool = false,
-    redirect_called: bool = false,
     matched_route: ?Match = null,
     has_called_done: bool = false,
 
-    pub fn handleRequest(this: *MockRequestContextType) !void {
-        this.handle_request_called = true;
-    }
+    pub fn handleRequest(_: *MockRequestContextType) !void {}
 
-    pub fn handleRedirect(this: *MockRequestContextType, _: string) !void {
-        this.redirect_called = true;
-    }
+    pub fn handleRedirect(_: *MockRequestContextType, _: string) !void {}
 
     pub const JavaScriptHandler = struct {
         pub fn enqueue(_: *MockRequestContextType, _: *MockServer, _: *Router.Param.List) !void {}

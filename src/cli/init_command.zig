@@ -920,7 +920,6 @@ const Template = enum {
     const TemplateFile = struct {
         path: [:0]const u8,
         contents: [:0]const u8,
-        can_skip_if_exists: bool = false,
     };
     pub fn isReact(this: Template) bool {
         return switch (this) {
@@ -1100,7 +1099,7 @@ const Template = enum {
             .{ .path = "tsconfig.json", .contents = @embedFile("./init/react-app/tsconfig.json") },
             .{ .path = "bun-env.d.ts", .contents = @embedFile("./init/react-app/bun-env.d.ts") },
             .{ .path = "README.md", .contents = InitCommand.Assets.@"README2.md" },
-            .{ .path = ".gitignore", .contents = InitCommand.Assets.@".gitignore", .can_skip_if_exists = true },
+            .{ .path = ".gitignore", .contents = InitCommand.Assets.@".gitignore" },
             .{ .path = "src/index.ts", .contents = @embedFile("./init/react-app/src/index.ts") },
             .{ .path = "src/App.tsx", .contents = @embedFile("./init/react-app/src/App.tsx") },
             .{ .path = "src/index.html", .contents = @embedFile("./init/react-app/src/index.html") },
@@ -1119,7 +1118,7 @@ const Template = enum {
             .{ .path = "tsconfig.json", .contents = @embedFile("./init/react-tailwind/tsconfig.json") },
             .{ .path = "bun-env.d.ts", .contents = @embedFile("./init/react-tailwind/bun-env.d.ts") },
             .{ .path = "README.md", .contents = InitCommand.Assets.@"README2.md" },
-            .{ .path = ".gitignore", .contents = InitCommand.Assets.@".gitignore", .can_skip_if_exists = true },
+            .{ .path = ".gitignore", .contents = InitCommand.Assets.@".gitignore" },
             .{ .path = "src/index.ts", .contents = @embedFile("./init/react-tailwind/src/index.ts") },
             .{ .path = "src/App.tsx", .contents = @embedFile("./init/react-tailwind/src/App.tsx") },
             .{ .path = "src/index.html", .contents = @embedFile("./init/react-tailwind/src/index.html") },
@@ -1141,7 +1140,7 @@ const Template = enum {
             .{ .path = "tsconfig.json", .contents = @embedFile("./init/react-shadcn/tsconfig.json") },
             .{ .path = "bun-env.d.ts", .contents = @embedFile("./init/react-shadcn/bun-env.d.ts") },
             .{ .path = "README.md", .contents = InitCommand.Assets.@"README2.md" },
-            .{ .path = ".gitignore", .contents = InitCommand.Assets.@".gitignore", .can_skip_if_exists = true },
+            .{ .path = ".gitignore", .contents = InitCommand.Assets.@".gitignore" },
             .{ .path = "src/index.ts", .contents = @embedFile("./init/react-shadcn/src/index.ts") },
             .{ .path = "src/App.tsx", .contents = @embedFile("./init/react-shadcn/src/App.tsx") },
             .{ .path = "src/index.html", .contents = @embedFile("./init/react-shadcn/src/index.html") },

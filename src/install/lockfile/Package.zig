@@ -185,8 +185,6 @@ pub fn Package(comptime SemverIntType: type) type {
 
             builder.clamp();
 
-            cloner.trees_count += @as(u32, @intFromBool(old_resolutions.len > 0));
-
             for (old_resolutions, resolutions, 0..) |old_resolution, *resolution, i| {
                 if (old_resolution >= max_package_id) {
                     resolution.* = invalid_package_id;

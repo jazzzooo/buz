@@ -30,7 +30,6 @@ async_http_id: u32 = 0,
 
 state: AtomicState = AtomicState.init(State.pending),
 elapsed: u64 = 0,
-gzip_elapsed: u64 = 0,
 
 signals: Signals = .{},
 

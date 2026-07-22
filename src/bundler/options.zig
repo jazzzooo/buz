@@ -1654,7 +1654,6 @@ pub const BundleOptions = struct {
     emit_dce_annotations: bool = false,
     bytecode: bool = false,
 
-    code_coverage: bool = false,
     debugger: bool = false,
 
     compile: bool = false,

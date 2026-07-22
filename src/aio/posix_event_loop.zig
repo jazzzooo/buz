@@ -1309,7 +1309,6 @@ pub const KEventWaker = struct {
     kq: std.posix.fd_t,
     machport: bun.mach_port = undefined,
     machport_buf: []u8 = &.{},
-    has_pending_wake: bool = false,
 
     const zeroed = std.mem.zeroes([16]Kevent64);
 
@@ -1318,11 +1317,7 @@ pub const KEventWaker = struct {
     pub fn wake(this: *Waker) void {
         bun.jsc.markBinding(@src());
 
-        if (io_darwin_schedule_wakeup(this.machport)) {
-            this.has_pending_wake = false;
-            return;
-        }
-        this.has_pending_wake = true;
+        _ = io_darwin_schedule_wakeup(this.machport);
     }
 
     pub fn getFd(this: *const Waker) bun.FD {

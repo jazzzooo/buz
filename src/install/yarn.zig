@@ -1626,7 +1626,6 @@ pub fn migrateYarnLockfile(
     const result = LoadResult{ .ok = .{
         .lockfile = this,
         .migrated = .yarn,
-        .loaded_from_binary_lockfile = false,
         .serializer_result = .{},
         .format = .binary,
     } };

@@ -66,7 +66,6 @@ pub fn ParseFn(
             var func = try p.parseFn(name, FnOrArrowDataParse{
                 .needs_async_loc = loc,
                 .async_range = asyncRange orelse logger.Range.None,
-                .has_async_range = asyncRange != null,
                 .allow_await = if (is_async) AwaitOrYield.allow_expr else AwaitOrYield.allow_ident,
                 .allow_yield = if (is_generator) AwaitOrYield.allow_expr else AwaitOrYield.allow_ident,
                 .is_typescript_declare = opts.is_typescript_declare,

@@ -14,7 +14,6 @@ changed_filepaths: [max_count]?[:0]u8,
 platform: Platform,
 
 watchlist: WatchList,
-watched_count: usize,
 mutex: Mutex,
 
 fs: *bun.fs.FileSystem,
@@ -85,7 +84,6 @@ pub fn init(comptime T: type, ctx: *T, fs: *bun.fs.FileSystem, allocator: std.me
     watcher.* = .{
         .fs = fs,
         .allocator = allocator,
-        .watched_count = 0,
         .watchlist = WatchList{},
         .mutex = .{},
         .cwd = fs.top_level_dir,

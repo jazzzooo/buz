@@ -1467,7 +1467,6 @@ pub const PackageInstaller = struct {
         if (scripts_list == null) return false;
 
         if (this.manager.options.do.run_scripts) {
-            this.manager.total_scripts += scripts_list.?.total;
             if (this.manager.scripts_node) |scripts_node| {
                 this.manager.setNodeName(
                     scripts_node,

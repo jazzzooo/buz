@@ -35,10 +35,6 @@ pub fn VisitExpr(
 
         const visitors = struct {
             pub fn e_new_target(_: *P, expr: Expr, _: ExprIn) Expr {
-                // this error is not necessary and it is causing breakages
-                // if (!p.fn_only_data_visit.is_new_target_allowed) {
-                //     p.log.addRangeError(p.source, target.range, "Cannot use \"new.target\" here") catch unreachable;
-                // }
                 return expr;
             }
             pub fn e_string(_: *P, expr: Expr, _: ExprIn) Expr {
@@ -545,9 +541,7 @@ pub fn VisitExpr(
                     return p.visitExprInOut(dot, in);
                 }
 
-                const target_visited = p.visitExprInOut(e_.target, ExprIn{
-                    .has_chain_parent = e_.optional_chain == .continuation,
-                });
+                const target_visited = p.visitExprInOut(e_.target, .{});
                 e_.target = target_visited;
 
                 switch (e_.index.data) {
@@ -726,7 +720,7 @@ pub fn VisitExpr(
                         }
                     },
                     .un_delete => {
-                        e_.value = p.visitExprInOut(e_.value, ExprIn{ .has_chain_parent = true });
+                        e_.value = p.visitExprInOut(e_.value, .{});
                     },
                     else => {
                         e_.value = p.visitExprInOut(e_.value, ExprIn{ .assign_target = e_.op.unaryAssignTarget() });
@@ -1194,7 +1188,6 @@ pub fn VisitExpr(
 
                 const target_was_identifier_before_visit = e_.target.data == .e_identifier;
                 e_.target = p.visitExprInOut(e_.target, .{
-                    .has_chain_parent = e_.optional_chain == .continuation,
                     .property_access_for_method_call_maybe_should_replace_with_undefined = true,
                 });
 
@@ -1572,7 +1565,6 @@ pub fn VisitExpr(
 
                 const old_fn_or_arrow_data = std.mem.toBytes(p.fn_or_arrow_data_visit);
                 p.fn_or_arrow_data_visit = FnOrArrowDataVisit{
-                    .is_arrow = true,
                     .is_async = e_.is_async,
                 };
 

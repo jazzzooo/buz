@@ -5,7 +5,6 @@ store: ?*Blob.Store = null,
 chunk_size: Blob.SizeType = 1024 * 1024 * 2,
 remain: Blob.SizeType = 1024 * 1024 * 2,
 done: bool = false,
-pulled: bool = false,
 
 /// https://github.com/oven-sh/bun/issues/14988
 /// Necessary for converting a ByteBlobLoader from a Blob -> back into a Blob
@@ -70,7 +69,6 @@ pub fn onStart(this: *ByteBlobLoader) streams.Start {
 pub fn onPull(this: *ByteBlobLoader, buffer: []u8, array: JSValue) streams.Result {
     array.ensureStillAlive();
     defer array.ensureStillAlive();
-    this.pulled = true;
     const store = this.store orelse return .{ .done = {} };
     if (this.done) {
         return .{ .done = {} };

@@ -834,7 +834,6 @@ pub fn migratePnpmLockfile(
     return .{
         .ok = .{
             .lockfile = lockfile,
-            .loaded_from_binary_lockfile = false,
             .migrated = .pnpm,
             .serializer_result = .{},
             .format = .text,

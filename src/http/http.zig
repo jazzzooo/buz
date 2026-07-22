@@ -477,8 +477,6 @@ pub inline fn cleanup(force: bool) void {
     default_arena.gc(force);
 }
 
-pub const extremely_verbose = false;
-
 fn writeProxyConnect(
     comptime Writer: type,
     writer: Writer,

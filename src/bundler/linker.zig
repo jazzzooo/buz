@@ -11,8 +11,6 @@ pub const Linker = struct {
     resolver: *ResolverType,
     resolve_results: *_transpiler.ResolveResults,
     hashed_filenames: HashedFileNameMap,
-    import_counter: usize = 0,
-
     plugin_runner: ?*PluginRunner = null,
 
     pub const runtime_source_path = "bun:wrap";
@@ -101,7 +99,6 @@ pub const Linker = struct {
                     if (import_record.flags.is_unused or
                         (is_bun and is_deferred and !result.isPendingImport(@intCast(record_i)))) continue;
 
-                    const record_index = record_i;
                     if (comptime !ignore_runtime) {
                         if (strings.eqlComptime(import_record.path.namespace, "runtime")) {
                             if (import_path_format == .absolute_url) {
@@ -116,9 +113,6 @@ pub const Linker = struct {
                                     import_path_format,
                                 );
                             }
-
-                            result.ast.runtime_import_record_id = @intCast(record_index);
-                            result.ast.needs_runtime = true;
                             continue;
                         }
                     }

@@ -1503,7 +1503,6 @@ pub const TestCommand = struct {
         }
 
         if (ctx.test_options.coverage.enabled) {
-            vm.transpiler.options.code_coverage = true;
             vm.transpiler.options.minify_syntax = false;
             vm.transpiler.options.minify_identifiers = false;
             vm.transpiler.options.minify_whitespace = false;

@@ -160,23 +160,12 @@ pub fn raiseIgnoringPanicHandler(sig: bun.SignalCode) noreturn {
     std.c.abort();
 }
 
-pub const AllocatorConfiguration = struct {
-    verbose: bool = false,
-    long_running: bool = false,
-};
-
 pub inline fn mimalloc_cleanup(force: bool) void {
     if (comptime use_mimalloc) {
         Mimalloc.mi_collect(force);
     }
 }
 // Versions are now handled by build-generated header (bun_dependency_versions.h)
-
-// Enabling huge pages slows down bun by 8x or so
-// Keeping this code for:
-// 1. documentation that an attempt was made
-// 2. if I want to configure allocator later
-pub inline fn configureAllocator(_: AllocatorConfiguration) void {}
 
 pub fn notimpl() noreturn {
     @branchHint(.cold);

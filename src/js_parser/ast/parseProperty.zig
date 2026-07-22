@@ -43,7 +43,6 @@ pub fn ParseProperty(
             var func = try p.parseFn(null, FnOrArrowDataParse{
                 .async_range = opts.async_range,
                 .needs_async_loc = key.loc,
-                .has_async_range = !opts.async_range.isEmpty(),
                 .allow_await = if (opts.is_async) AwaitOrYield.allow_expr else AwaitOrYield.allow_ident,
                 .allow_yield = if (opts.is_generator) AwaitOrYield.allow_expr else AwaitOrYield.allow_ident,
                 .allow_super_call = opts.class_has_extends and is_constructor,

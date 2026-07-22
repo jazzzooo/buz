@@ -371,39 +371,6 @@ pub fn statementCaresAboutScope(stmt: Stmt) bool {
 }
 
 pub const ExprIn = struct {
-    // This tells us if there are optional chain expressions (EDot, EIndex, or
-    // ECall) that are chained on to this expression. Because of the way the AST
-    // works, chaining expressions on to this expression means they are our
-    // parent expressions.
-    //
-    // Some examples:
-    //
-    //   a?.b.c  // EDot
-    //   a?.b[c] // EIndex
-    //   a?.b()  // ECall
-    //
-    // Note that this is false if our parent is a node with a OptionalChain
-    // value of OptionalChainStart. That means it's the start of a new chain, so
-    // it's not considered part of this one.
-    //
-    // Some examples:
-    //
-    //   a?.b?.c   // EDot
-    //   a?.b?.[c] // EIndex
-    //   a?.b?.()  // ECall
-    //
-    // Also note that this is false if our parent is a node with a OptionalChain
-    // value of OptionalChainNone. That means it's outside parentheses, which
-    // means it's no longer part of the chain.
-    //
-    // Some examples:
-    //
-    //   (a?.b).c  // EDot
-    //   (a?.b)[c] // EIndex
-    //   (a?.b)()  // ECall
-    //
-    has_chain_parent: bool = false,
-
     // Certain substitutions of identifiers are disallowed for assignment targets.
     // For example, we shouldn't transform "undefined = 1" into "void 0 = 1". This
     // isn't something real-world code would do but it matters for conformance
@@ -589,7 +556,6 @@ pub const FnOrArrowDataParse = struct {
     is_return_disallowed: bool = false,
     is_this_disallowed: bool = false,
 
-    has_async_range: bool = false,
     arrow_arg_errors: DeferredArrowArgErrors = DeferredArrowArgErrors{},
     track_arrow_arg_errors: bool = false,
 
@@ -610,7 +576,6 @@ pub const FnOrArrowDataParse = struct {
 pub const FnOrArrowDataVisit = struct {
     // super_index_ref: ?*Ref = null,
 
-    is_arrow: bool = false,
     is_async: bool = false,
     is_inside_loop: bool = false,
     is_inside_switch: bool = false,
@@ -649,13 +614,6 @@ pub const FnOnlyDataVisit = struct {
     // function. That means references to "arguments" inside the arrow function
     // will have to reference a captured variable instead of the real variable.
     is_inside_async_arrow_fn: bool = false,
-
-    // If false, disallow "new.target" expressions. We disallow all "new.target"
-    // expressions at the top-level of the file (i.e. not inside a function or
-    // a class field). Technically since CommonJS files are wrapped in a function
-    // you can use "new.target" in node as an alias for "undefined" but we don't
-    // support that.
-    is_new_target_allowed: bool = false,
 
     // If false, the value for "this" is the top-level module scope "this" value.
     // That means it's "undefined" for ECMAScript modules and "exports" for
@@ -727,7 +685,6 @@ pub const ScanPassResult = struct {
     import_records: ListManaged(ImportRecord),
     named_imports: js_ast.Ast.NamedImports,
     used_symbols: ParsePassSymbolUsageMap,
-    import_records_to_keep: ListManaged(u32),
     approximate_newline_count: usize = 0,
 
     pub fn init(allocator: Allocator) ScanPassResult {
@@ -735,7 +692,6 @@ pub const ScanPassResult = struct {
             .import_records = ListManaged(ImportRecord).init(allocator),
             .named_imports = .{},
             .used_symbols = .empty,
-            .import_records_to_keep = ListManaged(u32).init(allocator),
             .approximate_newline_count = 0,
         };
     }
@@ -853,13 +809,11 @@ pub const ImportItemForNamespaceMap = bun.StringArrayHashMap(LocRef);
 
 pub const MacroState = struct {
     refs: MacroRefs,
-    prepend_stmts: *ListManaged(Stmt) = undefined,
     imports: std.array_hash_map.Auto(i32, Ref),
 
     pub fn init() MacroState {
         return .{
             .refs = .empty,
-            .prepend_stmts = undefined,
             .imports = .empty,
         };
     }

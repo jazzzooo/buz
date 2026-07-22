@@ -392,7 +392,6 @@ pub const RuntimeTranspilerStore = struct {
                 .dirname_fd = .invalid,
                 .file_descriptor = fd,
                 .file_fd_ptr = &input_file_fd,
-                .file_hash = hash,
                 .macro_remappings = macro_remappings,
                 .jsx = transpiler.options.jsx,
                 .emit_decorator_metadata = transpiler.options.emit_decorator_metadata,

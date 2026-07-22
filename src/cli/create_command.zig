@@ -195,7 +195,6 @@ pub const CreateCommand = struct {
     pub fn exec(ctx: Command.Context, example_tag: Example.Tag, template: []const u8) !void {
         @branchHint(.cold);
 
-        Global.configureAllocator(.{ .long_running = false });
         HTTP.HTTPThread.init(&.{});
 
         var create_options = try CreateOptions.parse(ctx);

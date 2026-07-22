@@ -16,7 +16,6 @@ const PackageInfo = struct {
 
     const DependencyPath = struct {
         path: std.array_list.Managed([]const u8),
-        is_direct: bool,
     };
 };
 
@@ -473,7 +472,6 @@ fn findDependencyPaths(
         if (std.mem.eql(u8, dep_name, target_package)) {
             var direct_path = PackageInfo.DependencyPath{
                 .path = std.array_list.Managed([]const u8).init(allocator),
-                .is_direct = true,
             };
             try direct_path.path.append(try allocator.dupe(u8, target_package));
             try paths.append(direct_path);
@@ -492,7 +490,6 @@ fn findDependencyPaths(
             if (std.mem.eql(u8, dep_name, target_package)) {
                 var workspace_path = PackageInfo.DependencyPath{
                     .path = std.array_list.Managed([]const u8).init(allocator),
-                    .is_direct = false,
                 };
 
                 const workspace_prefix = try std.fmt.allocPrint(allocator, "workspace:{s}", .{workspace_name});
@@ -549,7 +546,6 @@ fn findDependencyPaths(
         if (is_root_dep or workspace_name_for_dep != null) {
             var path = PackageInfo.DependencyPath{
                 .path = std.array_list.Managed([]const u8).init(allocator),
-                .is_direct = false,
             };
 
             var trace = current.*;
@@ -713,16 +709,6 @@ fn printEnhancedAuditReport(
 
             if (package_info.vulnerabilities.items.len > 0) {
                 const main_vuln = package_info.vulnerabilities.items[0];
-
-                // const is_direct_dependency: bool = brk: {
-                //     for (package_info.dependents.items) |path| {
-                //         if (path.is_direct) {
-                //             break :brk true;
-                //         }
-                //     }
-
-                //     break :brk false;
-                // };
 
                 if (main_vuln.vulnerable_versions.len > 0) {
                     Output.prettyln("<red>{s}<r>  {s}", .{ main_vuln.package_name, main_vuln.vulnerable_versions });

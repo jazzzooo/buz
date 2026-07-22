@@ -70,7 +70,6 @@ pub const Route = struct {
 
     parent: Index.Optional,
     first_child: Route.Index.Optional,
-    prev_sibling: Route.Index.Optional,
     next_sibling: Route.Index.Optional,
 
     // Note: A route may be associated with no files, in which it is just a
@@ -134,7 +133,6 @@ pub fn initEmpty(root: []const u8, types: []Type, allocator: Allocator) !Framewo
             .part = .{ .text = "" },
             .type = Type.Index.init(@intCast(type_index)),
             .parent = .none,
-            .prev_sibling = .none,
             .next_sibling = .none,
             .first_child = .none,
             .file_page = .none,
@@ -743,7 +741,6 @@ pub fn insert(
                 .type = ty,
                 .parent = route_index.toOptional(),
                 .first_child = .none,
-                .prev_sibling = .init(next),
                 .next_sibling = .none,
             });
 
@@ -761,7 +758,6 @@ pub fn insert(
                     .type = ty,
                     .parent = new_route_index.toOptional(),
                     .first_child = .none,
-                    .prev_sibling = .init(next),
                     .next_sibling = .none,
                 });
                 fr.routePtr(new_route_index).first_child = newer_route_index.toOptional();

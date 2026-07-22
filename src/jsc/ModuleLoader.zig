@@ -118,7 +118,6 @@ pub fn transpileSourceCode(
             ast_scope.enter();
             defer ast_scope.exit();
 
-            jsc_vm.transpiled_count += 1;
             jsc_vm.transpiler.resetStore();
             const hash = bun.Watcher.getHash(path.text);
             const is_main = jsc_vm.main.len == path.text.len and
@@ -230,7 +229,6 @@ pub fn transpileSourceCode(
                 .dirname_fd = bun.invalid_fd,
                 .file_descriptor = fd,
                 .file_fd_ptr = &input_file_fd,
-                .file_hash = hash,
                 .macro_remappings = macro_remappings,
                 .jsx = jsc_vm.transpiler.options.jsx,
                 .emit_decorator_metadata = jsc_vm.transpiler.options.emit_decorator_metadata,
@@ -467,8 +465,6 @@ pub fn transpileSourceCode(
                 };
             }
 
-            const start_count = jsc_vm.transpiler.linker.import_counter;
-
             // We _must_ link because:
             // - node_modules bundle won't be properly
             try jsc_vm.transpiler.linker.link(
@@ -510,10 +506,6 @@ pub fn transpileSourceCode(
                 give_back_arena = false;
                 return error.AsyncModule;
             }
-
-            if (!jsc_vm.macro_mode)
-                jsc_vm.resolved_count += jsc_vm.transpiler.linker.import_counter - start_count;
-            jsc_vm.transpiler.linker.import_counter = 0;
 
             const is_commonjs_module = parse_result.ast.has_commonjs_export_names or parse_result.ast.exports_kind == .cjs;
             const module_info: ?*analyze_transpiled_module.ModuleInfo =
@@ -615,7 +607,6 @@ pub fn transpileSourceCode(
         //         .loader = loader,
         //         .dirname_fd = 0,
         //         .file_descriptor = fd,
-        //         .file_hash = hash,
         //         .macro_remappings = MacroRemap{},
         //         .jsx = jsc_vm.transpiler.options.jsx,
         //     };

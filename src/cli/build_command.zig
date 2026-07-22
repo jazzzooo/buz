@@ -1,6 +1,5 @@
 pub const BuildCommand = struct {
     pub fn exec(ctx: Command.Context, fetcher: ?*BundleV2.DependenciesScanner) !void {
-        Global.configureAllocator(.{ .long_running = true });
         const allocator = ctx.allocator;
         var log = ctx.log;
         const user_requested_browser_target = ctx.args.target != null and ctx.args.target.? == .browser;

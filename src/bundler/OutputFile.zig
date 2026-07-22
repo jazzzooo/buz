@@ -62,7 +62,6 @@ pub const FileOperation = struct {
     fd: FileDescriptorType = bun.invalid_fd,
     dir: FileDescriptorType = bun.invalid_fd,
     is_tmpdir: bool = false,
-    is_outdir: bool = false,
 
     pub fn fromFile(fd: bun.FD, pathname: string) FileOperation {
         return .{

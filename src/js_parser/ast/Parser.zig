@@ -14,7 +14,6 @@ pub const Parser = struct {
         preserve_unused_imports_ts: bool = false,
         use_define_for_class_fields: bool = false,
         suppress_warnings_about_weird_code: bool = true,
-        filepath_hash_for_hmr: u32 = 0,
         features: RuntimeFeatures = .{},
 
         tree_shaking: bool = false,

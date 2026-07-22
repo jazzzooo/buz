@@ -408,13 +408,13 @@ pub const PackageJSON = struct {
         }
 
         if (json.asProperty("exports")) |exports_prop| {
-            if (ExportsMap.parse(bun.default_allocator, &json_source, r.log, exports_prop.expr, exports_prop.loc)) |exports_map| {
+            if (ExportsMap.parse(bun.default_allocator, &json_source, r.log, exports_prop.expr)) |exports_map| {
                 package_json.exports = exports_map;
             }
         }
 
         if (json.asProperty("imports")) |imports_prop| {
-            if (ExportsMap.parse(bun.default_allocator, &json_source, r.log, imports_prop.expr, imports_prop.loc)) |imports_map| {
+            if (ExportsMap.parse(bun.default_allocator, &json_source, r.log, imports_prop.expr)) |imports_map| {
                 package_json.imports = imports_map;
             }
         }
@@ -698,10 +698,8 @@ pub const PackageJSON = struct {
 
 pub const ExportsMap = struct {
     root: Entry,
-    exports_range: logger.Range = logger.Range.None,
-    property_key_loc: logger.Loc,
 
-    pub fn parse(allocator: std.mem.Allocator, source: *const logger.Source, log: *logger.Log, json: js_ast.Expr, property_key_loc: logger.Loc) ?ExportsMap {
+    pub fn parse(allocator: std.mem.Allocator, source: *const logger.Source, log: *logger.Log, json: js_ast.Expr) ?ExportsMap {
         var visitor = Visitor{ .allocator = allocator, .source = source, .log = log };
 
         const root = visitor.visit(json);
@@ -712,8 +710,6 @@ pub const ExportsMap = struct {
 
         return ExportsMap{
             .root = root,
-            .exports_range = source.rangeOfString(json.loc),
-            .property_key_loc = property_key_loc,
         };
     }
 

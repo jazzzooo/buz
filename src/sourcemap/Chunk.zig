@@ -2,8 +2,6 @@ const Chunk = @This();
 
 buffer: MutableString,
 
-mappings_count: usize = 0,
-
 /// This end state will be used to rewrite the start of the following source
 /// map chunk so that the delta-encoded VLQ numbers are preserved.
 end_state: SourceMapState = .{},
@@ -19,7 +17,6 @@ should_ignore: bool = true,
 pub fn initEmpty() Chunk {
     return .{
         .buffer = MutableString.initEmpty(bun.default_allocator),
-        .mappings_count = 0,
         .end_state = .{},
         .final_generated_column = 0,
         .should_ignore = true,
@@ -229,7 +226,6 @@ pub fn NewBuilder(comptime SourceMapFormatType: type) type {
             }
             return Chunk{
                 .buffer = b.source_map.takeBuffer(),
-                .mappings_count = b.source_map.getCount(),
                 .end_state = b.prev_state,
                 .final_generated_column = b.generated_column,
                 .should_ignore = b.source_map.shouldIgnore(),

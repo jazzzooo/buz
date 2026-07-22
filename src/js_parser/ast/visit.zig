@@ -578,7 +578,6 @@ pub fn Visit(
                         p.fn_or_arrow_data_visit = .{};
                         p.fn_only_data_visit = .{
                             .is_this_nested = true,
-                            .is_new_target_allowed = true,
                             .class_name_ref = &shadow_ref,
 
                             // TODO: down transpilation
@@ -618,7 +617,6 @@ pub fn Visit(
                     const old_is_this_captured = p.fn_only_data_visit.is_this_nested;
                     const old_class_name_ref = p.fn_only_data_visit.class_name_ref;
                     p.fn_only_data_visit.is_this_nested = true;
-                    p.fn_only_data_visit.is_new_target_allowed = true;
                     p.fn_only_data_visit.class_name_ref = &shadow_ref;
                     defer p.fn_only_data_visit.is_this_nested = old_is_this_captured;
                     defer p.fn_only_data_visit.class_name_ref = old_class_name_ref;
@@ -811,10 +809,6 @@ pub fn Visit(
                             found += 1;
                         }
                     }
-                }
-
-                if (p.current_scope == p.module_scope) {
-                    p.macro.prepend_stmts = &before;
                 }
 
                 // visit all statements first

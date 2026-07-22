@@ -6,8 +6,6 @@ runtime_imports: Runtime.Imports = .{},
 
 nested_scope_slot_counts: SlotCounts = SlotCounts{},
 
-runtime_import_record_id: ?u32 = null,
-needs_runtime: bool = false,
 // This is a list of CommonJS features. When a file uses CommonJS features,
 // it's not a candidate for "flat bundling" and must be wrapped in its own
 // closure.
@@ -22,7 +20,6 @@ exports_kind: ExportsKind = ExportsKind.none,
 
 // This is a list of ES6 features. They are ranges instead of booleans so
 // that they can be used in log messages. Check to see if "Len > 0".
-import_keyword: logger.Range = logger.Range.None, // Does not include TypeScript-specific syntax or "import()"
 export_keyword: logger.Range = logger.Range.None, // Does not include TypeScript-specific syntax
 top_level_await_keyword: logger.Range = logger.Range.None,
 

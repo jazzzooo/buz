@@ -14,7 +14,6 @@ pub const Parser = struct {
 
     // Code indent offset: 4 normally, maxInt if no_indented_code_blocks
     code_indent_offset: u32,
-    doc_ends_with_newline: bool,
 
     // Mark character map — bitset of characters that need special handling
     mark_char_map: bun.bit_set.StaticBitSet(256) = bun.bit_set.StaticBitSet(256).initEmpty(),
@@ -39,7 +38,6 @@ pub const Parser = struct {
     fence_indent: u32 = 0,
 
     // Table column alignments
-    table_col_count: u32 = 0,
     table_alignments: [types.TABLE_MAXCOLCOUNT]Align = @splat(.default),
 
     // Ref defs
@@ -48,7 +46,6 @@ pub const Parser = struct {
     // State
     last_line_has_list_loosening_effect: bool = false,
     last_list_item_starts_with_two_blank_lines: bool = false,
-    max_ref_def_output: u64 = 0,
 
     // Stack overflow protection for recursive inline processing
     stack_check: bun.StackCheck,
@@ -76,8 +73,6 @@ pub const Parser = struct {
             .flags = flags,
             .renderer = rend,
             .code_indent_offset = if (flags.no_indented_code_blocks) std.math.maxInt(u32) else 4,
-            .doc_ends_with_newline = size > 0 and helpers.isNewline(text[size - 1]),
-            .max_ref_def_output = @min(@min(16 * @as(u64, size), 1024 * 1024), std.math.maxInt(u32)),
             .stack_check = bun.StackCheck.init(),
         };
         p.buildMarkCharMap();

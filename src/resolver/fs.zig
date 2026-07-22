@@ -441,7 +441,6 @@ pub const FileSystem = struct {
         entries: *EntriesOption.Map,
         cwd: string,
         file_limit: usize = 32,
-        file_quota: usize = 32,
 
         fn detectPlatformTempDir() []const u8 {
             // Try TMPDIR, TMP, and TEMP in that order, matching Node.js.
@@ -735,7 +734,6 @@ pub const FileSystem = struct {
                 .entries = _entries_option_map,
                 .cwd = cwd,
                 .file_limit = file_limit,
-                .file_quota = file_limit,
             };
         }
 

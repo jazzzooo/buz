@@ -6463,7 +6463,6 @@ pub fn NewParser_(
                 .exports_kind = exports_kind,
                 .named_imports = p.named_imports,
                 .named_exports = p.named_exports,
-                .import_keyword = p.esm_import_keyword,
                 .export_keyword = p.esm_export_keyword,
                 .top_level_symbols_to_parts = top_level_symbols_to_parts,
                 .char_freq = p.computeCharacterFrequency(),

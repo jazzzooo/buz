@@ -77,7 +77,7 @@ flags: Flags = .{},
 pub const Flags = packed struct(u8) {
     closed: bool = false,
     finalized: bool = false,
-    raw_mode: bool = false,
+    _padding: bool = false,
     reader_started: bool = false,
     connected: bool = false,
     reader_done: bool = false,
@@ -937,7 +937,6 @@ pub fn setRawMode(
         }
     }
 
-    this.flags.raw_mode = enabled;
     return .js_undefined;
 }
 /// POSIX termios struct for terminal flags manipulation

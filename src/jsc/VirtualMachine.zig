@@ -27,7 +27,6 @@ comptime {
 global: *JSGlobalObject,
 allocator: std.mem.Allocator,
 io: std.Io,
-has_loaded_constructors: bool = false,
 transpiler: Transpiler,
 bun_watcher: ImportWatcher = .{ .none = {} },
 console: *ConsoleObject,
@@ -82,8 +81,6 @@ source_mappings: SavedSourceMap = undefined,
 arena: *Arena = undefined,
 has_loaded: bool = false,
 
-transpiled_count: usize = 0,
-resolved_count: usize = 0,
 had_errors: bool = false,
 
 macros: MacroMap,
@@ -188,8 +185,6 @@ hot_reload_counter: u32 = 0,
 debugger: ?jsc.Debugger = null,
 has_started_debugger: bool = false,
 has_terminated: bool = false,
-
-debug_thread_id: if (Environment.allow_assert) std.Thread.Id else void,
 
 body_value_hive_allocator: webcore.Body.Value.HiveAllocator = undefined,
 
@@ -1120,8 +1115,6 @@ pub fn initWithModuleGraph(
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
         .standalone_module_graph = opts.graph.?,
-        .debug_thread_id = if (Environment.allow_assert) std.Thread.getCurrentId(),
-
         .initial_script_execution_context_identifier = if (opts.is_main_thread) 1 else std.math.maxInt(i32),
     };
     vm.source_mappings.init(&vm.saved_source_map_table);
@@ -1247,8 +1240,6 @@ pub fn init(opts: Options) !*VirtualMachine {
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
-        .debug_thread_id = if (Environment.allow_assert) std.Thread.getCurrentId(),
-
         .initial_script_execution_context_identifier = if (opts.is_main_thread) 1 else std.math.maxInt(i32),
     };
     vm.source_mappings.init(&vm.saved_source_map_table);
@@ -1411,7 +1402,6 @@ pub fn initWorker(
         .ref_strings_mutex = .{},
         .standalone_module_graph = worker.parent.standalone_module_graph,
         .worker = worker,
-        .debug_thread_id = if (Environment.allow_assert) std.Thread.getCurrentId(),
         .initial_script_execution_context_identifier = @as(i32, @intCast(worker.execution_context_id)),
     };
     vm.source_mappings.init(&vm.saved_source_map_table);
@@ -1507,8 +1497,6 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
-        .debug_thread_id = if (Environment.allow_assert) std.Thread.getCurrentId(),
-
         .initial_script_execution_context_identifier = if (opts.is_main_thread) 1 else std.math.maxInt(i32),
     };
     vm.source_mappings.init(&vm.saved_source_map_table);
@@ -1816,8 +1804,6 @@ fn _resolve(
     ret.result = result;
     ret.query_string = query_string;
     const result_path = result.pathConst() orelse return error.ModuleNotFound;
-    jsc_vm.resolved_count += 1;
-
     ret.path = result_path.text;
 }
 
@@ -2549,7 +2535,6 @@ pub fn swapGlobalForTestIsolation(this: *VirtualMachine) void {
     // macro_event_loop.global is assigned once from this.global at construction
     // and would otherwise keep the first file's dead global across the whole run.
     this.macro_event_loop.global = new_global;
-    this.has_loaded_constructors = true;
     if (this.ipc) |ipc| if (ipc == .initialized) {
         ipc.initialized.globalThis = new_global;
     };

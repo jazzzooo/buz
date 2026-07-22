@@ -1554,7 +1554,6 @@ pub const RunCommand = struct {
         if (resolved_loader) |l| {
             if (l == .md) renderMarkdownFileAndExit(path);
         }
-        Global.configureAllocator(.{ .long_running = true });
         Run.boot(ctx, ctx.allocator.dupe(u8, path) catch return false, loader) catch |err| {
             ctx.log.print(Output.errorWriter()) catch {};
 
@@ -1624,8 +1623,6 @@ pub const RunCommand = struct {
                 },
                 .err => return false,
             }
-
-            Global.configureAllocator(.{ .long_running = true });
 
             absolute_script_path = brk: {
                 if (comptime !Environment.isWindows) break :brk bun.getFdPath(file, &script_name_buf) catch return false;
@@ -1753,7 +1750,6 @@ pub const RunCommand = struct {
             if (package_json.scripts) |scripts| {
                 if (scripts.get(target_name)) |script_content| {
                     log("Found matching script `{s}`", .{script_content});
-                    Global.configureAllocator(.{ .long_running = false });
                     this_transpiler.env.map.put("npm_lifecycle_event", target_name) catch unreachable;
 
                     // allocate enough to hold "post${scriptname}"

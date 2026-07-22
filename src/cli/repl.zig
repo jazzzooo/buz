@@ -675,7 +675,6 @@ running: bool = false,
 is_tty: bool = false,
 use_colors: bool = false,
 terminal_width: u16 = 80,
-terminal_height: u16 = 24,
 ctrl_c_pressed: bool = false,
 
 // Buffered stdin
@@ -745,7 +744,6 @@ fn setupTerminal(self: *Repl) void {
     // Get terminal size
     if (Output.terminal_size.col > 0) {
         self.terminal_width = Output.terminal_size.col;
-        self.terminal_height = Output.terminal_size.row;
     }
 
     // Enable raw mode

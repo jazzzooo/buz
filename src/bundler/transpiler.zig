@@ -73,7 +73,6 @@ pub const Transpiler = struct {
     resolve_results: *ResolveResults,
     resolve_queue: ResolveQueue,
     elapsed: u64 = 0,
-    needs_runtime: bool = false,
     router: ?Router = null,
     source_map: options.SourceMapOption = .none,
 
@@ -419,7 +418,6 @@ pub const Transpiler = struct {
                         .loader = loader,
                         .dirname_fd = resolve_result.dirname_fd,
                         .file_descriptor = null,
-                        .file_hash = null,
                         .macro_remappings = transpiler.options.macro_remap,
                         .jsx = resolve_result.jsx,
                         .emit_decorator_metadata = resolve_result.flags.emit_decorator_metadata,
@@ -552,7 +550,6 @@ pub const Transpiler = struct {
                             .fromStdDir(output_handle)
                         else
                             .invalid,
-                        .is_outdir = true,
                     },
                 };
             },
@@ -733,7 +730,6 @@ pub const Transpiler = struct {
         allocator: std.mem.Allocator,
         dirname_fd: FD,
         file_descriptor: ?FD = null,
-        file_hash: ?u32 = null,
 
         /// On exception, we might still want to watch the file.
         file_fd_ptr: ?*FD = null,
@@ -799,7 +795,6 @@ pub const Transpiler = struct {
         var allocator = this_parse.allocator;
         const dirname_fd = this_parse.dirname_fd;
         const file_descriptor = this_parse.file_descriptor;
-        const file_hash = this_parse.file_hash;
         const path = this_parse.path;
         const loader = this_parse.loader;
 
@@ -912,7 +907,6 @@ pub const Transpiler = struct {
                 opts.tree_shaking = transpiler.options.tree_shaking;
                 opts.features.inlining = transpiler.options.inlining;
 
-                opts.filepath_hash_for_hmr = file_hash orelse 0;
                 opts.features.auto_import_jsx = transpiler.options.auto_import_jsx;
                 opts.warn_about_unbundled_modules = !target.isBun();
                 // JavaScriptCore implements `using` / `await using` natively, so

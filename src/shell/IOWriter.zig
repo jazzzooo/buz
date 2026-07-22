@@ -36,7 +36,6 @@ total_bytes_written: usize = 0,
 err: ?jsc.SystemError = null,
 evtloop: jsc.EventLoopHandle,
 concurrent_task: jsc.EventLoopTask,
-concurrent_task2: jsc.EventLoopTask,
 is_writing: bool = false,
 async_deinit: AsyncDeinitWriter = .{},
 started: bool = false,
@@ -91,7 +90,6 @@ pub fn init(fd: bun.FD, flags: Flags, evtloop: jsc.EventLoopHandle) *IOWriter {
         .fd = MovableIfWindowsFd.init(fd),
         .evtloop = evtloop,
         .concurrent_task = jsc.EventLoopTask.fromEventLoop(evtloop),
-        .concurrent_task2 = jsc.EventLoopTask.fromEventLoop(evtloop),
     });
 
     this.writer.parent = this;
