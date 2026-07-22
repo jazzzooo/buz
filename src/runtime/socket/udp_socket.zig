@@ -192,6 +192,7 @@ pub const UDPSocketConfig = struct {
                 return globalThis.throwInvalidArguments("Expected \"socket\" to be an object", .{});
             }
 
+            // TODO: Read "binaryType" from socket to match the socket.binaryType option and diagnostic.
             if (try options.getOptional(globalThis, "binaryType", JSValue)) |value| {
                 if (!value.isString()) {
                     return globalThis.throwInvalidArguments("Expected \"socket.binaryType\" to be a string", .{});
