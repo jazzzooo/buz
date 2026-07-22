@@ -10,20 +10,20 @@ pub fn toHaveLastReturnedWith(this: *Expect, globalThis: *JSGlobalObject, callfr
     this.incrementExpectCallCounter();
 
     const returns = try bun.cpp.JSMockFunction__getReturns(globalThis, value);
-    if (!returns.jsType().isArray()) {
+    const returns_array = returns.getArrayObject() orelse {
         var formatter = jsc.ConsoleObject.Formatter{ .globalThis = globalThis, .quote_strings = true };
         defer formatter.deinit();
         return globalThis.throw("Expected value must be a mock function: {f}", .{value.toFmt(&formatter)});
-    }
+    };
 
-    const calls_count = @as(u32, @intCast(try returns.getLength(globalThis)));
+    const calls_count = @as(u32, @intCast(try returns_array.getLength(globalThis)));
     var pass = false;
     var last_return_value: JSValue = .js_undefined;
     var last_call_threw = false;
     var last_error_value: JSValue = .js_undefined;
 
     if (calls_count > 0) {
-        const last_result = returns.getDirectIndex(globalThis, calls_count - 1);
+        const last_result = returns_array.getDirectIndex(globalThis, calls_count - 1);
 
         if (last_result.isObject()) {
             const result_type = try last_result.get(globalThis, "type") orelse .js_undefined;

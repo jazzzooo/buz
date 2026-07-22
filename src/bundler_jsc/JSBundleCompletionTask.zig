@@ -437,14 +437,14 @@ pub const JSBundleCompletionTask = struct {
     fn toJSError(this: *JSBundleCompletionTask, promise: *jsc.JSPromise, globalThis: *jsc.JSGlobalObject) bun.JSTerminated!void {
         const throw_on_error = this.config.throw_on_error;
 
-        const build_result = jsc.JSValue.createEmptyObject(globalThis, 3);
-        build_result.put(globalThis, jsc.ZigString.static("outputs"), jsc.JSValue.createEmptyArray(globalThis, 0) catch return promise.reject(globalThis, error.JSError));
-        build_result.put(
+        const build_result = jsc.JSObject.createEmpty(globalThis, 3);
+        build_result.putDirect(globalThis, jsc.ZigString.static("outputs"), (jsc.JSArray.createEmpty(globalThis, 0) catch return promise.reject(globalThis, error.JSError)).toJS());
+        build_result.putDirect(
             globalThis,
             jsc.ZigString.static("success"),
             .false,
         );
-        build_result.put(
+        build_result.putDirect(
             globalThis,
             jsc.ZigString.static("logs"),
             this.log.toJSArray(globalThis, bun.default_allocator) catch |err| {
@@ -455,11 +455,11 @@ pub const JSBundleCompletionTask = struct {
         const didHandleCallbacks = if (this.plugins) |plugin| blk: {
             if (throw_on_error) {
                 const aggregate_error = this.log.toJSAggregateError(globalThis, bun.String.static("Bundle failed"));
-                break :blk runOnEndCallbacks(globalThis, plugin, promise, build_result, aggregate_error) catch |err| {
+                break :blk runOnEndCallbacks(globalThis, plugin, promise, build_result.toJS(), aggregate_error) catch |err| {
                     return promise.reject(globalThis, err);
                 };
             } else {
-                break :blk runOnEndCallbacks(globalThis, plugin, promise, build_result, .js_undefined) catch |err| {
+                break :blk runOnEndCallbacks(globalThis, plugin, promise, build_result.toJS(), .js_undefined) catch |err| {
                     return promise.reject(globalThis, err);
                 };
             }
@@ -470,7 +470,7 @@ pub const JSBundleCompletionTask = struct {
                 const aggregate_error = this.log.toJSAggregateError(globalThis, bun.String.static("Bundle failed"));
                 return promise.reject(globalThis, aggregate_error);
             } else {
-                return promise.resolve(globalThis, build_result);
+                return promise.resolve(globalThis, build_result.toJS());
             }
         }
     }
@@ -510,11 +510,7 @@ pub const JSBundleCompletionTask = struct {
             .err => try this.toJSError(promise, globalThis),
             .value => |*build| {
                 const output_files = build.output_files.items;
-                const output_files_js = jsc.JSValue.createEmptyArray(globalThis, output_files.len) catch return promise.reject(globalThis, error.JSError);
-                if (output_files_js == .zero) {
-                    @panic("Unexpected pending JavaScript exception in JSBundleCompletionTask.onComplete. This is a bug in Bun.");
-                }
-
+                const output_files_js = jsc.JSArray.createEmpty(globalThis, output_files.len) catch return promise.reject(globalThis, error.JSError);
                 var to_assign_on_sourcemap: jsc.JSValue = .zero;
                 for (output_files, 0..) |*output_file, i| {
                     const result = output_file.toJS(
@@ -548,14 +544,14 @@ pub const JSBundleCompletionTask = struct {
                         to_assign_on_sourcemap = result;
                     }
 
-                    output_files_js.putIndex(globalThis, @as(u32, @intCast(i)), result) catch |err| {
+                    output_files_js.putDirectIndex(globalThis, @as(u32, @intCast(i)), result) catch |err| {
                         return promise.reject(globalThis, err);
                     };
                 }
-                const build_output = jsc.JSValue.createEmptyObject(globalThis, 4);
-                build_output.put(globalThis, jsc.ZigString.static("outputs"), output_files_js);
-                build_output.put(globalThis, jsc.ZigString.static("success"), .true);
-                build_output.put(
+                const build_output = jsc.JSObject.createEmpty(globalThis, 4);
+                build_output.putDirect(globalThis, jsc.ZigString.static("outputs"), output_files_js.toJS());
+                build_output.putDirect(globalThis, jsc.ZigString.static("success"), .true);
+                build_output.putDirect(
                     globalThis,
                     jsc.ZigString.static("logs"),
                     this.log.toJSArray(globalThis, bun.default_allocator) catch |err| {
@@ -576,15 +572,15 @@ pub const JSBundleCompletionTask = struct {
                     else
                         .js_undefined;
                     // Set up metafile object with json (lazy) and markdown (if present)
-                    Bun__setupLazyMetafile(globalThis, build_output, metafile_js_str, metafile_md_str);
+                    Bun__setupLazyMetafile(globalThis, build_output.toJS(), metafile_js_str, metafile_md_str);
                 }
 
-                const didHandleCallbacks = if (this.plugins) |plugin| runOnEndCallbacks(globalThis, plugin, promise, build_output, .js_undefined) catch |err| {
+                const didHandleCallbacks = if (this.plugins) |plugin| runOnEndCallbacks(globalThis, plugin, promise, build_output.toJS(), .js_undefined) catch |err| {
                     return promise.reject(globalThis, err);
                 } else false;
 
                 if (!didHandleCallbacks) {
-                    return promise.resolve(globalThis, build_output);
+                    return promise.resolve(globalThis, build_output.toJS());
                 }
             },
         }

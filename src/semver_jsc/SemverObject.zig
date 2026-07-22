@@ -1,9 +1,9 @@
 const SemverObject = @This();
 
 pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-    const object = jsc.JSValue.createEmptyObject(globalThis, 2);
+    const object = jsc.JSObject.createEmpty(globalThis, 2);
 
-    object.put(
+    object.putDirect(
         globalThis,
         jsc.ZigString.static("satisfies"),
         jsc.JSFunction.create(
@@ -15,7 +15,7 @@ pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
         ),
     );
 
-    object.put(
+    object.putDirect(
         globalThis,
         jsc.ZigString.static("order"),
         jsc.JSFunction.create(
@@ -27,7 +27,7 @@ pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
         ),
     );
 
-    return object;
+    return object.toJS();
 }
 
 pub fn order(

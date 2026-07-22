@@ -497,10 +497,10 @@ pub fn getQueries(_: *@This(), thisValue: jsc.JSValue, globalObject: *jsc.JSGlob
         return value;
     }
 
-    const array = try jsc.JSValue.createEmptyArray(globalObject, 0);
-    js.queriesSetCached(thisValue, globalObject, array);
+    const array = try jsc.JSArray.createEmpty(globalObject, 0);
+    js.queriesSetCached(thisValue, globalObject, array.toJS());
 
-    return array;
+    return array.toJS();
 }
 
 pub fn getConnected(this: *@This(), _: *jsc.JSGlobalObject) JSValue {

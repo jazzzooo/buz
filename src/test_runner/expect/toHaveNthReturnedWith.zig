@@ -18,13 +18,13 @@ pub fn toHaveNthReturnedWith(this: *Expect, globalThis: *JSGlobalObject, callfra
 
     this.incrementExpectCallCounter();
     const returns = try bun.cpp.JSMockFunction__getReturns(globalThis, value);
-    if (!returns.jsType().isArray()) {
+    const returns_array = returns.getArrayObject() orelse {
         var formatter = jsc.ConsoleObject.Formatter{ .globalThis = globalThis, .quote_strings = true };
         defer formatter.deinit();
         return globalThis.throw("Expected value must be a mock function: {f}", .{value.toFmt(&formatter)});
-    }
+    };
 
-    const calls_count = @as(u32, @intCast(try returns.getLength(globalThis)));
+    const calls_count = @as(u32, @intCast(try returns_array.getLength(globalThis)));
     const index = @as(u32, @intCast(n - 1)); // Convert to 0-based index
 
     var pass = false;
@@ -35,7 +35,7 @@ pub fn toHaveNthReturnedWith(this: *Expect, globalThis: *JSGlobalObject, callfra
 
     if (index < calls_count) {
         nth_call_exists = true;
-        const nth_result = returns.getDirectIndex(globalThis, index);
+        const nth_result = returns_array.getDirectIndex(globalThis, index);
         if (nth_result.isObject()) {
             const result_type = try nth_result.get(globalThis, "type") orelse .js_undefined;
             if (result_type.isString()) {

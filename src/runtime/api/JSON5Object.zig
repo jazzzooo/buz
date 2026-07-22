@@ -1,16 +1,16 @@
 pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-    const object = JSValue.createEmptyObject(globalThis, 2);
-    object.put(
+    const object = jsc.JSObject.createEmpty(globalThis, 2);
+    object.putDirect(
         globalThis,
         ZigString.static("parse"),
         jsc.JSFunction.create(globalThis, "parse", parse, 1, .{}),
     );
-    object.put(
+    object.putDirect(
         globalThis,
         ZigString.static("stringify"),
         jsc.JSFunction.create(globalThis, "stringify", stringify, 3, .{}),
     );
-    return object;
+    return object.toJS();
 }
 
 pub fn stringify(
@@ -394,25 +394,25 @@ fn exprToJS(expr: Expr, global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
             return str.toJS(bun.default_allocator, global);
         },
         .e_array => |arr| {
-            var js_arr = try JSValue.createEmptyArray(global, arr.items.len);
+            var js_arr = try jsc.JSArray.createEmpty(global, arr.items.len);
             for (arr.slice(), 0..) |item, _i| {
                 const i: u32 = @intCast(_i);
                 const value = try exprToJS(item, global);
-                try js_arr.putIndex(global, i, value);
+                try js_arr.putDirectIndex(global, i, value);
             }
-            return js_arr;
+            return js_arr.toJS();
         },
         .e_object => |obj| {
-            var js_obj = JSValue.createEmptyObject(global, obj.properties.len);
+            var js_obj = jsc.JSObject.createEmpty(global, obj.properties.len);
             for (obj.properties.slice()) |prop| {
                 const key_expr = prop.key.?;
                 const value = try exprToJS(prop.value.?, global);
                 const key_js = try exprToJS(key_expr, global);
                 const key_str = try key_js.toBunString(global);
                 defer key_str.deref();
-                try js_obj.putMayBeIndex(global, &key_str, value);
+                try js_obj.putDirectMayBeIndex(global, &key_str, value);
             }
-            return js_obj;
+            return js_obj.toJS();
         },
         else => return .js_undefined,
     }

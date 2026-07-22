@@ -1103,7 +1103,7 @@ fn createLOLHTMLError(global: *JSGlobalObject) JSValue {
 
     var err = createLOLHTMLStringError();
     const value = err.toErrorInstance(global);
-    value.put(global, "name", ZigString.init("HTMLRewriterError").toJS(global));
+    value.getObject().?.putDirect(global, "name", ZigString.init("HTMLRewriterError").toJS(global));
     return value;
 }
 fn createLOLHTMLStringError() bun.String {
@@ -1665,25 +1665,25 @@ pub const AttributeIterator = struct {
         const value_label = jsc.ZigString.static("value");
 
         if (this.iterator == null) {
-            return JSValue.createObject2(globalObject, done_label, value_label, .true, .js_undefined);
+            return (try jsc.JSObject.createObject2(globalObject, done_label, value_label, .true, .js_undefined)).toJS();
         }
 
         var attribute = this.iterator.?.next() orelse {
             this.iterator.?.deinit();
             this.iterator = null;
-            return JSValue.createObject2(globalObject, done_label, value_label, .true, .js_undefined);
+            return (try jsc.JSObject.createObject2(globalObject, done_label, value_label, .true, .js_undefined)).toJS();
         };
 
         const value = attribute.value();
         const name = attribute.name();
 
-        return JSValue.createObject2(globalObject, done_label, value_label, .false, try bun.String.toJSArray(
+        return (try jsc.JSObject.createObject2(globalObject, done_label, value_label, .false, try bun.String.toJSArray(
             globalObject,
             &[_]bun.String{
                 name.toString(),
                 value.toString(),
             },
-        ));
+        ))).toJS();
     }
 
     pub fn getThis(_: *AttributeIterator, _: *JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!JSValue {

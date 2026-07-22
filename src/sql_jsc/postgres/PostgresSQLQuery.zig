@@ -204,7 +204,7 @@ pub fn call(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSEr
             return globalThis.throwInvalidArguments("query is too long", .{});
         }
     }
-    if (!pending_value.jsType().isArrayLike()) {
+    if (pending_value.getArrayObject() == null) {
         return globalThis.throwInvalidArgumentType("query", "pendingValue", "Array");
     }
 
@@ -232,8 +232,9 @@ pub fn call(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSEr
 }
 
 pub fn push(this: *PostgresSQLQuery, globalThis: *jsc.JSGlobalObject, value: JSValue) void {
-    var pending_value = this.pending_value.get() orelse return;
-    pending_value.push(globalThis, value);
+    const pending_value = this.pending_value.get() orelse return;
+    const pending_array = pending_value.getArrayObject() orelse return;
+    pending_array.push(globalThis, value) catch |err| return this.onJSError(globalThis.takeException(err), globalThis);
 }
 
 pub fn doDone(this: *@This(), globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!JSValue {

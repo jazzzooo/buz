@@ -178,17 +178,17 @@ fn errorUnlessFakeTimers(globalObject: *jsc.JSGlobalObject) bun.JSError!void {
 /// if jest.advanceTimersByTime() should be called when draining the microtask queue.
 fn setFakeTimerMarker(globalObject: *jsc.JSGlobalObject, enabled: bool) void {
     const globalThis_value = globalObject.toJSValue();
-    const setTimeout_fn = (globalThis_value.getOwnTruthy(globalObject, "setTimeout") catch return) orelse return;
-    if (!setTimeout_fn.isObject()) return;
+    const setTimeout_fn = (globalThis_value.getOwn(globalObject, "setTimeout") catch return) orelse return;
+    const setTimeout_object = setTimeout_fn.getObject() orelse return;
     // testing-library/react checks Object.hasOwnProperty.call(setTimeout, 'clock')
     // to detect if fake timers are enabled.
     if (enabled) {
         // Set setTimeout.clock = true when enabling fake timers.
-        setTimeout_fn.put(globalObject, "clock", .true);
+        setTimeout_object.putDirect(globalObject, "clock", .true);
     } else {
         // Delete the clock property when disabling fake timers.
         // This ensures hasOwnProperty returns false, matching Jest/Sinon behavior.
-        _ = setTimeout_fn.deleteProperty(globalObject, "clock");
+        _ = setTimeout_object.deleteProperty(globalObject, "clock") catch return;
     }
 }
 
@@ -358,12 +358,12 @@ const fake_timers_fns: []const struct { [:0]const u8, u32, (fn (*jsc.JSGlobalObj
     .{ "isFakeTimers", 0, isFakeTimers },
 };
 pub const timerFnsCount = fake_timers_fns.len;
-pub fn putTimersFns(globalObject: *jsc.JSGlobalObject, jest: jsc.JSValue, vi: jsc.JSValue) void {
+pub fn putTimersFns(globalObject: *jsc.JSGlobalObject, jest: *jsc.JSObject, vi: *jsc.JSObject) void {
     inline for (fake_timers_fns) |fake_timer_fn| {
         const str = bun.ZigString.static(fake_timer_fn[0]);
         const jsvalue = jsc.JSFunction.create(globalObject, fake_timer_fn[0], fake_timer_fn[2], fake_timer_fn[1], .{});
-        vi.put(globalObject, str, jsvalue);
-        jest.put(globalObject, str, jsvalue);
+        vi.putDirect(globalObject, str, jsvalue);
+        jest.putDirect(globalObject, str, jsvalue);
     }
 }
 

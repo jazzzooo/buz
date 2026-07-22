@@ -219,11 +219,11 @@ pub fn parseEnv(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.
     var p = envloader.Loader.init(&map, allocator);
     try p.loadFromString(str.slice(), true, false);
 
-    var obj = jsc.JSValue.createEmptyObject(globalThis, map.map.count());
+    var obj = jsc.JSObject.createEmpty(globalThis, map.map.count());
     for (map.map.keys(), map.map.values()) |k, v| {
-        obj.put(globalThis, jsc.ZigString.initUTF8(k), try bun.String.createUTF8ForJS(globalThis, v.value));
+        obj.putDirect(globalThis, jsc.ZigString.initUTF8(k), try bun.String.createUTF8ForJS(globalThis, v.value));
     }
-    return obj;
+    return obj.toJS();
 }
 
 const string = []const u8;

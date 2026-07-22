@@ -183,7 +183,7 @@ pub fn rules(this: *@This(), globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JS
             },
         }
     }
-    return array;
+    return array.toJS();
 }
 
 pub fn onStructuredCloneSerialize(this: *@This(), globalThis: *jsc.JSGlobalObject, ctx: *anyopaque, writeBytes: *const fn (*anyopaque, ptr: [*]const u8, len: u32) callconv(jsc.conv) void) void {

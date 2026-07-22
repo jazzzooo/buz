@@ -152,15 +152,15 @@ pub const ResolveMessage = struct {
         globalThis: *jsc.JSGlobalObject,
         _: *jsc.CallFrame,
     ) bun.JSError!jsc.JSValue {
-        var object = jsc.JSValue.createEmptyObject(globalThis, 7);
-        object.put(globalThis, ZigString.static("name"), try bun.String.static("ResolveMessage").toJS(globalThis));
-        object.put(globalThis, ZigString.static("position"), this.getPosition(globalThis));
-        object.put(globalThis, ZigString.static("message"), this.getMessage(globalThis));
-        object.put(globalThis, ZigString.static("level"), this.getLevel(globalThis));
-        object.put(globalThis, ZigString.static("specifier"), this.getSpecifier(globalThis));
-        object.put(globalThis, ZigString.static("importKind"), this.getImportKind(globalThis));
-        object.put(globalThis, ZigString.static("referrer"), this.getReferrer(globalThis));
-        return object;
+        var object = jsc.JSObject.createEmpty(globalThis, 7);
+        object.putDirect(globalThis, ZigString.static("name"), try bun.String.static("ResolveMessage").toJS(globalThis));
+        object.putDirect(globalThis, ZigString.static("position"), this.getPosition(globalThis));
+        object.putDirect(globalThis, ZigString.static("message"), this.getMessage(globalThis));
+        object.putDirect(globalThis, ZigString.static("level"), this.getLevel(globalThis));
+        object.putDirect(globalThis, ZigString.static("specifier"), this.getSpecifier(globalThis));
+        object.putDirect(globalThis, ZigString.static("importKind"), this.getImportKind(globalThis));
+        object.putDirect(globalThis, ZigString.static("referrer"), this.getReferrer(globalThis));
+        return object.toJS();
     }
 
     pub fn create(

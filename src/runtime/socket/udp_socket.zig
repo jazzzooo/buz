@@ -111,15 +111,15 @@ fn onData(socket: *uws.udp.Socket, buf: *uws.udp.PacketBuffer, packets: c_int) c
         defer loop.exit();
         defer thisValue.ensureStillAlive();
 
-        const flags = jsc.JSValue.createEmptyObject(globalThis, 1);
-        flags.put(globalThis, jsc.ZigString.static("truncated"), .jsBoolean(truncated));
+        const flags = jsc.JSObject.createEmpty(globalThis, 1);
+        flags.putDirect(globalThis, jsc.ZigString.static("truncated"), .jsBoolean(truncated));
 
         _ = callback.call(globalThis, thisValue, &.{
             thisValue,
             udpSocket.config.binary_type.toJS(slice, globalThis) catch return,
             .jsNumber(port),
             hostname_string.transferToJS(globalThis) catch return,
-            flags,
+            flags.toJS(),
         }) catch |err| {
             udpSocket.callErrorHandler(.zero, globalThis.takeException(err));
         };
@@ -335,7 +335,7 @@ pub const UDPSocket = struct {
                     .message = bun.handleOom(bun.String.createFormat("bind {s} {f}", .{ code, this.config.hostname })),
                 };
                 const error_value = sys_err.toErrorInstance(globalThis);
-                error_value.put(globalThis, "address", try this.config.hostname.toJS(globalThis));
+                error_value.getObject().?.putDirect(globalThis, "address", try this.config.hostname.toJS(globalThis));
 
                 return globalThis.throwValue(error_value);
             }

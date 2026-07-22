@@ -601,7 +601,7 @@ pub const MatchedRoute = struct {
 
         var creator = QueryObjectCreator{ .query = map };
 
-        const value = JSObject.createWithInitializer(QueryObjectCreator, &creator, ctx, map.getNameCount());
+        const value = JSObject.createWithInitializer(QueryObjectCreator, &creator, ctx, map.getNameCount()).toJS();
 
         return value;
     }
@@ -630,7 +630,7 @@ pub const MatchedRoute = struct {
         globalThis: *jsc.JSGlobalObject,
     ) bun.JSError!jsc.JSValue {
         if (this.route.params.len == 0)
-            return JSValue.createEmptyObject(globalThis, 0);
+            return jsc.JSObject.createEmpty(globalThis, 0).toJS();
 
         if (this.param_map == null) {
             this.param_map = try QueryStringMap.initWithParams(
@@ -648,7 +648,7 @@ pub const MatchedRoute = struct {
         globalThis: *jsc.JSGlobalObject,
     ) bun.JSError!jsc.JSValue {
         if (this.route.query_string.len == 0 and this.route.params.len == 0) {
-            return JSValue.createEmptyObject(globalThis, 0);
+            return jsc.JSObject.createEmpty(globalThis, 0).toJS();
         } else if (this.route.query_string.len == 0) {
             return this.getParams(globalThis);
         }
@@ -670,7 +670,7 @@ pub const MatchedRoute = struct {
             return createQueryObject(globalThis, map);
         }
 
-        return JSValue.createEmptyObject(globalThis, 0);
+        return jsc.JSObject.createEmpty(globalThis, 0).toJS();
     }
 };
 

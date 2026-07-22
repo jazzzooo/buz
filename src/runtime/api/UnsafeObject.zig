@@ -1,18 +1,18 @@
 pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-    const object = JSValue.createEmptyObject(globalThis, 3);
+    const object = jsc.JSObject.createEmpty(globalThis, 3);
     const fields = comptime .{
         .gcAggressionLevel = gcAggressionLevel,
         .arrayBufferToString = arrayBufferToString,
         .mimallocDump = dump_mimalloc,
     };
     inline for (comptime std.meta.fieldNames(@TypeOf(fields))) |name| {
-        object.put(
+        object.putDirect(
             globalThis,
             comptime ZigString.static(name),
             jsc.JSFunction.create(globalThis, name, @field(fields, name), 1, .{}),
         );
     }
-    return object;
+    return object.toJS();
 }
 
 pub fn gcAggressionLevel(

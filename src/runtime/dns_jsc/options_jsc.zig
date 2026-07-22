@@ -136,33 +136,33 @@ pub fn resultAnyToJS(this: *const Result.Any, globalThis: *jsc.JSGlobalObject) b
     return switch (this.*) {
         .addrinfo => |addrinfo| try addrInfoToJSArray(addrinfo orelse return null, globalThis),
         .list => |list| brk: {
-            const array = try jsc.JSValue.createEmptyArray(globalThis, @as(u32, @truncate(list.items.len)));
+            const array = try jsc.JSArray.createEmpty(globalThis, @as(u32, @truncate(list.items.len)));
             var i: u32 = 0;
             const items: []const Result = list.items;
             for (items) |item| {
-                try array.putIndex(globalThis, i, try item.toJS(globalThis));
+                try array.putDirectIndex(globalThis, i, try item.toJS(globalThis));
                 i += 1;
             }
-            break :brk array;
+            break :brk array.toJS();
         },
     };
 }
 pub fn resultToJS(this: *const Result, globalThis: *jsc.JSGlobalObject) bun.JSError!JSValue {
-    const obj = jsc.JSValue.createEmptyObject(globalThis, 3);
-    obj.put(globalThis, jsc.ZigString.static("address"), try addressToJS(&this.address, globalThis));
-    obj.put(globalThis, jsc.ZigString.static("family"), switch (this.address.family()) {
+    const obj = jsc.JSObject.createEmpty(globalThis, 3);
+    obj.putDirect(globalThis, jsc.ZigString.static("address"), try addressToJS(&this.address, globalThis));
+    obj.putDirect(globalThis, jsc.ZigString.static("family"), switch (this.address.family()) {
         .INET => JSValue.jsNumber(4),
         .INET6 => JSValue.jsNumber(6),
     });
-    obj.put(globalThis, jsc.ZigString.static("ttl"), JSValue.jsNumber(this.ttl));
-    return obj;
+    obj.putDirect(globalThis, jsc.ZigString.static("ttl"), JSValue.jsNumber(this.ttl));
+    return obj.toJS();
 }
 pub fn addressToJS(address: *const bun.api.socket.SocketAddress, globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
     var str = addressToString(address) catch return globalThis.throwOutOfMemory();
     return str.transferToJS(globalThis);
 }
 pub fn addrInfoToJSArray(addr_info: *bun.dns.AddrInfo, globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-    const array = try jsc.JSValue.createEmptyArray(
+    const array = try jsc.JSArray.createEmpty(
         globalThis,
         addrInfoCount(addr_info),
     );
@@ -171,7 +171,7 @@ pub fn addrInfoToJSArray(addr_info: *bun.dns.AddrInfo, globalThis: *jsc.JSGlobal
         var j: u32 = 0;
         var current: ?*bun.dns.AddrInfo = addr_info;
         while (current) |this_node| : (current = current.?.next) {
-            try array.putIndex(
+            try array.putDirectIndex(
                 globalThis,
                 j,
                 try GetAddrInfo.Result.toJS(
@@ -183,7 +183,7 @@ pub fn addrInfoToJSArray(addr_info: *bun.dns.AddrInfo, globalThis: *jsc.JSGlobal
         }
     }
 
-    return array;
+    return array.toJS();
 }
 
 const std = @import("std");

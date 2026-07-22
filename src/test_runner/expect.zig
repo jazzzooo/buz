@@ -919,9 +919,9 @@ pub const Expect = struct {
             return globalThis.throwPretty("<d>expect.<r>extend<d>(<r>matchers<d>)<r>\n\nExpected an object containing matchers\n", .{});
         }
 
-        var expect_proto = Expect__getPrototype(globalThis);
-        var expect_constructor = Expect.js.getConstructor(globalThis);
-        var expect_static_proto = ExpectStatic__getPrototype(globalThis);
+        const expect_proto = Expect__getPrototype(globalThis).getObject().?;
+        const expect_constructor = Expect.js.getConstructor(globalThis).getObject().?;
+        const expect_static_proto = ExpectStatic__getPrototype(globalThis).getObject().?;
 
         // SAFETY: already checked that args[0] is an object
         const matchers_to_register = args[0].getObject().?;
@@ -947,9 +947,9 @@ pub const Expect = struct {
 
                 const wrapper_fn = Bun__JSWrappingFunction__create(globalThis, matcher_name, jsc.toJSHostFn(Expect.applyCustomMatcher), matcher_fn, true);
 
-                try expect_proto.putMayBeIndex(globalThis, matcher_name, wrapper_fn);
-                try expect_constructor.putMayBeIndex(globalThis, matcher_name, wrapper_fn);
-                try expect_static_proto.putMayBeIndex(globalThis, matcher_name, wrapper_fn);
+                try expect_proto.putDirectMayBeIndex(globalThis, matcher_name, wrapper_fn);
+                try expect_constructor.putDirectMayBeIndex(globalThis, matcher_name, wrapper_fn);
+                try expect_static_proto.putDirectMayBeIndex(globalThis, matcher_name, wrapper_fn);
             }
         }
 
@@ -1019,7 +1019,7 @@ pub const Expect = struct {
         const err = switch (Output.enable_ansi_colors_stderr) {
             inline else => |colors| globalThis.createErrorInstance(Output.prettyFmt(fmt, colors), .{ matcher_name, result.toFmt(&formatter) }),
         };
-        err.put(globalThis, ZigString.static("name"), try bun.String.static("InvalidMatcherError").toJS(globalThis));
+        err.getObject().?.putDirect(globalThis, ZigString.static("name"), try bun.String.static("InvalidMatcherError").toJS(globalThis));
         return globalThis.throwValue(err);
     }
 
@@ -1230,13 +1230,13 @@ pub const Expect = struct {
 
         if (arg.isEmptyOrUndefinedOrNull()) {
             const error_value = bun.String.init("reached unreachable code").toErrorInstance(globalThis);
-            error_value.put(globalThis, ZigString.static("name"), try bun.String.init("UnreachableError").toJS(globalThis));
+            error_value.getObject().?.putDirect(globalThis, ZigString.static("name"), try bun.String.init("UnreachableError").toJS(globalThis));
             return globalThis.throwValue(error_value);
         }
 
         if (arg.isString()) {
             const error_value = (try arg.toBunString(globalThis)).toErrorInstance(globalThis);
-            error_value.put(globalThis, ZigString.static("name"), try bun.String.init("UnreachableError").toJS(globalThis));
+            error_value.getObject().?.putDirect(globalThis, ZigString.static("name"), try bun.String.init("UnreachableError").toJS(globalThis));
             return globalThis.throwValue(error_value);
         }
 
@@ -1657,11 +1657,11 @@ pub const ExpectCustomAsymmetricMatcher = struct {
 
         // capture the args as a JS array saved in the instance, so the matcher can be executed later on with them
         const args = callFrame.arguments();
-        const array = try JSValue.createEmptyArray(globalThis, args.len);
+        const array = try jsc.JSArray.createEmpty(globalThis, args.len);
         for (args, 0..) |arg, i| {
-            try array.putIndex(globalThis, @truncate(i), arg);
+            try array.putDirectIndex(globalThis, @truncate(i), arg);
         }
-        js.capturedArgsSetCached(instance_jsvalue, globalThis, array);
+        js.capturedArgsSetCached(instance_jsvalue, globalThis, array.toJS());
         array.ensureStillAlive();
 
         // return the same instance, now fully initialized including the captured args (previously it was incomplete)

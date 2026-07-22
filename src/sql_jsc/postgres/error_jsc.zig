@@ -5,20 +5,20 @@ pub fn createPostgresError(
     message: []const u8,
     options: PostgresErrorOptions,
 ) bun.JSError!JSValue {
-    const opts_obj = JSValue.createEmptyObject(globalObject, 0);
+    const opts_obj = jsc.JSObject.createEmpty(globalObject, 0);
     opts_obj.ensureStillAlive();
-    opts_obj.put(globalObject, jsc.ZigString.static("code"), try bun.String.createUTF8ForJS(globalObject, options.code));
+    opts_obj.putDirect(globalObject, jsc.ZigString.static("code"), try bun.String.createUTF8ForJS(globalObject, options.code));
     inline for (comptime std.meta.fieldNames(PostgresErrorOptions)) |field_name| {
         const FieldType = @typeInfo(@TypeOf(@field(options, field_name)));
         if (FieldType == .optional) {
             if (@field(options, field_name)) |value| {
-                opts_obj.put(globalObject, jsc.ZigString.static(field_name), try bun.String.createUTF8ForJS(globalObject, value));
+                opts_obj.putDirect(globalObject, jsc.ZigString.static(field_name), try bun.String.createUTF8ForJS(globalObject, value));
             }
         }
     }
-    opts_obj.put(globalObject, jsc.ZigString.static("message"), try bun.String.createUTF8ForJS(globalObject, message));
+    opts_obj.putDirect(globalObject, jsc.ZigString.static("message"), try bun.String.createUTF8ForJS(globalObject, message));
 
-    return opts_obj;
+    return opts_obj.toJS();
 }
 
 pub fn postgresErrorToJS(globalObject: *jsc.JSGlobalObject, message: ?[]const u8, err: AnyPostgresError) JSValue {

@@ -2474,7 +2474,7 @@ JSC::EncodedJSValue SystemError__toErrorInstanceWithInfoObject(const SystemError
     return JSC::JSValue::encode(result);
 }
 
-JSC::EncodedJSValue
+JSC::JSObject*
 JSC__JSObject__create(JSC::JSGlobalObject* globalObject, size_t initialCapacity, void* arg2,
     void (*ArgFn3)(void* arg0, JSC::JSObject* arg1, JSC::JSGlobalObject* arg2))
 {
@@ -2482,7 +2482,7 @@ JSC__JSObject__create(JSC::JSGlobalObject* globalObject, size_t initialCapacity,
 
     ArgFn3(arg2, object, globalObject);
 
-    return JSC::JSValue::encode(object);
+    return object;
 }
 
 bool JSC__JSValue__hasOwnPropertyValue(JSC::EncodedJSValue value, JSC::JSGlobalObject* globalObject, JSC::EncodedJSValue ownKey)
@@ -2498,17 +2498,15 @@ bool JSC__JSValue__hasOwnPropertyValue(JSC::EncodedJSValue value, JSC::JSGlobalO
     return result;
 }
 
-JSC::EncodedJSValue JSC__JSValue__createEmptyObjectWithNullPrototype(JSC::JSGlobalObject* globalObject)
+JSC::JSObject* JSC__JSObject__createEmptyWithNullPrototype(JSC::JSGlobalObject* globalObject)
 {
-    return JSValue::encode(
-        JSC::constructEmptyObject(globalObject->vm(), globalObject->nullPrototypeObjectStructure()));
+    return JSC::constructEmptyObject(globalObject->vm(), globalObject->nullPrototypeObjectStructure());
 }
 
-JSC::EncodedJSValue JSC__JSValue__createEmptyObject(JSC::JSGlobalObject* globalObject,
+JSC::JSObject* JSC__JSObject__createEmpty(JSC::JSGlobalObject* globalObject,
     size_t initialCapacity)
 {
-    return JSC::JSValue::encode(
-        JSC::constructEmptyObject(globalObject, globalObject->objectPrototype(), std::min(static_cast<unsigned int>(initialCapacity), JSFinalObject::maxInlineCapacity)));
+    return JSC::constructEmptyObject(globalObject, globalObject->objectPrototype(), std::min(static_cast<unsigned int>(initialCapacity), JSFinalObject::maxInlineCapacity));
 }
 
 extern "C" uint64_t Bun__Blob__getSizeForBindings(void* blob);
@@ -2633,58 +2631,6 @@ void JSC__JSObject__putRecord(JSC::JSObject* object, JSC::JSGlobalObject* global
     object->putDirect(global->vm(), ident, descriptor.value());
     scope.release();
 }
-void JSC__JSValue__putRecord(JSC::EncodedJSValue objectValue, JSC::JSGlobalObject* global, ZigString* key,
-    ZigString* values, size_t valuesLen)
-{
-    JSC::JSValue objValue = JSC::JSValue::decode(objectValue);
-    JSC::JSObject* object = objValue.asCell()->getObject();
-    auto scope = DECLARE_THROW_SCOPE(global->vm());
-    auto ident = Zig::toIdentifier(*key, global);
-    JSC::PropertyDescriptor descriptor;
-
-    descriptor.setEnumerable(1);
-    descriptor.setConfigurable(1);
-    descriptor.setWritable(1);
-
-    if (valuesLen == 1) {
-        descriptor.setValue(JSC::jsString(global->vm(), Zig::toString(values[0])));
-    } else {
-
-        // Pre-convert all strings to JSValues before entering ObjectInitializationScope,
-        // since jsString() allocates GC cells which is not allowed inside the scope.
-        MarkedArgumentBuffer strings;
-        for (size_t i = 0; i < valuesLen; ++i) {
-            strings.append(JSC::jsString(global->vm(), Zig::toString(values[i])));
-        }
-
-        JSC::JSArray* array = nullptr;
-        {
-            JSC::ObjectInitializationScope initializationScope(global->vm());
-            if ((array = JSC::JSArray::tryCreateUninitializedRestricted(
-                     initializationScope, nullptr,
-                     global->arrayStructureForIndexingTypeDuringAllocation(JSC::ArrayWithContiguous),
-                     valuesLen))) {
-
-                for (size_t i = 0; i < valuesLen; ++i) {
-                    array->initializeIndexWithoutBarrier(
-                        initializationScope, i, strings.at(i));
-                }
-            }
-        }
-
-        if (!array) {
-            JSC::throwOutOfMemoryError(global, scope);
-            return;
-        }
-
-        descriptor.setValue(array);
-    }
-
-    object->methodTable()->defineOwnProperty(object, global, ident, descriptor, true);
-    object->putDirect(global->vm(), ident, descriptor.value());
-    scope.release();
-}
-
 JSC::JSPromise* JSC__JSValue__asInternalPromise(JSC::EncodedJSValue JSValue0)
 {
     JSC::JSValue value = JSC::JSValue::decode(JSValue0);
@@ -3005,23 +2951,32 @@ JSC::EncodedJSValue JSObjectCallAsFunctionReturnValueHoldingAPILock(JSContextRef
 // CPP_DECL void JSC__PropertyNameArray__release(JSC__PropertyNameArray* arg0);
 size_t JSC__JSObject__getArrayLength(JSC::JSObject* arg0) { return arg0->getArrayLength(); }
 
-JSC::EncodedJSValue JSC__JSObject__getIndex(JSC::EncodedJSValue jsValue, JSC::JSGlobalObject* globalObject,
+JSC::EncodedJSValue JSC__JSObject__getIndex(JSC::JSObject* object, JSC::JSGlobalObject* globalObject,
     uint32_t index)
 {
     ASSERT_NO_PENDING_EXCEPTION(globalObject);
     auto scope = DECLARE_THROW_SCOPE(getVM(globalObject));
-    auto* object = JSC::JSValue::decode(jsValue).toObject(globalObject);
+    auto value = object->getIndex(globalObject, index);
+    RETURN_IF_EXCEPTION(scope, {});
+    return JSC::JSValue::encode(value);
+}
+
+JSC::EncodedJSValue JSC__JSValue__getIndex(JSC::EncodedJSValue encodedValue, JSC::JSGlobalObject* globalObject,
+    uint32_t index)
+{
+    ASSERT_NO_PENDING_EXCEPTION(globalObject);
+    auto scope = DECLARE_THROW_SCOPE(getVM(globalObject));
+    auto* object = JSC::JSValue::decode(encodedValue).toObject(globalObject);
     RETURN_IF_EXCEPTION(scope, {});
     auto value = object->getIndex(globalObject, index);
     RETURN_IF_EXCEPTION(scope, {});
     return JSC::JSValue::encode(value);
 }
 
-JSC::EncodedJSValue JSC__JSValue__getDirectIndex(JSC::EncodedJSValue jsValue, JSC::JSGlobalObject* arg1,
-    uint32_t arg3)
+JSC::EncodedJSValue JSC__JSObject__getDirectIndex(JSC::JSObject* object, JSC::JSGlobalObject* globalObject,
+    uint32_t index)
 {
-    JSC::JSObject* object = JSC::JSValue::decode(jsValue).getObject();
-    return JSC::JSValue::encode(object->getDirectIndex(arg1, arg3));
+    return JSC::JSValue::encode(object->getDirectIndex(globalObject, index));
 }
 
 JSC::EncodedJSValue JSC__JSObject__getDirect(JSC::JSObject* arg0, JSC::JSGlobalObject* arg1,
@@ -3386,24 +3341,14 @@ CPP_DECL int32_t JSC__JSValue__borrowBytesForOffThread(JSC::EncodedJSValue v, co
     return 0;
 }
 
-CPP_DECL JSC::EncodedJSValue JSC__JSValue__createEmptyArray(JSC::JSGlobalObject* arg0, size_t length)
+CPP_DECL void JSC__JSArray__putDirectIndex(JSC::JSArray* array, JSC::JSGlobalObject* globalObject, uint32_t index, JSC::EncodedJSValue encodedValue)
 {
-    return JSC::JSValue::encode(JSC::constructEmptyArray(arg0, nullptr, length));
-}
-CPP_DECL void JSC__JSValue__putIndex(JSC::EncodedJSValue JSValue0, JSC::JSGlobalObject* arg1, uint32_t arg2, JSC::EncodedJSValue JSValue3)
-{
-    JSC::JSValue value = JSC::JSValue::decode(JSValue0);
-    JSC::JSValue value2 = JSC::JSValue::decode(JSValue3);
-    JSC::JSArray* array = uncheckedDowncast<JSC::JSArray>(value);
-    array->putDirectIndex(arg1, arg2, value2);
+    array->putDirectIndex(globalObject, index, JSC::JSValue::decode(encodedValue));
 }
 
-CPP_DECL void JSC__JSValue__push(JSC::EncodedJSValue JSValue0, JSC::JSGlobalObject* arg1, JSC::EncodedJSValue JSValue3)
+CPP_DECL void JSC__JSArray__push(JSC::JSArray* array, JSC::JSGlobalObject* globalObject, JSC::EncodedJSValue encodedValue)
 {
-    JSC::JSValue value = JSC::JSValue::decode(JSValue0);
-    JSC::JSValue value2 = JSC::JSValue::decode(JSValue3);
-    JSC::JSArray* array = uncheckedDowncast<JSC::JSArray>(value);
-    array->push(arg1, value2);
+    array->push(globalObject, JSC::JSValue::decode(encodedValue));
 }
 
 JSC::EncodedJSValue JSC__JSGlobalObject__createAggregateError(JSC::JSGlobalObject* globalObject,
@@ -3981,26 +3926,19 @@ bool JSC__JSValue__isException(JSC::EncodedJSValue JSValue0, JSC::VM* arg1)
     return JSC::JSValue::decode(JSValue0).isBigInt32();
 }
 
-void JSC__JSValue__put(JSC::EncodedJSValue JSValue0, JSC::JSGlobalObject* arg1, const ZigString* arg2, JSC::EncodedJSValue JSValue3)
+void JSC__JSObject__putDirectToPropertyKey(JSC::JSObject* object, JSC::JSGlobalObject* globalObject, JSC::EncodedJSValue encodedKey, JSC::EncodedJSValue encodedValue)
 {
-    JSC::JSObject* object = JSC::JSValue::decode(JSValue0).asCell()->getObject();
-    object->putDirect(arg1->vm(), Zig::toIdentifier(*arg2, arg1), JSC::JSValue::decode(JSValue3));
-}
-
-void JSC__JSValue__putToPropertyKey(JSC::EncodedJSValue JSValue0, JSC::JSGlobalObject* arg1, JSC::EncodedJSValue arg2, JSC::EncodedJSValue arg3)
-{
-    auto& vm = JSC::getVM(arg1);
+    auto& vm = JSC::getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
-    auto obj = JSValue::decode(JSValue0);
-    auto key = JSValue::decode(arg2);
-    auto value = JSValue::decode(arg3);
-    auto object = obj.asCell()->getObject();
-    auto pkey = key.toPropertyKey(arg1);
+    auto key = JSValue::decode(encodedKey);
+    auto value = JSValue::decode(encodedValue);
+    auto pkey = key.toPropertyKey(globalObject);
     RETURN_IF_EXCEPTION(scope, );
-    object->putDirectMayBeIndex(arg1, pkey, value);
+    object->putDirectMayBeIndex(globalObject, pkey, value);
+    RETURN_IF_EXCEPTION(scope, );
 }
 
-extern "C" [[ZIG_EXPORT(check_slow)]] void JSC__JSValue__putMayBeIndex(JSC::EncodedJSValue target, JSC::JSGlobalObject* globalObject, const BunString* key, JSC::EncodedJSValue value)
+extern "C" [[ZIG_EXPORT(check_slow)]] void JSC__JSObject__putDirectMayBeIndex(JSC::JSObject* object, JSC::JSGlobalObject* globalObject, const BunString* key, JSC::EncodedJSValue value)
 {
     auto& vm = JSC::getVM(globalObject);
     ThrowScope scope = DECLARE_THROW_SCOPE(vm);
@@ -4008,22 +3946,18 @@ extern "C" [[ZIG_EXPORT(check_slow)]] void JSC__JSValue__putMayBeIndex(JSC::Enco
     WTF::String keyStr = key->tag == BunStringTag::Empty ? WTF::emptyString() : key->toWTFString();
     JSC::Identifier identifier = JSC::Identifier::fromString(vm, keyStr);
 
-    JSC::JSObject* object = JSC::JSValue::decode(target).asCell()->getObject();
     object->putDirectMayBeIndex(globalObject, JSC::PropertyName(identifier), JSC::JSValue::decode(value));
     RETURN_IF_EXCEPTION(scope, );
 }
 
-extern "C" bool JSC__JSValue__deleteProperty(JSC::EncodedJSValue target, JSC::JSGlobalObject* globalObject, const ZigString* key)
+extern "C" bool JSC__JSObject__deleteProperty(JSC::JSObject* object, JSC::JSGlobalObject* globalObject, const ZigString* key)
 {
-    JSC::JSValue targetValue = JSC::JSValue::decode(target);
-    if (!targetValue.isObject())
-        return false;
-
     auto& vm = JSC::getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSC::JSObject* object = targetValue.getObject();
-    bool result = object->deleteProperty(globalObject, Zig::toIdentifier(*key, globalObject));
+    auto identifier = Zig::toIdentifier(*key, globalObject);
+    RETURN_IF_EXCEPTION(scope, false);
+    bool result = object->deleteProperty(globalObject, identifier);
     RETURN_IF_EXCEPTION(scope, false);
     return result;
 }
@@ -4294,7 +4228,7 @@ uint64_t JSC__JSValue__toUInt64NoTruncate(JSC::EncodedJSValue val)
     return 0;
 }
 
-JSC::EncodedJSValue JSC__JSValue__createObject2(JSC::JSGlobalObject* globalObject, const ZigString* arg1,
+JSC::JSObject* JSC__JSObject__createObject2(JSC::JSGlobalObject* globalObject, const ZigString* arg1,
     const ZigString* arg2, JSC::EncodedJSValue JSValue3,
     JSC::EncodedJSValue JSValue4)
 {
@@ -4319,12 +4253,12 @@ JSC::EncodedJSValue JSC__JSValue__createObject2(JSC::JSGlobalObject* globalObjec
 
     object->methodTable()
         ->defineOwnProperty(object, globalObject, key2, descriptor2, true);
-    RETURN_IF_EXCEPTION(scope, {});
+    RETURN_IF_EXCEPTION(scope, nullptr);
     object->methodTable()
         ->defineOwnProperty(object, globalObject, key1, descriptor1, true);
-    RETURN_IF_EXCEPTION(scope, {});
+    RETURN_IF_EXCEPTION(scope, nullptr);
 
-    return JSC::JSValue::encode(object);
+    return object;
 }
 
 // Returns empty for exception, returns deleted if not found.
@@ -6105,20 +6039,19 @@ extern "C" EncodedJSValue JSFunction__createFromZig(
         nullptr));
 }
 
-extern "C" EncodedJSValue JSArray__constructArray(
+extern "C" JSC::JSArray* JSC__JSArray__create(
     JSC::JSGlobalObject* global,
     const JSValue* values,
     size_t values_len)
 {
-    return JSValue::encode(
-        JSC::constructArray(global, (ArrayAllocationProfile*)nullptr, values, values_len));
+    return JSC::constructArray(global, (ArrayAllocationProfile*)nullptr, values, values_len);
 }
 
-extern "C" EncodedJSValue JSArray__constructEmptyArray(
+extern "C" JSC::JSArray* JSC__JSArray__createEmpty(
     JSC::JSGlobalObject* global,
     size_t len)
 {
-    return JSValue::encode(JSC::constructEmptyArray(global, (ArrayAllocationProfile*)nullptr, len));
+    return JSC::constructEmptyArray(global, (ArrayAllocationProfile*)nullptr, len);
 }
 
 extern "C" bool JSGlobalObject__hasException(JSC::JSGlobalObject* globalObject)

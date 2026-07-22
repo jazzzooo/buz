@@ -3248,13 +3248,13 @@ const Return = struct {
             defer if (!this.buffer_val.isEmptyOrUndefinedOrNull())
                 this.buffer_val.unprotect();
 
-            return jsc.JSValue.createObject2(
+            return (try jsc.JSObject.createObject2(
                 ctx,
                 &fields.bytesRead,
                 &fields.buffer,
                 jsc.JSValue.jsNumberFromUint64(@as(u52, @intCast(@min(std.math.maxInt(u52), this.bytes_read)))),
                 this.buffer_val,
-            );
+            )).toJS();
         }
     };
     pub const WritePromise = struct {
@@ -3271,7 +3271,7 @@ const Return = struct {
             defer if (!this.buffer_val.isEmptyOrUndefinedOrNull())
                 this.buffer_val.unprotect();
 
-            return jsc.JSValue.createObject2(
+            return (try jsc.JSObject.createObject2(
                 globalObject,
                 &fields.bytesWritten,
                 &fields.buffer,
@@ -3280,7 +3280,7 @@ const Return = struct {
                     this.buffer_val
                 else
                     this.buffer.toJS(globalObject),
-            );
+            )).toJS();
         }
     };
     pub const Write = struct {
@@ -3309,13 +3309,13 @@ const Return = struct {
             switch (this) {
                 .with_file_types => {
                     defer bun.default_allocator.free(this.with_file_types);
-                    var array = try jsc.JSValue.createEmptyArray(globalObject, this.with_file_types.len);
+                    var array = try jsc.JSArray.createEmpty(globalObject, this.with_file_types.len);
                     var previous_jsstring: ?*jsc.JSString = null;
                     for (this.with_file_types, 0..) |*item, i| {
                         const res = try item.toJSNewlyCreated(globalObject, &previous_jsstring);
-                        try array.putIndex(globalObject, @truncate(i), res);
+                        try array.putDirectIndex(globalObject, @truncate(i), res);
                     }
-                    return array;
+                    return array.toJS();
                 },
                 .buffers => {
                     defer bun.default_allocator.free(this.buffers);

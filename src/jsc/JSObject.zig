@@ -5,13 +5,43 @@ pub const JSObject = opaque {
         return JSC__JSObject__maxInlineCapacity;
     }
 
-    extern fn JSC__JSObject__getIndex(this: JSValue, globalThis: *JSGlobalObject, i: u32) JSValue;
+    extern fn JSC__JSObject__createEmpty(global: *JSGlobalObject, capacity: usize) *JSObject;
+    extern fn JSC__JSObject__createEmptyWithNullPrototype(global: *JSGlobalObject) *JSObject;
+    extern fn JSC__JSObject__createObject2(global: *JSGlobalObject, key1: *const ZigString, key2: *const ZigString, value1: JSValue, value2: JSValue) ?*JSObject;
+    extern fn JSC__JSObject__getDirectIndex(this: *JSObject, globalThis: *JSGlobalObject, i: u32) JSValue;
+    extern fn JSC__JSObject__getIndex(this: *JSObject, globalThis: *JSGlobalObject, i: u32) JSValue;
+    extern fn JSC__JSObject__putDirect(this: *JSObject, global: *JSGlobalObject, key: *const ZigString, value: JSValue) void;
+    extern fn JSC__JSObject__putDirectBunString(this: *JSObject, global: *JSGlobalObject, key: *const bun.String, value: JSValue) void;
+    extern fn JSC__JSObject__putDirectMayBeIndex(this: *JSObject, global: *JSGlobalObject, key: *const bun.String, value: JSValue) void;
+    extern fn JSC__JSObject__putDirectToPropertyKey(this: *JSObject, global: *JSGlobalObject, key: JSValue, value: JSValue) void;
+    extern fn JSC__JSObject__upsertBunStringArray(this: *JSObject, global: *JSGlobalObject, key: *const bun.String, value: JSValue) JSValue;
+    extern fn JSC__JSObject__deleteProperty(this: *JSObject, global: *JSGlobalObject, key: *const ZigString) bool;
     extern fn Bun__JSObject__getCodePropertyVMInquiry(global: *JSGlobalObject, obj: *JSObject) JSValue;
     extern fn JSC__createStructure(global: *jsc.JSGlobalObject, owner: ?*jsc.JSCell, length: u32, slots: [*]const ExternColumnSlot) jsc.JSValue;
-    extern fn JSC__JSObject__create(global_object: *JSGlobalObject, length: usize, ctx: *anyopaque, initializer: InitializeCallback) JSValue;
+    extern fn JSC__JSObject__create(global_object: *JSGlobalObject, length: usize, ctx: *anyopaque, initializer: InitializeCallback) *JSObject;
 
     pub fn toJS(obj: *JSObject) JSValue {
         return JSValue.fromCell(obj);
+    }
+
+    pub fn protect(obj: *JSObject) void {
+        obj.toJS().protect();
+    }
+
+    pub fn unprotect(obj: *JSObject) void {
+        obj.toJS().unprotect();
+    }
+
+    pub fn createEmpty(global: *JSGlobalObject, capacity: usize) *JSObject {
+        return JSC__JSObject__createEmpty(global, capacity);
+    }
+
+    pub fn createEmptyWithNullPrototype(global: *JSGlobalObject) *JSObject {
+        return JSC__JSObject__createEmptyWithNullPrototype(global);
+    }
+
+    pub fn createObject2(global: *JSGlobalObject, key1: *const ZigString, key2: *const ZigString, value1: JSValue, value2: JSValue) bun.JSError!*JSObject {
+        return (try bun.jsc.fromJSHostCallGeneric(global, @src(), JSC__JSObject__createObject2, .{ global, key1, key2, value1, value2 })) orelse unreachable;
     }
 
     /// Marshall a struct instance into a JSObject, copying its properties.
@@ -51,20 +81,14 @@ pub const JSObject = opaque {
     fn createFromStructWithPrototype(comptime T: type, pojo: T, global: *JSGlobalObject, comptime null_prototype: bool) bun.JSError!*JSObject {
         const info: std.builtin.Type.Struct = @typeInfo(T).@"struct";
 
-        const obj = obj: {
-            const val = if (comptime null_prototype)
-                JSValue.createEmptyObjectWithNullPrototype(global)
-            else
-                JSValue.createEmptyObject(global, comptime info.field_names.len);
-            if (bun.Environment.isDebug)
-                bun.assert(val.isObject());
-            break :obj val.uncheckedPtrCast(JSObject);
-        };
+        const obj = if (comptime null_prototype)
+            createEmptyWithNullPrototype(global)
+        else
+            createEmpty(global, comptime info.field_names.len);
 
-        const cell = toJS(obj);
         inline for (info.field_names) |field_name| {
             const property = @field(pojo, field_name);
-            cell.put(
+            obj.putDirect(
                 global,
                 field_name,
                 try .fromAny(global, @TypeOf(property), property),
@@ -78,8 +102,57 @@ pub const JSObject = opaque {
         return obj.toJS().get(global, prop);
     }
 
-    pub inline fn put(obj: *JSObject, global: *JSGlobalObject, key: anytype, value: JSValue) !void {
-        obj.toJS().put(global, key, value);
+    pub fn getOwn(obj: *JSObject, global: *JSGlobalObject, prop: anytype) JSError!?JSValue {
+        return obj.toJS().getOwn(global, prop);
+    }
+
+    pub fn putDirect(obj: *JSObject, global: *JSGlobalObject, key: anytype, value: JSValue) void {
+        const Key = @TypeOf(key);
+        if (comptime @typeInfo(Key) == .pointer) {
+            const Elem = @typeInfo(Key).pointer.child;
+            if (Elem == ZigString) {
+                JSC__JSObject__putDirect(obj, global, key, value);
+            } else if (Elem == bun.String) {
+                if (comptime bun.Environment.isDebug) jsc.markBinding(@src());
+                JSC__JSObject__putDirectBunString(obj, global, key, value);
+            } else if (std.meta.Elem(Key) == u8) {
+                JSC__JSObject__putDirect(obj, global, &ZigString.init(key), value);
+            } else {
+                @compileError("Unsupported key type in putDirect(). Expected ZigString or bun.String, got " ++ @typeName(Elem));
+            }
+        } else if (comptime Key == ZigString) {
+            JSC__JSObject__putDirect(obj, global, &key, value);
+        } else if (comptime Key == bun.String) {
+            if (comptime bun.Environment.isDebug) jsc.markBinding(@src());
+            JSC__JSObject__putDirectBunString(obj, global, &key, value);
+        } else {
+            @compileError("Unsupported key type in putDirect(). Expected ZigString or bun.String, got " ++ @typeName(Key));
+        }
+    }
+
+    pub fn putDirectMayBeIndex(obj: *JSObject, global: *JSGlobalObject, key: *const bun.String, value: JSValue) bun.JSError!void {
+        return bun.jsc.fromJSHostCallGeneric(global, @src(), JSC__JSObject__putDirectMayBeIndex, .{ obj, global, key, value });
+    }
+
+    pub fn putDirectToPropertyKey(obj: *JSObject, global: *JSGlobalObject, key: JSValue, value: JSValue) bun.JSError!void {
+        return bun.jsc.fromJSHostCallGeneric(global, @src(), JSC__JSObject__putDirectToPropertyKey, .{ obj, global, key, value });
+    }
+
+    pub fn putBunStringOneOrArray(obj: *JSObject, global: *JSGlobalObject, key: *const bun.String, value: JSValue) bun.JSError!JSValue {
+        return bun.jsc.fromJSHostCall(global, @src(), JSC__JSObject__upsertBunStringArray, .{ obj, global, key, value });
+    }
+
+    pub fn deleteProperty(obj: *JSObject, global: *JSGlobalObject, key: anytype) bun.JSError!bool {
+        const Key = @TypeOf(key);
+        if (comptime @typeInfo(Key) == .pointer and std.meta.Elem(Key) == u8) {
+            return bun.jsc.fromJSHostCallGeneric(global, @src(), JSC__JSObject__deleteProperty, .{ obj, global, &ZigString.init(key) });
+        } else if (comptime Key == ZigString) {
+            return bun.jsc.fromJSHostCallGeneric(global, @src(), JSC__JSObject__deleteProperty, .{ obj, global, &key });
+        } else if (comptime @typeInfo(Key) == .pointer and @typeInfo(Key).pointer.child == ZigString) {
+            return bun.jsc.fromJSHostCallGeneric(global, @src(), JSC__JSObject__deleteProperty, .{ obj, global, key });
+        } else {
+            @compileError("Unsupported key type in deleteProperty(). Expected ZigString or string literal, got " ++ @typeName(Key));
+        }
     }
 
     /// When the GC sees a JSValue referenced in the stack, it knows not to free it
@@ -131,12 +204,12 @@ pub const JSObject = opaque {
         };
     }
 
-    pub fn createWithInitializer(comptime Ctx: type, creator: *Ctx, global: *JSGlobalObject, length: usize) JSValue {
+    pub fn createWithInitializer(comptime Ctx: type, creator: *Ctx, global: *JSGlobalObject, length: usize) *JSObject {
         const Type = Initializer(Ctx, Ctx.create);
         return JSC__JSObject__create(global, length, creator, Type.call);
     }
 
-    pub fn getIndex(this: JSValue, globalThis: *JSGlobalObject, i: u32) JSError!JSValue {
+    pub fn getIndex(this: *JSObject, globalThis: *JSGlobalObject, i: u32) JSError!JSValue {
         // we don't use fromJSHostCall, because it will assert that if there is an exception
         // then the JSValue is zero. the function this ends up calling can return undefined
         // with an exception:
@@ -148,6 +221,10 @@ pub const JSObject = opaque {
         try scope.returnIfException();
         bun.assert(value != .zero);
         return value;
+    }
+
+    pub fn getDirectIndex(this: *JSObject, globalThis: *JSGlobalObject, i: u32) JSValue {
+        return JSC__JSObject__getDirectIndex(this, globalThis, i);
     }
 
     pub fn putRecord(this: *JSObject, global: *JSGlobalObject, key: *ZigString, values: []ZigString) bun.JSError!void {

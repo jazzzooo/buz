@@ -524,9 +524,10 @@ export fn Bun__inspect_singleline(globalThis: *JSGlobalObject, value: JSValue) b
 
 pub fn getInspect(globalObject: *jsc.JSGlobalObject, _: *jsc.JSObject) jsc.JSValue {
     const fun = jsc.JSFunction.create(globalObject, "inspect", inspect, 2, .{});
+    const fun_object = fun.getObject().?;
     var str = ZigString.init("nodejs.util.inspect.custom");
-    fun.put(globalObject, ZigString.static("custom"), jsc.JSValue.symbolFor(globalObject, &str));
-    fun.put(globalObject, ZigString.static("table"), jsc.JSFunction.create(globalObject, "table", inspectTable, 3, .{}));
+    fun_object.putDirect(globalObject, ZigString.static("custom"), jsc.JSValue.symbolFor(globalObject, &str));
+    fun_object.putDirect(globalObject, ZigString.static("table"), jsc.JSFunction.create(globalObject, "table", inspectTable, 3, .{}));
     return fun;
 }
 
@@ -1348,7 +1349,7 @@ pub fn getTerminalConstructor(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject)
 
 pub fn getEmbeddedFiles(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) bun.JSError!jsc.JSValue {
     const vm = globalThis.bunVM();
-    const graph = vm.standalone_module_graph orelse return try jsc.JSValue.createEmptyArray(globalThis, 0);
+    const graph = vm.standalone_module_graph orelse return (try jsc.JSArray.createEmpty(globalThis, 0)).toJS();
 
     const unsorted_files = graph.files.values();
     var sort_indices = bun.handleOom(std.array_list.Managed(u32).initCapacity(bun.default_allocator, unsorted_files.len));
@@ -1363,7 +1364,7 @@ pub fn getEmbeddedFiles(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) bun.J
     }
 
     var i: u32 = 0;
-    var array = try jsc.JSValue.createEmptyArray(globalThis, sort_indices.items.len);
+    var array = try jsc.JSArray.createEmpty(globalThis, sort_indices.items.len);
     std.mem.sort(u32, sort_indices.items, unsorted_files, bun.StandaloneModuleGraph.File.lessThanByIndex);
     for (sort_indices.items) |index| {
         const file = &unsorted_files[index];
@@ -1371,11 +1372,11 @@ pub fn getEmbeddedFiles(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) bun.J
         const input_blob = file.blob(globalThis);
         const blob = jsc.WebCore.Blob.new(input_blob.dupeWithContentType(true));
         blob.name = input_blob.name.dupeRef();
-        try array.putIndex(globalThis, i, blob.toJS(globalThis));
+        try array.putDirectIndex(globalThis, i, blob.toJS(globalThis));
         i += 1;
     }
 
-    return array;
+    return array.toJS();
 }
 
 pub fn getSemver(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) jsc.JSValue {
@@ -1398,21 +1399,21 @@ pub fn getCSRFObject(globalObject: *jsc.JSGlobalObject, _: *jsc.JSObject) jsc.JS
 
 const CSRFObject = struct {
     pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-        const object = JSValue.createEmptyObject(globalThis, 2);
+        const object = jsc.JSObject.createEmpty(globalThis, 2);
 
-        object.put(
+        object.putDirect(
             globalThis,
             ZigString.static("generate"),
             jsc.JSFunction.create(globalThis, "generate", @import("./csrf_jsc.zig").csrf__generate, 1, .{}),
         );
 
-        object.put(
+        object.putDirect(
             globalThis,
             ZigString.static("verify"),
             jsc.JSFunction.create(globalThis, "verify", @import("./csrf_jsc.zig").csrf__verify, 1, .{}),
         );
 
-        return object;
+        return object.toJS();
     }
 };
 

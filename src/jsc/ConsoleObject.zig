@@ -1308,7 +1308,8 @@ pub const Formatter = struct {
 
             // Is this a react element?
             if (js_type.isObject() and js_type != .ProxyObject) {
-                if (try value.getOwnTruthy(globalThis, "$$typeof")) |typeof_symbol| {
+                if (try value.getOwn(globalThis, "$$typeof")) |typeof_symbol| react: {
+                    if (typeof_symbol.isUndefined()) break :react;
                     // React 18 and below
                     var react_element_legacy = ZigString.init("react.element");
                     // For React 19 - https://github.com/oven-sh/bun/issues/17223
@@ -2416,7 +2417,8 @@ pub const Formatter = struct {
                 }
             },
             .Array => {
-                const len = try value.getLength(this.globalThis);
+                const array = value.getArrayObject().?;
+                const len = try array.getLength(this.globalThis);
 
                 // TODO: DerivedArray does not get passed along in JSType, and it's not clear why.
                 // if (jsType == .DerivedArray) {
@@ -2449,7 +2451,7 @@ pub const Formatter = struct {
                     defer this.quote_strings = prev_quote_strings;
                     var empty_start: ?u32 = null;
                     first: {
-                        const element = value.getDirectIndex(this.globalThis, 0);
+                        const element = array.getDirectIndex(this.globalThis, 0);
 
                         const tag = try Tag.getAdvanced(element, this.globalThis, .{
                             .hide_global = true,
@@ -2487,7 +2489,7 @@ pub const Formatter = struct {
                     var nonempty_count: u32 = 1;
 
                     while (i < len) : (i += 1) {
-                        const element = value.getDirectIndex(this.globalThis, i);
+                        const element = array.getDirectIndex(this.globalThis, i);
                         if (element == .zero) {
                             if (empty_start == null) {
                                 empty_start = i;

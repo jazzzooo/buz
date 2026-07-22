@@ -759,7 +759,7 @@ pub const FFI = struct {
 
         const napi_env = makeNapiEnvIfNeeded(compile_c.symbols.map.values(), globalThis);
 
-        var obj = jsc.JSValue.createEmptyObject(globalThis, compile_c.symbols.map.count());
+        var obj = jsc.JSObject.createEmpty(globalThis, compile_c.symbols.map.count());
         for (compile_c.symbols.map.values()) |*function| {
             const function_name = function.base_name.?;
 
@@ -792,7 +792,7 @@ pub const FFI = struct {
                         function.symbol_from_dynamic_library,
                     );
                     compiled.js_function = cb;
-                    obj.put(globalThis, &str, cb);
+                    obj.putDirect(globalThis, &str, cb);
                 },
             }
         }
@@ -808,7 +808,7 @@ pub const FFI = struct {
         compile_c.symbols = .{};
 
         const js_object = lib.toJS(globalThis);
-        jsc.Codegen.JSFFI.symbolsValueSetCached(js_object, globalThis, obj);
+        jsc.Codegen.JSFFI.symbolsValueSetCached(js_object, globalThis, obj.toJS());
         return js_object;
     }
 
@@ -859,13 +859,13 @@ pub const FFI = struct {
             .compiled => {
                 const function_ = bun.default_allocator.create(Function) catch unreachable;
                 function_.* = func.*;
-                return JSValue.createObject2(
+                return (try jsc.JSObject.createObject2(
                     globalThis,
                     ZigString.static("ptr"),
                     ZigString.static("ctx"),
                     jsc.JSValue.fromPtrAddress(@intFromPtr(function_.step.compiled.ptr)),
                     jsc.JSValue.fromPtrAddress(@intFromPtr(function_)),
-                );
+                )).toJS();
             },
         }
     }
@@ -1077,7 +1077,7 @@ pub const FFI = struct {
         if (size >= 63) {
             size = 0;
         }
-        var obj = jsc.JSValue.createEmptyObject(global, size);
+        var obj = jsc.JSObject.createEmpty(global, size);
         obj.protect();
         defer obj.unprotect();
 
@@ -1145,7 +1145,7 @@ pub const FFI = struct {
                         function.symbol_from_dynamic_library,
                     );
                     compiled.js_function = cb;
-                    obj.put(global, &str, cb);
+                    obj.putDirect(global, &str, cb);
                 },
             }
         }
@@ -1156,7 +1156,7 @@ pub const FFI = struct {
         });
 
         const js_object = lib.toJS(global);
-        jsc.Codegen.JSFFI.symbolsValueSetCached(js_object, global, obj);
+        jsc.Codegen.JSFFI.symbolsValueSetCached(js_object, global, obj.toJS());
         return js_object;
     }
 
@@ -1192,7 +1192,7 @@ pub const FFI = struct {
             return global.toInvalidArguments("Expected at least one symbol", .{});
         }
 
-        var obj = JSValue.createEmptyObject(global, symbols.count());
+        var obj = jsc.JSObject.createEmpty(global, symbols.count());
         obj.ensureStillAlive();
         defer obj.ensureStillAlive();
 
@@ -1255,7 +1255,7 @@ pub const FFI = struct {
                     );
                     compiled.js_function = cb;
 
-                    obj.put(global, name, cb);
+                    obj.putDirect(global, name, cb);
                 },
             }
         }
@@ -1266,7 +1266,7 @@ pub const FFI = struct {
         });
 
         const js_object = lib.toJS(global);
-        jsc.Codegen.JSFFI.symbolsValueSetCached(js_object, global, obj);
+        jsc.Codegen.JSFFI.symbolsValueSetCached(js_object, global, obj.toJS());
         return js_object;
     }
     pub fn generateSymbolForFunction(global: *JSGlobalObject, allocator: std.mem.Allocator, value: jsc.JSValue, function: *Function) bun.JSError!?JSValue {

@@ -249,7 +249,7 @@ fn checkOptionUsage(globalThis: *JSGlobalObject, options: []const OptionDefiniti
 /// - `option_value`: value from user args
 /// - `options`: option configs, from `parseArgs({ options })`
 /// - `values`: option values returned in `values` by parseArgs
-fn storeOption(globalThis: *JSGlobalObject, option_name: ValueRef, option_value: ValueRef, option_idx: ?usize, negative: bool, options: []const OptionDefinition, values: JSValue) bun.JSError!void {
+fn storeOption(globalThis: *JSGlobalObject, option_name: ValueRef, option_value: ValueRef, option_idx: ?usize, negative: bool, options: []const OptionDefinition, values: *jsc.JSObject) bun.JSError!void {
     var key = option_name.asBunString(globalThis);
     if (key.eqlComptime("__proto__")) {
         return;
@@ -268,14 +268,14 @@ fn storeOption(globalThis: *JSGlobalObject, option_name: ValueRef, option_value:
         // first value is added as new array [new_value],
         // subsequent values are pushed to existing array.
         if (try values.getOwn(globalThis, key)) |value_list| {
-            try value_list.push(globalThis, new_value);
+            try value_list.getArrayObject().?.push(globalThis, new_value);
         } else {
-            var value_list = try JSValue.createEmptyArray(globalThis, 1);
-            try value_list.putIndex(globalThis, 0, new_value);
-            try values.putMayBeIndex(globalThis, &key, value_list);
+            var value_list = try jsc.JSArray.createEmpty(globalThis, 1);
+            try value_list.putDirectIndex(globalThis, 0, new_value);
+            try values.putDirectMayBeIndex(globalThis, &key, value_list.toJS());
         }
     } else {
-        try values.putMayBeIndex(globalThis, &key, new_value);
+        try values.putDirectMayBeIndex(globalThis, &key, new_value);
     }
 }
 
@@ -556,9 +556,9 @@ const ParseArgsState = struct {
     allow_negative: bool,
 
     // Output
-    values: JSValue,
-    positionals: JSValue,
-    tokens: JSValue,
+    values: *jsc.JSObject,
+    positionals: *jsc.JSArray,
+    tokens: ?*jsc.JSArray,
 
     /// To reuse JSValue for the "kind" field in the output tokens array ("positional", "option", "option-terminator")
     kinds_jsvalues: [TokenKind.COUNT]?JSValue = @splat(null),
@@ -591,7 +591,7 @@ const ParseArgsState = struct {
 
         // Append to the parseArgs result "tokens" field
         // This field is opt-in, and people usually don't ask for it, so only create the js values if they are asked for
-        if (!this.tokens.isUndefined()) {
+        if (this.tokens) |tokens| {
             const num_properties: usize = switch (token_generic) {
                 .option => |token| if (token.value == .jsvalue and token.value.jsvalue.isUndefined()) 4 else 6,
                 .positional => 3,
@@ -606,28 +606,28 @@ const ParseArgsState = struct {
                 break :kindval val;
             };
 
-            var obj = JSValue.createEmptyObject(globalThis, num_properties);
-            obj.put(globalThis, ZigString.static("kind"), kind_jsvalue);
+            var obj = jsc.JSObject.createEmpty(globalThis, num_properties);
+            obj.putDirect(globalThis, ZigString.static("kind"), kind_jsvalue);
             switch (token_generic) {
                 .option => |token| {
-                    obj.put(globalThis, ZigString.static("index"), JSValue.jsNumber(token.index));
-                    obj.put(globalThis, ZigString.static("name"), try token.name.asJSValue(globalThis));
-                    obj.put(globalThis, ZigString.static("rawName"), try token.makeRawNameJSValue(globalThis));
+                    obj.putDirect(globalThis, ZigString.static("index"), JSValue.jsNumber(token.index));
+                    obj.putDirect(globalThis, ZigString.static("name"), try token.name.asJSValue(globalThis));
+                    obj.putDirect(globalThis, ZigString.static("rawName"), try token.makeRawNameJSValue(globalThis));
 
                     // value exists only for string options, otherwise the property exists with "undefined" as value
                     var value = try token.value.asJSValue(globalThis);
-                    obj.put(globalThis, ZigString.static("value"), value);
-                    obj.put(globalThis, ZigString.static("inlineValue"), if (value.isUndefined()) .js_undefined else JSValue.jsBoolean(token.inline_value));
+                    obj.putDirect(globalThis, ZigString.static("value"), value);
+                    obj.putDirect(globalThis, ZigString.static("inlineValue"), if (value.isUndefined()) .js_undefined else JSValue.jsBoolean(token.inline_value));
                 },
                 .positional => |token| {
-                    obj.put(globalThis, ZigString.static("index"), JSValue.jsNumber(token.index));
-                    obj.put(globalThis, ZigString.static("value"), try token.value.asJSValue(globalThis));
+                    obj.putDirect(globalThis, ZigString.static("index"), JSValue.jsNumber(token.index));
+                    obj.putDirect(globalThis, ZigString.static("value"), try token.value.asJSValue(globalThis));
                 },
                 .@"option-terminator" => |token| {
-                    obj.put(globalThis, ZigString.static("index"), JSValue.jsNumber(token.index));
+                    obj.putDirect(globalThis, ZigString.static("index"), JSValue.jsNumber(token.index));
                 },
             }
-            try this.tokens.push(globalThis, obj);
+            try tokens.push(globalThis, obj.toJS());
         }
     }
 };
@@ -695,9 +695,9 @@ pub fn parseArgs(globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSE
     log("Phase 1+2: tokenize args (args.len={d})", .{args.end - args.start});
 
     // note that "values" needs to have a null prototype instead of Object, to avoid issues such as "values.toString"` being defined
-    const values = JSValue.createEmptyObjectWithNullPrototype(globalThis);
-    const positionals = try jsc.JSValue.createEmptyArray(globalThis, 0);
-    const tokens: JSValue = if (return_tokens) try jsc.JSValue.createEmptyArray(globalThis, 0) else .js_undefined;
+    const values = jsc.JSObject.createEmptyWithNullPrototype(globalThis);
+    const positionals = try jsc.JSArray.createEmpty(globalThis, 0);
+    const tokens: ?*jsc.JSArray = if (return_tokens) try jsc.JSArray.createEmpty(globalThis, 0) else null;
 
     var state = ParseArgsState{
         .globalThis = globalThis,
@@ -724,7 +724,7 @@ pub fn parseArgs(globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSE
             if (!option.long_name.eqlComptime("__proto__")) {
                 if (try state.values.getOwn(globalThis, option.long_name) == null) {
                     log("  Setting \"{f}\" to default value", .{option.long_name});
-                    try state.values.putMayBeIndex(globalThis, &option.long_name, default_value);
+                    try state.values.putDirectMayBeIndex(globalThis, &option.long_name, default_value);
                 }
             }
         }
@@ -735,13 +735,13 @@ pub fn parseArgs(globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSE
     //
     log("Phase 4: Build result object", .{});
 
-    var result = JSValue.createEmptyObject(globalThis, if (return_tokens) 3 else 2);
+    var result = jsc.JSObject.createEmpty(globalThis, if (return_tokens) 3 else 2);
     if (return_tokens) {
-        result.put(globalThis, ZigString.static("tokens"), state.tokens);
+        result.putDirect(globalThis, ZigString.static("tokens"), state.tokens.?.toJS());
     }
-    result.put(globalThis, ZigString.static("values"), state.values);
-    result.put(globalThis, ZigString.static("positionals"), state.positionals);
-    return result;
+    result.putDirect(globalThis, ZigString.static("values"), state.values.toJS());
+    result.putDirect(globalThis, ZigString.static("positionals"), state.positionals.toJS());
+    return result.toJS();
 }
 
 const string = []const u8;

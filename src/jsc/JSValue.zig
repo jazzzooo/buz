@@ -48,8 +48,16 @@ pub const JSValue = enum(i64) {
         return bun.cpp.JSC__JSValue__coerceToInt64(this, globalThis);
     }
 
+    extern fn JSC__JSValue__getIndex(this: JSValue, globalThis: *JSGlobalObject, i: u32) JSValue;
+
     pub fn getIndex(this: JSValue, globalThis: *JSGlobalObject, i: u32) JSError!JSValue {
-        return jsc.JSObject.getIndex(this, globalThis, i);
+        var scope: jsc.TopExceptionScope = undefined;
+        scope.init(globalThis, @src());
+        defer scope.deinit();
+        const value = JSC__JSValue__getIndex(this, globalThis, i);
+        try scope.returnIfException();
+        bun.assert(value != .zero);
+        return value;
     }
 
     extern fn JSC__JSValue__isJSXElement(JSValue, *JSGlobalObject) bool;
@@ -60,11 +68,6 @@ pub const JSValue = enum(i64) {
             JSC__JSValue__isJSXElement,
             .{ this, globalThis },
         );
-    }
-
-    extern fn JSC__JSValue__getDirectIndex(JSValue, *JSGlobalObject, u32) JSValue;
-    pub fn getDirectIndex(this: JSValue, globalThis: *JSGlobalObject, i: u32) JSValue {
-        return JSC__JSValue__getDirectIndex(this, globalThis, i);
     }
 
     pub fn isFalsey(this: JSValue) bool {
@@ -304,107 +307,6 @@ pub const JSValue = enum(i64) {
         return JSC__jsTypeStringForValue(globalObject, this);
     }
 
-    extern fn JSC__JSValue__createEmptyObjectWithNullPrototype(globalObject: *JSGlobalObject) JSValue;
-
-    pub fn createEmptyObjectWithNullPrototype(global: *JSGlobalObject) JSValue {
-        return JSC__JSValue__createEmptyObjectWithNullPrototype(global);
-    }
-    extern fn JSC__JSValue__createEmptyObject(global: *JSGlobalObject, len: usize) JSValue;
-    /// Creates a new empty object, with Object as its prototype
-    pub fn createEmptyObject(global: *JSGlobalObject, len: usize) JSValue {
-        return JSC__JSValue__createEmptyObject(global, len);
-    }
-
-    extern fn JSC__JSValue__createEmptyArray(global: *JSGlobalObject, len: usize) JSValue;
-    pub fn createEmptyArray(global: *JSGlobalObject, len: usize) bun.JSError!JSValue {
-        return fromJSHostCall(global, @src(), JSC__JSValue__createEmptyArray, .{ global, len });
-    }
-
-    extern fn JSC__JSValue__putRecord(value: JSValue, global: *JSGlobalObject, key: *ZigString, values_array: [*]ZigString, values_len: usize) void;
-    pub fn putRecord(value: JSValue, global: *JSGlobalObject, key: *ZigString, values_array: [*]ZigString, values_len: usize) void {
-        return JSC__JSValue__putRecord(value, global, key, values_array, values_len);
-    }
-    extern fn JSC__JSValue__put(value: JSValue, global: *JSGlobalObject, key: *const ZigString, result: jsc.JSValue) void;
-    pub fn putZigString(value: JSValue, global: *JSGlobalObject, key: *const ZigString, result: jsc.JSValue) void {
-        JSC__JSValue__put(value, global, key, result);
-    }
-
-    extern fn JSC__JSValue__deleteProperty(target: JSValue, global: *JSGlobalObject, key: *const ZigString) bool;
-    /// Delete a property from an object by key. Returns true if the property was deleted.
-    pub fn deleteProperty(target: JSValue, global: *JSGlobalObject, key: anytype) bool {
-        const Key = @TypeOf(key);
-        if (comptime @typeInfo(Key) == .pointer) {
-            const Elem = @typeInfo(Key).pointer.child;
-            if (Elem == ZigString) {
-                return JSC__JSValue__deleteProperty(target, global, key);
-            } else if (std.meta.Elem(Key) == u8) {
-                return JSC__JSValue__deleteProperty(target, global, &ZigString.init(key));
-            } else {
-                @compileError("Unsupported key type in deleteProperty(). Expected ZigString or string literal, got " ++ @typeName(Elem));
-            }
-        } else if (comptime Key == ZigString) {
-            return JSC__JSValue__deleteProperty(target, global, &key);
-        } else {
-            @compileError("Unsupported key type in deleteProperty(). Expected ZigString or string literal, got " ++ @typeName(Key));
-        }
-    }
-
-    extern "c" fn JSC__JSValue__putBunString(value: JSValue, global: *JSGlobalObject, key: *const bun.String, result: jsc.JSValue) void;
-    fn putBunString(value: JSValue, global: *JSGlobalObject, key: *const bun.String, result: jsc.JSValue) void {
-        if (comptime bun.Environment.isDebug)
-            jsc.markBinding(@src());
-        JSC__JSValue__putBunString(value, global, key, result);
-    }
-
-    extern "c" fn JSC__JSValue__upsertBunStringArray(value: JSValue, global: *JSGlobalObject, key: *const bun.String, result: jsc.JSValue) JSValue;
-
-    /// Put key/val pair into `obj`. If `key` is already present on the object, create an array for the values.
-    pub fn putBunStringOneOrArray(obj: JSValue, global: *JSGlobalObject, key: *const bun.String, value: jsc.JSValue) bun.JSError!JSValue {
-        return fromJSHostCall(global, @src(), JSC__JSValue__upsertBunStringArray, .{ obj, global, key, value });
-    }
-
-    pub fn put(value: JSValue, global: *JSGlobalObject, key: anytype, result: jsc.JSValue) void {
-        const Key = @TypeOf(key);
-        if (comptime @typeInfo(Key) == .pointer) {
-            const Elem = @typeInfo(Key).pointer.child;
-            if (Elem == ZigString) {
-                putZigString(value, global, key, result);
-            } else if (Elem == bun.String) {
-                putBunString(value, global, key, result);
-            } else if (std.meta.Elem(Key) == u8) {
-                putZigString(value, global, &ZigString.init(key), result);
-            } else {
-                @compileError("Unsupported key type in put(). Expected ZigString or bun.String, got " ++ @typeName(Elem));
-            }
-        } else if (comptime Key == ZigString) {
-            putZigString(value, global, &key, result);
-        } else if (comptime Key == bun.String) {
-            putBunString(value, global, &key, result);
-        } else {
-            @compileError("Unsupported key type in put(). Expected ZigString or bun.String, got " ++ @typeName(Key));
-        }
-    }
-    /// Same as `.put` but accepts both non-numeric and numeric keys.
-    /// Prefer to use `.put` if the key is guaranteed to be non-numeric (e.g. known at comptime)
-    pub fn putMayBeIndex(this: JSValue, globalObject: *JSGlobalObject, key: *const String, value: JSValue) bun.JSError!void {
-        return bun.cpp.JSC__JSValue__putMayBeIndex(this, globalObject, key, value);
-    }
-
-    extern fn JSC__JSValue__putToPropertyKey(target: JSValue, globalObject: *JSGlobalObject, key: jsc.JSValue, value: jsc.JSValue) void;
-    pub fn putToPropertyKey(target: JSValue, globalObject: *JSGlobalObject, key: jsc.JSValue, value: jsc.JSValue) bun.JSError!void {
-        return bun.jsc.host_fn.fromJSHostCallGeneric(globalObject, @src(), JSC__JSValue__putToPropertyKey, .{ target, globalObject, key, value });
-    }
-
-    extern fn JSC__JSValue__putIndex(value: JSValue, globalObject: *JSGlobalObject, i: u32, out: JSValue) void;
-    pub fn putIndex(value: JSValue, globalObject: *JSGlobalObject, i: u32, out: JSValue) bun.JSError!void {
-        return bun.jsc.fromJSHostCallGeneric(globalObject, @src(), JSC__JSValue__putIndex, .{ value, globalObject, i, out });
-    }
-
-    extern fn JSC__JSValue__push(value: JSValue, globalObject: *JSGlobalObject, out: JSValue) void;
-    pub fn push(value: JSValue, globalObject: *JSGlobalObject, out: JSValue) bun.JSError!void {
-        return bun.jsc.fromJSHostCallGeneric(globalObject, @src(), JSC__JSValue__push, .{ value, globalObject, out });
-    }
-
     extern fn JSC__JSValue__toISOString(*jsc.JSGlobalObject, jsc.JSValue, *[28]u8) c_int;
     pub fn toISOString(this: JSValue, globalObject: *jsc.JSGlobalObject, buf: *[28]u8) []const u8 {
         const count = JSC__JSValue__toISOString(globalObject, this, buf);
@@ -521,12 +423,6 @@ pub const JSValue = enum(i64) {
     /// bindings.cpp file.
     pub fn unprotect(this: JSValue) void {
         Bun__JSValue__unprotect(this);
-    }
-
-    extern fn JSC__JSValue__createObject2(global: *JSGlobalObject, key1: *const ZigString, key2: *const ZigString, value1: JSValue, value2: JSValue) JSValue;
-    /// Create an object with exactly two properties
-    pub fn createObject2(global: *JSGlobalObject, key1: *const ZigString, key2: *const ZigString, value1: JSValue, value2: JSValue) bun.JSError!JSValue {
-        return bun.jsc.fromJSHostCall(global, @src(), JSC__JSValue__createObject2, .{ global, key1, key2, value1, value2 });
     }
 
     /// this must have been created by fromPtrAddress()
@@ -1291,6 +1187,10 @@ pub const JSValue = enum(i64) {
         return if (this.isObject()) this.uncheckedPtrCast(JSObject) else null;
     }
 
+    pub fn getArrayObject(this: JSValue) ?*jsc.JSArray {
+        return if (this.isArray()) this.uncheckedPtrCast(jsc.JSArray) else null;
+    }
+
     /// Unwraps Number, Boolean, String, and BigInt objects to their primitive forms.
     pub fn unwrapBoxedPrimitive(this: JSValue, global: *JSGlobalObject) JSError!JSValue {
         var scope: TopExceptionScope = undefined;
@@ -1505,15 +1405,6 @@ pub const JSValue = enum(i64) {
         return if (@backingInt(value) != 0) value else return null;
     }
 
-    pub fn getOwnTruthy(this: JSValue, global: *JSGlobalObject, property_name: anytype) bun.JSError!?JSValue {
-        if (try getOwn(this, global, property_name)) |prop| {
-            if (prop.isUndefined()) return null;
-            return prop;
-        }
-
-        return null;
-    }
-
     /// Safe to use on any JSValue, can error.
     pub fn implementsToString(this: JSValue, global: *JSGlobalObject) bun.JSError!bool {
         if (!this.isObject())
@@ -1678,7 +1569,8 @@ pub const JSValue = enum(i64) {
     }
 
     pub fn getOwnArray(this: JSValue, globalThis: *JSGlobalObject, comptime property_name: []const u8) JSError!?JSValue {
-        if (try getOwnTruthy(this, globalThis, property_name)) |prop| {
+        if (try getOwn(this, globalThis, property_name)) |prop| {
+            if (prop.isUndefined()) return null;
             return coerceToArray(prop, globalThis, property_name);
         }
 
@@ -1686,7 +1578,8 @@ pub const JSValue = enum(i64) {
     }
 
     pub fn getOwnObject(this: JSValue, globalThis: *JSGlobalObject, comptime property_name: []const u8) JSError!?*jsc.JSObject {
-        if (try getOwnTruthy(this, globalThis, property_name)) |prop| {
+        if (try getOwn(this, globalThis, property_name)) |prop| {
+            if (prop.isUndefined()) return null;
             const obj = prop.getObject() orelse {
                 return globalThis.throwInvalidArguments(property_name ++ " must be an object", .{});
             };
@@ -2212,15 +2105,15 @@ pub const JSValue = enum(i64) {
             jsc.JSValue => return if (Type != T) value.* else value,
 
             inline []const u16, []const u32, []const i16, []const i8, []const i32, []const f32 => {
-                var array = try jsc.JSValue.createEmptyArray(globalObject, value.len);
+                var array = try jsc.JSArray.createEmpty(globalObject, value.len);
                 for (value, 0..) |item, i| {
-                    try array.putIndex(
+                    try array.putDirectIndex(
                         globalObject,
                         @truncate(i),
                         .jsNumber(item),
                     );
                 }
-                return array;
+                return array.toJS();
             },
 
             else => {
@@ -2229,25 +2122,27 @@ pub const JSValue = enum(i64) {
                 if (bun.trait.isSlice(Type)) {
                     const Child = comptime std.meta.Child(Type);
 
-                    var array = try jsc.JSValue.createEmptyArray(globalObject, value.len);
+                    var array = try jsc.JSArray.createEmpty(globalObject, value.len);
                     for (value, 0..) |*item, i| {
                         const res = try fromAny(globalObject, *Child, item);
                         if (res == .zero) return .zero;
-                        try array.putIndex(
+                        try array.putDirectIndex(
                             globalObject,
                             @truncate(i),
                             res,
                         );
                     }
-                    return array;
+                    return array.toJS();
                 }
 
                 if (comptime @hasDecl(Type, "toJSNewlyCreated") and @typeInfo(@TypeOf(@field(Type, "toJSNewlyCreated"))).@"fn".param_types.len == 2) {
                     return value.toJSNewlyCreated(globalObject);
                 }
 
-                if (comptime @hasDecl(Type, "toJS") and @typeInfo(@TypeOf(@field(Type, "toJS"))).@"fn".param_types.len == 2) {
-                    return value.toJS(globalObject);
+                if (comptime @hasDecl(Type, "toJS")) {
+                    const params = @typeInfo(@TypeOf(@field(Type, "toJS"))).@"fn".param_types;
+                    if (comptime params.len == 1) return value.toJS();
+                    if (comptime params.len == 2) return value.toJS(globalObject);
                 }
 
                 // must come after toJS check in case this enum implements its own serializer.

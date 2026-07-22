@@ -12,17 +12,17 @@ pub fn create(rusage: *const Rusage, globalObject: *JSGlobalObject) bun.JSError!
 }
 
 pub fn getCPUTime(this: *ResourceUsage, globalObject: *JSGlobalObject) bun.JSError!JSValue {
-    var cpu = jsc.JSValue.createEmptyObjectWithNullPrototype(globalObject);
+    var cpu = jsc.JSObject.createEmptyWithNullPrototype(globalObject);
     const rusage = this.rusage;
 
     const usrTime = try JSValue.fromTimevalNoTruncate(globalObject, rusage.utime.usec, rusage.utime.sec);
     const sysTime = try JSValue.fromTimevalNoTruncate(globalObject, rusage.stime.usec, rusage.stime.sec);
 
-    cpu.put(globalObject, jsc.ZigString.static("user"), usrTime);
-    cpu.put(globalObject, jsc.ZigString.static("system"), sysTime);
-    cpu.put(globalObject, jsc.ZigString.static("total"), JSValue.bigIntSum(globalObject, usrTime, sysTime));
+    cpu.putDirect(globalObject, jsc.ZigString.static("user"), usrTime);
+    cpu.putDirect(globalObject, jsc.ZigString.static("system"), sysTime);
+    cpu.putDirect(globalObject, jsc.ZigString.static("total"), JSValue.bigIntSum(globalObject, usrTime, sysTime));
 
-    return cpu;
+    return cpu.toJS();
 }
 
 pub fn getMaxRSS(this: *ResourceUsage, _: *JSGlobalObject) JSValue {
@@ -38,17 +38,17 @@ pub fn getSwapCount(this: *ResourceUsage, _: *JSGlobalObject) JSValue {
 }
 
 pub fn getOps(this: *ResourceUsage, globalObject: *JSGlobalObject) JSValue {
-    var ops = jsc.JSValue.createEmptyObjectWithNullPrototype(globalObject);
-    ops.put(globalObject, jsc.ZigString.static("in"), jsc.JSValue.jsNumber(this.rusage.inblock));
-    ops.put(globalObject, jsc.ZigString.static("out"), jsc.JSValue.jsNumber(this.rusage.oublock));
-    return ops;
+    var ops = jsc.JSObject.createEmptyWithNullPrototype(globalObject);
+    ops.putDirect(globalObject, jsc.ZigString.static("in"), jsc.JSValue.jsNumber(this.rusage.inblock));
+    ops.putDirect(globalObject, jsc.ZigString.static("out"), jsc.JSValue.jsNumber(this.rusage.oublock));
+    return ops.toJS();
 }
 
 pub fn getMessages(this: *ResourceUsage, globalObject: *JSGlobalObject) JSValue {
-    var msgs = jsc.JSValue.createEmptyObjectWithNullPrototype(globalObject);
-    msgs.put(globalObject, jsc.ZigString.static("sent"), jsc.JSValue.jsNumber(this.rusage.msgsnd));
-    msgs.put(globalObject, jsc.ZigString.static("received"), jsc.JSValue.jsNumber(this.rusage.msgrcv));
-    return msgs;
+    var msgs = jsc.JSObject.createEmptyWithNullPrototype(globalObject);
+    msgs.putDirect(globalObject, jsc.ZigString.static("sent"), jsc.JSValue.jsNumber(this.rusage.msgsnd));
+    msgs.putDirect(globalObject, jsc.ZigString.static("received"), jsc.JSValue.jsNumber(this.rusage.msgrcv));
+    return msgs.toJS();
 }
 
 pub fn getSignalCount(this: *ResourceUsage, _: *JSGlobalObject) JSValue {
@@ -56,10 +56,10 @@ pub fn getSignalCount(this: *ResourceUsage, _: *JSGlobalObject) JSValue {
 }
 
 pub fn getContextSwitches(this: *ResourceUsage, globalObject: *JSGlobalObject) JSValue {
-    var ctx = jsc.JSValue.createEmptyObjectWithNullPrototype(globalObject);
-    ctx.put(globalObject, jsc.ZigString.static("voluntary"), jsc.JSValue.jsNumber(this.rusage.nvcsw));
-    ctx.put(globalObject, jsc.ZigString.static("involuntary"), jsc.JSValue.jsNumber(this.rusage.nivcsw));
-    return ctx;
+    var ctx = jsc.JSObject.createEmptyWithNullPrototype(globalObject);
+    ctx.putDirect(globalObject, jsc.ZigString.static("voluntary"), jsc.JSValue.jsNumber(this.rusage.nvcsw));
+    ctx.putDirect(globalObject, jsc.ZigString.static("involuntary"), jsc.JSValue.jsNumber(this.rusage.nivcsw));
+    return ctx.toJS();
 }
 
 pub fn finalize(this: *ResourceUsage) callconv(.c) void {

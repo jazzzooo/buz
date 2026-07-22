@@ -893,7 +893,7 @@ pub fn scan(this: *JSTranspiler, globalThis: *jsc.JSGlobalObject, callframe: *js
         globalThis,
         &parse_result.ast.named_exports,
     );
-    return jsc.JSValue.createObject2(globalThis, imports_label, exports_label, named_imports_value, named_exports_value);
+    return (try jsc.JSObject.createObject2(globalThis, imports_label, exports_label, named_imports_value, named_exports_value)).toJS();
 }
 
 pub fn transform(this: *JSTranspiler, globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
@@ -1052,7 +1052,7 @@ pub fn transformSync(
 
 fn namedExportsToJS(global: *JSGlobalObject, named_exports: *JSAst.Ast.NamedExports) bun.JSError!jsc.JSValue {
     if (named_exports.count() == 0)
-        return JSValue.createEmptyArray(global, 0);
+        return (try jsc.JSArray.createEmpty(global, 0)).toJS();
 
     var named_exports_iter = named_exports.iterator();
     var stack_fallback_buffer: [32]bun.String = undefined;
@@ -1085,7 +1085,7 @@ fn namedImportsToJS(global: *JSGlobalObject, import_records: []const ImportRecor
         count += 1;
     }
 
-    const array = try jsc.JSValue.createEmptyArray(global, count);
+    const array = try jsc.JSArray.createEmpty(global, count);
     array.ensureStillAlive();
 
     var i: u32 = 0;
@@ -1096,11 +1096,11 @@ fn namedImportsToJS(global: *JSGlobalObject, import_records: []const ImportRecor
         array.ensureStillAlive();
         const path = jsc.ZigString.init(record.path.text).toJS(global);
         const kind = jsc.ZigString.init(record.kind.label()).toJS(global);
-        try array.putIndex(global, i, try jsc.JSValue.createObject2(global, path_label, kind_label, path, kind));
+        try array.putDirectIndex(global, i, (try jsc.JSObject.createObject2(global, path_label, kind_label, path, kind)).toJS());
         i += 1;
     }
 
-    return array;
+    return array.toJS();
 }
 
 pub fn scanImports(this: *JSTranspiler, globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {

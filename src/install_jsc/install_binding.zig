@@ -4,10 +4,10 @@ pub const bun_install_js_bindings = struct {
     const JSGlobalObject = jsc.JSGlobalObject;
 
     pub fn generate(global: *JSGlobalObject) JSValue {
-        const obj = JSValue.createEmptyObject(global, 1);
+        const obj = jsc.JSObject.createEmpty(global, 1);
         const parseLockfile = ZigString.static("parseLockfile");
-        obj.put(global, parseLockfile, jsc.JSFunction.create(global, "parseLockfile", jsParseLockfile, 1, .{}));
-        return obj;
+        obj.putDirect(global, parseLockfile, jsc.JSFunction.create(global, "parseLockfile", jsParseLockfile, 1, .{}));
+        return obj.toJS();
     }
 
     pub fn jsParseLockfile(globalObject: *JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!JSValue {

@@ -1,6 +1,6 @@
 pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-    const object = JSValue.createEmptyObject(globalThis, 1);
-    object.put(
+    const object = jsc.JSObject.createEmpty(globalThis, 1);
+    object.putDirect(
         globalThis,
         ZigString.static("parse"),
         jsc.JSFunction.create(
@@ -12,7 +12,7 @@ pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
         ),
     );
 
-    return object;
+    return object.toJS();
 }
 
 pub fn parse(

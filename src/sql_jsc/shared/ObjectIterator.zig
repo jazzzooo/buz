@@ -26,7 +26,7 @@ pub fn next(this: *ObjectIterator) ?jsc.JSValue {
     const globalObject = this.globalObject;
 
     if (this.current_row == .zero) {
-        this.current_row = jsc.JSObject.getIndex(this.array, globalObject, @intCast(row_i)) catch {
+        this.current_row = this.array.getIndex(globalObject, @intCast(row_i)) catch {
             this.any_failed = true;
             return null;
         };
@@ -43,7 +43,7 @@ pub fn next(this: *ObjectIterator) ?jsc.JSValue {
         }
     }
 
-    const property = jsc.JSObject.getIndex(this.columns, globalObject, @intCast(cell_i)) catch {
+    const property = this.columns.getIndex(globalObject, @intCast(cell_i)) catch {
         this.any_failed = true;
         return null;
     };

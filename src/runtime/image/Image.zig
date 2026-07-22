@@ -399,7 +399,7 @@ fn rejectError(global: *jsc.JSGlobalObject, e: codecs.Error) jsc.JSValue {
 
 fn errorWithCode(global: *jsc.JSGlobalObject, code: [:0]const u8, msg: [:0]const u8) jsc.JSValue {
     const err = global.createErrorInstance("{s}", .{msg});
-    err.put(global, jsc.ZigString.static("code"), jsc.ZigString.init(code).toJS(global));
+    err.getObject().?.putDirect(global, jsc.ZigString.static("code"), jsc.ZigString.init(code).toJS(global));
     return err;
 }
 
@@ -541,11 +541,11 @@ pub fn doMetadata(this: *Image, global: *jsc.JSGlobalObject, callframe: *jsc.Cal
             }
             this.last_width = @intCast(w);
             this.last_height = @intCast(h);
-            const obj = jsc.JSValue.createEmptyObject(global, 3);
-            obj.put(global, jsc.ZigString.static("width"), jsc.JSValue.jsNumber(w));
-            obj.put(global, jsc.ZigString.static("height"), jsc.JSValue.jsNumber(h));
-            obj.put(global, jsc.ZigString.static("format"), jsc.ZigString.init(@tagName(p.format)).toJS(global));
-            return jsc.JSPromise.resolvedPromiseValue(global, obj);
+            const obj = jsc.JSObject.createEmpty(global, 3);
+            obj.putDirect(global, jsc.ZigString.static("width"), jsc.JSValue.jsNumber(w));
+            obj.putDirect(global, jsc.ZigString.static("height"), jsc.JSValue.jsNumber(h));
+            obj.putDirect(global, jsc.ZigString.static("format"), jsc.ZigString.init(@tagName(p.format)).toJS(global));
+            return jsc.JSPromise.resolvedPromiseValue(global, obj.toJS());
         } else |e| switch (e) {
             // HEIC/AVIF need the system backend → fall through to async.
             error.UnsupportedOnPlatform => {},
@@ -1163,11 +1163,11 @@ pub const PipelineTask = struct {
                 },
             },
             .meta => |m| {
-                const obj = jsc.JSValue.createEmptyObject(global, 3);
-                obj.put(global, jsc.ZigString.static("width"), jsc.JSValue.jsNumber(m.w));
-                obj.put(global, jsc.ZigString.static("height"), jsc.JSValue.jsNumber(m.h));
-                obj.put(global, jsc.ZigString.static("format"), jsc.ZigString.init(@tagName(m.format)).toJS(global));
-                try promise.resolve(global, obj);
+                const obj = jsc.JSObject.createEmpty(global, 3);
+                obj.putDirect(global, jsc.ZigString.static("width"), jsc.JSValue.jsNumber(m.w));
+                obj.putDirect(global, jsc.ZigString.static("height"), jsc.JSValue.jsNumber(m.h));
+                obj.putDirect(global, jsc.ZigString.static("format"), jsc.ZigString.init(@tagName(m.format)).toJS(global));
+                try promise.resolve(global, obj.toJS());
             },
             .err => |e| try promise.reject(global, rejectError(global, e)),
             .io_err => |e| try promise.reject(global, e.toJS(global)),

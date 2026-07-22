@@ -345,7 +345,7 @@ pub const CallbackList = union(enum) {
     /// js callable
     callback: jsc.JSValue,
     /// js array
-    callback_array: jsc.JSValue,
+    callback_array: *jsc.JSArray,
 
     /// protects the callback
     pub fn init(callback: jsc.JSValue) @This() {
@@ -366,10 +366,10 @@ pub const CallbackList = union(enum) {
             },
             .callback => {
                 const prev = self.callback;
-                const arr = try jsc.JSValue.createEmptyArray(global, 2);
+                const arr = try jsc.JSArray.createEmpty(global, 2);
                 arr.protect();
-                try arr.putIndex(global, 0, prev); // add the old callback to the array
-                try arr.putIndex(global, 1, callback); // add the new callback to the array
+                try arr.putDirectIndex(global, 0, prev); // add the old callback to the array
+                try arr.putDirectIndex(global, 1, callback); // add the new callback to the array
                 prev.unprotect(); // owned by the array now
                 self.* = .{ .callback_array = arr };
             },
@@ -388,7 +388,7 @@ pub const CallbackList = union(enum) {
                 self.* = .none;
             },
             .callback_array => {
-                var iter = try self.callback_array.arrayIterator(global);
+                var iter = try self.callback_array.iterator(global);
                 while (try iter.next()) |item| {
                     try item.callNextTick(global, .{.null});
                 }
@@ -1057,9 +1057,9 @@ pub fn doSend(ipc: ?*SendQueue, globalObject: *jsc.JSGlobalObject, callFrame: *j
     const status = ipc_data.serializeAndSend(globalObject, message, .external, callback, zig_handle);
 
     if (status == .failure) {
-        const ex = globalObject.createTypeErrorInstance("process.send() failed", .{});
-        ex.put(globalObject, jsc.ZigString.static("syscall"), try bun.String.static("write").toJS(globalObject));
-        return doSendErr(globalObject, callback, ex, from);
+        const ex = globalObject.createTypeErrorInstance("process.send() failed", .{}).getObject().?;
+        ex.putDirect(globalObject, jsc.ZigString.static("syscall"), try bun.String.static("write").toJS(globalObject));
+        return doSendErr(globalObject, callback, ex.toJS(), from);
     }
 
     // in the success or backoff case, serializeAndSend will handle calling the callback

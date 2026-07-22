@@ -92,7 +92,7 @@ pub fn buildCommand(ctx: bun.cli.Command.Context) !void {
 
         .vm = vm,
         .loaded_files = bun.bit_set.AutoBitSet.initEmpty(vm.allocator, 0) catch unreachable,
-        .all_server_files = JSValue.null,
+        .all_server_files = null,
     };
 
     buildWithVm(ctx, cwd, vm, &pt) catch |err| switch (err) {
@@ -482,9 +482,9 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
     pt.attach();
 
     // Static site generator
-    const server_render_funcs = try JSValue.createEmptyArray(global, router.types.len);
-    const server_param_funcs = try JSValue.createEmptyArray(global, router.types.len);
-    const client_entry_urls = try JSValue.createEmptyArray(global, router.types.len);
+    const server_render_funcs = try jsc.JSArray.createEmpty(global, router.types.len);
+    const server_param_funcs = try jsc.JSArray.createEmpty(global, router.types.len);
+    const client_entry_urls = try jsc.JSArray.createEmpty(global, router.types.len);
 
     for (router.types, 0..) |router_type, i| {
         if (router_type.client_file.unwrap()) |client_file| {
@@ -492,9 +492,9 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
                 public_path,
                 pt.outputFile(client_file).dest_path,
             })).toJS(global);
-            try client_entry_urls.putIndex(global, @intCast(i), str);
+            try client_entry_urls.putDirectIndex(global, @intCast(i), str);
         } else {
-            try client_entry_urls.putIndex(global, @intCast(i), .null);
+            try client_entry_urls.putDirectIndex(global, @intCast(i), .null);
         }
 
         const server_entry_point = try pt.loadBundledModule(router_type.server_file);
@@ -546,8 +546,8 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
             }
         else
             JSValue.null;
-        try server_render_funcs.putIndex(global, @intCast(i), server_render_func);
-        try server_param_funcs.putIndex(global, @intCast(i), server_param_func);
+        try server_render_funcs.putDirectIndex(global, @intCast(i), server_render_func);
+        try server_param_funcs.putDirectIndex(global, @intCast(i), server_param_func);
     }
 
     var navigatable_routes = std.array_list.Managed(FrameworkRouter.Route.Index).init(allocator);
@@ -566,27 +566,27 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
 
     // Route URL patterns with parameter placeholders.
     // Examples: "/", "/about", "/blog/:slug", "/products/:category/:id"
-    const route_patterns = try JSValue.createEmptyArray(global, navigatable_routes.items.len);
+    const route_patterns = try jsc.JSArray.createEmpty(global, navigatable_routes.items.len);
 
     // File indices for each route's components (page, layouts).
     // Example: [2, 5, 0] = page at index 2, layout at 5, root layout at 0
-    const route_nested_files = try JSValue.createEmptyArray(global, navigatable_routes.items.len);
+    const route_nested_files = try jsc.JSArray.createEmpty(global, navigatable_routes.items.len);
 
     // Router type index (lower 8 bits) and flags (upper 24 bits).
     // Example: 0x00000001 = router type 1, no flags
-    const route_type_and_flags = try JSValue.createEmptyArray(global, navigatable_routes.items.len);
+    const route_type_and_flags = try jsc.JSArray.createEmpty(global, navigatable_routes.items.len);
 
     // Source file paths relative to project root.
     // Examples: "pages/index.tsx", "pages/blog/[slug].tsx"
-    const route_source_files = try JSValue.createEmptyArray(global, navigatable_routes.items.len);
+    const route_source_files = try jsc.JSArray.createEmpty(global, navigatable_routes.items.len);
 
     // Parameter names for dynamic routes (reversed order), null for static routes.
     // Examples: ["slug"] for /blog/[slug], ["id", "category"] for /products/[category]/[id]
-    const route_param_info = try JSValue.createEmptyArray(global, navigatable_routes.items.len);
+    const route_param_info = try jsc.JSArray.createEmpty(global, navigatable_routes.items.len);
 
     // CSS chunk URLs for each route.
     // Example: ["/assets/main.css", "/assets/blog.css"]
-    const route_style_references = try JSValue.createEmptyArray(global, navigatable_routes.items.len);
+    const route_style_references = try jsc.JSArray.createEmpty(global, navigatable_routes.items.len);
 
     var params_buf: std.ArrayListUnmanaged([]const u8) = .empty;
     for (navigatable_routes.items, 0..) |route_index, nav_index| {
@@ -642,21 +642,21 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         }
 
         // Fill styles and file_list
-        const styles = try JSValue.createEmptyArray(global, css_chunks_count);
-        const file_list = try JSValue.createEmptyArray(global, file_count);
+        const styles = try jsc.JSArray.createEmpty(global, css_chunks_count);
+        const file_list = try jsc.JSArray.createEmpty(global, file_count);
 
         next = route.parent.unwrap();
         file_count = 1;
         css_file_count = 0;
-        try file_list.putIndex(global, 0, try pt.preloadBundledModule(main_file_route_index));
+        try file_list.putDirectIndex(global, 0, try pt.preloadBundledModule(main_file_route_index));
         for (main_file.referenced_css_chunks) |ref| {
-            try styles.putIndex(global, css_file_count, css_chunk_js_strings[ref.get() - css_chunks_first]);
+            try styles.putDirectIndex(global, css_file_count, css_chunk_js_strings[ref.get() - css_chunks_first]);
             css_file_count += 1;
         }
         if (route.file_layout.unwrap()) |file| {
-            try file_list.putIndex(global, file_count, try pt.preloadBundledModule(file));
+            try file_list.putDirectIndex(global, file_count, try pt.preloadBundledModule(file));
             for (pt.outputFile(file).referenced_css_chunks) |ref| {
-                try styles.putIndex(global, css_file_count, css_chunk_js_strings[ref.get() - css_chunks_first]);
+                try styles.putDirectIndex(global, css_file_count, css_chunk_js_strings[ref.get() - css_chunks_first]);
                 css_file_count += 1;
             }
             file_count += 1;
@@ -665,9 +665,9 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         while (next) |parent_index| {
             const parent = router.routePtr(parent_index);
             if (parent.file_layout.unwrap()) |file| {
-                try file_list.putIndex(global, file_count, try pt.preloadBundledModule(file));
+                try file_list.putDirectIndex(global, file_count, try pt.preloadBundledModule(file));
                 for (pt.outputFile(file).referenced_css_chunks) |ref| {
-                    try styles.putIndex(global, css_file_count, css_chunk_js_strings[ref.get() - css_chunks_first]);
+                    try styles.putDirectIndex(global, css_file_count, css_chunk_js_strings[ref.get() - css_chunks_first]);
                     css_file_count += 1;
                 }
                 file_count += 1;
@@ -678,7 +678,7 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         // Init the items
         var pattern_string = bun.String.cloneUTF8(pattern.slice());
         defer pattern_string.deref();
-        try route_patterns.putIndex(global, @intCast(nav_index), try pattern_string.toJS(global));
+        try route_patterns.putDirectIndex(global, @intCast(nav_index), try pattern_string.toJS(global));
 
         const relative_src_path = bun.handleOom(std.fs.path.relative(
             bun.default_allocator,
@@ -689,40 +689,40 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         ));
         defer bun.default_allocator.free(relative_src_path);
         var src_path = bun.String.cloneUTF8(relative_src_path);
-        try route_source_files.putIndex(global, @intCast(nav_index), try src_path.transferToJS(global));
+        try route_source_files.putDirectIndex(global, @intCast(nav_index), try src_path.transferToJS(global));
 
-        try route_nested_files.putIndex(global, @intCast(nav_index), file_list);
-        try route_type_and_flags.putIndex(global, @intCast(nav_index), JSValue.jsNumberFromInt32(@bitCast(TypeAndFlags{
+        try route_nested_files.putDirectIndex(global, @intCast(nav_index), file_list.toJS());
+        try route_type_and_flags.putDirectIndex(global, @intCast(nav_index), JSValue.jsNumberFromInt32(@bitCast(TypeAndFlags{
             .type = route.type.get(),
             .no_client = main_file.bake_extra.fully_static,
         })));
 
         if (params_buf.items.len > 0) {
-            const param_info_array = try JSValue.createEmptyArray(global, params_buf.items.len);
+            const param_info_array = try jsc.JSArray.createEmpty(global, params_buf.items.len);
             for (params_buf.items, 0..) |param, i| {
-                try param_info_array.putIndex(global, @intCast(params_buf.items.len - i - 1), try bun.String.createUTF8ForJS(global, param));
+                try param_info_array.putDirectIndex(global, @intCast(params_buf.items.len - i - 1), try bun.String.createUTF8ForJS(global, param));
             }
-            try route_param_info.putIndex(global, @intCast(nav_index), param_info_array);
+            try route_param_info.putDirectIndex(global, @intCast(nav_index), param_info_array.toJS());
         } else {
-            try route_param_info.putIndex(global, @intCast(nav_index), .null);
+            try route_param_info.putDirectIndex(global, @intCast(nav_index), .null);
         }
-        try route_style_references.putIndex(global, @intCast(nav_index), styles);
+        try route_style_references.putDirectIndex(global, @intCast(nav_index), styles.toJS());
     }
 
     const render_promise = BakeRenderRoutesForProdStatic(
         global,
         bun.String.init(root_dir_path),
-        pt.all_server_files,
-        server_render_funcs,
-        server_param_funcs,
-        client_entry_urls,
+        pt.all_server_files.?.toJS(),
+        server_render_funcs.toJS(),
+        server_param_funcs.toJS(),
+        client_entry_urls.toJS(),
 
-        route_patterns,
-        route_nested_files,
-        route_type_and_flags,
-        route_source_files,
-        route_param_info,
-        route_style_references,
+        route_patterns.toJS(),
+        route_nested_files.toJS(),
+        route_type_and_flags.toJS(),
+        route_source_files.toJS(),
+        route_param_info.toJS(),
+        route_style_references.toJS(),
     );
     render_promise.setHandled();
     vm.waitForPromise(.{ .normal = render_promise });
@@ -954,7 +954,7 @@ pub const PerThread = struct {
     /// Indexed by entry point index (OpaqueFileId)
     loaded_files: bun.bit_set.AutoBitSet,
     /// JSArray of JSString, indexed by entry point index (OpaqueFileId)
-    all_server_files: jsc.JSValue,
+    all_server_files: ?*jsc.JSArray,
 
     /// Sent to other threads for rendering
     pub const Options = struct {
@@ -976,7 +976,7 @@ pub const PerThread = struct {
         var loaded_files = try bun.bit_set.AutoBitSet.initEmpty(vm.allocator, opts.output_indexes.len);
         errdefer loaded_files.deinit(vm.allocator);
 
-        const all_server_files = try JSValue.createEmptyArray(vm.global, opts.output_indexes.len);
+        const all_server_files = try jsc.JSArray.createEmpty(vm.global, opts.output_indexes.len);
         all_server_files.protect();
 
         return .{
@@ -998,7 +998,7 @@ pub const PerThread = struct {
 
     pub fn deinit(pt: *PerThread) void {
         BakeGlobalObject__attachPerThreadData(pt.vm.global, null);
-        pt.all_server_files.unprotect();
+        pt.all_server_files.?.unprotect();
     }
 
     pub fn outputIndex(s: PerThread, id: OpaqueFileId) OutputFile.Index {
@@ -1032,7 +1032,7 @@ pub const PerThread = struct {
     pub fn preloadBundledModule(pt: *PerThread, id: OpaqueFileId) bun.JSError!JSValue {
         if (!pt.loaded_files.isSet(id.get())) {
             pt.loaded_files.set(id.get());
-            try pt.all_server_files.putIndex(
+            try pt.all_server_files.?.putDirectIndex(
                 pt.vm.global,
                 @intCast(id.get()),
                 try pt.module_keys[id.get()].toJS(pt.vm.global),

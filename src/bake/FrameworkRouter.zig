@@ -822,7 +822,7 @@ pub const MatchedParams = struct {
         }
 
         // Create a JavaScript object with params
-        const obj = JSValue.createEmptyObject(global, params_array.len);
+        const obj = jsc.JSObject.createEmpty(global, params_array.len);
         for (params_array) |param| {
             const key_str = bun.String.cloneUTF8(param.key);
             defer key_str.deref();
@@ -831,7 +831,7 @@ pub const MatchedParams = struct {
 
             _ = obj.putBunStringOneOrArray(global, &key_str, value_str.toJS(global) catch unreachable) catch unreachable;
         }
-        return obj;
+        return obj.toJS();
     }
 };
 
@@ -1201,9 +1201,9 @@ pub const JSFrameworkRouter = struct {
             InsertionContext.wrap(JSFrameworkRouter, jsfr),
         );
         if (jsfr.stored_parse_errors.items.len > 0) {
-            const arr = try JSValue.createEmptyArray(global, jsfr.stored_parse_errors.items.len);
+            const arr = try jsc.JSArray.createEmpty(global, jsfr.stored_parse_errors.items.len);
             for (jsfr.stored_parse_errors.items, 0..) |*item, i| {
-                try arr.putIndex(
+                try arr.putDirectIndex(
                     global,
                     @intCast(i),
                     global.createErrorInstance("Invalid route {f}: {s}", .{
@@ -1212,7 +1212,7 @@ pub const JSFrameworkRouter = struct {
                     }),
                 );
             }
-            return global.throwValue(try global.createAggregateErrorWithArray(.static("Errors scanning routes"), arr));
+            return global.throwValue(try global.createAggregateErrorWithArray(.static("Errors scanning routes"), arr.toJS()));
         }
 
         return jsfr;
@@ -1231,13 +1231,13 @@ pub const JSFrameworkRouter = struct {
 
             return (try jsc.JSObject.create(.{
                 .params = if (params_out.params.len > 0) params: {
-                    const obj = JSValue.createEmptyObject(global, params_out.params.len);
+                    const obj = jsc.JSObject.createEmpty(global, params_out.params.len);
                     for (params_out.params.slice()) |param| {
                         const value = bun.String.cloneUTF8(param.value);
                         defer value.deref();
-                        obj.put(global, param.key, try value.toJS(global));
+                        obj.putDirect(global, param.key, try value.toJS(global));
                     }
-                    break :params obj;
+                    break :params obj.toJS();
                 } else .null,
                 .route = try jsfr.routeToJsonInverse(global, index, alloc),
             }, global)).toJS();
@@ -1268,11 +1268,11 @@ pub const JSFrameworkRouter = struct {
                 var next = route.first_child.unwrap();
                 while (next) |r| : (next = jsfr.router.routePtr(r).next_sibling.unwrap())
                     len += 1;
-                const arr = try JSValue.createEmptyArray(global, len);
+                const arr = try jsc.JSArray.createEmpty(global, len);
                 next = route.first_child.unwrap();
                 var i: u32 = 0;
                 while (next) |r| : (next = jsfr.router.routePtr(r).next_sibling.unwrap()) {
-                    try arr.putIndex(global, i, try routeToJson(jsfr, global, r, allocator));
+                    try arr.putDirectIndex(global, i, try routeToJson(jsfr, global, r, allocator));
                     i += 1;
                 }
                 break :brk arr;
@@ -1330,10 +1330,10 @@ pub const JSFrameworkRouter = struct {
         for (parsed.parts) |part| part.toStringForInternalUse(&rendered.writer) catch return error.OutOfMemory;
 
         var out = bun.String.init(rendered.written());
-        const obj = JSValue.createEmptyObject(global, 2);
-        obj.put(global, "kind", try bun.String.static(@tagName(parsed.kind)).toJS(global));
-        obj.put(global, "pattern", try out.transferToJS(global));
-        return obj;
+        const obj = jsc.JSObject.createEmpty(global, 2);
+        obj.putDirect(global, "kind", try bun.String.static(@tagName(parsed.kind)).toJS(global));
+        obj.putDirect(global, "pattern", try out.transferToJS(global));
+        return obj.toJS();
     }
 
     fn partToJS(global: *JSGlobalObject, part: Part, temp_allocator: Allocator) !JSValue {

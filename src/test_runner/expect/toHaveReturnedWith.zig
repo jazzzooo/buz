@@ -10,13 +10,13 @@ pub fn toHaveReturnedWith(this: *Expect, globalThis: *JSGlobalObject, callframe:
     this.incrementExpectCallCounter();
 
     const returns = try bun.cpp.JSMockFunction__getReturns(globalThis, value);
-    if (!returns.jsType().isArray()) {
+    const returns_array = returns.getArrayObject() orelse {
         var formatter = jsc.ConsoleObject.Formatter{ .globalThis = globalThis, .quote_strings = true };
         defer formatter.deinit();
         return globalThis.throw("Expected value must be a mock function: {f}", .{value.toFmt(&formatter)});
-    }
+    };
 
-    const calls_count = @as(u32, @intCast(try returns.getLength(globalThis)));
+    const calls_count = @as(u32, @intCast(try returns_array.getLength(globalThis)));
     var pass = false;
 
     var successful_returns = std.array_list.Managed(JSValue).init(globalThis.bunVM().allocator);
@@ -26,7 +26,7 @@ pub fn toHaveReturnedWith(this: *Expect, globalThis: *JSGlobalObject, callframe:
 
     // Check for a pass and collect info for error messages
     for (0..calls_count) |i| {
-        const result = returns.getDirectIndex(globalThis, @truncate(i));
+        const result = returns_array.getDirectIndex(globalThis, @truncate(i));
 
         if (result.isObject()) {
             const result_type = try result.get(globalThis, "type") orelse .js_undefined;

@@ -368,7 +368,7 @@ pub fn transpileSourceCode(
                         .allocator = null,
                         .specifier = input_specifier,
                         .source_url = input_specifier.createIfDifferent(path.text),
-                        .jsvalue_for_export = JSValue.createEmptyObject(jsc_vm.global, 0),
+                        .jsvalue_for_export = jsc.JSObject.createEmpty(jsc_vm.global, 0).toJS(),
                         .tag = .exports_object,
                     };
                 }
@@ -634,8 +634,8 @@ pub fn transpileSourceCode(
                         const decoded: jsc.DecodedJSValue = .{
                             .u = .{ .ptr = @ptrCast(globalThis) },
                         };
-                        const globalValue = decoded.encode();
-                        globalValue.put(
+                        const globalValue = decoded.encode().getObject().?;
+                        globalValue.putDirect(
                             globalThis,
                             ZigString.static("wasmSourceBytes"),
                             try jsc.ArrayBuffer.create(globalThis, source.contents, .Uint8Array),

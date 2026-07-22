@@ -59,9 +59,9 @@ pub fn toHaveBeenNthCalledWith(this: *Expect, globalThis: *JSGlobalObject, callf
     defer formatter.deinit();
 
     const expected_args_slice = arguments[1..];
-    const expected_args_js_array = try JSValue.createEmptyArray(globalThis, expected_args_slice.len);
+    const expected_args_js_array = try jsc.JSArray.createEmpty(globalThis, expected_args_slice.len);
     for (expected_args_slice, 0..) |arg, i| {
-        try expected_args_js_array.putIndex(globalThis, @intCast(i), arg);
+        try expected_args_js_array.putDirectIndex(globalThis, @intCast(i), arg);
     }
     expected_args_js_array.ensureStillAlive();
 
@@ -85,7 +85,7 @@ pub fn toHaveBeenNthCalledWith(this: *Expect, globalThis: *JSGlobalObject, callf
 
     // The call existed but didn't match. Show a diff.
     const diff_format = DiffFormatter{
-        .expected = expected_args_js_array,
+        .expected = expected_args_js_array.toJS(),
         .received = nthCallValue,
         .globalThis = globalThis,
         .not = false,

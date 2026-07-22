@@ -37,7 +37,7 @@ pub const JSArrayIterator = struct {
             }
             this.fast = null;
         }
-        return try JSObject.getIndex(this.array, this.global, i);
+        return try this.array.getIndex(this.global, i);
     }
 
     extern fn Bun__JSArray__getContiguousVector(JSValue, *u32) ?[*]const JSValue;
@@ -45,8 +45,6 @@ pub const JSArrayIterator = struct {
 };
 
 const bun = @import("bun");
-const JSObject = @import("./JSObject.zig").JSObject;
-
 const jsc = bun.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
 const JSValue = jsc.JSValue;

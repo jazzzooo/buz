@@ -55,7 +55,7 @@ pub const JSGlobalObject = opaque {
             bun.assert(this.hasException());
             return error.JSError;
         }
-        err.put(this, ZigString.static("name"), (bun.String.static("TODOError").toJS(this)) catch return error.JSError);
+        err.getObject().?.putDirect(this, ZigString.static("name"), (bun.String.static("TODOError").toJS(this)) catch return error.JSError);
         return this.throwValue(err);
     }
 
@@ -376,7 +376,7 @@ pub const JSGlobalObject = opaque {
             bun.assert(this.hasException());
             return .zero;
         }
-        err.put(this, ZigString.static("code"), ZigString.static(@tagName(jsc.Node.ErrorCode.ERR_OUT_OF_RANGE)).toJS(this));
+        err.getObject().?.putDirect(this, ZigString.static("code"), ZigString.static(@tagName(jsc.Node.ErrorCode.ERR_OUT_OF_RANGE)).toJS(this));
         return err;
     }
 
@@ -400,9 +400,10 @@ pub const JSGlobalObject = opaque {
             bun.assert(this.hasException());
             return error.JSError;
         }
-        err.put(this, ZigString.static("code"), ZigString.init(@tagName(opts.code)).toJS(this));
-        if (opts.name) |name| err.put(this, ZigString.static("name"), ZigString.init(name).toJS(this));
-        if (opts.errno) |errno| err.put(this, ZigString.static("errno"), try .fromAny(this, i32, errno));
+        const err_object = err.getObject().?;
+        err_object.putDirect(this, ZigString.static("code"), ZigString.init(@tagName(opts.code)).toJS(this));
+        if (opts.name) |name| err_object.putDirect(this, ZigString.static("name"), ZigString.init(name).toJS(this));
+        if (opts.errno) |errno| err_object.putDirect(this, ZigString.static("errno"), try .fromAny(this, i32, errno));
         return this.throwValue(err);
     }
 

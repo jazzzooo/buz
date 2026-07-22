@@ -148,7 +148,7 @@ pub const SplitBundlerOptions = struct {
     pub fn parsePluginArray(opts: *SplitBundlerOptions, plugin_array: JSValue, global: *jsc.JSGlobalObject) bun.JSError!void {
         const plugin = opts.plugin orelse Plugin.create(global, .bun);
         opts.plugin = plugin;
-        const empty_object = JSValue.createEmptyObject(global, 0);
+        const empty_object = jsc.JSObject.createEmpty(global, 0);
 
         var iter = try plugin_array.arrayIterator(global);
         while (try iter.next()) |plugin_config| {
@@ -168,7 +168,7 @@ pub const SplitBundlerOptions = struct {
             const function = try plugin_config.getFunction(global, "setup") orelse {
                 return global.throwInvalidArguments("Expected plugin to have a setup() function", .{});
             };
-            const plugin_result = try plugin.addPlugin(function, empty_object, .null, false, true);
+            const plugin_result = try plugin.addPlugin(function, empty_object.toJS(), .null, false, true);
             if (plugin_result.asAnyPromise()) |promise| {
                 promise.setHandled(global.vm());
                 // TODO: remove this call, replace with a promise list that must

@@ -6,7 +6,7 @@ pub const js_bindings = struct {
     const JSValue = jsc.JSValue;
 
     pub fn generate(global: *jsc.JSGlobalObject) jsc.JSValue {
-        const obj = jsc.JSValue.createEmptyObject(global, 8);
+        const obj = jsc.JSObject.createEmpty(global, 8);
         inline for (.{
             .{ "getMachOImageZeroOffset", jsGetMachOImageZeroOffset },
             .{ "getFeaturesAsVLQ", jsGetFeaturesAsVLQ },
@@ -18,9 +18,9 @@ pub const js_bindings = struct {
             .{ "raiseIgnoringPanicHandler", jsRaiseIgnoringPanicHandler },
         }) |tuple| {
             const name = jsc.ZigString.static(tuple[0]);
-            obj.put(global, name, jsc.JSFunction.create(global, tuple[0], tuple[1], 1, .{}));
+            obj.putDirect(global, name, jsc.JSFunction.create(global, tuple[0], tuple[1], 1, .{}));
         }
-        return obj;
+        return obj.toJS();
     }
 
     pub fn jsGetMachOImageZeroOffset(_: *bun.jsc.JSGlobalObject, _: *bun.jsc.CallFrame) bun.JSError!JSValue {
@@ -73,22 +73,22 @@ pub const js_bindings = struct {
     }
 
     pub fn jsGetFeatureData(global: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const obj = JSValue.createEmptyObject(global, 5);
+        const obj = jsc.JSObject.createEmpty(global, 5);
         const list = bun.analytics.packed_features_list;
-        const array = try JSValue.createEmptyArray(global, list.len);
+        const array = try jsc.JSArray.createEmpty(global, list.len);
         for (list, 0..) |feature, i| {
-            try array.putIndex(global, @intCast(i), try bun.String.static(feature).toJS(global));
+            try array.putDirectIndex(global, @intCast(i), try bun.String.static(feature).toJS(global));
         }
-        obj.put(global, jsc.ZigString.static("features"), array);
-        obj.put(global, jsc.ZigString.static("version"), try bun.String.init(Global.package_json_version).toJS(global));
-        obj.put(global, jsc.ZigString.static("is_canary"), jsc.JSValue.jsBoolean(bun.Environment.is_canary));
+        obj.putDirect(global, jsc.ZigString.static("features"), array.toJS());
+        obj.putDirect(global, jsc.ZigString.static("version"), try bun.String.init(Global.package_json_version).toJS(global));
+        obj.putDirect(global, jsc.ZigString.static("is_canary"), jsc.JSValue.jsBoolean(bun.Environment.is_canary));
 
         // This is the source of truth for the git sha.
         // Not the github ref or the git tag.
-        obj.put(global, jsc.ZigString.static("revision"), try bun.String.init(bun.Environment.git_sha).toJS(global));
+        obj.putDirect(global, jsc.ZigString.static("revision"), try bun.String.init(bun.Environment.git_sha).toJS(global));
 
-        obj.put(global, jsc.ZigString.static("generated_at"), JSValue.jsNumberFromInt64(@max(bun.timespec.realNow().ms(), 0)));
-        return obj;
+        obj.putDirect(global, jsc.ZigString.static("generated_at"), JSValue.jsNumberFromInt64(@max(bun.timespec.realNow().ms(), 0)));
+        return obj.toJS();
     }
 };
 

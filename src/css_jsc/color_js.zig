@@ -279,34 +279,34 @@ pub fn jsFunctionColor(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFram
                             const rgba = srgba.into(.RGBA);
                             switch (tag) {
                                 .@"{rgba}" => {
-                                    const object = jsc.JSValue.createEmptyObject(globalThis, 4);
-                                    object.put(globalThis, "r", jsc.JSValue.jsNumber(rgba.red));
-                                    object.put(globalThis, "g", jsc.JSValue.jsNumber(rgba.green));
-                                    object.put(globalThis, "b", jsc.JSValue.jsNumber(rgba.blue));
-                                    object.put(globalThis, "a", jsc.JSValue.jsNumber(rgba.alphaF32()));
-                                    return object;
+                                    const object = jsc.JSObject.createEmpty(globalThis, 4);
+                                    object.putDirect(globalThis, "r", jsc.JSValue.jsNumber(rgba.red));
+                                    object.putDirect(globalThis, "g", jsc.JSValue.jsNumber(rgba.green));
+                                    object.putDirect(globalThis, "b", jsc.JSValue.jsNumber(rgba.blue));
+                                    object.putDirect(globalThis, "a", jsc.JSValue.jsNumber(rgba.alphaF32()));
+                                    return object.toJS();
                                 },
                                 .@"{rgb}" => {
-                                    const object = jsc.JSValue.createEmptyObject(globalThis, 3);
-                                    object.put(globalThis, "r", jsc.JSValue.jsNumber(rgba.red));
-                                    object.put(globalThis, "g", jsc.JSValue.jsNumber(rgba.green));
-                                    object.put(globalThis, "b", jsc.JSValue.jsNumber(rgba.blue));
-                                    return object;
+                                    const object = jsc.JSObject.createEmpty(globalThis, 3);
+                                    object.putDirect(globalThis, "r", jsc.JSValue.jsNumber(rgba.red));
+                                    object.putDirect(globalThis, "g", jsc.JSValue.jsNumber(rgba.green));
+                                    object.putDirect(globalThis, "b", jsc.JSValue.jsNumber(rgba.blue));
+                                    return object.toJS();
                                 },
                                 .@"[rgb]" => {
-                                    const object = try jsc.JSValue.createEmptyArray(globalThis, 3);
-                                    try object.putIndex(globalThis, 0, jsc.JSValue.jsNumber(rgba.red));
-                                    try object.putIndex(globalThis, 1, jsc.JSValue.jsNumber(rgba.green));
-                                    try object.putIndex(globalThis, 2, jsc.JSValue.jsNumber(rgba.blue));
-                                    return object;
+                                    const object = try jsc.JSArray.createEmpty(globalThis, 3);
+                                    try object.putDirectIndex(globalThis, 0, jsc.JSValue.jsNumber(rgba.red));
+                                    try object.putDirectIndex(globalThis, 1, jsc.JSValue.jsNumber(rgba.green));
+                                    try object.putDirectIndex(globalThis, 2, jsc.JSValue.jsNumber(rgba.blue));
+                                    return object.toJS();
                                 },
                                 .@"[rgba]" => {
-                                    const object = try jsc.JSValue.createEmptyArray(globalThis, 4);
-                                    try object.putIndex(globalThis, 0, jsc.JSValue.jsNumber(rgba.red));
-                                    try object.putIndex(globalThis, 1, jsc.JSValue.jsNumber(rgba.green));
-                                    try object.putIndex(globalThis, 2, jsc.JSValue.jsNumber(rgba.blue));
-                                    try object.putIndex(globalThis, 3, jsc.JSValue.jsNumber(rgba.alpha));
-                                    return object;
+                                    const object = try jsc.JSArray.createEmpty(globalThis, 4);
+                                    try object.putDirectIndex(globalThis, 0, jsc.JSValue.jsNumber(rgba.red));
+                                    try object.putDirectIndex(globalThis, 1, jsc.JSValue.jsNumber(rgba.green));
+                                    try object.putDirectIndex(globalThis, 2, jsc.JSValue.jsNumber(rgba.blue));
+                                    try object.putDirectIndex(globalThis, 3, jsc.JSValue.jsNumber(rgba.alpha));
+                                    return object.toJS();
                                 },
                                 .number => {
                                     var int: u32 = 0;

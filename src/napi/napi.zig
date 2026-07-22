@@ -298,7 +298,7 @@ pub export fn napi_create_array(env_: napi_env, result_: ?*napi_value) napi_stat
     const result = result_ orelse {
         return env.invalidArg();
     };
-    result.set(env, JSValue.createEmptyArray(env.toJS(), 0) catch return env.setLastError(.pending_exception));
+    result.set(env, (jsc.JSArray.createEmpty(env.toJS(), 0) catch return env.setLastError(.pending_exception)).toJS());
     return env.ok();
 }
 pub export fn napi_create_array_with_length(env_: napi_env, length: usize, result_: ?*napi_value) napi_status {
@@ -317,9 +317,9 @@ pub export fn napi_create_array_with_length(env_: napi_env, length: usize, resul
     const len_i32: i32 = @truncate(len_i64);
     const len: u32 = if (len_i32 > 0) @bitCast(len_i32) else 0;
 
-    const array = jsc.JSValue.createEmptyArray(env.toJS(), len) catch return env.setLastError(.pending_exception);
+    const array = jsc.JSArray.createEmpty(env.toJS(), len) catch return env.setLastError(.pending_exception);
     array.ensureStillAlive();
-    result.set(env, array);
+    result.set(env, array.toJS());
     return env.ok();
 }
 pub extern fn napi_create_double(_: napi_env, value: f64, result: *napi_value) napi_status;

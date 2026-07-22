@@ -1699,10 +1699,10 @@ pub fn NewSocket(comptime ssl: bool) type {
             tls.onOpen(tls.socket);
             new_raw.startTLSHandshake();
 
-            const array = try jsc.JSValue.createEmptyArray(globalObject, 2);
-            try array.putIndex(globalObject, 0, raw_js_value);
-            try array.putIndex(globalObject, 1, tls_js_value);
-            return array;
+            const array = try jsc.JSArray.createEmpty(globalObject, 2);
+            try array.putDirectIndex(globalObject, 0, raw_js_value);
+            try array.putDirectIndex(globalObject, 1, tls_js_value);
+            return array.toJS();
         }
 
         pub const disableRenegotiation = if (ssl) tls_socket_functions.disableRenegotiation else tcp_socket_function_that_returns_undefined;
@@ -2165,12 +2165,12 @@ pub fn jsUpgradeDuplexToTLS(globalObject: *jsc.JSGlobalObject, callframe: *jsc.C
 
     duplexContext.startTLS();
 
-    const array = try jsc.JSValue.createEmptyArray(globalObject, 2);
-    try array.putIndex(globalObject, 0, tls_js_value);
+    const array = try jsc.JSArray.createEmpty(globalObject, 2);
+    try array.putDirectIndex(globalObject, 0, tls_js_value);
     // data, end, drain and close events must be reported
-    try array.putIndex(globalObject, 1, try duplexContext.upgrade.getJSHandlers(globalObject));
+    try array.putDirectIndex(globalObject, 1, try duplexContext.upgrade.getJSHandlers(globalObject));
 
-    return array;
+    return array.toJS();
 }
 
 pub fn jsIsNamedPipeSocket(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
@@ -2222,10 +2222,10 @@ pub fn jsCreateSocketPair(global: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JS
     _ = bun.FD.fromNative(fds_[0]).updateNonblocking(true);
     _ = bun.FD.fromNative(fds_[1]).updateNonblocking(true);
 
-    const array = try jsc.JSValue.createEmptyArray(global, 2);
-    try array.putIndex(global, 0, .jsNumber(fds_[0]));
-    try array.putIndex(global, 1, .jsNumber(fds_[1]));
-    return array;
+    const array = try jsc.JSArray.createEmpty(global, 2);
+    try array.putDirectIndex(global, 0, .jsNumber(fds_[0]));
+    try array.putDirectIndex(global, 1, .jsNumber(fds_[1]));
+    return array.toJS();
 }
 
 pub fn jsSetSocketOptions(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {

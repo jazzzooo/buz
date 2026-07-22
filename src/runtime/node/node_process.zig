@@ -58,11 +58,11 @@ fn createExecArgv(globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
     if (vm.worker) |worker| {
         // was explicitly overridden for the worker?
         if (worker.execArgv) |execArgv| {
-            const array = try jsc.JSValue.createEmptyArray(globalObject, execArgv.len);
+            const array = try jsc.JSArray.createEmpty(globalObject, execArgv.len);
             for (0..execArgv.len) |i| {
-                try array.putIndex(globalObject, @intCast(i), try bun.String.init(execArgv[i]).toJS(globalObject));
+                try array.putDirectIndex(globalObject, @intCast(i), try bun.String.init(execArgv[i]).toJS(globalObject));
             }
-            return array;
+            return array.toJS();
         }
     }
 
@@ -91,13 +91,13 @@ fn createExecArgv(globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
                 }
             }
 
-            const array = try jsc.JSValue.createEmptyArray(globalObject, args.items.len);
+            const array = try jsc.JSArray.createEmpty(globalObject, args.items.len);
             for (0..args.items.len) |idx| {
-                try array.putIndex(globalObject, @intCast(idx), try args.items[idx].toJS(globalObject));
+                try array.putDirectIndex(globalObject, @intCast(idx), try args.items[idx].toJS(globalObject));
             }
-            return array;
+            return array.toJS();
         }
-        return try jsc.JSValue.createEmptyArray(globalObject, 0);
+        return (try jsc.JSArray.createEmpty(globalObject, 0)).toJS();
     }
 
     var args = try std.array_list.Managed(bun.String).initCapacity(temp_alloc, bun.argv.len - 1);

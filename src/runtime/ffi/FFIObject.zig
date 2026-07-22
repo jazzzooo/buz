@@ -14,19 +14,19 @@ pub fn newCString(globalThis: *JSGlobalObject, value: JSValue, byteOffset: ?JSVa
 pub const dom_call = DOMCall("FFI", @This(), "ptr", DOMEffect.forRead(.TypedArrayProperties));
 
 pub fn toJS(globalObject: *jsc.JSGlobalObject) jsc.JSValue {
-    const object = jsc.JSValue.createEmptyObject(globalObject, comptime std.meta.fieldNames(@TypeOf(fields)).len + 2);
+    const object = jsc.JSObject.createEmpty(globalObject, comptime std.meta.fieldNames(@TypeOf(fields)).len + 2);
     inline for (comptime std.meta.fieldNames(@TypeOf(fields))) |field| {
         if (comptime bun.strings.eqlComptime(field, "CString")) {
             // CString needs to be callable as a constructor for backward compatibility.
             // Pass the same function as the constructor so `new CString(ptr)` works.
             const func = jsc.toJSHostFn(@field(fields, field));
-            object.put(
+            object.putDirect(
                 globalObject,
                 comptime ZigString.static(field),
                 jsc.JSFunction.create(globalObject, field, func, 1, .{ .constructor = func }),
             );
         } else {
-            object.put(
+            object.putDirect(
                 globalObject,
                 comptime ZigString.static(field),
                 jsc.JSFunction.create(globalObject, field, @field(fields, field), 1, .{}),
@@ -34,10 +34,10 @@ pub fn toJS(globalObject: *jsc.JSGlobalObject) jsc.JSValue {
         }
     }
 
-    dom_call.put(globalObject, object);
-    object.put(globalObject, ZigString.static("read"), Reader.toJS(globalObject));
+    dom_call.put(globalObject, object.toJS());
+    object.putDirect(globalObject, ZigString.static("read"), Reader.toJS(globalObject));
 
-    return object;
+    return object.toJS();
 }
 
 pub const Reader = struct {
@@ -57,13 +57,13 @@ pub const Reader = struct {
     };
 
     pub fn toJS(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-        const obj = jsc.JSValue.createEmptyObject(globalThis, std.meta.fieldNames(@TypeOf(Reader.dom_calls)).len);
+        const obj = jsc.JSObject.createEmpty(globalThis, std.meta.fieldNames(@TypeOf(Reader.dom_calls)).len);
 
         inline for (comptime std.meta.fieldNames(@TypeOf(Reader.dom_calls))) |field| {
-            @field(Reader.dom_calls, field).put(globalThis, obj);
+            @field(Reader.dom_calls, field).put(globalThis, obj.toJS());
         }
 
-        return obj;
+        return obj.toJS();
     }
 
     pub fn @"u8"(

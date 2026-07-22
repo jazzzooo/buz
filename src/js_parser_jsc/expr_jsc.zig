@@ -36,14 +36,14 @@ pub fn dataToJS(this: Expr.Data, allocator: std.mem.Allocator, globalObject: *js
 
 pub fn arrayToJS(this: E.Array, allocator: std.mem.Allocator, globalObject: *jsc.JSGlobalObject) ToJSError!jsc.JSValue {
     const items = this.items.slice();
-    var array = try jsc.JSValue.createEmptyArray(globalObject, items.len);
+    var array = try jsc.JSArray.createEmpty(globalObject, items.len);
     array.protect();
     defer array.unprotect();
     for (items, 0..) |expr, j| {
-        try array.putIndex(globalObject, @as(u32, @truncate(j)), try dataToJS(expr.data, allocator, globalObject));
+        try array.putDirectIndex(globalObject, @as(u32, @truncate(j)), try dataToJS(expr.data, allocator, globalObject));
     }
 
-    return array;
+    return array.toJS();
 }
 
 pub fn boolToJS(this: E.Boolean, ctx: *jsc.JSGlobalObject) jsc.C.JSValueRef {
@@ -60,7 +60,7 @@ pub fn bigIntToJS(_: E.BigInt) jsc.JSValue {
 }
 
 pub fn objectToJS(this: *E.Object, allocator: std.mem.Allocator, globalObject: *jsc.JSGlobalObject) ToJSError!jsc.JSValue {
-    var obj = jsc.JSValue.createEmptyObject(globalObject, this.properties.len);
+    var obj = jsc.JSObject.createEmpty(globalObject, this.properties.len);
     obj.protect();
     defer obj.unprotect();
     const props: []const G.Property = this.properties.slice();
@@ -70,10 +70,10 @@ pub fn objectToJS(this: *E.Object, allocator: std.mem.Allocator, globalObject: *
         }
         const key = try dataToJS(prop.key.?.data, allocator, globalObject);
         const value = try exprToJS(prop.value.?, allocator, globalObject);
-        try obj.putToPropertyKey(globalObject, key, value);
+        try obj.putDirectToPropertyKey(globalObject, key, value);
     }
 
-    return obj;
+    return obj.toJS();
 }
 
 pub fn stringToJS(s: *E.String, allocator: std.mem.Allocator, globalObject: *jsc.JSGlobalObject) !jsc.JSValue {

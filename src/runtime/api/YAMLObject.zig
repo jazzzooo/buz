@@ -1,6 +1,6 @@
 pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-    const object = JSValue.createEmptyObject(globalThis, 2);
-    object.put(
+    const object = jsc.JSObject.createEmpty(globalThis, 2);
+    object.putDirect(
         globalThis,
         ZigString.static("parse"),
         jsc.JSFunction.create(
@@ -11,7 +11,7 @@ pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
             .{},
         ),
     );
-    object.put(
+    object.putDirect(
         globalThis,
         ZigString.static("stringify"),
         jsc.JSFunction.create(
@@ -23,7 +23,7 @@ pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
         ),
     );
 
-    return object;
+    return object.toJS();
 }
 
 pub fn stringify(global: *JSGlobalObject, callFrame: *jsc.CallFrame) JSError!JSValue {
@@ -1011,9 +1011,9 @@ pub fn parse(
         const err = global.createRangeErrorInstance(
             "The value of \"input.byteLength\" is out of range. It must be <= {d}. Received {d}",
             .{ std.math.maxInt(i32), input_len },
-        );
-        err.put(global, ZigString.static("code"), ZigString.static("ERR_OUT_OF_RANGE").toJS(global));
-        return global.throwValue(err);
+        ).getObject().?;
+        err.putDirect(global, ZigString.static("code"), ZigString.static("ERR_OUT_OF_RANGE").toJS(global));
+        return global.throwValue(err.toJS());
     }
 
     var log = logger.Log.init(bun.default_allocator);
@@ -1096,28 +1096,28 @@ const ParserCtx = struct {
                     return arr;
                 }
 
-                var arr = try JSValue.createEmptyArray(ctx.global, expr.data.e_array.items.len);
+                var arr = try jsc.JSArray.createEmpty(ctx.global, expr.data.e_array.items.len);
 
-                args.append(arr);
-                try ctx.seen_objects.put(expr.data.e_array, arr);
+                args.append(arr.toJS());
+                try ctx.seen_objects.put(expr.data.e_array, arr.toJS());
 
                 for (expr.data.e_array.slice(), 0..) |item, _i| {
                     const i: u32 = @intCast(_i);
                     const value = try ctx.toJS(args, item);
-                    try arr.putIndex(ctx.global, i, value);
+                    try arr.putDirectIndex(ctx.global, i, value);
                 }
 
-                return arr;
+                return arr.toJS();
             },
             .e_object => {
                 if (ctx.seen_objects.get(expr.data.e_object)) |obj| {
                     return obj;
                 }
 
-                var obj = JSValue.createEmptyObject(ctx.global, expr.data.e_object.properties.len);
+                var obj = jsc.JSObject.createEmpty(ctx.global, expr.data.e_object.properties.len);
 
-                args.append(obj);
-                try ctx.seen_objects.put(expr.data.e_object, obj);
+                args.append(obj.toJS());
+                try ctx.seen_objects.put(expr.data.e_object, obj.toJS());
 
                 for (expr.data.e_object.properties.slice()) |prop| {
                     const key_expr = prop.key.?;
@@ -1129,10 +1129,10 @@ const ParserCtx = struct {
                     const key_str = try key.toBunString(ctx.global);
                     defer key_str.deref();
 
-                    try obj.putMayBeIndex(ctx.global, &key_str, value);
+                    try obj.putDirectMayBeIndex(ctx.global, &key_str, value);
                 }
 
-                return obj;
+                return obj.toJS();
             },
 
             // unreachable. the yaml AST does not use any other

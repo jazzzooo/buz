@@ -341,7 +341,8 @@ pub const JSBundler = struct {
                     try this.executable_path.appendSliceExact(slice.slice());
                 }
 
-                if (try object.getOwnTruthy(globalThis, "windows")) |windows| {
+                if (try object.getOwn(globalThis, "windows")) |windows| windows_options: {
+                    if (windows.isUndefined()) break :windows_options;
                     if (!windows.isObject()) {
                         return globalThis.throwInvalidArguments("windows must be an object", .{});
                     }

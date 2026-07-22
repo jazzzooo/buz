@@ -75,12 +75,12 @@ pub fn logToJSAggregateError(this: Log, global: *jsc.JSGlobalObject, message: bu
 pub fn logToJSArray(this: Log, global: *jsc.JSGlobalObject, allocator: std.mem.Allocator) bun.JSError!jsc.JSValue {
     const msgs: []const Msg = this.msgs.items;
 
-    const arr = try jsc.JSValue.createEmptyArray(global, msgs.len);
+    const arr = try jsc.JSArray.createEmpty(global, msgs.len);
     for (msgs, 0..) |msg, i| {
-        try arr.putIndex(global, @as(u32, @intCast(i)), try msgToJS(msg, global, allocator));
+        try arr.putDirectIndex(global, @as(u32, @intCast(i)), try msgToJS(msg, global, allocator));
     }
 
-    return arr;
+    return arr.toJS();
 }
 
 const std = @import("std");

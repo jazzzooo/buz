@@ -52,29 +52,28 @@ pub fn myersDiff(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSE
 const StrDiffList = DiffList([]const u8);
 fn diffListToJS(global: *jsc.JSGlobalObject, diff_list: StrDiffList) bun.JSError!jsc.JSValue {
     // todo: replace with toJS
-    var array = try jsc.JSValue.createEmptyArray(global, diff_list.items.len);
+    const array = try jsc.JSArray.createEmpty(global, diff_list.items.len);
     for (diff_list.items, 0..) |*line, i| {
-        var obj = jsc.JSValue.createEmptyObjectWithNullPrototype(global);
-        if (obj == .zero) return global.throwOutOfMemory();
-        obj.put(global, bun.String.static("kind"), jsc.JSValue.jsNumber(@as(u32, @backingInt(line.kind))));
-        obj.put(global, bun.String.static("value"), .fromAny(global, []const u8, line.value));
-        array.putIndex(global, @truncate(i), obj);
+        const obj = jsc.JSObject.createEmptyWithNullPrototype(global);
+        obj.putDirect(global, bun.String.static("kind"), jsc.JSValue.jsNumber(@as(u32, @backingInt(line.kind))));
+        obj.putDirect(global, bun.String.static("value"), try .fromAny(global, []const u8, line.value));
+        try array.putDirectIndex(global, @truncate(i), obj.toJS());
     }
-    return array;
+    return array.toJS();
 }
 
 // =============================================================================
 
 pub fn generate(global: *jsc.JSGlobalObject) jsc.JSValue {
-    const exports = jsc.JSValue.createEmptyObject(global, 1);
+    const exports = jsc.JSObject.createEmpty(global, 1);
 
-    exports.put(
+    exports.putDirect(
         global,
         bun.String.static("myersDiff"),
         jsc.JSFunction.create(global, "myersDiff", myersDiff, 2, .{}),
     );
 
-    return exports;
+    return exports.toJS();
 }
 
 const assert = @import("./node_assert.zig");

@@ -1731,14 +1731,14 @@ pub const internal = struct {
     var getaddrinfo_calls: usize = 0;
 
     pub fn getDNSCacheStats(globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const object = jsc.JSValue.createEmptyObject(globalObject, 6);
-        object.put(globalObject, jsc.ZigString.static("cacheHitsCompleted"), jsc.JSValue.jsNumber(@atomicLoad(usize, &dns_cache_hits_completed, .monotonic)));
-        object.put(globalObject, jsc.ZigString.static("cacheHitsInflight"), jsc.JSValue.jsNumber(@atomicLoad(usize, &dns_cache_hits_inflight, .monotonic)));
-        object.put(globalObject, jsc.ZigString.static("cacheMisses"), jsc.JSValue.jsNumber(@atomicLoad(usize, &dns_cache_misses, .monotonic)));
-        object.put(globalObject, jsc.ZigString.static("size"), jsc.JSValue.jsNumber(@atomicLoad(usize, &dns_cache_size, .monotonic)));
-        object.put(globalObject, jsc.ZigString.static("errors"), jsc.JSValue.jsNumber(@atomicLoad(usize, &dns_cache_errors, .monotonic)));
-        object.put(globalObject, jsc.ZigString.static("totalCount"), jsc.JSValue.jsNumber(@atomicLoad(usize, &getaddrinfo_calls, .monotonic)));
-        return object;
+        const object = jsc.JSObject.createEmpty(globalObject, 6);
+        object.putDirect(globalObject, jsc.ZigString.static("cacheHitsCompleted"), jsc.JSValue.jsNumber(@atomicLoad(usize, &dns_cache_hits_completed, .monotonic)));
+        object.putDirect(globalObject, jsc.ZigString.static("cacheHitsInflight"), jsc.JSValue.jsNumber(@atomicLoad(usize, &dns_cache_hits_inflight, .monotonic)));
+        object.putDirect(globalObject, jsc.ZigString.static("cacheMisses"), jsc.JSValue.jsNumber(@atomicLoad(usize, &dns_cache_misses, .monotonic)));
+        object.putDirect(globalObject, jsc.ZigString.static("size"), jsc.JSValue.jsNumber(@atomicLoad(usize, &dns_cache_size, .monotonic)));
+        object.putDirect(globalObject, jsc.ZigString.static("errors"), jsc.JSValue.jsNumber(@atomicLoad(usize, &dns_cache_errors, .monotonic)));
+        object.putDirect(globalObject, jsc.ZigString.static("totalCount"), jsc.JSValue.jsNumber(@atomicLoad(usize, &getaddrinfo_calls, .monotonic)));
+        return object.toJS();
     }
 
     pub fn getaddrinfo(loop: *bun.uws.Loop, host: ?[:0]const u8, port: u16, is_cache_hit: ?*bool) ?*Request {
@@ -3273,7 +3273,7 @@ pub const Resolver = struct {
         }
         defer c_ares.ares_free_data(servers);
 
-        const values = try jsc.JSValue.createEmptyArray(globalThis, 0);
+        const values = try jsc.JSArray.createEmpty(globalThis, 0);
 
         var i: u32 = 0;
         var cur = servers;
@@ -3307,21 +3307,21 @@ pub const Resolver = struct {
 
             const size = bun.len(bun.cast([*:0]u8, buf[1..])) + 1;
             if (port == IANA_DNS_PORT) {
-                try values.putIndex(globalThis, i, jsc.ZigString.init(buf[1..size]).withEncoding().toJS(globalThis));
+                try values.putDirectIndex(globalThis, i, jsc.ZigString.init(buf[1..size]).withEncoding().toJS(globalThis));
             } else {
                 if (family == std.posix.AF.INET6) {
                     buf[0] = '[';
                     buf[size] = ']';
                     const port_slice = std.fmt.bufPrint(buf[size + 1 ..], ":{d}", .{port}) catch unreachable;
-                    try values.putIndex(globalThis, i, jsc.ZigString.init(buf[0 .. size + 1 + port_slice.len]).withEncoding().toJS(globalThis));
+                    try values.putDirectIndex(globalThis, i, jsc.ZigString.init(buf[0 .. size + 1 + port_slice.len]).withEncoding().toJS(globalThis));
                 } else {
                     const port_slice = std.fmt.bufPrint(buf[size..], ":{d}", .{port}) catch unreachable;
-                    try values.putIndex(globalThis, i, jsc.ZigString.init(buf[1 .. size + port_slice.len]).withEncoding().toJS(globalThis));
+                    try values.putDirectIndex(globalThis, i, jsc.ZigString.init(buf[1 .. size + port_slice.len]).withEncoding().toJS(globalThis));
                 }
             }
         }
 
-        return values;
+        return values.toJS();
     }
 
     pub fn getGlobalServers(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {

@@ -43,13 +43,13 @@ pub const TestingAPIs = struct {
         const ism = InternalSourceMap{ .data = bytes.ptr };
         const mapping = ism.find(.fromZeroBased(line), .fromZeroBased(col)) orelse return .null;
 
-        const obj = jsc.JSValue.createEmptyObject(globalThis, 5);
-        obj.put(globalThis, jsc.ZigString.static("generatedLine"), .jsNumber(mapping.generated.lines.zeroBased()));
-        obj.put(globalThis, jsc.ZigString.static("generatedColumn"), .jsNumber(mapping.generated.columns.zeroBased()));
-        obj.put(globalThis, jsc.ZigString.static("originalLine"), .jsNumber(mapping.original.lines.zeroBased()));
-        obj.put(globalThis, jsc.ZigString.static("originalColumn"), .jsNumber(mapping.original.columns.zeroBased()));
-        obj.put(globalThis, jsc.ZigString.static("sourceIndex"), .jsNumber(mapping.source_index));
-        return obj;
+        const obj = jsc.JSObject.createEmpty(globalThis, 5);
+        obj.putDirect(globalThis, jsc.ZigString.static("generatedLine"), .jsNumber(mapping.generated.lines.zeroBased()));
+        obj.putDirect(globalThis, jsc.ZigString.static("generatedColumn"), .jsNumber(mapping.generated.columns.zeroBased()));
+        obj.putDirect(globalThis, jsc.ZigString.static("originalLine"), .jsNumber(mapping.original.lines.zeroBased()));
+        obj.putDirect(globalThis, jsc.ZigString.static("originalColumn"), .jsNumber(mapping.original.columns.zeroBased()));
+        obj.putDirect(globalThis, jsc.ZigString.static("sourceIndex"), .jsNumber(mapping.source_index));
+        return obj.toJS();
     }
 };
 

@@ -213,16 +213,16 @@ const FullSettingsPayload = packed struct(u336) {
     enableConnectProtocol: u32 = 0,
     pub const byteSize: usize = 42;
     pub fn toJS(this: *FullSettingsPayload, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
-        var result = JSValue.createEmptyObject(globalObject, 8);
-        result.put(globalObject, jsc.ZigString.static("headerTableSize"), jsc.JSValue.jsNumber(this.headerTableSize));
-        result.put(globalObject, jsc.ZigString.static("enablePush"), jsc.JSValue.jsBoolean(this.enablePush > 0));
-        result.put(globalObject, jsc.ZigString.static("maxConcurrentStreams"), jsc.JSValue.jsNumber(this.maxConcurrentStreams));
-        result.put(globalObject, jsc.ZigString.static("initialWindowSize"), jsc.JSValue.jsNumber(this.initialWindowSize));
-        result.put(globalObject, jsc.ZigString.static("maxFrameSize"), jsc.JSValue.jsNumber(this.maxFrameSize));
-        result.put(globalObject, jsc.ZigString.static("maxHeaderListSize"), jsc.JSValue.jsNumber(this.maxHeaderListSize));
-        result.put(globalObject, jsc.ZigString.static("maxHeaderSize"), jsc.JSValue.jsNumber(this.maxHeaderListSize));
-        result.put(globalObject, jsc.ZigString.static("enableConnectProtocol"), jsc.JSValue.jsBoolean(this.enableConnectProtocol > 0));
-        return result;
+        var result = jsc.JSObject.createEmpty(globalObject, 8);
+        result.putDirect(globalObject, jsc.ZigString.static("headerTableSize"), jsc.JSValue.jsNumber(this.headerTableSize));
+        result.putDirect(globalObject, jsc.ZigString.static("enablePush"), jsc.JSValue.jsBoolean(this.enablePush > 0));
+        result.putDirect(globalObject, jsc.ZigString.static("maxConcurrentStreams"), jsc.JSValue.jsNumber(this.maxConcurrentStreams));
+        result.putDirect(globalObject, jsc.ZigString.static("initialWindowSize"), jsc.JSValue.jsNumber(this.initialWindowSize));
+        result.putDirect(globalObject, jsc.ZigString.static("maxFrameSize"), jsc.JSValue.jsNumber(this.maxFrameSize));
+        result.putDirect(globalObject, jsc.ZigString.static("maxHeaderListSize"), jsc.JSValue.jsNumber(this.maxHeaderListSize));
+        result.putDirect(globalObject, jsc.ZigString.static("maxHeaderSize"), jsc.JSValue.jsNumber(this.maxHeaderListSize));
+        result.putDirect(globalObject, jsc.ZigString.static("enableConnectProtocol"), jsc.JSValue.jsBoolean(this.enableConnectProtocol > 0));
+        return result.toJS();
     }
 
     pub fn updateWith(this: *FullSettingsPayload, option: SettingsPayloadUnit) void {
@@ -1772,10 +1772,10 @@ pub const H2FrameParser = struct {
         }
 
         const stream_id = stream.id;
-        const headers = try jsc.JSValue.createEmptyArray(globalObject, 0);
+        const headers = try jsc.JSArray.createEmpty(globalObject, 0);
         headers.ensureStillAlive();
 
-        var sensitiveHeaders: JSValue = .js_undefined;
+        var sensitiveHeaders: ?*jsc.JSArray = null;
         var count: usize = 0;
         // RFC 7540 Section 6.5.2: Track cumulative header list size
         var headerListSize: usize = 0;
@@ -1820,22 +1820,22 @@ pub const H2FrameParser = struct {
                 try headers.push(globalObject, js_header_name);
                 try headers.push(globalObject, try bun.String.createUTF8ForJS(globalObject, header.value));
                 if (header.never_index) {
-                    if (sensitiveHeaders.isUndefined()) {
-                        sensitiveHeaders = try jsc.JSValue.createEmptyArray(globalObject, 0);
-                        sensitiveHeaders.ensureStillAlive();
+                    if (sensitiveHeaders == null) {
+                        sensitiveHeaders = try jsc.JSArray.createEmpty(globalObject, 0);
+                        sensitiveHeaders.?.ensureStillAlive();
                     }
-                    try sensitiveHeaders.push(globalObject, js_header_name);
+                    try sensitiveHeaders.?.push(globalObject, js_header_name);
                 }
             } else {
                 const js_header_name = try bun.String.createUTF8ForJS(globalObject, header.name);
                 const js_header_value = try bun.String.createUTF8ForJS(globalObject, header.value);
 
                 if (header.never_index) {
-                    if (sensitiveHeaders.isUndefined()) {
-                        sensitiveHeaders = try jsc.JSValue.createEmptyArray(globalObject, 0);
-                        sensitiveHeaders.ensureStillAlive();
+                    if (sensitiveHeaders == null) {
+                        sensitiveHeaders = try jsc.JSArray.createEmpty(globalObject, 0);
+                        sensitiveHeaders.?.ensureStillAlive();
                     }
-                    try sensitiveHeaders.push(globalObject, js_header_name);
+                    try sensitiveHeaders.?.push(globalObject, js_header_name);
                 }
 
                 try headers.push(globalObject, js_header_name);
@@ -1850,7 +1850,7 @@ pub const H2FrameParser = struct {
             }
         }
 
-        this.dispatchWith3Extra(.onStreamHeaders, stream.getIdentifier(), headers, sensitiveHeaders, jsc.JSValue.jsNumber(flags));
+        this.dispatchWith3Extra(.onStreamHeaders, stream.getIdentifier(), headers.toJS(), if (sensitiveHeaders) |array| array.toJS() else .js_undefined, jsc.JSValue.jsNumber(flags));
         return this.streams.get(stream_id);
     }
 
@@ -2036,14 +2036,14 @@ pub const H2FrameParser = struct {
                     originValue.ensureStillAlive();
                 } else if (count == 1) {
                     // need to create an array
-                    const array = try jsc.JSValue.createEmptyArray(this.handlers.globalObject, 0);
+                    const array = try jsc.JSArray.createEmpty(this.handlers.globalObject, 0);
                     array.ensureStillAlive();
                     try array.push(this.handlers.globalObject, originValue);
                     try array.push(this.handlers.globalObject, try this.stringOrEmptyToJS(origin_str));
-                    originValue = array;
+                    originValue = array.toJS();
                 } else {
                     // we already have an array, just add the origin to it
-                    try originValue.push(this.handlers.globalObject, try this.stringOrEmptyToJS(origin_str));
+                    try originValue.getArrayObject().?.push(this.handlers.globalObject, try this.stringOrEmptyToJS(origin_str));
                 }
                 count += 1;
                 payload = payload[origin_length + 2 ..];
@@ -2797,19 +2797,19 @@ pub const H2FrameParser = struct {
 
     pub fn getCurrentState(this: *H2FrameParser, globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!JSValue {
         jsc.markBinding(@src());
-        var result = JSValue.createEmptyObject(globalObject, 9);
-        result.put(globalObject, jsc.ZigString.static("effectiveLocalWindowSize"), jsc.JSValue.jsNumber(this.windowSize));
-        result.put(globalObject, jsc.ZigString.static("effectiveRecvDataLength"), jsc.JSValue.jsNumber(this.windowSize - this.usedWindowSize));
-        result.put(globalObject, jsc.ZigString.static("nextStreamID"), jsc.JSValue.jsNumber(this.getNextStreamID()));
-        result.put(globalObject, jsc.ZigString.static("lastProcStreamID"), jsc.JSValue.jsNumber(this.lastStreamID));
+        var result = jsc.JSObject.createEmpty(globalObject, 9);
+        result.putDirect(globalObject, jsc.ZigString.static("effectiveLocalWindowSize"), jsc.JSValue.jsNumber(this.windowSize));
+        result.putDirect(globalObject, jsc.ZigString.static("effectiveRecvDataLength"), jsc.JSValue.jsNumber(this.windowSize - this.usedWindowSize));
+        result.putDirect(globalObject, jsc.ZigString.static("nextStreamID"), jsc.JSValue.jsNumber(this.getNextStreamID()));
+        result.putDirect(globalObject, jsc.ZigString.static("lastProcStreamID"), jsc.JSValue.jsNumber(this.lastStreamID));
 
         const settings: FullSettingsPayload = this.remoteSettings orelse .{};
-        result.put(globalObject, jsc.ZigString.static("remoteWindowSize"), jsc.JSValue.jsNumber(settings.initialWindowSize));
-        result.put(globalObject, jsc.ZigString.static("localWindowSize"), jsc.JSValue.jsNumber(this.localSettings.initialWindowSize));
-        result.put(globalObject, jsc.ZigString.static("deflateDynamicTableSize"), jsc.JSValue.jsNumber(this.localSettings.headerTableSize));
-        result.put(globalObject, jsc.ZigString.static("inflateDynamicTableSize"), jsc.JSValue.jsNumber(this.localSettings.headerTableSize));
-        result.put(globalObject, jsc.ZigString.static("outboundQueueSize"), jsc.JSValue.jsNumber(this.outboundQueueSize));
-        return result;
+        result.putDirect(globalObject, jsc.ZigString.static("remoteWindowSize"), jsc.JSValue.jsNumber(settings.initialWindowSize));
+        result.putDirect(globalObject, jsc.ZigString.static("localWindowSize"), jsc.JSValue.jsNumber(this.localSettings.initialWindowSize));
+        result.putDirect(globalObject, jsc.ZigString.static("deflateDynamicTableSize"), jsc.JSValue.jsNumber(this.localSettings.headerTableSize));
+        result.putDirect(globalObject, jsc.ZigString.static("inflateDynamicTableSize"), jsc.JSValue.jsNumber(this.localSettings.headerTableSize));
+        result.putDirect(globalObject, jsc.ZigString.static("outboundQueueSize"), jsc.JSValue.jsNumber(this.outboundQueueSize));
+        return result.toJS();
     }
 
     pub fn goaway(this: *H2FrameParser, globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
@@ -3090,17 +3090,17 @@ pub const H2FrameParser = struct {
         var stream = this.streams.get(stream_id) orelse {
             return globalObject.throw("Invalid stream id", .{});
         };
-        var state = jsc.JSValue.createEmptyObject(globalObject, 6);
+        var state = jsc.JSObject.createEmpty(globalObject, 6);
 
-        state.put(globalObject, jsc.ZigString.static("localWindowSize"), jsc.JSValue.jsNumber(stream.windowSize));
-        state.put(globalObject, jsc.ZigString.static("state"), jsc.JSValue.jsNumber(@backingInt(stream.state)));
-        state.put(globalObject, jsc.ZigString.static("localClose"), jsc.JSValue.jsNumber(@as(i32, if (stream.canSendData()) 0 else 1)));
-        state.put(globalObject, jsc.ZigString.static("remoteClose"), jsc.JSValue.jsNumber(@as(i32, if (stream.canReceiveData()) 0 else 1)));
+        state.putDirect(globalObject, jsc.ZigString.static("localWindowSize"), jsc.JSValue.jsNumber(stream.windowSize));
+        state.putDirect(globalObject, jsc.ZigString.static("state"), jsc.JSValue.jsNumber(@backingInt(stream.state)));
+        state.putDirect(globalObject, jsc.ZigString.static("localClose"), jsc.JSValue.jsNumber(@as(i32, if (stream.canSendData()) 0 else 1)));
+        state.putDirect(globalObject, jsc.ZigString.static("remoteClose"), jsc.JSValue.jsNumber(@as(i32, if (stream.canReceiveData()) 0 else 1)));
         // TODO: sumDependencyWeight
-        state.put(globalObject, jsc.ZigString.static("sumDependencyWeight"), jsc.JSValue.jsNumber(0));
-        state.put(globalObject, jsc.ZigString.static("weight"), jsc.JSValue.jsNumber(stream.weight));
+        state.putDirect(globalObject, jsc.ZigString.static("sumDependencyWeight"), jsc.JSValue.jsNumber(0));
+        state.putDirect(globalObject, jsc.ZigString.static("weight"), jsc.JSValue.jsNumber(stream.weight));
 
-        return state;
+        return state.toJS();
     }
 
     pub fn setStreamPriority(this: *H2FrameParser, globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {

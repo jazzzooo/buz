@@ -415,7 +415,8 @@ pub const JestPrettyFormat = struct {
 
                 // Is this a react element?
                 if (js_type.isObject() and js_type != .ProxyObject) {
-                    if (try value.getOwnTruthy(globalThis, "$$typeof")) |typeof_symbol| {
+                    if (try value.getOwn(globalThis, "$$typeof")) |typeof_symbol| react: {
+                        if (typeof_symbol.isUndefined()) break :react;
                         var reactElement = ZigString.init("react.element");
                         var react_fragment = ZigString.init("react.fragment");
 
@@ -651,8 +652,8 @@ pub const JestPrettyFormat = struct {
                 pub fn forEach(_: *jsc.VM, globalObject: *JSGlobalObject, ctx: ?*anyopaque, nextValue: JSValue) callconv(.c) void {
                     var this: *@This() = bun.cast(*@This(), ctx orelse return);
                     if (this.formatter.failed) return;
-                    const key = jsc.JSObject.getIndex(nextValue, globalObject, 0) catch return;
-                    const value = jsc.JSObject.getIndex(nextValue, globalObject, 1) catch return;
+                    const key = nextValue.getIndex(globalObject, 0) catch return;
+                    const value = nextValue.getIndex(globalObject, 1) catch return;
                     this.formatter.writeIndent(Writer, this.writer) catch return;
                     const key_tag = Tag.get(key, globalObject) catch return;
 
@@ -1661,7 +1662,7 @@ pub const JestPrettyFormat = struct {
 
                                                     var j: usize = 0;
                                                     while (j < length) : (j += 1) {
-                                                        const child = try jsc.JSObject.getIndex(children, this.globalThis, @as(u32, @intCast(j)));
+                                                        const child = try children.getIndex(this.globalThis, @as(u32, @intCast(j)));
                                                         try this.format(try Tag.get(child, this.globalThis), Writer, writer_, child, this.globalThis, enable_ansi_colors);
                                                         if (j + 1 < length) {
                                                             writer.writeAll("\n");

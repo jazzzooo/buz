@@ -54,9 +54,9 @@ pub fn toHaveBeenCalledWith(this: *Expect, globalThis: *JSGlobalObject, callfram
     var formatter = jsc.ConsoleObject.Formatter{ .globalThis = globalThis, .quote_strings = true };
     defer formatter.deinit();
 
-    const expected_args_js_array = try JSValue.createEmptyArray(globalThis, arguments.len);
+    const expected_args_js_array = try jsc.JSArray.createEmpty(globalThis, arguments.len);
     for (arguments, 0..) |arg, i| {
-        try expected_args_js_array.putIndex(globalThis, @intCast(i), arg);
+        try expected_args_js_array.putDirectIndex(globalThis, @intCast(i), arg);
     }
     expected_args_js_array.ensureStillAlive();
 
@@ -78,7 +78,7 @@ pub fn toHaveBeenCalledWith(this: *Expect, globalThis: *JSGlobalObject, callfram
     if (calls_count == 1) {
         const received_call_args = try calls.getIndex(globalThis, 0);
         const diff_format = DiffFormatter{
-            .expected = expected_args_js_array,
+            .expected = expected_args_js_array.toJS(),
             .received = received_call_args,
             .globalThis = globalThis,
             .not = false,

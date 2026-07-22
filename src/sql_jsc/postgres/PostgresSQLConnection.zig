@@ -140,10 +140,10 @@ pub fn getQueries(_: *PostgresSQLConnection, thisValue: jsc.JSValue, globalObjec
         return value;
     }
 
-    const array = try jsc.JSValue.createEmptyArray(globalObject, 0);
-    js.queriesSetCached(thisValue, globalObject, array);
+    const array = try jsc.JSArray.createEmpty(globalObject, 0);
+    js.queriesSetCached(thisValue, globalObject, array.toJS());
 
-    return array;
+    return array.toJS();
 }
 
 pub fn getOnConnect(_: *PostgresSQLConnection, thisValue: jsc.JSValue, _: *jsc.JSGlobalObject) jsc.JSValue {

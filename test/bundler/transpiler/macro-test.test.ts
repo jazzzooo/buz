@@ -132,7 +132,7 @@ test("ireturnapromise", async () => {
 });
 
 // A numeric key >= 100000 (JSC's MIN_SPARSE_ARRAY_INDEX) makes the property put inside
-// JSC__JSValue__putToPropertyKey take a path that can throw, so the binding must check for
+// JSC__JSObject__putDirectToPropertyKey takes a path that can throw, so the binding must check for
 // an exception. BUN_JSC_validateExceptionChecks=1 aborts the child if the check is missing.
 test("object argument with a sparse numeric key", async () => {
   using dir = tempDir("macro-sparse-key", {

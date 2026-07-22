@@ -1109,20 +1109,20 @@ pub fn spawnMaybeSync(
     const resultPid = jsc.JSValue.jsNumberFromInt32(subprocess.pid());
     subprocess.finalize();
 
-    const sync_value = jsc.JSValue.createEmptyObject(globalThis, 0);
-    sync_value.put(globalThis, jsc.ZigString.static("exitCode"), exitCode);
+    const sync_value = jsc.JSObject.createEmpty(globalThis, 0);
+    sync_value.putDirect(globalThis, jsc.ZigString.static("exitCode"), exitCode);
     if (!signalCode.isEmptyOrUndefinedOrNull()) {
-        sync_value.put(globalThis, jsc.ZigString.static("signalCode"), signalCode);
+        sync_value.putDirect(globalThis, jsc.ZigString.static("signalCode"), signalCode);
     }
-    sync_value.put(globalThis, jsc.ZigString.static("stdout"), stdout);
-    sync_value.put(globalThis, jsc.ZigString.static("stderr"), stderr);
-    sync_value.put(globalThis, jsc.ZigString.static("success"), JSValue.jsBoolean(exitCode.isInt32() and exitCode.asInt32() == 0));
-    sync_value.put(globalThis, jsc.ZigString.static("resourceUsage"), resource_usage);
-    if (timeout != null) sync_value.put(globalThis, jsc.ZigString.static("exitedDueToTimeout"), if (exitedDueToTimeout) .true else .false);
-    if (maxBuffer != null) sync_value.put(globalThis, jsc.ZigString.static("exitedDueToMaxBuffer"), if (exitedDueToMaxBuffer != null) .true else .false);
-    sync_value.put(globalThis, jsc.ZigString.static("pid"), resultPid);
+    sync_value.putDirect(globalThis, jsc.ZigString.static("stdout"), stdout);
+    sync_value.putDirect(globalThis, jsc.ZigString.static("stderr"), stderr);
+    sync_value.putDirect(globalThis, jsc.ZigString.static("success"), JSValue.jsBoolean(exitCode.isInt32() and exitCode.asInt32() == 0));
+    sync_value.putDirect(globalThis, jsc.ZigString.static("resourceUsage"), resource_usage);
+    if (timeout != null) sync_value.putDirect(globalThis, jsc.ZigString.static("exitedDueToTimeout"), if (exitedDueToTimeout) .true else .false);
+    if (maxBuffer != null) sync_value.putDirect(globalThis, jsc.ZigString.static("exitedDueToMaxBuffer"), if (exitedDueToMaxBuffer != null) .true else .false);
+    sync_value.putDirect(globalThis, jsc.ZigString.static("pid"), resultPid);
 
-    return sync_value;
+    return sync_value.toJS();
 }
 
 fn throwCommandNotFound(globalThis: *jsc.JSGlobalObject, command: []const u8) bun.JSError {

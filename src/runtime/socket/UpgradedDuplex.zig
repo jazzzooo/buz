@@ -261,7 +261,7 @@ pub fn from(
 }
 
 pub fn getJSHandlers(this: *UpgradedDuplex, globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-    const array = try jsc.JSValue.createEmptyArray(globalThis, 4);
+    const array = try jsc.JSArray.createEmpty(globalThis, 4);
     array.ensureStillAlive();
 
     {
@@ -280,7 +280,7 @@ pub fn getJSHandlers(this: *UpgradedDuplex, globalThis: *jsc.JSGlobalObject) bun
             this.onDataCallback = .create(dataCallback, globalThis);
             break :brk dataCallback;
         };
-        try array.putIndex(globalThis, 0, callback);
+        try array.putDirectIndex(globalThis, 0, callback);
     }
 
     {
@@ -299,7 +299,7 @@ pub fn getJSHandlers(this: *UpgradedDuplex, globalThis: *jsc.JSGlobalObject) bun
             this.onEndCallback = .create(endCallback, globalThis);
             break :brk endCallback;
         };
-        try array.putIndex(globalThis, 1, callback);
+        try array.putDirectIndex(globalThis, 1, callback);
     }
 
     {
@@ -317,7 +317,7 @@ pub fn getJSHandlers(this: *UpgradedDuplex, globalThis: *jsc.JSGlobalObject) bun
             this.onWritableCallback = .create(writableCallback, globalThis);
             break :brk writableCallback;
         };
-        try array.putIndex(globalThis, 2, callback);
+        try array.putDirectIndex(globalThis, 2, callback);
     }
 
     {
@@ -335,10 +335,10 @@ pub fn getJSHandlers(this: *UpgradedDuplex, globalThis: *jsc.JSGlobalObject) bun
             this.onCloseCallback = .create(closeCallback, globalThis);
             break :brk closeCallback;
         };
-        try array.putIndex(globalThis, 3, callback);
+        try array.putDirectIndex(globalThis, 3, callback);
     }
 
-    return array;
+    return array.toJS();
 }
 
 pub fn startTLS(this: *UpgradedDuplex, ssl_options: jsc.API.ServerConfig.SSLConfig, is_client: bool) !void {

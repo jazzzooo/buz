@@ -478,7 +478,7 @@ pub fn getKilled(this: *Subprocess, _: *JSGlobalObject) JSValue {
 }
 
 pub fn getStdio(this: *Subprocess, global: *JSGlobalObject) bun.JSError!JSValue {
-    const array = try JSValue.createEmptyArray(global, 0);
+    const array = try jsc.JSArray.createEmpty(global, 0);
     try array.push(global, .null);
     try array.push(global, .null); // TODO: align this with options
     try array.push(global, .null); // TODO: align this with options
@@ -496,7 +496,7 @@ pub fn getStdio(this: *Subprocess, global: *JSGlobalObject) bun.JSError!JSValue 
             .unavailable => try array.push(global, .null),
         }
     }
-    return array;
+    return array.toJS();
 }
 
 pub const Source = union(enum) {

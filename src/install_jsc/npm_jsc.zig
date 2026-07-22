@@ -48,10 +48,10 @@ pub fn architectureIsMatch(globalObject: *jsc.JSGlobalObject, callframe: *jsc.Ca
 /// Formerly `npm.PackageManifest.bindings` — testing-only (`internal-for-testing.ts`).
 pub const ManifestBindings = struct {
     pub fn generate(global: *jsc.JSGlobalObject) jsc.JSValue {
-        const obj = jsc.JSValue.createEmptyObject(global, 1);
+        const obj = jsc.JSObject.createEmpty(global, 1);
         const parseManifestString = jsc.ZigString.static("parseManifest");
-        obj.put(global, parseManifestString, jsc.JSFunction.create(global, "parseManifest", jsParseManifest, 2, .{}));
-        return obj;
+        obj.putDirect(global, parseManifestString, jsc.JSFunction.create(global, "parseManifest", jsParseManifest, 2, .{}));
+        return obj.toJS();
     }
 
     pub fn jsParseManifest(global: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {

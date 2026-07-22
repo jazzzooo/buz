@@ -109,7 +109,7 @@ pub const SubscriptionCtx = struct {
         const new_length = try updated_array.getLength(globalObject);
 
         if (new_length != 0) {
-            try map.set(globalObject, channelName, updated_array);
+            try map.set(globalObject, channelName, updated_array.toJS());
         }
 
         return new_length;
@@ -125,32 +125,20 @@ pub const SubscriptionCtx = struct {
         defer this.parent().onNewSubscriptionCallbackInsert();
         const map = this.subscriptionCallbackMap();
 
-        var handlers_array: JSValue = .js_undefined;
-        var is_new_channel = false;
         const existing_handler_arr = try map.get(globalObject, channelName);
-        if (existing_handler_arr != .js_undefined) {
+        const handlers_array = if (existing_handler_arr.getArrayObject()) |array| array else if (existing_handler_arr.isUndefined())
+            try jsc.JSArray.createEmpty(globalObject, 0)
+        else
+            unreachable;
+        if (!existing_handler_arr.isUndefined()) {
             debug("Adding a new receive handler.", .{});
-            // Note that we need to cover this case because maps in JSC can return undefined when the key has never been
-            // set.
-            if (existing_handler_arr.isUndefined()) {
-                // Create a new array if the existing_handler_arr is undefined/null
-                handlers_array = try jsc.JSArray.createEmpty(globalObject, 0);
-                is_new_channel = true;
-            } else if (existing_handler_arr.isArray()) {
-                // Use the existing array
-                handlers_array = existing_handler_arr;
-            } else unreachable;
-        } else {
-            // No existing_handler_arr exists, create a new array
-            handlers_array = try jsc.JSArray.createEmpty(globalObject, 0);
-            is_new_channel = true;
         }
 
         // Append the new callback to the array
         try handlers_array.push(globalObject, callback);
 
         // Set the updated array back in the map
-        try map.set(globalObject, channelName, handlers_array);
+        try map.set(globalObject, channelName, handlers_array.toJS());
     }
 
     pub fn getCallbacks(this: *Self, globalObject: *jsc.JSGlobalObject, channelName: JSValue) bun.JSError!?JSValue {

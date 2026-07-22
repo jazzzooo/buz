@@ -176,7 +176,7 @@ pub const WalkTask = struct {
 
 fn globWalkResultToJS(globWalk: *GlobWalker, globalThis: *JSGlobalObject) bun.JSError!JSValue {
     if (globWalk.matchedPaths.keys().len == 0) {
-        return jsc.JSValue.createEmptyArray(globalThis, 0);
+        return (try jsc.JSArray.createEmpty(globalThis, 0)).toJS();
     }
 
     return BunString.toJSArray(globalThis, globWalk.matchedPaths.keys());

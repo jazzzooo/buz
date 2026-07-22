@@ -3801,7 +3801,8 @@ pub fn handleTemplateValue(
         }
 
         if (template_value.isObject()) {
-            if (try template_value.getOwnTruthy(globalThis, "raw")) |maybe_str| {
+            if (try template_value.getOwn(globalThis, "raw")) |maybe_str| raw: {
+                if (maybe_str.isUndefined()) break :raw;
                 const bunstr = try maybe_str.toBunString(globalThis);
                 defer bunstr.deref();
 

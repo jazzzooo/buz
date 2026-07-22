@@ -2810,23 +2810,23 @@ pub const bindings = struct {
         const entries = try JSArray.createEmpty(global, entries_info.items.len);
 
         for (entries_info.items, 0..) |entry, i| {
-            const obj = JSValue.createEmptyObject(global, 0);
-            obj.put(global, "pathname", try entry.pathname.toJS(global));
-            obj.put(global, "kind", try entry.kind.toJS(global));
-            obj.put(global, "perm", JSValue.jsNumber(entry.perm));
+            const obj = jsc.JSObject.createEmpty(global, 0);
+            obj.putDirect(global, "pathname", try entry.pathname.toJS(global));
+            obj.putDirect(global, "kind", try entry.kind.toJS(global));
+            obj.putDirect(global, "perm", JSValue.jsNumber(entry.perm));
             if (entry.contents) |contents| {
-                obj.put(global, "contents", try contents.toJS(global));
+                obj.putDirect(global, "contents", try contents.toJS(global));
             }
-            try entries.putIndex(global, @intCast(i), obj);
+            try entries.putDirectIndex(global, @intCast(i), obj.toJS());
         }
 
-        const result = JSValue.createEmptyObject(global, 4);
-        result.put(global, "entries", entries);
-        result.put(global, "size", JSValue.jsNumber(tarball.len));
-        result.put(global, "shasum", try shasum_str.toJS(global));
-        result.put(global, "integrity", integrity_value);
+        const result = jsc.JSObject.createEmpty(global, 4);
+        result.putDirect(global, "entries", entries.toJS());
+        result.putDirect(global, "size", JSValue.jsNumber(tarball.len));
+        result.putDirect(global, "shasum", try shasum_str.toJS(global));
+        result.putDirect(global, "integrity", integrity_value);
 
-        return result;
+        return result.toJS();
     }
 };
 

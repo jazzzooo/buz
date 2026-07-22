@@ -1237,7 +1237,7 @@ pub fn getSubscriptions(
     globalThis: *jsc.JSGlobalObject,
 ) bun.JSError!JSValue {
     if (this.isClosed()) {
-        return try JSValue.createEmptyArray(globalThis, 0);
+        return (try jsc.JSArray.createEmpty(globalThis, 0)).toJS();
     }
 
     // Get the JSValue directly from C++

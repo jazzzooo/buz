@@ -47,11 +47,11 @@ pub fn fromJS(globalThis: *jsc.JSGlobalObject, input: jsc.JSValue) bun.JSError!j
         return globalThis.throw("Failed to parse dependencies", .{});
     }
 
-    var object = jsc.JSValue.createEmptyObject(globalThis, 2);
+    var object = jsc.JSObject.createEmpty(globalThis, 2);
     var name_str = bun.String.init(update_requests[0].name);
-    object.put(globalThis, "name", try name_str.transferToJS(globalThis));
-    object.put(globalThis, "version", try update_requests[0].version.toJS(update_requests[0].version_buf, globalThis));
-    return object;
+    object.putDirect(globalThis, "name", try name_str.transferToJS(globalThis));
+    object.putDirect(globalThis, "version", try update_requests[0].version.toJS(update_requests[0].version_buf, globalThis));
+    return object.toJS();
 }
 
 const std = @import("std");

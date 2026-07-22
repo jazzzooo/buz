@@ -892,20 +892,13 @@ extern "C" [[ZIG_EXPORT(nothrow)]] void Bun__WTFStringImpl__ensureHash(WTF::Stri
     str->hash();
 }
 
-extern "C" JSC::EncodedJSValue JSC__JSValue__upsertBunStringArray(
-    JSC::EncodedJSValue encodedTarget,
+extern "C" JSC::EncodedJSValue JSC__JSObject__upsertBunStringArray(
+    JSC::JSObject* target,
     JSC::JSGlobalObject* global,
     const BunString* key,
     JSC::EncodedJSValue encodedValue)
 {
     auto scope = DECLARE_THROW_SCOPE(global->vm());
-    JSC::JSValue targetValue = JSC::JSValue::decode(encodedTarget);
-    JSC::JSObject* target = targetValue.getObject();
-    if (!target) {
-        scope.throwException(global, createTypeError(global, "Target must be an object"_s));
-        return {};
-    }
-    RETURN_IF_EXCEPTION(scope, {});
     JSC::JSValue newValue = JSC::JSValue::decode(encodedValue);
     auto& vm = global->vm();
     WTF::String str = key->tag == BunStringTag::Empty ? WTF::emptyString() : key->toWTFString();
@@ -934,13 +927,12 @@ extern "C" JSC::EncodedJSValue JSC__JSValue__upsertBunStringArray(
     return JSC::JSValue::encode(JSC::jsUndefined());
 }
 
-extern "C" void JSC__JSValue__putBunString(
-    JSC::EncodedJSValue encodedTarget,
+extern "C" void JSC__JSObject__putDirectBunString(
+    JSC::JSObject* target,
     JSC::JSGlobalObject* global,
     const BunString* key,
     JSC::EncodedJSValue encodedValue)
 {
-    JSC::JSObject* target = JSC::JSValue::decode(encodedTarget).getObject();
     JSC::JSValue value = JSC::JSValue::decode(encodedValue);
     auto& vm = global->vm();
     WTF::String str = key->tag == BunStringTag::Empty ? WTF::emptyString() : key->toWTFString();

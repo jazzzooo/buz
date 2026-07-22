@@ -934,12 +934,12 @@ pub const upgrade_js_bindings = struct {
     var tempdir_fd: ?bun.FD = null;
 
     pub fn generate(global: *jsc.JSGlobalObject) jsc.JSValue {
-        const obj = JSValue.createEmptyObject(global, 2);
+        const obj = jsc.JSObject.createEmpty(global, 2);
         const open = ZigString.static("openTempDirWithoutSharingDelete");
-        obj.put(global, open, jsc.JSFunction.create(global, "openTempDirWithoutSharingDelete", jsOpenTempDirWithoutSharingDelete, 1, .{}));
+        obj.putDirect(global, open, jsc.JSFunction.create(global, "openTempDirWithoutSharingDelete", jsOpenTempDirWithoutSharingDelete, 1, .{}));
         const close = ZigString.static("closeTempDirHandle");
-        obj.put(global, close, jsc.JSFunction.create(global, "closeTempDirHandle", jsCloseTempDirHandle, 1, .{}));
-        return obj;
+        obj.putDirect(global, close, jsc.JSFunction.create(global, "closeTempDirHandle", jsCloseTempDirHandle, 1, .{}));
+        return obj.toJS();
     }
 
     /// For testing upgrades when the temp directory has an open handle without FILE_SHARE_DELETE.

@@ -17,10 +17,10 @@ pub fn toFetchHeaders(this: *Headers, global: *bun.jsc.JSGlobalObject) bun.JSErr
 
 pub const H2TestingAPIs = struct {
     pub fn liveCounts(globalThis: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const obj = jsc.JSValue.createEmptyObject(globalThis, 2);
-        obj.put(globalThis, jsc.ZigString.static("sessions"), .jsNumber(H2Client.live_sessions.load(.monotonic)));
-        obj.put(globalThis, jsc.ZigString.static("streams"), .jsNumber(H2Client.live_streams.load(.monotonic)));
-        return obj;
+        const obj = jsc.JSObject.createEmpty(globalThis, 2);
+        obj.putDirect(globalThis, jsc.ZigString.static("sessions"), .jsNumber(H2Client.live_sessions.load(.monotonic)));
+        obj.putDirect(globalThis, jsc.ZigString.static("streams"), .jsNumber(H2Client.live_streams.load(.monotonic)));
+        return obj.toJS();
     }
 };
 
@@ -29,10 +29,10 @@ pub const H3TestingAPIs = struct {
     /// mangles `[^A-Za-z]` to `_`, so `H2Client.zig` and `H3Client.zig` produce
     /// the same path prefix and the function name has to differ.
     pub fn quicLiveCounts(globalThis: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const obj = jsc.JSValue.createEmptyObject(globalThis, 2);
-        obj.put(globalThis, jsc.ZigString.static("sessions"), .jsNumber(H3Client.live_sessions.load(.monotonic)));
-        obj.put(globalThis, jsc.ZigString.static("streams"), .jsNumber(H3Client.live_streams.load(.monotonic)));
-        return obj;
+        const obj = jsc.JSObject.createEmpty(globalThis, 2);
+        obj.putDirect(globalThis, jsc.ZigString.static("sessions"), .jsNumber(H3Client.live_sessions.load(.monotonic)));
+        obj.putDirect(globalThis, jsc.ZigString.static("streams"), .jsNumber(H3Client.live_streams.load(.monotonic)));
+        return obj.toJS();
     }
 };
 

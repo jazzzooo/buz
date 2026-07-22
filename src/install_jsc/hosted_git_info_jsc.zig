@@ -2,28 +2,28 @@
 //! sites and `$newZigFunction("hosted_git_info.zig", …)` are unchanged.
 
 pub fn hostedGitInfoToJS(self: *const hgi.HostedGitInfo, go: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-    const obj = jsc.JSValue.createEmptyObject(go, 6);
-    obj.put(
+    const obj = jsc.JSObject.createEmpty(go, 6);
+    obj.putDirect(
         go,
         jsc.ZigString.static("type"),
         try bun.String.fromBytes(self.host_provider.typeStr()).toJS(go),
     );
-    obj.put(
+    obj.putDirect(
         go,
         jsc.ZigString.static("domain"),
         try bun.String.fromBytes(self.host_provider.domain()).toJS(go),
     );
-    obj.put(
+    obj.putDirect(
         go,
         jsc.ZigString.static("project"),
         try bun.String.fromBytes(self.project).toJS(go),
     );
-    obj.put(
+    obj.putDirect(
         go,
         jsc.ZigString.static("user"),
         if (self.user) |user| try bun.String.fromBytes(user).toJS(go) else .null,
     );
-    obj.put(
+    obj.putDirect(
         go,
         jsc.ZigString.static("committish"),
         if (self.committish) |committish|
@@ -31,13 +31,13 @@ pub fn hostedGitInfoToJS(self: *const hgi.HostedGitInfo, go: *jsc.JSGlobalObject
         else
             .null,
     );
-    obj.put(
+    obj.putDirect(
         go,
         jsc.ZigString.static("default"),
         try bun.String.fromBytes(@tagName(self.default_representation)).toJS(go),
     );
 
-    return obj;
+    return obj.toJS();
 }
 
 pub fn jsParseUrl(go: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {

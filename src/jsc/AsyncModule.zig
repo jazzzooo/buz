@@ -524,21 +524,21 @@ pub const AsyncModule = struct {
             else => "PackageResolveError",
         };
 
-        var error_instance = ZigString.init(msg).withEncoding().toErrorInstance(globalThis);
+        const error_instance = ZigString.init(msg).withEncoding().toErrorInstance(globalThis).getObject().?;
         if (result.url.len > 0)
-            error_instance.put(globalThis, ZigString.static("url"), ZigString.init(result.url).withEncoding().toJS(globalThis));
-        error_instance.put(globalThis, ZigString.static("name"), ZigString.init(name).withEncoding().toJS(globalThis));
-        error_instance.put(globalThis, ZigString.static("pkg"), ZigString.init(result.name).withEncoding().toJS(globalThis));
-        error_instance.put(globalThis, ZigString.static("specifier"), ZigString.init(this.specifier).withEncoding().toJS(globalThis));
+            error_instance.putDirect(globalThis, ZigString.static("url"), ZigString.init(result.url).withEncoding().toJS(globalThis));
+        error_instance.putDirect(globalThis, ZigString.static("name"), ZigString.init(name).withEncoding().toJS(globalThis));
+        error_instance.putDirect(globalThis, ZigString.static("pkg"), ZigString.init(result.name).withEncoding().toJS(globalThis));
+        error_instance.putDirect(globalThis, ZigString.static("specifier"), ZigString.init(this.specifier).withEncoding().toJS(globalThis));
         const location = logger.rangeData(&this.parse_result.source, this.parse_result.ast.import_records.at(import_record_id).range, "").location.?;
-        error_instance.put(globalThis, ZigString.static("sourceURL"), ZigString.init(this.parse_result.source.path.text).withEncoding().toJS(globalThis));
-        error_instance.put(globalThis, ZigString.static("line"), JSValue.jsNumber(location.line));
+        error_instance.putDirect(globalThis, ZigString.static("sourceURL"), ZigString.init(this.parse_result.source.path.text).withEncoding().toJS(globalThis));
+        error_instance.putDirect(globalThis, ZigString.static("line"), JSValue.jsNumber(location.line));
         if (location.line_text) |line_text| {
-            error_instance.put(globalThis, ZigString.static("lineText"), ZigString.init(line_text).withEncoding().toJS(globalThis));
+            error_instance.putDirect(globalThis, ZigString.static("lineText"), ZigString.init(line_text).withEncoding().toJS(globalThis));
         }
-        error_instance.put(globalThis, ZigString.static("column"), JSValue.jsNumber(location.column));
+        error_instance.putDirect(globalThis, ZigString.static("column"), JSValue.jsNumber(location.column));
         if (this.referrer.len > 0 and !strings.eqlComptime(this.referrer, "undefined")) {
-            error_instance.put(globalThis, ZigString.static("referrer"), ZigString.init(this.referrer).withEncoding().toJS(globalThis));
+            error_instance.putDirect(globalThis, ZigString.static("referrer"), ZigString.init(this.referrer).withEncoding().toJS(globalThis));
         }
 
         const promise_value = this.promise.swap();
@@ -546,7 +546,7 @@ pub const AsyncModule = struct {
         promise_value.ensureStillAlive();
         this.poll_ref.unref(vm);
         this.deinit();
-        promise.rejectAsHandled(globalThis, error_instance) catch {};
+        promise.rejectAsHandled(globalThis, error_instance.toJS()) catch {};
     }
     pub fn downloadError(this: *AsyncModule, vm: *VirtualMachine, import_record_id: u32, result: PackageDownloadError) !void {
         const globalThis = this.globalThis;
@@ -616,32 +616,32 @@ pub const AsyncModule = struct {
             else => "TarballDownloadError",
         };
 
-        var error_instance = ZigString.init(msg).withEncoding().toErrorInstance(globalThis);
+        const error_instance = ZigString.init(msg).withEncoding().toErrorInstance(globalThis).getObject().?;
         if (result.url.len > 0)
-            error_instance.put(globalThis, ZigString.static("url"), ZigString.init(result.url).withEncoding().toJS(globalThis));
-        error_instance.put(globalThis, ZigString.static("name"), ZigString.init(name).withEncoding().toJS(globalThis));
-        error_instance.put(globalThis, ZigString.static("pkg"), ZigString.init(result.name).withEncoding().toJS(globalThis));
+            error_instance.putDirect(globalThis, ZigString.static("url"), ZigString.init(result.url).withEncoding().toJS(globalThis));
+        error_instance.putDirect(globalThis, ZigString.static("name"), ZigString.init(name).withEncoding().toJS(globalThis));
+        error_instance.putDirect(globalThis, ZigString.static("pkg"), ZigString.init(result.name).withEncoding().toJS(globalThis));
         if (this.specifier.len > 0 and !strings.eqlComptime(this.specifier, "undefined")) {
-            error_instance.put(globalThis, ZigString.static("referrer"), ZigString.init(this.specifier).withEncoding().toJS(globalThis));
+            error_instance.putDirect(globalThis, ZigString.static("referrer"), ZigString.init(this.specifier).withEncoding().toJS(globalThis));
         }
 
         const location = logger.rangeData(&this.parse_result.source, this.parse_result.ast.import_records.at(import_record_id).range, "").location.?;
-        error_instance.put(globalThis, ZigString.static("specifier"), ZigString.init(
+        error_instance.putDirect(globalThis, ZigString.static("specifier"), ZigString.init(
             this.parse_result.ast.import_records.at(import_record_id).path.text,
         ).withEncoding().toJS(globalThis));
-        error_instance.put(globalThis, ZigString.static("sourceURL"), ZigString.init(this.parse_result.source.path.text).withEncoding().toJS(globalThis));
-        error_instance.put(globalThis, ZigString.static("line"), JSValue.jsNumber(location.line));
+        error_instance.putDirect(globalThis, ZigString.static("sourceURL"), ZigString.init(this.parse_result.source.path.text).withEncoding().toJS(globalThis));
+        error_instance.putDirect(globalThis, ZigString.static("line"), JSValue.jsNumber(location.line));
         if (location.line_text) |line_text| {
-            error_instance.put(globalThis, ZigString.static("lineText"), ZigString.init(line_text).withEncoding().toJS(globalThis));
+            error_instance.putDirect(globalThis, ZigString.static("lineText"), ZigString.init(line_text).withEncoding().toJS(globalThis));
         }
-        error_instance.put(globalThis, ZigString.static("column"), JSValue.jsNumber(location.column));
+        error_instance.putDirect(globalThis, ZigString.static("column"), JSValue.jsNumber(location.column));
 
         const promise_value = this.promise.swap();
         var promise = promise_value.asInternalPromise().?;
         promise_value.ensureStillAlive();
         this.poll_ref.unref(vm);
         this.deinit();
-        promise.rejectAsHandled(globalThis, error_instance) catch {};
+        promise.rejectAsHandled(globalThis, error_instance.toJS()) catch {};
     }
 
     pub fn resumeLoadingModule(this: *AsyncModule, log: *logger.Log) !ResolvedSource {

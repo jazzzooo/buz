@@ -1,26 +1,26 @@
 pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-    const object = JSValue.createEmptyObject(globalThis, 4);
-    object.put(
+    const object = jsc.JSObject.createEmpty(globalThis, 4);
+    object.putDirect(
         globalThis,
         ZigString.static("html"),
         jsc.JSFunction.create(globalThis, "html", renderToHTML, 1, .{}),
     );
-    object.put(
+    object.putDirect(
         globalThis,
         ZigString.static("ansi"),
         jsc.JSFunction.create(globalThis, "ansi", renderToAnsi, 2, .{}),
     );
-    object.put(
+    object.putDirect(
         globalThis,
         ZigString.static("render"),
         jsc.JSFunction.create(globalThis, "render", render, 3, .{}),
     );
-    object.put(
+    object.putDirect(
         globalThis,
         ZigString.static("react"),
         jsc.JSFunction.create(globalThis, "react", renderReact, 3, .{}),
     );
-    return object;
+    return object.toJS();
 }
 
 /// `Bun.markdown.ansi(text, theme?)` — render markdown to an ANSI-colored
@@ -368,7 +368,7 @@ const ParseRenderer = struct {
     };
 
     const StackEntry = struct {
-        children: JSValue,
+        children: *jsc.JSArray,
         block_type: ?md.BlockType = null,
         span_type: ?md.SpanType = null,
         data: u32 = 0,
@@ -392,8 +392,8 @@ const ParseRenderer = struct {
             .react_version = react_version,
         };
         // Root entry — its children array becomes the return value
-        const root_array = JSValue.createEmptyArray(globalObject, 0) catch return error.OutOfMemory;
-        marked_args.append(root_array);
+        const root_array = jsc.JSArray.createEmpty(globalObject, 0) catch return error.OutOfMemory;
+        marked_args.append(root_array.toJS());
         try self.stack.append(bun.default_allocator, .{ .children = root_array, .block_type = .doc });
         return self;
     }
@@ -466,7 +466,7 @@ const ParseRenderer = struct {
 
     fn getResult(self: *ParseRenderer) JSValue {
         if (self.stack.items.len == 0) return .js_undefined;
-        return self.stack.items[0].children;
+        return self.stack.items[0].children.toJS();
     }
 
     /// Creates an element node. In React mode, uses the C++ fast path with
@@ -478,11 +478,11 @@ const ParseRenderer = struct {
             self.marked_args.append(obj);
             return obj;
         } else {
-            const obj = JSValue.createEmptyObject(self.globalObject, 2);
-            self.marked_args.append(obj);
-            obj.put(self.globalObject, ZigString.static("type"), type_val);
-            obj.put(self.globalObject, ZigString.static("props"), props);
-            return obj;
+            const obj = jsc.JSObject.createEmpty(self.globalObject, 2);
+            self.marked_args.append(obj.toJS());
+            obj.putDirect(self.globalObject, ZigString.static("type"), type_val);
+            obj.putDirect(self.globalObject, ZigString.static("props"), props);
+            return obj.toJS();
         }
     }
 
@@ -507,8 +507,8 @@ const ParseRenderer = struct {
             self.heading_tracker.enterHeading();
         }
 
-        const array = try JSValue.createEmptyArray(self.globalObject, 0);
-        self.marked_args.append(array);
+        const array = try jsc.JSArray.createEmpty(self.globalObject, 0);
+        self.marked_args.append(array.toJS());
         try self.stack.append(bun.default_allocator, .{
             .children = array,
             .block_type = block_type,
@@ -560,37 +560,37 @@ const ParseRenderer = struct {
         const component = self.getBlockComponent(block_type, entry.data);
         const type_val: JSValue = if (component != .zero) component else getCachedTagString(g, tag_index);
 
-        const props = JSValue.createEmptyObject(g, props_count);
-        self.marked_args.append(props);
+        const props = jsc.JSObject.createEmpty(g, props_count);
+        self.marked_args.append(props.toJS());
 
         // Set metadata props
         switch (block_type) {
             .h => {
                 if (slug) |s| {
-                    props.put(g, ZigString.static("id"), try bun.String.createUTF8ForJS(g, s));
+                    props.putDirect(g, ZigString.static("id"), try bun.String.createUTF8ForJS(g, s));
                 }
             },
             .ol => {
-                props.put(g, ZigString.static("start"), JSValue.jsNumber(entry.data));
+                props.putDirect(g, ZigString.static("start"), JSValue.jsNumber(entry.data));
             },
             .li => {
                 const task_mark = md.types.taskMarkFromData(entry.data);
                 if (task_mark != 0) {
-                    props.put(g, ZigString.static("checked"), JSValue.jsBoolean(md.types.isTaskChecked(task_mark)));
+                    props.putDirect(g, ZigString.static("checked"), JSValue.jsBoolean(md.types.isTaskChecked(task_mark)));
                 }
             },
             .code => {
                 if (entry.flags & md.BLOCK_FENCED_CODE != 0) {
                     const lang = extractLanguage(self.src_text, entry.data);
                     if (lang.len > 0) {
-                        props.put(g, ZigString.static("language"), try bun.String.createUTF8ForJS(g, lang));
+                        props.putDirect(g, ZigString.static("language"), try bun.String.createUTF8ForJS(g, lang));
                     }
                 }
             },
             .th, .td => {
                 const alignment = md.types.alignmentFromData(entry.data);
                 if (md.types.alignmentName(alignment)) |align_str| {
-                    props.put(g, ZigString.static("align"), try bun.String.createUTF8ForJS(g, align_str));
+                    props.putDirect(g, ZigString.static("align"), try bun.String.createUTF8ForJS(g, align_str));
                 }
             },
             else => {},
@@ -598,10 +598,10 @@ const ParseRenderer = struct {
 
         // Set children (skip for void elements)
         if (block_type != .hr) {
-            props.put(g, ZigString.static("children"), entry.children);
+            props.putDirect(g, ZigString.static("children"), entry.children.toJS());
         }
 
-        const obj = self.createElement(type_val, props);
+        const obj = self.createElement(type_val, props.toJS());
 
         // Push to parent's children array
         if (self.stack.items.len > 0) {
@@ -621,8 +621,8 @@ const ParseRenderer = struct {
         const self: *ParseRenderer = @ptrCast(@alignCast(ptr));
         if (!self.stack_check.isSafeToRecurse()) return self.globalObject.throwStackOverflow();
 
-        const array = try JSValue.createEmptyArray(self.globalObject, 0);
-        self.marked_args.append(array);
+        const array = try jsc.JSArray.createEmpty(self.globalObject, 0);
+        self.marked_args.append(array.toJS());
         try self.stack.append(bun.default_allocator, .{ .children = array, .detail = detail });
     }
 
@@ -656,28 +656,28 @@ const ParseRenderer = struct {
         const component = self.getSpanComponent(span_type);
         const type_val: JSValue = if (component != .zero) component else getCachedTagString(g, tag_index);
 
-        const props = JSValue.createEmptyObject(g, props_count);
-        self.marked_args.append(props);
+        const props = jsc.JSObject.createEmpty(g, props_count);
+        self.marked_args.append(props.toJS());
 
         // Set metadata props
         switch (span_type) {
             .a => {
-                props.put(g, ZigString.static("href"), try bun.String.createUTF8ForJS(g, entry.detail.href));
+                props.putDirect(g, ZigString.static("href"), try bun.String.createUTF8ForJS(g, entry.detail.href));
                 if (entry.detail.title.len > 0) {
-                    props.put(g, ZigString.static("title"), try bun.String.createUTF8ForJS(g, entry.detail.title));
+                    props.putDirect(g, ZigString.static("title"), try bun.String.createUTF8ForJS(g, entry.detail.title));
                 }
             },
             .img => {
-                props.put(g, ZigString.static("src"), try bun.String.createUTF8ForJS(g, entry.detail.href));
+                props.putDirect(g, ZigString.static("src"), try bun.String.createUTF8ForJS(g, entry.detail.href));
                 if (entry.detail.title.len > 0) {
-                    props.put(g, ZigString.static("title"), try bun.String.createUTF8ForJS(g, entry.detail.title));
+                    props.putDirect(g, ZigString.static("title"), try bun.String.createUTF8ForJS(g, entry.detail.title));
                 }
             },
             .wikilink => {
-                props.put(g, ZigString.static("target"), try bun.String.createUTF8ForJS(g, entry.detail.href));
+                props.putDirect(g, ZigString.static("target"), try bun.String.createUTF8ForJS(g, entry.detail.href));
             },
             .latexmath_display => {
-                props.put(g, ZigString.static("display"), .true);
+                props.putDirect(g, ZigString.static("display"), .true);
             },
             else => {},
         }
@@ -688,7 +688,7 @@ const ParseRenderer = struct {
             if (len == 1) {
                 const child = try entry.children.getIndex(g, 0);
                 if (child.isString()) {
-                    props.put(g, ZigString.static("alt"), child);
+                    props.putDirect(g, ZigString.static("alt"), child);
                 }
             } else if (len > 1) {
                 // Multiple children — concatenate string parts
@@ -703,14 +703,14 @@ const ParseRenderer = struct {
                     }
                 }
                 if (alt_buf.items.len > 0) {
-                    props.put(g, ZigString.static("alt"), try bun.String.createUTF8ForJS(g, alt_buf.items));
+                    props.putDirect(g, ZigString.static("alt"), try bun.String.createUTF8ForJS(g, alt_buf.items));
                 }
             }
         } else {
-            props.put(g, ZigString.static("children"), entry.children);
+            props.putDirect(g, ZigString.static("children"), entry.children.toJS());
         }
 
-        const obj = self.createElement(type_val, props);
+        const obj = self.createElement(type_val, props.toJS());
 
         // Push to parent's children array
         if (self.stack.items.len > 0) {
@@ -738,9 +738,9 @@ const ParseRenderer = struct {
             .br => {
                 const br_component = self.components.br;
                 const br_type: JSValue = if (br_component != .zero) br_component else getCachedTagString(g, .br);
-                const empty_props = JSValue.createEmptyObject(g, 0);
-                self.marked_args.append(empty_props);
-                const obj = self.createElement(br_type, empty_props);
+                const empty_props = jsc.JSObject.createEmpty(g, 0);
+                self.marked_args.append(empty_props.toJS());
+                const obj = self.createElement(br_type, empty_props.toJS());
                 try parent.children.push(g, obj);
             },
             .softbr => {
@@ -1097,12 +1097,12 @@ const JsCallbackRenderer = struct {
             .h => {
                 const slug = self.heading_tracker.leaveHeading(self.allocator);
                 const field_count: usize = if (slug != null) 2 else 1;
-                const obj = JSValue.createEmptyObject(g, field_count);
-                obj.put(g, ZigString.static("level"), JSValue.jsNumber(data));
+                const obj = jsc.JSObject.createEmpty(g, field_count);
+                obj.putDirect(g, ZigString.static("level"), JSValue.jsNumber(data));
                 if (slug) |s| {
-                    obj.put(g, ZigString.static("id"), try bun.String.createUTF8ForJS(g, s));
+                    obj.putDirect(g, ZigString.static("id"), try bun.String.createUTF8ForJS(g, s));
                 }
-                return obj;
+                return obj.toJS();
             },
             .ol => {
                 return BunMarkdownMeta__createList(g, true, JSValue.jsNumber(data), self.countListDepth());
@@ -1114,9 +1114,9 @@ const JsCallbackRenderer = struct {
                 if (flags & md.BLOCK_FENCED_CODE != 0) {
                     const lang = extractLanguage(self.src_text, data);
                     if (lang.len > 0) {
-                        const obj = JSValue.createEmptyObject(g, 1);
-                        obj.put(g, ZigString.static("language"), try bun.String.createUTF8ForJS(g, lang));
-                        return obj;
+                        const obj = jsc.JSObject.createEmpty(g, 1);
+                        obj.putDirect(g, ZigString.static("language"), try bun.String.createUTF8ForJS(g, lang));
+                        return obj.toJS();
                     }
                 }
                 return null;
@@ -1169,12 +1169,12 @@ const JsCallbackRenderer = struct {
                 // field). We use a separate cached structure would require a
                 // second slot, so just fall back to the generic path here —
                 // images are rare enough that it doesn't matter.
-                const obj = JSValue.createEmptyObject(g, 2);
-                obj.put(g, ZigString.static("src"), try bun.String.createUTF8ForJS(g, detail.href));
+                const obj = jsc.JSObject.createEmpty(g, 2);
+                obj.putDirect(g, ZigString.static("src"), try bun.String.createUTF8ForJS(g, detail.href));
                 if (detail.title.len > 0) {
-                    obj.put(g, ZigString.static("title"), try bun.String.createUTF8ForJS(g, detail.title));
+                    obj.putDirect(g, ZigString.static("title"), try bun.String.createUTF8ForJS(g, detail.title));
                 }
-                return obj;
+                return obj.toJS();
             },
             else => return null,
         }

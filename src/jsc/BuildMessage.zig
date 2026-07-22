@@ -15,17 +15,17 @@ pub const BuildMessage = struct {
 
     pub fn getNotes(this: *BuildMessage, globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
         const notes = this.msg.notes;
-        const array = try jsc.JSValue.createEmptyArray(globalThis, notes.len);
+        const array = try jsc.JSArray.createEmpty(globalThis, notes.len);
         for (notes, 0..) |note, i| {
             const cloned = try note.clone(bun.default_allocator);
-            try array.putIndex(
+            try array.putDirectIndex(
                 globalThis,
                 @intCast(i),
                 try BuildMessage.create(globalThis, bun.default_allocator, logger.Msg{ .data = cloned, .kind = .note }),
             );
         }
 
-        return array;
+        return array.toJS();
     }
 
     pub fn toStringFn(this: *BuildMessage, globalThis: *jsc.JSGlobalObject) jsc.JSValue {
@@ -93,55 +93,55 @@ pub const BuildMessage = struct {
         globalThis: *jsc.JSGlobalObject,
         _: *jsc.CallFrame,
     ) bun.JSError!jsc.JSValue {
-        var object = jsc.JSValue.createEmptyObject(globalThis, 4);
-        object.put(globalThis, ZigString.static("name"), try bun.String.static("BuildMessage").toJS(globalThis));
-        object.put(globalThis, ZigString.static("position"), this.getPosition(globalThis));
-        object.put(globalThis, ZigString.static("message"), this.getMessage(globalThis));
-        object.put(globalThis, ZigString.static("level"), this.getLevel(globalThis));
-        return object;
+        var object = jsc.JSObject.createEmpty(globalThis, 4);
+        object.putDirect(globalThis, ZigString.static("name"), try bun.String.static("BuildMessage").toJS(globalThis));
+        object.putDirect(globalThis, ZigString.static("position"), this.getPosition(globalThis));
+        object.putDirect(globalThis, ZigString.static("message"), this.getMessage(globalThis));
+        object.putDirect(globalThis, ZigString.static("level"), this.getLevel(globalThis));
+        return object.toJS();
     }
 
     pub fn generatePositionObject(msg: logger.Msg, globalThis: *jsc.JSGlobalObject) jsc.JSValue {
         const location = msg.data.location orelse return jsc.JSValue.jsNull();
-        var object = jsc.JSValue.createEmptyObject(globalThis, 7);
+        var object = jsc.JSObject.createEmpty(globalThis, 7);
 
-        object.put(
+        object.putDirect(
             globalThis,
             ZigString.static("lineText"),
             ZigString.init(location.line_text orelse "").toJS(globalThis),
         );
-        object.put(
+        object.putDirect(
             globalThis,
             ZigString.static("file"),
             ZigString.init(location.file).toJS(globalThis),
         );
-        object.put(
+        object.putDirect(
             globalThis,
             ZigString.static("namespace"),
             ZigString.init(location.namespace).toJS(globalThis),
         );
-        object.put(
+        object.putDirect(
             globalThis,
             ZigString.static("line"),
             JSValue.jsNumber(location.line),
         );
-        object.put(
+        object.putDirect(
             globalThis,
             ZigString.static("column"),
             JSValue.jsNumber(location.column),
         );
-        object.put(
+        object.putDirect(
             globalThis,
             ZigString.static("length"),
             JSValue.jsNumber(location.length),
         );
-        object.put(
+        object.putDirect(
             globalThis,
             ZigString.static("offset"),
             JSValue.jsNumber(location.offset),
         );
 
-        return object;
+        return object.toJS();
     }
 
     // https://github.com/oven-sh/bun/issues/2375#issuecomment-2121530202

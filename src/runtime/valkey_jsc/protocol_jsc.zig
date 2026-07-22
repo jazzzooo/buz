@@ -72,12 +72,12 @@ pub fn respValueToJSWithOptions(self: *RESPValue, globalObject: *jsc.JSGlobalObj
             }
         },
         .Array => |array| {
-            var js_array = try jsc.JSValue.createEmptyArray(globalObject, array.len);
+            var js_array = try jsc.JSArray.createEmpty(globalObject, array.len);
             for (array, 0..) |*item, i| {
                 const js_item = try respValueToJSWithOptions(item, globalObject, options);
-                try js_array.putIndex(globalObject, @intCast(i), js_item);
+                try js_array.putDirectIndex(globalObject, @intCast(i), js_item);
             }
-            return js_array;
+            return js_array.toJS();
         },
         .Null => return jsc.JSValue.jsNull(),
         .Double => |d| return jsc.JSValue.jsNumber(d),
@@ -85,24 +85,24 @@ pub fn respValueToJSWithOptions(self: *RESPValue, globalObject: *jsc.JSGlobalObj
         .BlobError => |str| return valkeyErrorToJS(globalObject, str, protocol.RedisError.InvalidBlobError),
         .VerbatimString => |verbatim| return valkeyStrToJSValue(globalObject, verbatim.content, &options),
         .Map => |entries| {
-            var js_obj = jsc.JSValue.createEmptyObjectWithNullPrototype(globalObject);
+            var js_obj = jsc.JSObject.createEmptyWithNullPrototype(globalObject);
             for (entries) |*entry| {
                 const js_key = try respValueToJSWithOptions(&entry.key, globalObject, .{});
                 var key_str = try js_key.toBunString(globalObject);
                 defer key_str.deref();
                 const js_value = try respValueToJSWithOptions(&entry.value, globalObject, options);
 
-                try js_obj.putMayBeIndex(globalObject, &key_str, js_value);
+                try js_obj.putDirectMayBeIndex(globalObject, &key_str, js_value);
             }
-            return js_obj;
+            return js_obj.toJS();
         },
         .Set => |set| {
-            var js_array = try jsc.JSValue.createEmptyArray(globalObject, set.len);
+            var js_array = try jsc.JSArray.createEmpty(globalObject, set.len);
             for (set, 0..) |*item, i| {
                 const js_item = try respValueToJSWithOptions(item, globalObject, options);
-                try js_array.putIndex(globalObject, @intCast(i), js_item);
+                try js_array.putDirectIndex(globalObject, @intCast(i), js_item);
             }
-            return js_array;
+            return js_array.toJS();
         },
         .Attribute => |attribute| {
             // For now, we just return the value and ignore attributes
@@ -110,21 +110,21 @@ pub fn respValueToJSWithOptions(self: *RESPValue, globalObject: *jsc.JSGlobalObj
             return try respValueToJSWithOptions(attribute.value, globalObject, options);
         },
         .Push => |push| {
-            var js_obj = jsc.JSValue.createEmptyObjectWithNullPrototype(globalObject);
+            var js_obj = jsc.JSObject.createEmptyWithNullPrototype(globalObject);
 
             // Add the push type
             const kind_str = try bun.String.createUTF8ForJS(globalObject, push.kind);
-            js_obj.put(globalObject, "type", kind_str);
+            js_obj.putDirect(globalObject, "type", kind_str);
 
             // Add the data as an array
-            var data_array = try jsc.JSValue.createEmptyArray(globalObject, push.data.len);
+            var data_array = try jsc.JSArray.createEmpty(globalObject, push.data.len);
             for (push.data, 0..) |*item, i| {
                 const js_item = try respValueToJSWithOptions(item, globalObject, options);
-                try data_array.putIndex(globalObject, @intCast(i), js_item);
+                try data_array.putDirectIndex(globalObject, @intCast(i), js_item);
             }
-            js_obj.put(globalObject, "data", data_array);
+            js_obj.putDirect(globalObject, "data", data_array.toJS());
 
-            return js_obj;
+            return js_obj.toJS();
         },
         .BigNumber => |str| {
             // Try to parse as number if possible

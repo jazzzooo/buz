@@ -1393,13 +1393,13 @@ fn computeArgumentsForFrameworkRequest(
                 if (route.file_layout != .none) n += 1;
                 route = dev.router.routePtr(route.parent.unwrap() orelse break);
             }
-            const arr = try JSValue.createEmptyArray(global, n);
+            const arr = try jsc.JSArray.createEmpty(global, n);
             route = dev.router.routePtr(framework_bundle.route_index);
             {
                 const relative_path = try dev.relativePath(alloc, keys[fromOpaqueFileId(.server, route.file_page.unwrap().?).get()]);
                 defer alloc.free(relative_path);
                 var route_name = bun.String.cloneUTF8(relative_path);
-                try arr.putIndex(global, 0, try route_name.transferToJS(global));
+                try arr.putDirectIndex(global, 0, try route_name.transferToJS(global));
             }
             n = 1;
             while (true) {
@@ -1407,13 +1407,13 @@ fn computeArgumentsForFrameworkRequest(
                     const relative_path = try dev.relativePath(alloc, keys[fromOpaqueFileId(.server, layout).get()]);
                     defer alloc.free(relative_path);
                     var layout_name = bun.String.cloneUTF8(relative_path);
-                    try arr.putIndex(global, @intCast(n), try layout_name.transferToJS(global));
+                    try arr.putDirectIndex(global, @intCast(n), try layout_name.transferToJS(global));
                     n += 1;
                 }
                 route = dev.router.routePtr(route.parent.unwrap() orelse break);
             }
-            framework_bundle.cached_module_list = .create(arr, global);
-            break :arr arr;
+            framework_bundle.cached_module_list = .create(arr.toJS(), global);
+            break :arr arr.toJS();
         },
         // clientId
         .client_id = framework_bundle.cached_client_bundle_url.get() orelse str: {
@@ -2152,9 +2152,9 @@ fn generateCssJSArray(dev: *DevServer, route_bundle: *RouteBundle) bun.JSError!j
         }) catch unreachable;
         const str = bun.String.cloneUTF8(path);
         defer str.deref();
-        try arr.putIndex(dev.vm.global, @intCast(i), try str.toJS(dev.vm.global));
+        try arr.putDirectIndex(dev.vm.global, @intCast(i), try str.toJS(dev.vm.global));
     }
-    return arr;
+    return arr.toJS();
 }
 
 fn traceAllRouteImports(dev: *DevServer, route_bundle: *RouteBundle, gts: *GraphTraceState, comptime goal: TraceImportGoal) !void {
@@ -2198,9 +2198,9 @@ fn makeArrayForServerComponentsPatch(dev: *DevServer, global: *jsc.JSGlobalObjec
         defer alloc.free(relative_path);
         const str = bun.String.cloneUTF8(relative_path);
         defer str.deref();
-        try arr.putIndex(global, @intCast(i), try str.toJS(global));
+        try arr.putDirectIndex(global, @intCast(i), try str.toJS(global));
     }
-    return arr;
+    return arr.toJS();
 }
 
 pub const HotUpdateContext = struct {
@@ -4566,19 +4566,19 @@ fn bundleNewRouteJSFunctionImpl(global: *bun.jsc.JSGlobalObject, request_ptr: *a
         &ctx,
     );
 
-    var array = try JSValue.createEmptyArray(global, 2);
+    var array = try jsc.JSArray.createEmpty(global, 2);
 
-    try array.putIndex(global, 0, JSValue.jsNumberFromUint64(ctx.route_bundle_index.get()));
+    try array.putDirectIndex(global, 0, JSValue.jsNumberFromUint64(ctx.route_bundle_index.get()));
 
     if (ctx.p == null) {
-        try array.putIndex(global, 1, JSValue.js_undefined);
-        return array;
+        try array.putDirectIndex(global, 1, JSValue.js_undefined);
+        return array.toJS();
     }
 
     bun.assert(ctx.p != null);
-    try array.putIndex(global, 1, ctx.p.?.toJS());
+    try array.putDirectIndex(global, 1, ctx.p.?.toJS());
 
-    return array;
+    return array.toJS();
 }
 
 extern "C" fn Bake__createDevServerFrameworkRequestArgsObject(
