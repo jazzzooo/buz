@@ -397,22 +397,20 @@ pub fn anyReplyToJSResponse(this: *c_ares.struct_any_reply, parent_allocator: st
 }
 
 fn anyReplyAppend(globalThis: *jsc.JSGlobalObject, array: *jsc.JSArray, i: *u32, response: jsc.JSValue, comptime lookup_name: []const u8) bun.JSError!void {
-    const transformed = if (response.isString())
-        (try jsc.JSObject.create(.{
+    const transformed: *jsc.JSObject = if (response.isString())
+        try jsc.JSObject.create(.{
             .value = response,
-        }, globalThis)).toJS()
-    else blk: {
-        bun.assert(response.isObject());
-        break :blk response;
-    };
+        }, globalThis)
+    else
+        response.getObject() orelse unreachable;
 
     var upper = comptime lookup_name[0..lookup_name.len].*;
     inline for (&upper) |*char| {
         char.* = std.ascii.toUpper(char.*);
     }
 
-    transformed.getObject().?.putDirect(globalThis, "type", try bun.String.ascii(&upper).toJS(globalThis));
-    try array.putDirectIndex(globalThis, i.*, transformed);
+    transformed.putDirect(globalThis, "type", try bun.String.ascii(&upper).toJS(globalThis));
+    try array.putDirectIndex(globalThis, i.*, transformed.toJS());
     i.* += 1;
 }
 

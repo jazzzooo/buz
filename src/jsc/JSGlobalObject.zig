@@ -65,8 +65,12 @@ pub const JSGlobalObject = opaque {
         return JSGlobalObject__setTimeZone(this, timeZone);
     }
 
+    pub inline fn toJSObject(globalThis: *JSGlobalObject) *jsc.JSObject {
+        return @ptrCast(globalThis);
+    }
+
     pub inline fn toJSValue(globalThis: *JSGlobalObject) JSValue {
-        return @fromBackingInt(@intCast(@intFromPtr(globalThis)));
+        return globalThis.toJSObject().toJS();
     }
 
     pub fn throwInvalidArguments(this: *JSGlobalObject, comptime fmt: [:0]const u8, args: anytype) bun.JSError {

@@ -12,7 +12,6 @@ pub const JSObject = opaque {
     extern fn JSC__JSObject__getIndex(this: *JSObject, globalThis: *JSGlobalObject, i: u32) JSValue;
     extern fn JSC__JSObject__putDirect(this: *JSObject, global: *JSGlobalObject, key: *const ZigString, value: JSValue) void;
     extern fn JSC__JSObject__putDirectBunString(this: *JSObject, global: *JSGlobalObject, key: *const bun.String, value: JSValue) void;
-    extern fn JSC__JSObject__putDirectMayBeIndex(this: *JSObject, global: *JSGlobalObject, key: *const bun.String, value: JSValue) void;
     extern fn JSC__JSObject__putDirectToPropertyKey(this: *JSObject, global: *JSGlobalObject, key: JSValue, value: JSValue) void;
     extern fn JSC__JSObject__upsertBunStringArray(this: *JSObject, global: *JSGlobalObject, key: *const bun.String, value: JSValue) JSValue;
     extern fn JSC__JSObject__deleteProperty(this: *JSObject, global: *JSGlobalObject, key: *const ZigString) bool;
@@ -131,7 +130,7 @@ pub const JSObject = opaque {
     }
 
     pub fn putDirectMayBeIndex(obj: *JSObject, global: *JSGlobalObject, key: *const bun.String, value: JSValue) bun.JSError!void {
-        return bun.jsc.fromJSHostCallGeneric(global, @src(), JSC__JSObject__putDirectMayBeIndex, .{ obj, global, key, value });
+        return bun.cpp.JSC__JSObject__putDirectMayBeIndex(obj, global, key, value);
     }
 
     pub fn putDirectToPropertyKey(obj: *JSObject, global: *JSGlobalObject, key: JSValue, value: JSValue) bun.JSError!void {

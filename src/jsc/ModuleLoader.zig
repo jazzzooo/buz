@@ -631,11 +631,7 @@ pub fn transpileSourceCode(
                 if (virtual_source) |source| {
                     if (globalObject) |globalThis| {
                         // attempt to avoid reading the WASM file twice.
-                        const decoded: jsc.DecodedJSValue = .{
-                            .u = .{ .ptr = @ptrCast(globalThis) },
-                        };
-                        const globalValue = decoded.encode().getObject().?;
-                        globalValue.putDirect(
+                        globalThis.toJSObject().putDirect(
                             globalThis,
                             ZigString.static("wasmSourceBytes"),
                             try jsc.ArrayBuffer.create(globalThis, source.contents, .Uint8Array),

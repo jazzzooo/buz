@@ -1121,8 +1121,7 @@ fn evaluateAndPrint(self: *Repl, code: []const u8) void {
                 const rejection = promise.result(vm.jsc_vm);
                 self.setLastError(rejection);
                 // Set _error on the global object
-                const global_this = global.toJSValue().getObject().?;
-                global_this.putDirect(global, "_error", rejection);
+                global.toJSObject().putDirect(global, "_error", rejection);
                 self.printJSError(rejection);
                 return;
             },
@@ -1156,10 +1155,8 @@ fn evaluateAndPrint(self: *Repl, code: []const u8) void {
     self.setLastResult(actual_result);
 
     // Set _ to the last result (only if not undefined)
-    // Use the global object as JSValue and put the property on it
     if (!actual_result.isUndefined()) {
-        const global_this = global.toJSValue().getObject().?;
-        global_this.putDirect(global, "_", actual_result);
+        global.toJSObject().putDirect(global, "_", actual_result);
     }
 
     if (actual_result.isUndefined()) {
@@ -1385,8 +1382,7 @@ fn evaluateAndCopy(self: *Repl, code: []const u8) void {
 
     self.setLastResult(actual_result);
     if (!actual_result.isUndefined()) {
-        const global_this = global.toJSValue().getObject().?;
-        global_this.putDirect(global, "_", actual_result);
+        global.toJSObject().putDirect(global, "_", actual_result);
     }
 
     self.copyValueToClipboard(actual_result) catch |err| {
