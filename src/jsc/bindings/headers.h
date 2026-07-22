@@ -59,7 +59,7 @@ CPP_DECL JSC::EncodedJSValue JSC__JSValue__getIndex(JSC::EncodedJSValue arg0, JS
 CPP_DECL void JSC__JSObject__putDirect(JSC::JSObject* arg0, JSC::JSGlobalObject* arg1, const ZigString* arg2, JSC::EncodedJSValue JSValue3);
 CPP_DECL void JSC__JSObject__putDirectMayBeIndex(JSC::JSObject* arg0, JSC::JSGlobalObject* arg1, const BunString* arg2, JSC::EncodedJSValue JSValue3);
 CPP_DECL void JSC__JSObject__putDirectToPropertyKey(JSC::JSObject* arg0, JSC::JSGlobalObject* arg1, JSC::EncodedJSValue JSValue2, JSC::EncodedJSValue JSValue3);
-CPP_DECL void JSC__JSObject__putRecord(JSC::JSObject* arg0, JSC::JSGlobalObject* arg1, ZigString* arg2, ZigString* arg3, size_t arg4);
+CPP_DECL void JSC__JSObject__putDirectStringOrStringArray(JSC::JSObject* arg0, JSC::JSGlobalObject* arg1, const ZigString* arg2, const ZigString* arg3, size_t arg4);
 CPP_DECL JSC::JSArray* JSC__JSArray__create(JSC::JSGlobalObject* arg0, const JSC::JSValue* arg1, size_t arg2);
 CPP_DECL JSC::JSArray* JSC__JSArray__createEmpty(JSC::JSGlobalObject* arg0, size_t arg1);
 CPP_DECL void JSC__JSArray__push(JSC::JSArray* arg0, JSC::JSGlobalObject* arg1, JSC::EncodedJSValue JSValue2);

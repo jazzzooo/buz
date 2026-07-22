@@ -587,14 +587,14 @@ pub const MatchedRoute = struct {
                 var iter = this.query.iter();
                 while (iter.next()) |entry| {
                     const entry_name = entry.name;
-                    var str = ZigString.init(entry_name).withEncoding();
+                    const str = ZigString.init(entry_name).withEncoding();
 
                     try value_refs.resize(allocator, entry.value_count);
                     var values = entry.values;
                     for (value_refs.items) |*value_ref| {
                         value_ref.* = ZigString.init(values.next().?).withEncoding();
                     }
-                    try obj.putRecord(global, &str, value_refs.items);
+                    try obj.putDirectStringOrStringArray(global, &str, value_refs.items);
                 }
             }
         };

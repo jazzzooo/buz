@@ -227,8 +227,8 @@ pub const JSObject = opaque {
         return JSC__JSObject__getDirectIndex(this, globalThis, i);
     }
 
-    pub fn putRecord(this: *JSObject, global: *JSGlobalObject, key: *ZigString, values: []ZigString) bun.JSError!void {
-        return bun.cpp.JSC__JSObject__putRecord(this, global, key, values.ptr, values.len);
+    pub fn putDirectStringOrStringArray(this: *JSObject, global: *JSGlobalObject, key: *const ZigString, values: []const ZigString) bun.JSError!void {
+        return bun.cpp.JSC__JSObject__putDirectStringOrStringArray(this, global, key, values.ptr, values.len);
     }
 
     /// This will not call getters or be observable from JavaScript.

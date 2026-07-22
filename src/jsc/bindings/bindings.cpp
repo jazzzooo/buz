@@ -2587,33 +2587,37 @@ double JSC__JSValue__getLengthIfPropertyExistsInternal(JSC::EncodedJSValue value
 }
 
 [[ZIG_EXPORT(check_slow)]]
-void JSC__JSObject__putRecord(JSC::JSObject* object, JSC::JSGlobalObject* global, ZigString* key, ZigString* values, size_t valuesLen)
+void JSC__JSObject__putDirectStringOrStringArray(JSC::JSObject* object, JSC::JSGlobalObject* global, const ZigString* key, const ZigString* values, size_t valuesLen)
 {
-    auto scope = DECLARE_THROW_SCOPE(global->vm());
+    auto& vm = global->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
     auto ident = Zig::toIdentifier(*key, global);
-    JSC::PropertyDescriptor descriptor;
+    RETURN_IF_EXCEPTION(scope, );
 
-    descriptor.setEnumerable(1);
-    descriptor.setConfigurable(1);
-    descriptor.setWritable(1);
-
+    JSC::JSValue propertyValue;
     if (valuesLen == 1) {
-        descriptor.setValue(JSC::jsString(global->vm(), Zig::toStringCopy(values[0])));
+        propertyValue = JSC::jsString(vm, Zig::toStringCopy(values[0]));
+        RETURN_IF_EXCEPTION(scope, );
     } else {
-
         // Pre-convert all strings to JSValues before entering ObjectInitializationScope,
         // since jsString() allocates GC cells which is not allowed inside the scope.
         MarkedArgumentBuffer strings;
+        strings.ensureCapacity(valuesLen);
+        if (strings.hasOverflowed()) [[unlikely]] {
+            JSC::throwOutOfMemoryError(global, scope);
+            return;
+        }
+
         for (size_t i = 0; i < valuesLen; ++i) {
-            strings.append(JSC::jsString(global->vm(), Zig::toStringCopy(values[i])));
+            strings.append(JSC::jsString(vm, Zig::toStringCopy(values[i])));
+            RETURN_IF_EXCEPTION(scope, );
         }
 
         JSC::JSArray* array = nullptr;
         {
-            JSC::ObjectInitializationScope initializationScope(global->vm());
-            if ((array = JSC::JSArray::tryCreateUninitializedRestricted(initializationScope, nullptr, global->arrayStructureForIndexingTypeDuringAllocation(JSC::ArrayWithContiguous), valuesLen))) {
-
-                for (size_t i = 0; i < valuesLen; ++i) {
+            JSC::ObjectInitializationScope initializationScope(vm);
+            if ((array = JSC::JSArray::tryCreateUninitializedRestricted(initializationScope, nullptr, global->arrayStructureForIndexingTypeDuringAllocation(JSC::ArrayWithContiguous), strings.size()))) {
+                for (unsigned i = 0; i < strings.size(); ++i) {
                     array->initializeIndexWithoutBarrier(initializationScope, i, strings.at(i));
                 }
             }
@@ -2624,11 +2628,11 @@ void JSC__JSObject__putRecord(JSC::JSObject* object, JSC::JSGlobalObject* global
             return;
         }
 
-        descriptor.setValue(array);
+        propertyValue = array;
     }
 
-    object->methodTable()->defineOwnProperty(object, global, ident, descriptor, true);
-    object->putDirect(global->vm(), ident, descriptor.value());
+    object->putDirect(vm, ident, propertyValue);
+    RETURN_IF_EXCEPTION(scope, );
     scope.release();
 }
 JSC::JSPromise* JSC__JSValue__asInternalPromise(JSC::EncodedJSValue JSValue0)
