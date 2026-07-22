@@ -151,7 +151,7 @@ pub const UDPSocketConfig = struct {
         }
 
         const port: u16 = brk: {
-            if (try options.getTruthy(globalThis, "port")) |value| {
+            if (try options.getOptional(globalThis, "port", JSValue)) |value| {
                 const number = try value.coerceToInt32(globalThis);
                 if (number < 0 or number > 0xffff) {
                     return globalThis.throwInvalidArguments("Expected \"port\" to be an integer between 0 and 65535", .{});
@@ -162,16 +162,17 @@ pub const UDPSocketConfig = struct {
             }
         };
 
-        const flags: i32 = if (try options.getTruthy(globalThis, "flags")) |value|
+        const flags: i32 = if (try options.getOptional(globalThis, "flags", JSValue)) |value|
             try bun.validators.validateInt32(globalThis, value, "flags", .{}, null, null)
         else
             0;
 
         const hostname = brk: {
-            if (try options.getTruthy(globalThis, "hostname")) |value| {
+            if (try options.getOptional(globalThis, "hostname", JSValue)) |value| {
                 if (!value.isString()) {
                     return globalThis.throwInvalidArguments("Expected \"hostname\" to be a string", .{});
                 }
+                if (!value.toBoolean()) break :brk bun.String.static("0.0.0.0");
                 break :brk try value.toBunString(globalThis);
             } else {
                 break :brk bun.String.static("0.0.0.0");
@@ -186,12 +187,12 @@ pub const UDPSocketConfig = struct {
 
         errdefer config.deinit();
 
-        if (try options.getTruthy(globalThis, "socket")) |socket| {
+        if (try options.getOptional(globalThis, "socket", JSValue)) |socket| {
             if (!socket.isObject()) {
                 return globalThis.throwInvalidArguments("Expected \"socket\" to be an object", .{});
             }
 
-            if (try options.getTruthy(globalThis, "binaryType")) |value| {
+            if (try options.getOptional(globalThis, "binaryType", JSValue)) |value| {
                 if (!value.isString()) {
                     return globalThis.throwInvalidArguments("Expected \"socket.binaryType\" to be a string", .{});
                 }
@@ -202,7 +203,7 @@ pub const UDPSocketConfig = struct {
             }
 
             inline for (handlers) |handler| {
-                if (try socket.getTruthyComptime(globalThis, handler.@"0")) |value| {
+                if (try socket.getOptional(globalThis, handler.@"0", JSValue)) |value| {
                     if (!value.isCell() or !value.isCallable()) {
                         return globalThis.throwInvalidArguments("Expected \"socket.{s}\" to be a function", .{handler.@"0"});
                     }
@@ -212,22 +213,25 @@ pub const UDPSocketConfig = struct {
             }
         }
 
-        if (try options.getTruthy(globalThis, "connect")) |connect| {
+        if (try options.getOptional(globalThis, "connect", JSValue)) |connect| {
             if (!connect.isObject()) {
                 return globalThis.throwInvalidArguments("Expected \"connect\" to be an object", .{});
             }
 
-            const connect_host_js = try connect.getTruthy(globalThis, "hostname") orelse {
+            const connect_host_js = try connect.getOptional(globalThis, "hostname", JSValue) orelse {
                 return globalThis.throwInvalidArguments("Expected \"connect.hostname\" to be a string", .{});
             };
 
-            if (!connect_host_js.isString()) {
+            if (!connect_host_js.isString() or !connect_host_js.toBoolean()) {
                 return globalThis.throwInvalidArguments("Expected \"connect.hostname\" to be a string", .{});
             }
 
-            const connect_port_js = try connect.getTruthy(globalThis, "port") orelse {
+            const connect_port_js = try connect.getOptional(globalThis, "port", JSValue) orelse {
                 return globalThis.throwInvalidArguments("Expected \"connect.port\" to be an integer", .{});
             };
+            if (connect_port_js.isString() and !connect_port_js.toBoolean()) {
+                return globalThis.throwInvalidArguments("Expected \"connect.port\" to be an integer", .{});
+            }
             const connect_port = try connect_port_js.coerceToInt32(globalThis);
 
             const connect_host = try connect_host_js.toBunString(globalThis);

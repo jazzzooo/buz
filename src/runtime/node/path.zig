@@ -812,7 +812,7 @@ pub fn format(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]j
     var root_slice: ?jsc.ZigString.Slice = null;
     defer if (root_slice) |slice| slice.deinit();
 
-    if (try pathObject_ptr.getTruthy(globalObject, "root")) |jsValue| {
+    if (try pathObject_ptr.getOptional(globalObject, "root", jsc.JSValue)) |jsValue| {
         root_slice = try jsValue.toSlice(globalObject, allocator);
         root = root_slice.?.slice();
     }
@@ -820,7 +820,7 @@ pub fn format(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]j
     var dir_slice: ?jsc.ZigString.Slice = null;
     defer if (dir_slice) |slice| slice.deinit();
 
-    if (try pathObject_ptr.getTruthy(globalObject, "dir")) |jsValue| {
+    if (try pathObject_ptr.getOptional(globalObject, "dir", jsc.JSValue)) |jsValue| {
         dir_slice = try jsValue.toSlice(globalObject, allocator);
         dir = dir_slice.?.slice();
     }
@@ -828,7 +828,7 @@ pub fn format(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]j
     var base_slice: ?jsc.ZigString.Slice = null;
     defer if (base_slice) |slice| slice.deinit();
 
-    if (try pathObject_ptr.getTruthy(globalObject, "base")) |jsValue| {
+    if (try pathObject_ptr.getOptional(globalObject, "base", jsc.JSValue)) |jsValue| {
         base_slice = try jsValue.toSlice(globalObject, allocator);
         base = base_slice.?.slice();
     }
@@ -836,7 +836,7 @@ pub fn format(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]j
     var _name_slice: ?jsc.ZigString.Slice = null;
     defer if (_name_slice) |slice| slice.deinit();
 
-    if (try pathObject_ptr.getTruthy(globalObject, "name")) |jsValue| {
+    if (try pathObject_ptr.getOptional(globalObject, "name", jsc.JSValue)) |jsValue| {
         _name_slice = try jsValue.toSlice(globalObject, allocator);
         _name = _name_slice.?.slice();
     }
@@ -844,7 +844,7 @@ pub fn format(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]j
     var ext_slice: ?jsc.ZigString.Slice = null;
     defer if (ext_slice) |slice| slice.deinit();
 
-    if (try pathObject_ptr.getTruthy(globalObject, "ext")) |jsValue| {
+    if (try pathObject_ptr.getOptional(globalObject, "ext", jsc.JSValue)) |jsValue| {
         ext_slice = try jsValue.toSlice(globalObject, allocator);
         ext = ext_slice.?.slice();
     }

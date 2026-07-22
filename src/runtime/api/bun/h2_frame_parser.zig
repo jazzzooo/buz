@@ -443,7 +443,7 @@ const Handlers = struct {
         };
 
         inline for (pairs) |pair| {
-            if (try opts.getTruthy(globalObject, pair.@"1")) |callback_value| {
+            if (try opts.getOptional(globalObject, pair.@"1", JSValue)) |callback_value| {
                 if (!callback_value.isCell() or !callback_value.isCallable()) {
                     return globalObject.throwInvalidArguments("Expected \"{s}\" callback to be a function", .{pair[1]});
                 }
@@ -465,7 +465,7 @@ const Handlers = struct {
             return globalObject.throwInvalidArguments("Expected at least \"write\" callback", .{});
         }
 
-        if (try opts.getTruthy(globalObject, "binaryType")) |binary_type_value| {
+        if (try opts.getOptional(globalObject, "binaryType", JSValue)) |binary_type_value| {
             if (!binary_type_value.isString()) {
                 return globalObject.throwInvalidArguments("Expected \"binaryType\" to be a string", .{});
             }
@@ -3429,6 +3429,20 @@ pub const H2FrameParser = struct {
         return if (any) out[0..in.len] else in;
     }
 
+    fn isSensitiveHeader(sensitive: JSValue, globalObject: *jsc.JSGlobalObject, normalized_name: []const u8, original_name: []const u8) bun.JSError!bool {
+        if (try sensitive.getPropertyValue(globalObject, normalized_name)) |value| {
+            if (!value.isUndefinedOrNull()) return value.toBoolean();
+        }
+
+        if (!strings.eql(normalized_name, original_name)) {
+            if (try sensitive.getPropertyValue(globalObject, original_name)) |value| {
+                if (!value.isUndefinedOrNull()) return value.toBoolean();
+            }
+        }
+
+        return false;
+    }
+
     pub fn sendTrailers(this: *H2FrameParser, globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
         jsc.markBinding(@src());
         const args_list = callframe.arguments_old(3);
@@ -3535,7 +3549,7 @@ pub const H2FrameParser = struct {
                         return globalObject.throwValue(exception);
                     };
 
-                    const never_index = (try sensitive_arg.getTruthyPropertyValue(globalObject, validated_name) orelse try sensitive_arg.getTruthyPropertyValue(globalObject, name)) != null;
+                    const never_index = try isSensitiveHeader(sensitive_arg, globalObject, validated_name, name);
 
                     const value_slice = value_str.toSlice(globalObject, bun.default_allocator);
                     defer value_slice.deinit();
@@ -3575,7 +3589,7 @@ pub const H2FrameParser = struct {
                     return globalObject.throwValue(exception);
                 };
 
-                const never_index = (try sensitive_arg.getTruthyPropertyValue(globalObject, validated_name) orelse try sensitive_arg.getTruthyPropertyValue(globalObject, name)) != null;
+                const never_index = try isSensitiveHeader(sensitive_arg, globalObject, validated_name, name);
 
                 const value_slice = value_str.toSlice(globalObject, bun.default_allocator);
                 defer value_slice.deinit();
@@ -4032,7 +4046,7 @@ pub const H2FrameParser = struct {
                             return globalObject.ERR(.HTTP2_INVALID_HEADER_VALUE, "Invalid value for header \"{s}\"", .{validated_name}).throw();
                         };
 
-                        const never_index = (try sensitive_arg.getTruthyPropertyValue(globalObject, validated_name) orelse try sensitive_arg.getTruthyPropertyValue(globalObject, name)) != null;
+                        const never_index = try isSensitiveHeader(sensitive_arg, globalObject, validated_name, name);
 
                         const value_slice = value_str.toSlice(globalObject, bun.default_allocator);
                         defer value_slice.deinit();
@@ -4069,7 +4083,7 @@ pub const H2FrameParser = struct {
                         return globalObject.ERR(.HTTP2_INVALID_HEADER_VALUE, "Invalid value for header \"{s}\"", .{name}).throw();
                     };
 
-                    const never_index = (try sensitive_arg.getTruthyPropertyValue(globalObject, validated_name) orelse try sensitive_arg.getTruthyPropertyValue(globalObject, name)) != null;
+                    const never_index = try isSensitiveHeader(sensitive_arg, globalObject, validated_name, name);
 
                     const value_slice = value_str.toSlice(globalObject, bun.default_allocator);
                     defer value_slice.deinit();

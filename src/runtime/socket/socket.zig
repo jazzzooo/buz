@@ -1545,10 +1545,10 @@ pub fn NewSocket(comptime ssl: bool) type {
             // SecureContext arrives as `opts.tls.secureContext`. Bun.connect
             // userland may also pass it top-level. Check both.
             const sc_js: JSValue = blk: {
-                if (try opts.getTruthy(globalObject, "secureContext")) |v| break :blk v;
-                if (try opts.getTruthy(globalObject, "tls")) |t| {
+                if (try opts.getOptional(globalObject, "secureContext", JSValue)) |v| break :blk v;
+                if (try opts.getOptional(globalObject, "tls", JSValue)) |t| {
                     if (t.isObject()) {
-                        if (try t.getTruthy(globalObject, "secureContext")) |v| break :blk v;
+                        if (try t.getOptional(globalObject, "secureContext", JSValue)) |v| break :blk v;
                     }
                 }
                 break :blk .zero;
@@ -1559,10 +1559,10 @@ pub fn NewSocket(comptime ssl: bool) type {
                 };
                 owned_ctx = sc.borrow();
                 // servername / ALPN still come from the surrounding tls config.
-                if (try opts.getTruthy(globalObject, "tls")) |t| {
+                if (try opts.getOptional(globalObject, "tls", JSValue)) |t| {
                     if (!t.isBoolean()) ssl_opts = try jsc.API.ServerConfig.SSLConfig.fromJS(jsc.VirtualMachine.get(), globalObject, t);
                 }
-            } else if (try opts.getTruthy(globalObject, "tls")) |tls_js| {
+            } else if (try opts.getOptional(globalObject, "tls", JSValue)) |tls_js| {
                 if (!tls_js.isBoolean()) {
                     ssl_opts = try jsc.API.ServerConfig.SSLConfig.fromJS(jsc.VirtualMachine.get(), globalObject, tls_js);
                 } else if (tls_js.toBoolean()) {
@@ -2041,8 +2041,8 @@ pub fn jsUpgradeDuplexToTLS(globalObject: *jsc.JSGlobalObject, callframe: *jsc.C
     };
 
     var is_server = false;
-    if (try opts.getTruthy(globalObject, "isServer")) |is_server_val| {
-        is_server = is_server_val.toBoolean();
+    if (try opts.getBooleanLoose(globalObject, "isServer")) |value| {
+        is_server = value;
     }
     // Note: Handlers.fromJS is_server=false because these handlers are standalone
     // allocations (not embedded in a Listener). The mode field on Handlers
@@ -2060,10 +2060,10 @@ pub fn jsUpgradeDuplexToTLS(globalObject: *jsc.JSGlobalObject, callframe: *jsc.C
     var owned_ctx: ?*BoringSSL.SSL_CTX = null;
     errdefer if (owned_ctx) |c| BoringSSL.SSL_CTX_free(c);
     const sc_js: JSValue = blk: {
-        if (try opts.getTruthy(globalObject, "secureContext")) |v| break :blk v;
-        if (try opts.getTruthy(globalObject, "tls")) |t| {
+        if (try opts.getOptional(globalObject, "secureContext", JSValue)) |v| break :blk v;
+        if (try opts.getOptional(globalObject, "tls", JSValue)) |t| {
             if (t.isObject()) {
-                if (try t.getTruthy(globalObject, "secureContext")) |v| break :blk v;
+                if (try t.getOptional(globalObject, "secureContext", JSValue)) |v| break :blk v;
             }
         }
         break :blk .zero;
@@ -2079,7 +2079,7 @@ pub fn jsUpgradeDuplexToTLS(globalObject: *jsc.JSGlobalObject, callframe: *jsc.C
     // wrapper, not the SSL_CTX) and as the build source when no SecureContext.
     var ssl_opts: ?jsc.API.ServerConfig.SSLConfig = null;
     errdefer if (ssl_opts) |*c| c.deinit();
-    if (try opts.getTruthy(globalObject, "tls")) |tls| {
+    if (try opts.getOptional(globalObject, "tls", JSValue)) |tls| {
         if (!tls.isBoolean()) {
             ssl_opts = try jsc.API.ServerConfig.SSLConfig.fromJS(jsc.VirtualMachine.get(), globalObject, tls);
         } else if (tls.toBoolean()) {

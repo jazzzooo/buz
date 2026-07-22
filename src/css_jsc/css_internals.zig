@@ -154,7 +154,7 @@ pub fn testingImpl(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, c
 
 fn parserOptionsFromJS(globalThis: *jsc.JSGlobalObject, allocator: Allocator, opts: *bun.css.ParserOptions, jsobj: JSValue) bun.JSError!void {
     _ = allocator; // autofix
-    if (try jsobj.getTruthy(globalThis, "flags")) |val| {
+    if (try jsobj.getOptional(globalThis, "flags", JSValue)) |val| {
         if (val.isArray()) {
             var iter = try val.arrayIterator(globalThis);
             while (try iter.next()) |item| {
@@ -173,12 +173,12 @@ fn parserOptionsFromJS(globalThis: *jsc.JSGlobalObject, allocator: Allocator, op
         }
     }
 
-    // if (try jsobj.getTruthy(globalThis, "css_modules")) |val| {
+    // if (try jsobj.getOptional(globalThis, "css_modules", JSValue)) |val| {
     //     opts.css_modules = bun.css.css_modules.Config{
 
     //     };
     //     if (val.isObject()) {
-    //         if (try val.getTruthy(globalThis, "pure")) |pure_val| {
+    //         if (try val.getOptional(globalThis, "pure", JSValue)) |pure_val| {
     //             opts.css_modules.pure = pure_val.toBoolean();
     //         }
     //     }
@@ -188,63 +188,63 @@ fn parserOptionsFromJS(globalThis: *jsc.JSGlobalObject, allocator: Allocator, op
 fn targetsFromJS(globalThis: *jsc.JSGlobalObject, jsobj: JSValue) bun.JSError!bun.css.targets.Browsers {
     var targets = bun.css.targets.Browsers{};
 
-    if (try jsobj.getTruthy(globalThis, "android")) |val| {
+    if (try jsobj.getOptional(globalThis, "android", JSValue)) |val| {
         if (val.isInt32()) {
             if (val.getNumber()) |value| {
                 targets.android = bun.intFromFloat(u32, value);
             }
         }
     }
-    if (try jsobj.getTruthy(globalThis, "chrome")) |val| {
+    if (try jsobj.getOptional(globalThis, "chrome", JSValue)) |val| {
         if (val.isInt32()) {
             if (val.getNumber()) |value| {
                 targets.chrome = bun.intFromFloat(u32, value);
             }
         }
     }
-    if (try jsobj.getTruthy(globalThis, "edge")) |val| {
+    if (try jsobj.getOptional(globalThis, "edge", JSValue)) |val| {
         if (val.isInt32()) {
             if (val.getNumber()) |value| {
                 targets.edge = bun.intFromFloat(u32, value);
             }
         }
     }
-    if (try jsobj.getTruthy(globalThis, "firefox")) |val| {
+    if (try jsobj.getOptional(globalThis, "firefox", JSValue)) |val| {
         if (val.isInt32()) {
             if (val.getNumber()) |value| {
                 targets.firefox = bun.intFromFloat(u32, value);
             }
         }
     }
-    if (try jsobj.getTruthy(globalThis, "ie")) |val| {
+    if (try jsobj.getOptional(globalThis, "ie", JSValue)) |val| {
         if (val.isInt32()) {
             if (val.getNumber()) |value| {
                 targets.ie = bun.intFromFloat(u32, value);
             }
         }
     }
-    if (try jsobj.getTruthy(globalThis, "ios_saf")) |val| {
+    if (try jsobj.getOptional(globalThis, "ios_saf", JSValue)) |val| {
         if (val.isInt32()) {
             if (val.getNumber()) |value| {
                 targets.ios_saf = bun.intFromFloat(u32, value);
             }
         }
     }
-    if (try jsobj.getTruthy(globalThis, "opera")) |val| {
+    if (try jsobj.getOptional(globalThis, "opera", JSValue)) |val| {
         if (val.isInt32()) {
             if (val.getNumber()) |value| {
                 targets.opera = bun.intFromFloat(u32, value);
             }
         }
     }
-    if (try jsobj.getTruthy(globalThis, "safari")) |val| {
+    if (try jsobj.getOptional(globalThis, "safari", JSValue)) |val| {
         if (val.isInt32()) {
             if (val.getNumber()) |value| {
                 targets.safari = bun.intFromFloat(u32, value);
             }
         }
     }
-    if (try jsobj.getTruthy(globalThis, "samsung")) |val| {
+    if (try jsobj.getOptional(globalThis, "samsung", JSValue)) |val| {
         if (val.isInt32()) {
             if (val.getNumber()) |value| {
                 targets.samsung = bun.intFromFloat(u32, value);

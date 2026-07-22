@@ -67,23 +67,23 @@ const ScanOpts = struct {
             return globalThis.throw("{s}: expected first argument to be an object", .{fnName});
         }
 
-        if (try optsObj.getTruthy(globalThis, "onlyFiles")) |only_files| {
+        if (try optsObj.getOptional(globalThis, "onlyFiles", JSValue)) |only_files| {
             out.only_files = if (only_files.isBoolean()) only_files.asBoolean() else false;
         }
 
-        if (try optsObj.getTruthy(globalThis, "throwErrorOnBrokenSymlink")) |error_on_broken| {
+        if (try optsObj.getOptional(globalThis, "throwErrorOnBrokenSymlink", JSValue)) |error_on_broken| {
             out.error_on_broken_symlinks = if (error_on_broken.isBoolean()) error_on_broken.asBoolean() else false;
         }
 
-        if (try optsObj.getTruthy(globalThis, "followSymlinks")) |followSymlinksVal| {
+        if (try optsObj.getOptional(globalThis, "followSymlinks", JSValue)) |followSymlinksVal| {
             out.follow_symlinks = if (followSymlinksVal.isBoolean()) followSymlinksVal.asBoolean() else false;
         }
 
-        if (try optsObj.getTruthy(globalThis, "absolute")) |absoluteVal| {
+        if (try optsObj.getOptional(globalThis, "absolute", JSValue)) |absoluteVal| {
             out.absolute = if (absoluteVal.isBoolean()) absoluteVal.asBoolean() else false;
         }
 
-        if (try optsObj.getTruthy(globalThis, "cwd")) |cwdVal| {
+        if (try optsObj.getOptional(globalThis, "cwd", JSValue)) |cwdVal| {
             if (!cwdVal.isString()) {
                 return globalThis.throw("{s}: invalid `cwd`, not a string", .{fnName});
             }
@@ -96,7 +96,7 @@ const ScanOpts = struct {
             }
         }
 
-        if (try optsObj.getTruthy(globalThis, "dot")) |dot| {
+        if (try optsObj.getOptional(globalThis, "dot", JSValue)) |dot| {
             out.dot = if (dot.isBoolean()) dot.asBoolean() else false;
         }
 

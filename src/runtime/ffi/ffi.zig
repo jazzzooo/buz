@@ -634,7 +634,7 @@ pub const FFI = struct {
             return error.JSError;
         }
 
-        if (try object.getTruthy(globalThis, "flags")) |flags_value| {
+        if (try object.getOptional(globalThis, "flags", JSValue)) |flags_value| {
             if (flags_value.isArray()) {
                 var iter = try flags_value.arrayIterator(globalThis);
 
@@ -671,7 +671,7 @@ pub const FFI = struct {
             return error.JSError;
         }
 
-        if (try object.getTruthy(globalThis, "define")) |define_value| {
+        if (try object.getOptional(globalThis, "define", JSValue)) |define_value| {
             if (define_value.getObject()) |define_obj| {
                 const Iter = jsc.JSPropertyIterator(.{ .include_value = true, .skip_empty_name = true });
                 var iter = try Iter.init(globalThis, define_obj);
@@ -701,7 +701,7 @@ pub const FFI = struct {
             return error.JSError;
         }
 
-        if (try object.getTruthy(globalThis, "include")) |include_value| {
+        if (try object.getOptional(globalThis, "include", JSValue)) |include_value| {
             compile_c.include_dirs = try StringArray.fromJS(globalThis, include_value, "include");
         }
 
@@ -1318,11 +1318,12 @@ pub const FFI = struct {
 
         var threadsafe = false;
 
-        if (try value.getTruthy(global, "threadsafe")) |threadsafe_value| {
-            threadsafe = threadsafe_value.toBoolean();
+        if (try value.getBooleanLoose(global, "threadsafe")) |flag| {
+            threadsafe = flag;
         }
 
-        if (try value.getTruthy(global, "returns")) |ret_value| brk: {
+        if (try value.getOptional(global, "returns", JSValue)) |ret_value| brk: {
+            if (ret_value.isString() and !ret_value.toBoolean()) break :brk;
             if (ret_value.isAnyInt()) {
                 const int = ret_value.toInt32();
                 switch (int) {

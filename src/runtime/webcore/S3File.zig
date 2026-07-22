@@ -272,7 +272,7 @@ pub fn constructS3FileWithS3CredentialsAndOptions(
     var blob = Blob.initWithStore(store, globalObject);
     if (options) |opts| {
         if (opts.isObject()) {
-            if (try opts.getTruthyComptime(globalObject, "type")) |file_type| {
+            if (try opts.getOptional(globalObject, "type", JSValue)) |file_type| {
                 inner: {
                     if (file_type.isString()) {
                         var allocator = bun.default_allocator;
@@ -316,7 +316,7 @@ pub fn constructS3FileWithS3Credentials(
     var blob = Blob.initWithStore(store, globalObject);
     if (options) |opts| {
         if (opts.isObject()) {
-            if (try opts.getTruthyComptime(globalObject, "type")) |file_type| {
+            if (try opts.getOptional(globalObject, "type", JSValue)) |file_type| {
                 inner: {
                     if (file_type.isString()) {
                         var allocator = bun.default_allocator;
@@ -483,7 +483,7 @@ pub fn getPresignUrlFrom(this: *Blob, globalThis: *jsc.JSGlobalObject, extra_opt
 
     if (extra_options) |options| {
         if (options.isObject()) {
-            if (try options.getTruthyComptime(globalThis, "method")) |method_| {
+            if (try options.getOptional(globalThis, "method", JSValue)) |method_| {
                 method = try Method.fromJS(globalThis, method_) orelse {
                     return globalThis.throwInvalidArguments("method must be GET, PUT, DELETE or HEAD when using s3 protocol", .{});
                 };

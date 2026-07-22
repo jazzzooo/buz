@@ -409,8 +409,8 @@ const ParseRenderer = struct {
     fn extractComponents(self: *ParseRenderer, opts: JSValue) bun.JSError!void {
         if (opts.isUndefinedOrNull() or !opts.isObject()) return;
         inline for (@typeInfo(Components).@"struct".field_names) |field_name| {
-            if (try opts.getTruthy(self.globalObject, field_name)) |val| {
-                if (!val.isBoolean()) {
+            if (try opts.getOptional(self.globalObject, field_name, JSValue)) |val| {
+                if (!val.isBoolean() and val.toBoolean()) {
                     @field(self.components, field_name) = val;
                     self.marked_args.append(val);
                 }
@@ -833,7 +833,7 @@ const JsCallbackRenderer = struct {
     fn extractCallbacks(self: *JsCallbackRenderer, opts: JSValue) bun.JSError!void {
         if (opts.isUndefinedOrNull() or !opts.isObject()) return;
         inline for (@typeInfo(Callbacks).@"struct".field_names) |field_name| {
-            if (try opts.getTruthy(self.globalObject, field_name)) |val| {
+            if (try opts.getOptional(self.globalObject, field_name, JSValue)) |val| {
                 if (val.isCallable()) {
                     @field(self.callbacks, field_name) = val;
                 }

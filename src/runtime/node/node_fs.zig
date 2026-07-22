@@ -2346,11 +2346,11 @@ pub const Arguments = struct {
                 arguments.eat();
 
                 if (val.isObject()) {
-                    if (try val.getTruthy(ctx, "flags")) |flags_| {
+                    if (try val.getOptional(ctx, "flags", jsc.JSValue)) |flags_| {
                         flags = try FileSystemFlags.fromJS(ctx, flags_) orelse flags;
                     }
 
-                    if (try val.getTruthy(ctx, "mode")) |mode_| {
+                    if (try val.getOptional(ctx, "mode", jsc.JSValue)) |mode_| {
                         mode = try jsc.Node.modeFromJS(ctx, mode_) orelse mode;
                     }
                 } else if (val != .zero) {
@@ -2736,13 +2736,13 @@ pub const Arguments = struct {
                 } else if (arg.isObject()) {
                     encoding = try getEncoding(arg, ctx, encoding);
 
-                    if (try arg.getTruthy(ctx, "flag")) |flag_| {
+                    if (try arg.getOptional(ctx, "flag", jsc.JSValue)) |flag_| {
                         flag = try FileSystemFlags.fromJS(ctx, flag_) orelse {
                             return ctx.throwInvalidArguments("Invalid flag", .{});
                         };
                     }
 
-                    if (try arg.getTruthy(ctx, "signal")) |value| {
+                    if (try arg.getOptional(ctx, "signal", jsc.JSValue)) |value| {
                         if (AbortSignal.fromJS(value)) |signal| {
                             abort_signal = signal.ref();
                             signal.pendingActivityRef();
@@ -2839,17 +2839,17 @@ pub const Arguments = struct {
                 } else if (arg.isObject()) {
                     encoding = try getEncoding(arg, ctx, encoding);
 
-                    if (try arg.getTruthy(ctx, "flag")) |flag_| {
+                    if (try arg.getOptional(ctx, "flag", jsc.JSValue)) |flag_| {
                         flag = try FileSystemFlags.fromJS(ctx, flag_) orelse {
                             return ctx.throwInvalidArguments("Invalid flag", .{});
                         };
                     }
 
-                    if (try arg.getTruthy(ctx, "mode")) |mode_| {
+                    if (try arg.getOptional(ctx, "mode", jsc.JSValue)) |mode_| {
                         mode = try jsc.Node.modeFromJS(ctx, mode_) orelse mode;
                     }
 
-                    if (try arg.getTruthy(ctx, "signal")) |value| {
+                    if (try arg.getOptional(ctx, "signal", jsc.JSValue)) |value| {
                         if (AbortSignal.fromJS(value)) |signal| {
                             abort_signal = signal.ref();
                             signal.pendingActivityRef();

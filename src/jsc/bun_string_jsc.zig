@@ -114,11 +114,11 @@ pub fn jsGetStringWidth(globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallF
     var ambiguous_is_narrow: bool = true;
 
     if (opts_val.isObject()) {
-        if (try opts_val.getTruthyComptime(globalObject, "countAnsiEscapeCodes")) |v| {
-            count_ansi = v.toBoolean();
+        if (try opts_val.getOptional(globalObject, "countAnsiEscapeCodes", jsc.JSValue)) |value| {
+            count_ansi = value.toBoolean();
         }
-        if (try opts_val.getTruthyComptime(globalObject, "ambiguousIsNarrow")) |v| {
-            ambiguous_is_narrow = v.toBoolean();
+        if (try opts_val.getOptional(globalObject, "ambiguousIsNarrow", jsc.JSValue)) |value| {
+            ambiguous_is_narrow = value.toBoolean();
         }
     }
 

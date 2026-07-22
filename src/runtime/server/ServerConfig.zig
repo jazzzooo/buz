@@ -755,7 +755,7 @@ pub fn fromJS(
             }
         }
 
-        if (try arg.getTruthy(global, "webSocket") orelse try arg.getTruthy(global, "websocket")) |websocket_object| {
+        if (try arg.getOptional(global, "webSocket", jsc.JSValue) orelse try arg.getOptional(global, "websocket", jsc.JSValue)) |websocket_object| {
             if (!websocket_object.isObject()) {
                 if (args.ssl_config) |*conf| {
                     conf.deinit();
@@ -768,7 +768,7 @@ pub fn fromJS(
         }
         if (global.hasException()) return error.JSError;
 
-        if (try arg.getTruthy(global, "port")) |port_| {
+        if (try arg.getOptional(global, "port", jsc.JSValue)) |port_| {
             args.address.tcp.port = @as(
                 u16,
                 @intCast(@min(
@@ -780,7 +780,7 @@ pub fn fromJS(
         }
         if (global.hasException()) return error.JSError;
 
-        if (try arg.getTruthy(global, "baseURI")) |baseURI| {
+        if (try arg.getOptional(global, "baseURI", jsc.JSValue)) |baseURI| {
             var sliced = try baseURI.toSlice(global, bun.default_allocator);
 
             if (sliced.len > 0) {
@@ -834,7 +834,7 @@ pub fn fromJS(
         if (global.hasException()) return error.JSError;
 
         if (opts.allow_bake_config) {
-            if (try arg.getTruthy(global, "app")) |bake_args_js| brk: {
+            if (try arg.getOptional(global, "app", jsc.JSValue)) |bake_args_js| brk: {
                 if (!bun.FeatureFlags.bake()) {
                     break :brk;
                 }
@@ -871,14 +871,14 @@ pub fn fromJS(
         }
         if (global.hasException()) return error.JSError;
 
-        if (try arg.getTruthy(global, "maxRequestBodySize")) |max_request_body_size| {
+        if (try arg.getOptional(global, "maxRequestBodySize", jsc.JSValue)) |max_request_body_size| {
             if (max_request_body_size.isNumber()) {
                 args.max_request_body_size = @as(u64, @intCast(@max(0, max_request_body_size.toInt64())));
             }
         }
         if (global.hasException()) return error.JSError;
 
-        if (try arg.getTruthyComptime(global, "error")) |onError| {
+        if (try arg.getOptional(global, "error", jsc.JSValue)) |onError| {
             if (!onError.isCallable()) {
                 return global.throwInvalidArguments("Expected error to be a function", .{});
             }
@@ -888,7 +888,7 @@ pub fn fromJS(
         }
         if (global.hasException()) return error.JSError;
 
-        if (try arg.getTruthy(global, "onNodeHTTPRequest")) |onRequest_| {
+        if (try arg.getOptional(global, "onNodeHTTPRequest", jsc.JSValue)) |onRequest_| {
             if (!onRequest_.isCallable()) {
                 return global.throwInvalidArguments("Expected onNodeHTTPRequest to be a function", .{});
             }
@@ -897,7 +897,7 @@ pub fn fromJS(
             args.onNodeHTTPRequest = onRequest;
         }
 
-        if (try arg.getTruthy(global, "fetch")) |onRequest_| {
+        if (try arg.getOptional(global, "fetch", jsc.JSValue)) |onRequest_| {
             if (!onRequest_.isCallable()) {
                 return global.throwInvalidArguments("Expected fetch() to be a function", .{});
             }
@@ -927,7 +927,7 @@ pub fn fromJS(
             if (global.hasException()) return error.JSError;
         }
 
-        if (try arg.getTruthy(global, "tls")) |tls| {
+        if (try arg.getOptional(global, "tls", jsc.JSValue)) |tls| {
             if (tls.isFalsey()) {
                 args.ssl_config = null;
             } else if (tls.jsType().isArray()) {

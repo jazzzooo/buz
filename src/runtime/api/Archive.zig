@@ -129,7 +129,7 @@ fn parseCompressionOptions(globalThis: *jsc.JSGlobalObject, options_arg: jsc.JSV
     }
 
     // Check for compress option
-    if (try options_arg.getTruthy(globalThis, "compress")) |compress_val| {
+    if (try options_arg.getOptional(globalThis, "compress", jsc.JSValue)) |compress_val| {
         // compress must be "gzip"
         if (!compress_val.isString()) {
             return globalThis.throwInvalidArguments("Archive: compress option must be a string", .{});
@@ -144,7 +144,7 @@ fn parseCompressionOptions(globalThis: *jsc.JSGlobalObject, options_arg: jsc.JSV
 
         // Parse level option (1-12, default 6)
         var level: u8 = 6;
-        if (try options_arg.getTruthy(globalThis, "level")) |level_val| {
+        if (try options_arg.getOptional(globalThis, "level", jsc.JSValue)) |level_val| {
             if (!level_val.isNumber()) {
                 return globalThis.throwInvalidArguments("Archive: level must be a number", .{});
             }
@@ -347,7 +347,7 @@ pub fn extract(this: *Archive, globalThis: *jsc.JSGlobalObject, callframe: *jsc.
         }
 
         // Parse glob option
-        if (try options_arg.getTruthy(globalThis, "glob")) |glob_val| {
+        if (try options_arg.getOptional(globalThis, "glob", jsc.JSValue)) |glob_val| {
             glob_patterns = try parsePatternArg(globalThis, glob_val, "Archive.extract", "glob");
         }
     }

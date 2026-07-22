@@ -189,14 +189,14 @@ pub fn spawnMaybeSync(
             args = secondaryArgsValue orelse JSValue.zero;
         } else if (!args.isObject()) {
             return globalThis.throwInvalidArguments("cmd must be an array", .{});
-        } else if (try args.getTruthy(globalThis, "cmd")) |cmd_value_| {
+        } else if (try args.getOptional(globalThis, "cmd", JSValue)) |cmd_value_| {
             cmd_value = cmd_value_;
         } else {
             return globalThis.throwInvalidArguments("cmd must be an array", .{});
         }
 
         if (args.isObject()) {
-            if (try args.getTruthy(globalThis, "argv0")) |argv0_| {
+            if (try args.getOptional(globalThis, "argv0", JSValue)) |argv0_| {
                 const argv0_str = try argv0_.getZigString(globalThis);
                 if (argv0_str.len > 0) {
                     argv0 = try argv0_str.toOwnedSliceZ(allocator);
@@ -204,7 +204,7 @@ pub fn spawnMaybeSync(
             }
 
             // need to update `cwd` before searching for executable with `Which.which`
-            if (try args.getTruthy(globalThis, "cwd")) |cwd_| {
+            if (try args.getOptional(globalThis, "cwd", JSValue)) |cwd_| {
                 const cwd_str = try cwd_.getZigString(globalThis);
                 if (cwd_str.len > 0) {
                     cwd = try cwd_str.toOwnedSliceZ(allocator);
@@ -215,17 +215,17 @@ pub fn spawnMaybeSync(
         if (args != .zero and args.isObject()) {
             // Reject terminal option on spawnSync
             if (comptime is_sync) {
-                if (try args.getTruthy(globalThis, "terminal")) |_| {
+                if (try args.getOptional(globalThis, "terminal", JSValue)) |_| {
                     return globalThis.throwInvalidArguments("terminal option is only supported for Bun.spawn, not Bun.spawnSync", .{});
                 }
             }
 
             // This must run before the stdio parsing happens
             if (!is_sync) {
-                if (try args.getTruthy(globalThis, "ipc")) |val| {
+                if (try args.getOptional(globalThis, "ipc", JSValue)) |val| {
                     if (val.isCell() and val.isCallable()) {
                         maybe_ipc_mode = ipc_mode: {
-                            if (try args.getTruthy(globalThis, "serialization")) |mode_val| {
+                            if (try args.getOptional(globalThis, "serialization", JSValue)) |mode_val| {
                                 if (mode_val.isString()) {
                                     break :ipc_mode try IPC.Mode.fromJS(globalThis, mode_val) orelse {
                                         return globalThis.throwInvalidArguments("serialization must be \"json\" or \"advanced\"", .{});
@@ -245,7 +245,7 @@ pub fn spawnMaybeSync(
                 }
             }
 
-            if (try args.getTruthy(globalThis, "signal")) |signal_val| {
+            if (try args.getOptional(globalThis, "signal", JSValue)) |signal_val| {
                 if (signal_val.as(jsc.WebCore.AbortSignal)) |signal| {
                     abort_signal = signal.ref();
                 } else {
@@ -253,7 +253,7 @@ pub fn spawnMaybeSync(
                 }
             }
 
-            if (try args.getTruthy(globalThis, "onDisconnect")) |onDisconnect_| {
+            if (try args.getOptional(globalThis, "onDisconnect", JSValue)) |onDisconnect_| {
                 if (!onDisconnect_.isCell() or !onDisconnect_.isCallable()) {
                     return globalThis.throwInvalidArguments("onDisconnect must be a function or undefined", .{});
                 }
@@ -264,7 +264,7 @@ pub fn spawnMaybeSync(
                     onDisconnect_.withAsyncContextIfNeeded(globalThis);
             }
 
-            if (try args.getTruthy(globalThis, "onExit")) |onExit_| {
+            if (try args.getOptional(globalThis, "onExit", JSValue)) |onExit_| {
                 if (!onExit_.isCell() or !onExit_.isCallable()) {
                     return globalThis.throwInvalidArguments("onExit must be a function or undefined", .{});
                 }
@@ -275,7 +275,7 @@ pub fn spawnMaybeSync(
                     onExit_.withAsyncContextIfNeeded(globalThis);
             }
 
-            if (try args.getTruthy(globalThis, "env")) |env_arg| {
+            if (try args.getOptional(globalThis, "env", JSValue)) |env_arg| {
                 env_arg.ensureStillAlive();
                 const object = env_arg.getObject() orelse {
                     return globalThis.throwInvalidArguments("env must be an object", .{});
@@ -393,7 +393,7 @@ pub fn spawnMaybeSync(
             }
 
             if (comptime !is_sync) {
-                if (try args.getTruthy(globalThis, "terminal")) |terminal_val| {
+                if (try args.getOptional(globalThis, "terminal", JSValue)) |terminal_val| {
                     // Check if it's an existing Terminal object
                     if (Terminal.fromJS(terminal_val)) |terminal| {
                         if (terminal.flags.closed) {

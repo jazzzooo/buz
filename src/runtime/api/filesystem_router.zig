@@ -165,7 +165,7 @@ pub const FileSystemRouter = struct {
         }
 
         var asset_prefix_path: string = "";
-        if (try argument.getTruthy(globalThis, "assetPrefix")) |asset_prefix| {
+        if (try argument.getOptional(globalThis, "assetPrefix", jsc.JSValue)) |asset_prefix| {
             if (!asset_prefix.isString()) {
                 return globalThis.throwInvalidArguments("Expected assetPrefix to be a string", .{});
             }

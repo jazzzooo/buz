@@ -764,7 +764,7 @@ pub fn constructInto(globalThis: *jsc.JSGlobalObject, arguments: []const jsc.JSV
         }
 
         if (!fields.contains(.signal)) {
-            if (try value.getTruthy(globalThis, "signal")) |signal_| {
+            if (try value.getOptional(globalThis, "signal", JSValue)) |signal_| {
                 fields.insert(.signal);
                 if (AbortSignal.fromJS(signal_)) |signal| {
                     //Keep it alive

@@ -19,7 +19,7 @@ pub fn getCredentialsWithOptions(this: S3Credentials, default_options: MultiPart
 
     if (options) |opts| {
         if (opts.isObject()) {
-            if (try opts.getTruthyComptime(globalObject, "accessKeyId")) |js_value| {
+            if (try opts.getOptional(globalObject, "accessKeyId", jsc.JSValue)) |js_value| {
                 if (!js_value.isEmptyOrUndefinedOrNull()) {
                     if (js_value.isString()) {
                         const str = try bun.String.fromJS(js_value, globalObject);
@@ -34,7 +34,7 @@ pub fn getCredentialsWithOptions(this: S3Credentials, default_options: MultiPart
                     }
                 }
             }
-            if (try opts.getTruthyComptime(globalObject, "secretAccessKey")) |js_value| {
+            if (try opts.getOptional(globalObject, "secretAccessKey", jsc.JSValue)) |js_value| {
                 if (!js_value.isEmptyOrUndefinedOrNull()) {
                     if (js_value.isString()) {
                         const str = try bun.String.fromJS(js_value, globalObject);
@@ -49,7 +49,7 @@ pub fn getCredentialsWithOptions(this: S3Credentials, default_options: MultiPart
                     }
                 }
             }
-            if (try opts.getTruthyComptime(globalObject, "region")) |js_value| {
+            if (try opts.getOptional(globalObject, "region", jsc.JSValue)) |js_value| {
                 if (!js_value.isEmptyOrUndefinedOrNull()) {
                     if (js_value.isString()) {
                         const str = try bun.String.fromJS(js_value, globalObject);
@@ -64,7 +64,7 @@ pub fn getCredentialsWithOptions(this: S3Credentials, default_options: MultiPart
                     }
                 }
             }
-            if (try opts.getTruthyComptime(globalObject, "endpoint")) |js_value| {
+            if (try opts.getOptional(globalObject, "endpoint", jsc.JSValue)) |js_value| {
                 if (!js_value.isEmptyOrUndefinedOrNull()) {
                     if (js_value.isString()) {
                         const str = try bun.String.fromJS(js_value, globalObject);
@@ -92,7 +92,7 @@ pub fn getCredentialsWithOptions(this: S3Credentials, default_options: MultiPart
                     }
                 }
             }
-            if (try opts.getTruthyComptime(globalObject, "bucket")) |js_value| {
+            if (try opts.getOptional(globalObject, "bucket", jsc.JSValue)) |js_value| {
                 if (!js_value.isEmptyOrUndefinedOrNull()) {
                     if (js_value.isString()) {
                         const str = try bun.String.fromJS(js_value, globalObject);
@@ -113,7 +113,7 @@ pub fn getCredentialsWithOptions(this: S3Credentials, default_options: MultiPart
                 new_credentials.changed_credentials = true;
             }
 
-            if (try opts.getTruthyComptime(globalObject, "sessionToken")) |js_value| {
+            if (try opts.getOptional(globalObject, "sessionToken", jsc.JSValue)) |js_value| {
                 if (!js_value.isEmptyOrUndefinedOrNull()) {
                     if (js_value.isString()) {
                         const str = try bun.String.fromJS(js_value, globalObject);
@@ -182,7 +182,7 @@ pub fn getCredentialsWithOptions(this: S3Credentials, default_options: MultiPart
                 new_credentials.storage_class = storage_class;
             }
 
-            if (try opts.getTruthyComptime(globalObject, "contentDisposition")) |js_value| {
+            if (try opts.getOptional(globalObject, "contentDisposition", jsc.JSValue)) |js_value| {
                 if (!js_value.isEmptyOrUndefinedOrNull()) {
                     if (js_value.isString()) {
                         const str = try bun.String.fromJS(js_value, globalObject);
@@ -201,7 +201,7 @@ pub fn getCredentialsWithOptions(this: S3Credentials, default_options: MultiPart
                 }
             }
 
-            if (try opts.getTruthyComptime(globalObject, "type")) |js_value| {
+            if (try opts.getOptional(globalObject, "type", jsc.JSValue)) |js_value| {
                 if (!js_value.isEmptyOrUndefinedOrNull()) {
                     if (js_value.isString()) {
                         const str = try bun.String.fromJS(js_value, globalObject);
@@ -220,7 +220,7 @@ pub fn getCredentialsWithOptions(this: S3Credentials, default_options: MultiPart
                 }
             }
 
-            if (try opts.getTruthyComptime(globalObject, "contentEncoding")) |js_value| {
+            if (try opts.getOptional(globalObject, "contentEncoding", jsc.JSValue)) |js_value| {
                 if (!js_value.isEmptyOrUndefinedOrNull()) {
                     if (js_value.isString()) {
                         const str = try bun.String.fromJS(js_value, globalObject);

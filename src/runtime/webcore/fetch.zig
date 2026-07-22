@@ -385,7 +385,7 @@ fn fetchImpl(
     // "method"
     method = extract_method: {
         if (options_object) |options| {
-            if (try options.getTruthyComptime(globalThis, "method")) |method_| {
+            if (try options.getOptional(globalThis, "method", JSValue)) |method_| {
                 break :extract_method try Method.fromJS(globalThis, method_);
             }
         }
@@ -395,7 +395,7 @@ fn fetchImpl(
         }
 
         if (request_init_object) |req| {
-            if (try req.getTruthyComptime(globalThis, "method")) |method_| {
+            if (try req.getOptional(globalThis, "method", JSValue)) |method_| {
                 break :extract_method try Method.fromJS(globalThis, method_);
             }
         }
@@ -1247,7 +1247,7 @@ fn fetchImpl(
         }
 
         if (options_object) |options| {
-            if (try options.getTruthyComptime(globalThis, "s3")) |s3_options| {
+            if (try options.getOptional(globalThis, "s3", JSValue)) |s3_options| {
                 if (s3_options.isObject()) {
                     s3_options.ensureStillAlive();
                     credentialsWithOptions = try s3.S3Credentials.getCredentialsWithOptions(credentialsWithOptions.credentials, .{}, s3_options, null, null, false, globalThis);

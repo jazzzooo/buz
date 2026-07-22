@@ -60,7 +60,7 @@ pub const Handler = struct {
             .{ "ping", "onPing" },
             .{ "pong", "onPong" },
         }, 0..) |pair, i| {
-            if (try object.getTruthy(globalObject, pair[0])) |value| {
+            if (try object.getOptional(globalObject, pair[0], jsc.JSValue)) |value| {
                 if (!value.isCell() or !value.isCallable()) {
                     return globalObject.throwInvalidArguments("websocket expects a function for the '{s}' option", .{pair[0]});
                 }
@@ -176,7 +176,7 @@ pub fn onCreate(globalObject: *jsc.JSGlobalObject, object: JSValue) bun.JSError!
                 return globalObject.throwInvalidArguments("websocket expects perMessageDeflate to be a boolean or an object", .{});
             }
 
-            if (try per_message_deflate.getTruthy(globalObject, "compress")) |compression| {
+            if (try per_message_deflate.getOptional(globalObject, "compress", jsc.JSValue)) |compression| {
                 if (compression.isBoolean()) {
                     server.compression |= if (compression.toBoolean()) uws.SHARED_COMPRESSOR else 0;
                 } else if (compression.isString()) {
@@ -188,7 +188,7 @@ pub fn onCreate(globalObject: *jsc.JSGlobalObject, object: JSValue) bun.JSError!
                 }
             }
 
-            if (try per_message_deflate.getTruthy(globalObject, "decompress")) |compression| {
+            if (try per_message_deflate.getOptional(globalObject, "decompress", jsc.JSValue)) |compression| {
                 if (compression.isBoolean()) {
                     server.compression |= if (compression.toBoolean()) uws.SHARED_DECOMPRESSOR else 0;
                 } else if (compression.isString()) {

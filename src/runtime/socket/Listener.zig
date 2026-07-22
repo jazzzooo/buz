@@ -579,7 +579,7 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
     vm.eventLoop().ensureWaker();
 
     var connection: Listener.UnixOrHost = blk: {
-        if (try opts.getTruthy(globalObject, "fd")) |fd_| {
+        if (try opts.getOptional(globalObject, "fd", JSValue)) |fd_| {
             if (fd_.isNumber()) {
                 const fd = fd_.asFileDescriptor();
                 break :blk .{ .fd = fd };
@@ -612,9 +612,9 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
     var owned_ssl_ctx: ?*BoringSSL.SSL_CTX = null;
     if (ssl_enabled) {
         const native_sc: ?*SecureContext = blk: {
-            const tls_js = (try opts.getTruthy(globalObject, "tls")) orelse break :blk null;
+            const tls_js = (try opts.getOptional(globalObject, "tls", JSValue)) orelse break :blk null;
             if (!tls_js.isObject()) break :blk null;
-            const sc_js = (try tls_js.getTruthy(globalObject, "secureContext")) orelse break :blk null;
+            const sc_js = (try tls_js.getOptional(globalObject, "secureContext", JSValue)) orelse break :blk null;
             break :blk SecureContext.fromJS(sc_js);
         };
         if (native_sc) |sc| owned_ssl_ctx = sc.borrow();

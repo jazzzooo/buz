@@ -48,8 +48,8 @@ pub fn toThrow(this: *Expect, globalThis: *JSGlobalObject, callFrame: *CallFrame
         if (expected_value == .zero or expected_value.isUndefined()) {
             const signature_no_args = comptime getSignature("toThrow", "", true);
             if (result.toError()) |err| {
-                const name: JSValue = try err.getTruthyComptime(globalThis, "name") orelse .js_undefined;
-                const message: JSValue = try err.getTruthyComptime(globalThis, "message") orelse .js_undefined;
+                const name: JSValue = try err.getOptional(globalThis, "name", JSValue) orelse .js_undefined;
+                const message: JSValue = try err.getOptional(globalThis, "message", JSValue) orelse .js_undefined;
                 const fmt = signature_no_args ++ "\n\nError name: <red>{f}<r>\nError message: <red>{f}<r>\n";
                 return globalThis.throwPretty(fmt, .{
                     name.toFmt(&formatter),

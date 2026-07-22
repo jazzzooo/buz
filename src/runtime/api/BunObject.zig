@@ -648,31 +648,35 @@ pub fn openInEditor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) 
 
     if (arguments.nextEat()) |opts| {
         if (!opts.isUndefinedOrNull()) {
-            if (try opts.getTruthy(globalThis, "editor")) |editor_val| {
+            if (try opts.getOptional(globalThis, "editor", JSValue)) |editor_val| {
                 var sliced = try editor_val.toSlice(globalThis, arguments.arena.allocator());
-                const prev_name = edit.name;
+                if (sliced.len > 0) {
+                    const prev_name = edit.name;
 
-                if (!strings.eqlLong(prev_name, sliced.slice(), true)) {
-                    const prev = edit.*;
-                    edit.name = sliced.slice();
-                    edit.detectEditor(VirtualMachine.get().transpiler.env);
-                    editor_choice = edit.editor;
-                    if (editor_choice == null) {
-                        edit.* = prev;
-                        return globalThis.throw("Could not find editor \"{s}\"", .{sliced.slice()});
-                    } else if (edit.name.ptr == edit.path.ptr) {
-                        edit.name = arguments.arena.allocator().dupe(u8, edit.path) catch unreachable;
-                        edit.path = edit.path;
+                    if (!strings.eqlLong(prev_name, sliced.slice(), true)) {
+                        const prev = edit.*;
+                        edit.name = sliced.slice();
+                        edit.detectEditor(VirtualMachine.get().transpiler.env);
+                        editor_choice = edit.editor;
+                        if (editor_choice == null) {
+                            edit.* = prev;
+                            return globalThis.throw("Could not find editor \"{s}\"", .{sliced.slice()});
+                        } else if (edit.name.ptr == edit.path.ptr) {
+                            edit.name = arguments.arena.allocator().dupe(u8, edit.path) catch unreachable;
+                            edit.path = edit.path;
+                        }
                     }
                 }
             }
 
-            if (try opts.getTruthy(globalThis, "line")) |line_| {
-                line = (try line_.toSlice(globalThis, arguments.arena.allocator())).slice();
+            if (try opts.getOptional(globalThis, "line", JSValue)) |line_| {
+                const slice = (try line_.toSlice(globalThis, arguments.arena.allocator())).slice();
+                if (slice.len > 0) line = slice;
             }
 
-            if (try opts.getTruthy(globalThis, "column")) |column_| {
-                column = (try column_.toSlice(globalThis, arguments.arena.allocator())).slice();
+            if (try opts.getOptional(globalThis, "column", JSValue)) |column_| {
+                const slice = (try column_.toSlice(globalThis, arguments.arena.allocator())).slice();
+                if (slice.len > 0) column = slice;
             }
         }
     }
@@ -1619,7 +1623,7 @@ pub const JSZlib = struct {
                 library = .zlib;
             }
 
-            if (try options_val.getTruthy(globalThis, "library")) |library_value| {
+            if (try options_val.getOptional(globalThis, "library", JSValue)) |library_value| {
                 if (!library_value.isString()) {
                     return globalThis.throwInvalidArguments("Expected library to be a string", .{});
                 }
@@ -1729,7 +1733,7 @@ pub const JSZlib = struct {
                 library = .zlib;
             }
 
-            if (try options_val.getTruthy(globalThis, "library")) |library_value| {
+            if (try options_val.getOptional(globalThis, "library", JSValue)) |library_value| {
                 if (!library_value.isString()) {
                     return globalThis.throwInvalidArguments("Expected library to be a string", .{});
                 }

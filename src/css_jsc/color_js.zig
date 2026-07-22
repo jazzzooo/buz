@@ -197,7 +197,7 @@ pub fn jsFunctionColor(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFram
             const g = try colorIntFromJS(globalThis, try args[0].get(globalThis, "g") orelse .zero, "g");
             const b = try colorIntFromJS(globalThis, try args[0].get(globalThis, "b") orelse .zero, "b");
 
-            const a: ?u8 = if (try args[0].getTruthy(globalThis, "a")) |a_value| brk2: {
+            const a: ?u8 = if (try args[0].getOptional(globalThis, "a", jsc.JSValue)) |a_value| brk2: {
                 if (a_value.isNumber()) {
                     break :brk2 @intCast(@mod(@as(i64, bun.intFromFloat(i64, a_value.asNumber() * 255.0)), 256));
                 }

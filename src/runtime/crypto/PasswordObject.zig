@@ -21,7 +21,7 @@ pub const PasswordObject = struct {
 
             pub fn fromJS(globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) bun.JSError!Value {
                 if (value.isObject()) {
-                    if (try value.getTruthy(globalObject, "algorithm")) |algorithm_value| {
+                    if (try value.getOptional(globalObject, "algorithm", jsc.JSValue)) |algorithm_value| {
                         if (!algorithm_value.isString()) {
                             return globalObject.throwInvalidArgumentType("hash", "algorithm", "string");
                         }
@@ -36,7 +36,7 @@ pub const PasswordObject = struct {
                                     .bcrypt = PasswordObject.Algorithm.Value.bcrpyt_default,
                                 };
 
-                                if (try value.getTruthy(globalObject, "cost")) |rounds_value| {
+                                if (try value.getOptional(globalObject, "cost", jsc.JSValue)) |rounds_value| {
                                     if (!rounds_value.isNumber()) {
                                         return globalObject.throwInvalidArgumentType("hash", "cost", "number");
                                     }
@@ -55,7 +55,7 @@ pub const PasswordObject = struct {
                             inline .argon2id, .argon2d, .argon2i => |tag| {
                                 var argon = Algorithm.Argon2Params{};
 
-                                if (try value.getTruthy(globalObject, "timeCost")) |time_value| {
+                                if (try value.getOptional(globalObject, "timeCost", jsc.JSValue)) |time_value| {
                                     if (!time_value.isNumber()) {
                                         return globalObject.throwInvalidArgumentType("hash", "timeCost", "number");
                                     }
@@ -69,7 +69,7 @@ pub const PasswordObject = struct {
                                     argon.time_cost = @as(u32, @intCast(time_cost));
                                 }
 
-                                if (try value.getTruthy(globalObject, "memoryCost")) |memory_value| {
+                                if (try value.getOptional(globalObject, "memoryCost", jsc.JSValue)) |memory_value| {
                                     if (!memory_value.isNumber()) {
                                         return globalObject.throwInvalidArgumentType("hash", "memoryCost", "number");
                                     }

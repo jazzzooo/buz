@@ -2845,13 +2845,13 @@ pub const Resolver = struct {
         if (arguments.len > 1 and arguments.ptr[1].isObject()) {
             const optionsObject = arguments.ptr[1];
 
-            if (try optionsObject.getTruthy(globalThis, "port")) |port_value| {
+            if (try optionsObject.getOptional(globalThis, "port", jsc.JSValue)) |port_value| {
                 port = try port_value.toPortNumber(globalThis);
             }
 
             options = GetAddrInfo.Options.fromJS(optionsObject, globalThis) catch |err| {
                 return switch (err) {
-                    error.InvalidFlags => globalThis.throwInvalidArgumentValue("flags", try optionsObject.getTruthy(globalThis, "flags") orelse .js_undefined),
+                    error.InvalidFlags => globalThis.throwInvalidArgumentValue("flags", try optionsObject.getOptional(globalThis, "flags", jsc.JSValue) orelse .js_undefined),
                     error.JSError => |exception| exception,
                     error.OutOfMemory => |oom| oom,
                     error.JSTerminated => |e| e,
@@ -3484,11 +3484,11 @@ pub const Resolver = struct {
 
         const options = callframe.argument(0);
         if (options.isObject()) {
-            if (try options.getTruthy(globalThis, "timeout")) |timeout| {
+            if (try options.getOptional(globalThis, "timeout", jsc.JSValue)) |timeout| {
                 resolver.options.timeout = try timeout.coerceToInt32(globalThis);
             }
 
-            if (try options.getTruthy(globalThis, "tries")) |tries| {
+            if (try options.getOptional(globalThis, "tries", jsc.JSValue)) |tries| {
                 resolver.options.tries = try tries.coerceToInt32(globalThis);
             }
         }

@@ -595,7 +595,7 @@ pub const Expect = struct {
 
         var err_value_res = err_value orelse return null;
         if (err_value_res.isAnyError()) {
-            const message: JSValue = try err_value_res.getTruthyComptime(globalThis, "message") orelse .js_undefined;
+            const message: JSValue = try err_value_res.getOptional(globalThis, "message", JSValue) orelse .js_undefined;
             err_value_res = message;
         } else {
             err_value_res = .js_undefined;

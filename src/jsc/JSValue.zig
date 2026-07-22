@@ -1414,56 +1414,6 @@ pub const JSValue = enum(i64) {
         return function.isCell() and function.isCallable();
     }
 
-    fn truthyPropertyValue(prop: JSValue) ?JSValue {
-        return switch (prop) {
-            .zero => unreachable,
-
-            // Treat undefined and null as unspecified
-            .null, .js_undefined => null,
-
-            // false, 0, are deliberately not included in this list.
-            // That would prevent you from passing `0` or `false` to various Bun APIs.
-
-            else => {
-                // Ignore empty string.
-                if (prop.isString()) {
-                    if (!prop.toBoolean()) {
-                        return null;
-                    }
-                }
-
-                return prop;
-            },
-        };
-    }
-
-    // TODO: replace calls to this function with `getOptional`
-    pub fn getTruthyComptime(this: JSValue, global: *JSGlobalObject, comptime property: []const u8) bun.JSError!?JSValue {
-        if (comptime BuiltinName.has(property)) {
-            return truthyPropertyValue(try fastGet(this, global, @field(BuiltinName, property)) orelse return null);
-        }
-
-        return getTruthy(this, global, property);
-    }
-
-    // TODO: replace calls to this function with `getOptional`
-    /// This Cannot handle numeric index property names safely. Please use `getTruthyPropertyValue` instead.
-    pub fn getTruthy(this: JSValue, global: *JSGlobalObject, property: []const u8) bun.JSError!?JSValue {
-        if (try get(this, global, property)) |prop| {
-            return truthyPropertyValue(prop);
-        }
-
-        return null;
-    }
-
-    /// Get a property value handling numeric index property names safely.
-    pub fn getTruthyPropertyValue(this: JSValue, global: *JSGlobalObject, property: []const u8) bun.JSError!?JSValue {
-        if (try getPropertyValue(this, global, property)) |prop| {
-            return truthyPropertyValue(prop);
-        }
-
-        return null;
-    }
     /// Get a value that can be coerced to a string.
     ///
     /// Returns null when the value is:

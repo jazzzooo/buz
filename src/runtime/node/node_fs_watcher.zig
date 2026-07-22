@@ -349,33 +349,33 @@ pub const FSWatcher = struct {
 
                 // options
                 if (options_or_callable.isObject()) {
-                    if (try options_or_callable.getTruthy(ctx, "persistent")) |persistent_| {
-                        if (!persistent_.isBoolean()) {
+                    if (try options_or_callable.getOptional(ctx, "persistent", jsc.JSValue)) |value| {
+                        if (!value.isBoolean()) {
                             return ctx.throwInvalidArguments("persistent must be a boolean", .{});
                         }
-                        persistent = persistent_.toBoolean();
+                        persistent = value.toBoolean();
                     }
 
-                    if (try options_or_callable.getTruthy(ctx, "verbose")) |verbose_| {
-                        if (!verbose_.isBoolean()) {
+                    if (try options_or_callable.getOptional(ctx, "verbose", jsc.JSValue)) |value| {
+                        if (!value.isBoolean()) {
                             return ctx.throwInvalidArguments("verbose must be a boolean", .{});
                         }
-                        verbose = verbose_.toBoolean();
+                        verbose = value.toBoolean();
                     }
 
                     if (try options_or_callable.fastGet(ctx, .encoding)) |encoding_| {
                         encoding = try jsc.Node.Encoding.assert(encoding_, ctx, encoding);
                     }
 
-                    if (try options_or_callable.getTruthy(ctx, "recursive")) |recursive_| {
-                        if (!recursive_.isBoolean()) {
+                    if (try options_or_callable.getOptional(ctx, "recursive", jsc.JSValue)) |value| {
+                        if (!value.isBoolean()) {
                             return ctx.throwInvalidArguments("recursive must be a boolean", .{});
                         }
-                        recursive = recursive_.toBoolean();
+                        recursive = value.toBoolean();
                     }
 
                     // abort signal
-                    if (try options_or_callable.getTruthy(ctx, "signal")) |signal_| {
+                    if (try options_or_callable.getOptional(ctx, "signal", jsc.JSValue)) |signal_| {
                         if (webcore.AbortSignal.fromJS(signal_)) |signal_obj| {
                             //Keep it alive
                             signal_.ensureStillAlive();

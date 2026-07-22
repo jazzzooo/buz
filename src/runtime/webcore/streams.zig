@@ -140,7 +140,7 @@ pub const Start = union(Tag) {
                             },
                         },
                     };
-                } else if (try value.getTruthy(globalThis, "fd")) |fd_value| {
+                } else if (try value.getOptional(globalThis, "fd", JSValue)) |fd_value| {
                     if (!fd_value.isAnyInt()) {
                         return .{
                             .err = Syscall.Error{

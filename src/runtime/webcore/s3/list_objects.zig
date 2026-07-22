@@ -520,7 +520,7 @@ pub fn getListObjectsOptionsFromJS(globalThis: *jsc.JSGlobalObject, listOptions:
         return listObjectsOptions;
     }
 
-    if (try listOptions.getTruthyComptime(globalThis, "continuationToken")) |val| {
+    if (try listOptions.getOptional(globalThis, "continuationToken", JSValue)) |val| {
         if (val.isString()) {
             const str = try bun.String.fromJS(val, globalThis);
 
@@ -531,7 +531,7 @@ pub fn getListObjectsOptionsFromJS(globalThis: *jsc.JSGlobalObject, listOptions:
         }
     }
 
-    if (try listOptions.getTruthyComptime(globalThis, "delimiter")) |val| {
+    if (try listOptions.getOptional(globalThis, "delimiter", JSValue)) |val| {
         if (val.isString()) {
             const str = try bun.String.fromJS(val, globalThis);
 
@@ -542,7 +542,7 @@ pub fn getListObjectsOptionsFromJS(globalThis: *jsc.JSGlobalObject, listOptions:
         }
     }
 
-    if (try listOptions.getTruthyComptime(globalThis, "encodingType")) |val| {
+    if (try listOptions.getOptional(globalThis, "encodingType", JSValue)) |val| {
         if (val.isString()) {
             const str = try bun.String.fromJS(val, globalThis);
 
@@ -557,13 +557,13 @@ pub fn getListObjectsOptionsFromJS(globalThis: *jsc.JSGlobalObject, listOptions:
         listObjectsOptions.fetch_owner = val;
     }
 
-    if (try listOptions.getTruthyComptime(globalThis, "maxKeys")) |val| {
+    if (try listOptions.getOptional(globalThis, "maxKeys", JSValue)) |val| {
         if (val.isNumber()) {
             listObjectsOptions.max_keys = val.toInt32();
         }
     }
 
-    if (try listOptions.getTruthyComptime(globalThis, "prefix")) |val| {
+    if (try listOptions.getOptional(globalThis, "prefix", JSValue)) |val| {
         if (val.isString()) {
             const str = try bun.String.fromJS(val, globalThis);
 
@@ -574,7 +574,7 @@ pub fn getListObjectsOptionsFromJS(globalThis: *jsc.JSGlobalObject, listOptions:
         }
     }
 
-    if (try listOptions.getTruthyComptime(globalThis, "startAfter")) |val| {
+    if (try listOptions.getOptional(globalThis, "startAfter", JSValue)) |val| {
         if (val.isString()) {
             const str = try bun.String.fromJS(val, globalThis);
 

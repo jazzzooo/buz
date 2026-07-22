@@ -53,55 +53,49 @@ pub const Config = struct {
             return globalThis.throwInvalidArguments("Expected an object", .{});
         }
 
-        if (try object.getTruthy(globalThis, "define")) |define| {
-            define: {
-                if (define.isUndefinedOrNull()) {
-                    break :define;
+        if (try object.getOptional(globalThis, "define", jsc.JSValue)) |define| {
+            const define_obj = define.getObject() orelse {
+                return globalThis.throwInvalidArguments("define must be an object", .{});
+            };
+
+            var define_iter = try jsc.JSPropertyIterator(.{
+                .skip_empty_name = true,
+
+                .include_value = true,
+            }).init(globalThis, define_obj);
+            defer define_iter.deinit();
+
+            // `define_iter.i` is the property position, not a dense index of yielded
+            // entries. With `skip_empty_name = true` (or a skipped property getter),
+            // writing at `define_iter.i` would leave earlier slots uninitialized.
+            // Use ArrayLists so the stored slice is always exactly what was appended.
+            // `allocator` is an arena, so ownership transfers via `.items`.
+            var names: std.ArrayListUnmanaged([]const u8) = .empty;
+            var values: std.ArrayListUnmanaged([]const u8) = .empty;
+            names.ensureTotalCapacityPrecise(allocator, define_iter.len) catch unreachable;
+            values.ensureTotalCapacityPrecise(allocator, define_iter.len) catch unreachable;
+
+            while (try define_iter.next()) |prop| {
+                const property_value = define_iter.value;
+                const value_type = property_value.jsType();
+
+                if (!value_type.isStringLike()) {
+                    return globalThis.throwInvalidArguments("define \"{f}\" must be a JSON string", .{prop});
                 }
 
-                const define_obj = define.getObject() orelse {
-                    return globalThis.throwInvalidArguments("define must be an object", .{});
-                };
-
-                var define_iter = try jsc.JSPropertyIterator(.{
-                    .skip_empty_name = true,
-
-                    .include_value = true,
-                }).init(globalThis, define_obj);
-                defer define_iter.deinit();
-
-                // `define_iter.i` is the property position, not a dense index of yielded
-                // entries. With `skip_empty_name = true` (or a skipped property getter),
-                // writing at `define_iter.i` would leave earlier slots uninitialized.
-                // Use ArrayLists so the stored slice is always exactly what was appended.
-                // `allocator` is an arena, so ownership transfers via `.items`.
-                var names: std.ArrayListUnmanaged([]const u8) = .empty;
-                var values: std.ArrayListUnmanaged([]const u8) = .empty;
-                names.ensureTotalCapacityPrecise(allocator, define_iter.len) catch unreachable;
-                values.ensureTotalCapacityPrecise(allocator, define_iter.len) catch unreachable;
-
-                while (try define_iter.next()) |prop| {
-                    const property_value = define_iter.value;
-                    const value_type = property_value.jsType();
-
-                    if (!value_type.isStringLike()) {
-                        return globalThis.throwInvalidArguments("define \"{f}\" must be a JSON string", .{prop});
-                    }
-
-                    names.appendAssumeCapacity(prop.toOwnedSlice(allocator) catch unreachable);
-                    var val = jsc.ZigString.init("");
-                    try property_value.toZigString(&val, globalThis);
-                    if (val.len == 0) {
-                        val = jsc.ZigString.init("\"\"");
-                    }
-                    values.appendAssumeCapacity(std.fmt.allocPrint(allocator, "{f}", .{val}) catch unreachable);
+                names.appendAssumeCapacity(prop.toOwnedSlice(allocator) catch unreachable);
+                var val = jsc.ZigString.init("");
+                try property_value.toZigString(&val, globalThis);
+                if (val.len == 0) {
+                    val = jsc.ZigString.init("\"\"");
                 }
-
-                this.transform.define = api.StringMap{
-                    .keys = names.items,
-                    .values = values.items,
-                };
+                values.appendAssumeCapacity(std.fmt.allocPrint(allocator, "{f}", .{val}) catch unreachable);
             }
+
+            this.transform.define = api.StringMap{
+                .keys = names.items,
+                .values = values.items,
+            };
         }
 
         if (try object.get(globalThis, "external")) |external| {
@@ -193,9 +187,8 @@ pub const Config = struct {
 
         this.runtime.allow_runtime = false;
 
-        if (try object.getTruthy(globalThis, "macro")) |macros| {
+        if (try object.getOptional(globalThis, "macro", jsc.JSValue)) |macros| {
             macros: {
-                if (macros.isUndefinedOrNull()) break :macros;
                 if (macros.isBoolean()) {
                     this.no_macros = !macros.asBoolean();
                     break :macros;
@@ -254,7 +247,7 @@ pub const Config = struct {
             this.repl_mode = flag;
         }
 
-        if (try object.getTruthy(globalThis, "minify")) |minify| {
+        if (try object.getOptional(globalThis, "minify", jsc.JSValue)) |minify| {
             if (minify.isBoolean()) {
                 this.minify_whitespace = minify.toBoolean();
                 this.minify_syntax = this.minify_whitespace;
@@ -304,7 +297,7 @@ pub const Config = struct {
             trim_unused_imports = trimUnusedImports;
         }
 
-        if (try object.getTruthy(globalThis, "exports")) |exports| {
+        if (try object.getOptional(globalThis, "exports", jsc.JSValue)) |exports| {
             if (!exports.isObject()) {
                 return globalThis.throwInvalidArguments("exports must be an object", .{});
             }
@@ -312,7 +305,7 @@ pub const Config = struct {
             var replacements = Runtime.Features.ReplaceableExport.Map{};
             errdefer replacements.clearAndFree(allocator);
 
-            if (try exports.getTruthy(globalThis, "eliminate")) |eliminate| {
+            if (try exports.getOptional(globalThis, "eliminate", jsc.JSValue)) |eliminate| {
                 if (!eliminate.jsType().isArray()) {
                     return globalThis.throwInvalidArguments("exports.eliminate must be an array", .{});
                 }
@@ -354,7 +347,7 @@ pub const Config = struct {
                 }
             }
 
-            if (try exports.getTruthy(globalThis, "replace")) |replace| {
+            if (try exports.getOptional(globalThis, "replace", jsc.JSValue)) |replace| {
                 const replace_obj = replace.getObject() orelse {
                     return globalThis.throwInvalidArguments("replace must be an object", .{});
                 };
@@ -426,7 +419,7 @@ pub const Config = struct {
             this.runtime.replace_exports = replacements;
         }
 
-        if (try object.getTruthy(globalThis, "logLevel")) |logLevel| {
+        if (try object.getOptional(globalThis, "logLevel", jsc.JSValue)) |logLevel| {
             if (try logger.Log.Level.Map.fromJS(globalThis, logLevel)) |level| {
                 this.log.level = level;
             } else {

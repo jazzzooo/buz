@@ -294,7 +294,7 @@ pub const JSBundler = struct {
                 errdefer this.deinit();
 
                 const object = brk: {
-                    const compile_value = try config.getTruthy(globalThis, "compile") orelse return null;
+                    const compile_value = try config.getOptional(globalThis, "compile", jsc.JSValue) orelse return null;
 
                     if (compile_value.isBoolean()) {
                         if (compile_value == .false) {
@@ -579,7 +579,7 @@ pub const JSBundler = struct {
                 try this.footer.appendSliceExact(slice.slice());
             }
 
-            if (try config.getTruthy(globalThis, "sourcemap")) |source_map_js| {
+            if (try config.getOptional(globalThis, "sourcemap", jsc.JSValue)) |source_map_js| {
                 if (source_map_js.isBoolean()) {
                     if (source_map_js == .true) {
                         this.source_map = if (has_out_dir)
@@ -630,7 +630,7 @@ pub const JSBundler = struct {
             }
 
             // Parse JSX configuration
-            if (try config.getTruthy(globalThis, "jsx")) |jsx_value| {
+            if (try config.getOptional(globalThis, "jsx", jsc.JSValue)) |jsx_value| {
                 if (!jsx_value.isObject()) {
                     return globalThis.throwInvalidArguments("jsx must be an object", .{});
                 }
@@ -686,7 +686,7 @@ pub const JSBundler = struct {
                 this.code_splitting = hot;
             }
 
-            if (try config.getTruthy(globalThis, "minify")) |minify| {
+            if (try config.getOptional(globalThis, "minify", jsc.JSValue)) |minify| {
                 if (minify.isBoolean()) {
                     const value = minify.toBoolean();
                     this.minify.whitespace = value;
@@ -734,7 +734,7 @@ pub const JSBundler = struct {
                 this.ignore_dce_annotations = flag;
             }
 
-            if (try config.getTruthy(globalThis, "conditions")) |conditions_value| {
+            if (try config.getOptional(globalThis, "conditions", jsc.JSValue)) |conditions_value| {
                 if (conditions_value.isString()) {
                     var slice = try conditions_value.toSliceOrNull(globalThis);
                     defer slice.deinit();
@@ -859,10 +859,11 @@ pub const JSBundler = struct {
                 try this.public_path.appendSliceExact(slice.slice());
             }
 
-            if (try config.getTruthy(globalThis, "naming")) |naming| {
+            if (try config.getOptional(globalThis, "naming", jsc.JSValue)) |naming| {
                 if (naming.isString()) {
-                    if (try config.getOptional(globalThis, "naming", ZigString.Slice)) |slice| {
-                        defer slice.deinit();
+                    var slice = try naming.toSliceOrNull(globalThis);
+                    defer slice.deinit();
+                    if (slice.len > 0) {
                         if (!strings.hasPrefixComptime(slice.slice(), "./")) {
                             try this.names.owned_entry_point.appendSliceExact("./");
                         }

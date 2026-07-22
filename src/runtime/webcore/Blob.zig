@@ -1717,11 +1717,11 @@ pub fn writeFile(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun
     const options = args.nextEat();
     if (options) |options_object| {
         if (options_object.isObject()) {
-            if (try options_object.getTruthy(globalThis, "createPath")) |create_directory| {
-                if (!create_directory.isBoolean()) {
+            if (try options_object.getOptional(globalThis, "createPath", JSValue)) |value| {
+                if (!value.isBoolean()) {
                     return globalThis.throwInvalidArgumentType("write", "options.createPath", "boolean");
                 }
-                mkdirp_if_not_exists = create_directory.toBoolean();
+                mkdirp_if_not_exists = value.toBoolean();
             }
             if (try options_object.get(globalThis, "mode")) |mode_value| {
                 if (!mode_value.isEmptyOrUndefinedOrNull()) {
@@ -1998,7 +1998,7 @@ pub fn JSDOMFile__construct_(globalThis: *jsc.JSGlobalObject, callframe: *jsc.Ca
                 }
             }
 
-            if (try options.getTruthy(globalThis, "lastModified")) |last_modified| {
+            if (try options.getOptional(globalThis, "lastModified", JSValue)) |last_modified| {
                 set_last_modified = true;
                 blob.last_modified = try last_modified.coerce(f64, globalThis);
             }
@@ -2076,7 +2076,7 @@ pub fn constructBunFile(
 
     if (options) |opts| {
         if (opts.isObject()) {
-            if (try opts.getTruthy(globalObject, "type")) |file_type| {
+            if (try opts.getOptional(globalObject, "type", JSValue)) |file_type| {
                 inner: {
                     if (file_type.isString()) {
                         var allocator = bun.default_allocator;
@@ -2097,7 +2097,7 @@ pub fn constructBunFile(
                     }
                 }
             }
-            if (try opts.getTruthy(globalObject, "lastModified")) |last_modified| {
+            if (try opts.getOptional(globalObject, "lastModified", JSValue)) |last_modified| {
                 blob.last_modified = try last_modified.coerce(f64, globalObject);
             }
         }
@@ -2420,13 +2420,13 @@ pub fn doWrite(this: *Blob, globalThis: *jsc.JSGlobalObject, callframe: *jsc.Cal
     const options = args.nextEat();
     if (options) |options_object| {
         if (options_object.isObject()) {
-            if (try options_object.getTruthy(globalThis, "createPath")) |create_directory| {
-                if (!create_directory.isBoolean()) {
+            if (try options_object.getOptional(globalThis, "createPath", JSValue)) |value| {
+                if (!value.isBoolean()) {
                     return globalThis.throwInvalidArgumentType("write", "options.createPath", "boolean");
                 }
-                mkdirp_if_not_exists = create_directory.toBoolean();
+                mkdirp_if_not_exists = value.toBoolean();
             }
-            if (try options_object.getTruthy(globalThis, "type")) |content_type| {
+            if (try options_object.getOptional(globalThis, "type", JSValue)) |content_type| {
                 //override the content type
                 if (!content_type.isString()) {
                     return globalThis.throwInvalidArgumentType("write", "options.type", "string");
@@ -2770,7 +2770,7 @@ pub fn getWriter(
         if (arguments.len > 0) {
             const options = arguments.ptr[0];
             if (options.isObject()) {
-                if (try options.getTruthy(globalThis, "type")) |content_type| {
+                if (try options.getOptional(globalThis, "type", JSValue)) |content_type| {
                     //override the content type
                     if (!content_type.isString()) {
                         return globalThis.throwInvalidArgumentType("write", "options.type", "string");
@@ -2796,19 +2796,23 @@ pub fn getWriter(
                 }
                 var content_disposition_str: ?ZigString.Slice = null;
                 defer if (content_disposition_str) |cd| cd.deinit();
-                if (try options.getTruthy(globalThis, "contentDisposition")) |content_disposition| {
+                if (try options.getOptional(globalThis, "contentDisposition", JSValue)) |content_disposition| {
                     if (!content_disposition.isString()) {
                         return globalThis.throwInvalidArgumentType("write", "options.contentDisposition", "string");
                     }
-                    content_disposition_str = try content_disposition.toSlice(globalThis, bun.default_allocator);
+                    if (content_disposition.toBoolean()) {
+                        content_disposition_str = try content_disposition.toSlice(globalThis, bun.default_allocator);
+                    }
                 }
                 var content_encoding_str: ?ZigString.Slice = null;
                 defer if (content_encoding_str) |ce| ce.deinit();
-                if (try options.getTruthy(globalThis, "contentEncoding")) |content_encoding| {
+                if (try options.getOptional(globalThis, "contentEncoding", JSValue)) |content_encoding| {
                     if (!content_encoding.isString()) {
                         return globalThis.throwInvalidArgumentType("write", "options.contentEncoding", "string");
                     }
-                    content_encoding_str = try content_encoding.toSlice(globalThis, bun.default_allocator);
+                    if (content_encoding.toBoolean()) {
+                        content_encoding_str = try content_encoding.toSlice(globalThis, bun.default_allocator);
+                    }
                 }
                 var credentialsWithOptions = try s3.getCredentialsWithOptions(options, globalThis);
                 defer credentialsWithOptions.deinit();
