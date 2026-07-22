@@ -1022,7 +1022,6 @@ pub fn serve(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.J
             &args,
             .{
                 .allow_bake_config = bun.FeatureFlags.bake(),
-                .is_fetch_required = true,
                 .has_user_routes = false,
             },
         );

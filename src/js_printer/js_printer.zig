@@ -2932,15 +2932,6 @@ fn NewPrinter(
                                 if (wrap) {
                                     p.print(")");
                                 }
-                            } else if (import_record.flags.was_originally_require and import_record.path.is_disabled) {
-                                p.addSourceMapping(expr.loc);
-
-                                if (import_record.flags.handles_import_errors) {
-                                    p.printRequireError(import_record.path.text);
-                                } else {
-                                    p.printDisabledImport();
-                                }
-                                didPrint = true;
                             }
                         }
 
@@ -3135,10 +3126,6 @@ fn NewPrinter(
                 .e_name_of_symbol => |e| {
                     const name = p.mangledPropName(e.ref);
                     p.addSourceMappingForName(expr.loc, name, e.ref);
-
-                    if (!p.options.minify_whitespace and e.has_property_key_comment) {
-                        p.print(" /* @__KEY__ */");
-                    }
 
                     p.print('"');
                     p.printStringCharactersUTF8(name, '"');
@@ -5574,8 +5561,6 @@ pub const DirectWriter = struct {
 pub const BufferWriter = struct {
     buffer: MutableString = undefined,
     written: []u8 = &[_]u8{},
-    sentinel: [:0]const u8 = "",
-    append_null_byte: bool = false,
     append_newline: bool = false,
     approximate_newline_count: usize = 0,
     last_bytes: [2]u8 = [_]u8{ 0, 0 },
@@ -5680,12 +5665,7 @@ pub const BufferWriter = struct {
             try ctx.buffer.appendChar('\n');
         }
 
-        if (ctx.append_null_byte) {
-            ctx.sentinel = ctx.buffer.sliceWithSentinel();
-            ctx.written = ctx.buffer.slice();
-        } else {
-            ctx.written = ctx.buffer.slice();
-        }
+        ctx.written = ctx.buffer.slice();
     }
 
     pub fn flush(

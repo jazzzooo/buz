@@ -397,7 +397,6 @@ fn getRoutesObject(global: *jsc.JSGlobalObject, arg: jsc.JSValue) bun.JSError!?j
 
 pub const FromJSOptions = struct {
     allow_bake_config: bool = true,
-    is_fetch_required: bool = true,
     has_user_routes: bool = false,
 };
 
@@ -905,7 +904,7 @@ pub fn fromJS(
             const onRequest = onRequest_.withAsyncContextIfNeeded(global);
             onRequest.protect();
             args.onRequest = onRequest;
-        } else if (args.bake == null and args.onNodeHTTPRequest == .zero and ((args.static_routes.items.len + args.user_routes_to_build.items.len) == 0 and !opts.has_user_routes) and opts.is_fetch_required) {
+        } else if (args.bake == null and args.onNodeHTTPRequest == .zero and ((args.static_routes.items.len + args.user_routes_to_build.items.len) == 0 and !opts.has_user_routes)) {
             if (global.hasException()) return error.JSError;
             return global.throwInvalidArguments(
                 \\Bun.serve() needs either:

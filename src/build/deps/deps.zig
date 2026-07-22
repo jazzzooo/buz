@@ -25,6 +25,7 @@ pub const Group = struct {
     cxx: bool = false,
     /// When true, `flags` is the complete flag list (assembly TUs, mimalloc);
     /// the per-mode base flags are not prepended.
+    /// TODO: Audit assembly and mimalloc recipes so this policy is either exercised or removed.
     no_base: bool = false,
     flags: []const []const u8,
     /// Release-mode flags when they differ beyond what base factoring can

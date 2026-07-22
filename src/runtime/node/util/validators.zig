@@ -160,34 +160,13 @@ pub fn validateBoolean(globalThis: *JSGlobalObject, value: JSValue, comptime nam
     return value.asBoolean();
 }
 
-pub const ValidateObjectOptions = packed struct(u8) {
-    allow_nullable: bool = false,
-    allow_array: bool = false,
-    allow_function: bool = false,
-    _: u5 = 0,
-};
+pub fn validateObject(globalThis: *JSGlobalObject, value: JSValue, comptime name_fmt: string, name_args: anytype) bun.JSError!void {
+    if (value.isNull() or value.jsType().isArray()) {
+        return throwErrInvalidArgType(globalThis, name_fmt, name_args, "object", value);
+    }
 
-pub fn validateObject(globalThis: *JSGlobalObject, value: JSValue, comptime name_fmt: string, name_args: anytype, comptime options: ValidateObjectOptions) bun.JSError!void {
-    if (comptime !options.allow_nullable and !options.allow_array and !options.allow_function) {
-        if (value.isNull() or value.jsType().isArray()) {
-            return throwErrInvalidArgType(globalThis, name_fmt, name_args, "object", value);
-        }
-
-        if (!value.isObject()) {
-            return throwErrInvalidArgType(globalThis, name_fmt, name_args, "object", value);
-        }
-    } else {
-        if (!options.allow_nullable and value.isNull()) {
-            return throwErrInvalidArgType(globalThis, name_fmt, name_args, "object", value);
-        }
-
-        if (!options.allow_array and value.jsType().isArray()) {
-            return throwErrInvalidArgType(globalThis, name_fmt, name_args, "object", value);
-        }
-
-        if (!value.isObject() and (!options.allow_function or !value.jsType().isFunction())) {
-            return throwErrInvalidArgType(globalThis, name_fmt, name_args, "object", value);
-        }
+    if (!value.isObject()) {
+        return throwErrInvalidArgType(globalThis, name_fmt, name_args, "object", value);
     }
 }
 

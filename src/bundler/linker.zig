@@ -303,10 +303,8 @@ pub const Linker = struct {
                 } else {
                     var output_extension = std.fs.path.extension(source_path);
 
-                    if (!linker.options.preserve_extensions) {
-                        if (linker.options.out_extensions.get(output_extension)) |ext| {
-                            output_extension = ext;
-                        }
+                    if (linker.options.out_extensions.get(output_extension)) |ext| {
+                        output_extension = ext;
                     }
 
                     const relative_base = try std.fs.path.relative(

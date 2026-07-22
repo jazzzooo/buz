@@ -69,7 +69,6 @@ pub const SymbolSlot = struct {
     // Or we WILL run into memory bugs.
     name: TinyString = TinyString{ .string = "" },
     count: u32 = 0,
-    needs_capital_for_jsx: bool = false,
 
     pub const List = std.EnumArray(js_ast.Symbol.SlotNamespace, std.array_list.Managed(SymbolSlot));
 
@@ -226,9 +225,6 @@ pub const MinifyRenamer = struct {
         if (symbol.nestedScopeSlot()) |i| {
             var slot = &this.slots.getPtr(ns).items[i];
             slot.count += count;
-            if (symbol.must_start_with_capital_letter_for_jsx) {
-                slot.needs_capital_for_jsx = true;
-            }
             return;
         }
 
@@ -248,14 +244,10 @@ pub const MinifyRenamer = struct {
             if (existing.found_existing) {
                 var slot = &slots.items[existing.value_ptr.*];
                 slot.count += stable.count;
-                if (symbol.must_start_with_capital_letter_for_jsx) {
-                    slot.needs_capital_for_jsx = true;
-                }
             } else {
                 existing.value_ptr.* = slots.items.len;
                 try slots.append(SymbolSlot{
                     .count = stable.count,
-                    .needs_capital_for_jsx = symbol.must_start_with_capital_letter_for_jsx,
                 });
             }
         }
@@ -300,13 +292,6 @@ pub const MinifyRenamer = struct {
                         while (this.reserved_names.contains(name_buf.items)) {
                             try name_minifier.numberToMinifiedName(&name_buf, next_name);
                             next_name += 1;
-                        }
-
-                        if (slot.needs_capital_for_jsx) {
-                            while (name_buf.items[0] >= 'a' and name_buf.items[0] <= 'z') {
-                                try name_minifier.numberToMinifiedName(&name_buf, next_name);
-                                next_name += 1;
-                            }
                         }
                     },
                     .label => {

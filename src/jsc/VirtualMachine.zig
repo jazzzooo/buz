@@ -90,6 +90,7 @@ no_macros: bool = false,
 auto_killer: ProcessAutoKiller = .{ .enabled = false },
 
 has_any_macro_remappings: bool = false,
+/// TODO: Audit VM initialization so development-server instances enable origin-aware stack formatting.
 is_from_devserver: bool = false,
 has_enabled_macro_mode: bool = false,
 
@@ -481,7 +482,6 @@ fn ensureSourceCodePrinter(this: *VirtualMachine) void {
         const writer = js_printer.BufferWriter.init(allocator);
         source_code_printer = allocator.create(js_printer.BufferPrinter) catch unreachable;
         source_code_printer.?.* = js_printer.BufferPrinter.init(writer);
-        source_code_printer.?.ctx.append_null_byte = false;
     }
 }
 

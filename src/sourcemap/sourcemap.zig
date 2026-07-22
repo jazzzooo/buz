@@ -33,7 +33,6 @@ pub const ParseUrlResultHint = union(enum) {
     all: struct {
         line: i32,
         column: i32,
-        include_names: bool = false,
     },
 };
 
@@ -171,42 +170,17 @@ pub fn parseJSON(
     };
 
     const map = if (hint != .source_only) map: {
-        var map_data = switch (Mapping.parse(
+        const map_data = switch (Mapping.parse(
             alloc,
             mappings_str.data.e_string.slice(arena),
             null,
             std.math.maxInt(i32),
             std.math.maxInt(i32),
-            .{ .allow_names = hint == .all and hint.all.include_names, .sort = true },
+            .{ .allow_names = false, .sort = true },
         )) {
             .success => |x| x,
             .fail => |fail| return fail.err,
         };
-
-        if (hint == .all and hint.all.include_names and map_data.mappings.impl == .with_names) {
-            if (json.get("names")) |names| {
-                if (names.data == .e_array) {
-                    var names_list = try std.ArrayListUnmanaged(bun.Semver.String).initCapacity(alloc, names.data.e_array.items.len);
-                    errdefer names_list.deinit(alloc);
-
-                    var names_buffer = std.ArrayListUnmanaged(u8).empty;
-                    errdefer names_buffer.deinit(alloc);
-
-                    for (names.data.e_array.items.slice()) |*item| {
-                        if (item.data != .e_string) {
-                            return error.InvalidSourceMap;
-                        }
-
-                        const str = try item.data.e_string.string(arena);
-
-                        names_list.appendAssumeCapacity(try bun.Semver.String.initAppendIfNeeded(alloc, &names_buffer, str));
-                    }
-
-                    map_data.mappings.names = names_list.items;
-                    map_data.mappings.names_buffer = .moveFromList(&names_buffer);
-                }
-            }
-        }
 
         const ptr = bun.new(ParsedSourceMap, map_data);
         ptr.external_source_names = source_paths_slice.?;

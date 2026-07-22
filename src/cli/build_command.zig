@@ -297,11 +297,6 @@ pub const BuildCommand = struct {
 
         // var env_loader = this_transpiler.env;
 
-        if (ctx.debug.dump_environment_variables) {
-            this_transpiler.dumpEnvironmentVariables();
-            return;
-        }
-
         var reachable_file_count: usize = 0;
         var minify_duration: u64 = 0;
         var input_code_length: u64 = 0;

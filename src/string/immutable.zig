@@ -1870,9 +1870,6 @@ pub fn mustEscapeYAMLString(contents: []const u8) bool {
 
 pub const QuoteEscapeFormatFlags = struct {
     quote_char: u8,
-    ascii_only: bool = false,
-    json: bool = false,
-    str_encoding: Encoding = .utf8,
 };
 /// usage: print(" string: '{'}' ", .{formatEscapesJS("hello'world!")});
 pub fn formatEscapes(str: []const u8, comptime flags: QuoteEscapeFormatFlags) QuoteEscapeFormat(flags) {
@@ -1883,7 +1880,7 @@ fn QuoteEscapeFormat(comptime flags: QuoteEscapeFormatFlags) type {
         data: []const u8,
 
         pub fn format(self: @This(), writer: *std.Io.Writer) !void {
-            try bun.js_printer.writePreQuotedString(self.data, @TypeOf(writer), writer, flags.quote_char, false, flags.json, flags.str_encoding);
+            try bun.js_printer.writePreQuotedString(self.data, @TypeOf(writer), writer, flags.quote_char, false, false, .utf8);
         }
     };
 }

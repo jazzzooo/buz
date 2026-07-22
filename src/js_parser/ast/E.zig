@@ -2,11 +2,6 @@
 /// referenced by this expression should be a "SymbolMangledProp" symbol.
 pub const NameOfSymbol = struct {
     ref: Ref = Ref.None,
-
-    /// If true, a preceding comment contains "@__KEY__"
-    ///
-    /// Currently not used
-    has_property_key_comment: bool = false,
 };
 
 pub const Array = struct {

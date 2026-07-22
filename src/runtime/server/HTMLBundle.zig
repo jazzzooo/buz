@@ -252,10 +252,6 @@ pub const Route = struct {
             }
         }
 
-        if (vm.transpiler.options.transform_options.serve_splitting) {
-            config.code_splitting = vm.transpiler.options.transform_options.serve_splitting;
-        }
-
         config.target = .browser;
         const is_development = development.isDevelopment();
 

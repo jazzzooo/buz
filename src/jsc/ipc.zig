@@ -148,8 +148,6 @@ const advanced = struct {
         const serialized = try value.serialize(global, .{
             // IPC sends across process.
             .forCrossProcessTransfer = true,
-
-            .forStorage = false,
         });
         defer serialized.deinit();
 

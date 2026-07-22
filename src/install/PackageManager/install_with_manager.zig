@@ -776,7 +776,7 @@ pub fn installWithManager(
                 break :frozen_lockfile;
             }
         } else {
-            if (!(manager.lockfile.hasMetaHashChanged(PackageManager.verbose_install or manager.options.do.print_meta_hash_string, packages_len_before_install) catch false)) {
+            if (!(manager.lockfile.hasMetaHashChanged(PackageManager.verbose_install, packages_len_before_install) catch false)) {
                 break :frozen_lockfile;
             }
         }
@@ -796,7 +796,7 @@ pub fn installWithManager(
         // save the lockfile and exit. make sure metahash is generated for binary lockfile
 
         manager.lockfile.meta_hash = try manager.lockfile.generateMetaHash(
-            PackageManager.verbose_install or manager.options.do.print_meta_hash_string,
+            PackageManager.verbose_install,
             packages_len_before_install,
         );
 
@@ -874,7 +874,7 @@ pub fn installWithManager(
             !try manager.lockfile.eql(lockfile_before_clean, packages_len_before_install, manager.allocator)
         else
             try manager.lockfile.hasMetaHashChanged(
-                PackageManager.verbose_install or manager.options.do.print_meta_hash_string,
+                PackageManager.verbose_install,
                 @min(packages_len_before_install, manager.lockfile.packages.len),
             );
 

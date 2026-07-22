@@ -205,6 +205,7 @@ pub const TransposeState = struct {
     is_then_catch_target: bool = false,
     is_require_immediately_assigned_to_decl: bool = false,
     loc: logger.Loc = logger.Loc.Empty,
+    /// TODO: Audit dynamic-import tagging so this state is populated or its propagation path is removed.
     import_record_tag: ?ImportRecord.Tag = null,
     import_loader: ?bun.options.Loader = null,
     import_options: Expr = Expr.empty,
@@ -598,6 +599,7 @@ pub const FnOnlyDataVisit = struct {
 
     // Arrow functions inherit "this" from the surrounding context. If an arrow
     // function is lowered to a regular function, this captures that value.
+    // TODO: Audit lexical-this capture for lowered arrow functions so this state is populated when required.
     this_capture_ref: ?Ref = null,
 
     /// This is a reference to the enclosing class name if there is one. It's used
@@ -607,6 +609,7 @@ pub const FnOnlyDataVisit = struct {
 
     /// If true, we're inside a static class context where "this" expressions
     /// should be replaced with the class name.
+    /// TODO: Audit static-class downleveling so this flag is enabled when required.
     should_replace_this_with_class_name_ref: bool = false,
 
     // If we're inside an async arrow function and async functions are not
@@ -999,12 +1002,13 @@ pub const ReactRefresh = struct {
     /// If a comment with '@refresh reset' is seen, we will forward a
     /// force refresh to the refresh runtime. This lets you reset the
     /// state of hooks on an update on a per-component basis.
-    // TODO: this is never set
+    // TODO: Audit refresh-reset parsing so this flag is populated or the inactive path is removed.
     force_reset: bool = false,
 
     /// The last hook that was scanned. This is used when visiting
     /// `.s_local`, as we must hash the variable destructure if the
     /// hook's result is assigned directly to a local.
+    /// TODO: Audit hook tracking so this pointer is populated before its binding is hashed.
     last_hook_seen: ?*E.Call = null,
 
     /// Every function sets up stack memory to hold data related to it's

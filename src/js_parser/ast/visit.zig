@@ -579,8 +579,6 @@ pub fn Visit(
                         p.fn_only_data_visit = .{
                             .is_this_nested = true,
                             .class_name_ref = &shadow_ref,
-
-                            // TODO: down transpilation
                             .should_replace_this_with_class_name_ref = false,
                         };
                         p.pushScopeForVisitPass(.class_static_init, property.class_static_block.?.loc) catch unreachable;

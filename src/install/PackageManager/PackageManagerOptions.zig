@@ -697,7 +697,6 @@ pub const Do = packed struct(u16) {
     write_package_json: bool = true,
     run_scripts: bool = true,
     save_yarn_lock: bool = false,
-    print_meta_hash_string: bool = false,
     verify_integrity: bool = true,
     summary: bool = true,
     trust_dependencies_from_args: bool = false,
@@ -705,7 +704,7 @@ pub const Do = packed struct(u16) {
     analyze: bool = false,
     recursive: bool = false,
     prefetch_resolved_tarballs: bool = true,
-    _: u2 = 0,
+    _: u3 = 0,
 };
 
 pub const Enable = packed struct(u16) {

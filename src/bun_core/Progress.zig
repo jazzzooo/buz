@@ -28,13 +28,6 @@ is_windows_terminal: bool = false,
 /// Whether the terminal supports ANSI escape codes.
 supports_ansi_escape_codes: bool = false,
 
-/// If the terminal is "dumb", don't print output.
-/// This can be useful if you don't want to print all
-/// the stages of code generation if there are a lot.
-/// You should not use it if the user should see output
-/// for example showing the user what tests run.
-dont_print_on_dumb: bool = false,
-
 root: Node = undefined,
 
 /// Keeps track of how much time has passed since the beginning.
@@ -287,9 +280,6 @@ fn clearWithHeldLock(p: *Progress, end_ptr: *usize) void {
 }
 
 fn refreshWithHeldLock(self: *Progress) void {
-    const is_dumb = !self.supports_ansi_escape_codes and !self.is_windows_terminal;
-    if (is_dumb and self.dont_print_on_dumb) return;
-
     const file = self.terminal orelse return;
 
     var end: usize = 0;

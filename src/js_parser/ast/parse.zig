@@ -1151,7 +1151,6 @@ pub fn Parse(
             var opts = _opts.*;
             var stmts = StmtList.init(p.allocator);
 
-            var returnWithoutSemicolonStart: i32 = -1;
             opts.lexical_decl = .allow_all;
             var isDirectivePrologue = true;
 
@@ -1216,36 +1215,6 @@ pub fn Parse(
 
                 if (!skip)
                     try stmts.append(stmt);
-
-                // Warn about ASI and return statements. Here's an example of code with
-                // this problem: https://github.com/rollup/rollup/issues/3729
-                if (!p.options.suppress_warnings_about_weird_code) {
-                    var needsCheck = true;
-                    switch (stmt.data) {
-                        .s_return => |ret| {
-                            if (ret.value == null and !p.latest_return_had_semicolon) {
-                                returnWithoutSemicolonStart = stmt.loc.start;
-                                needsCheck = false;
-                            }
-                        },
-                        else => {},
-                    }
-
-                    if (needsCheck and returnWithoutSemicolonStart != -1) {
-                        switch (stmt.data) {
-                            .s_expr => {
-                                try p.log.addWarning(
-                                    p.source,
-                                    logger.Loc{ .start = returnWithoutSemicolonStart + 6 },
-                                    "The following expression is not returned because of an automatically-inserted semicolon",
-                                );
-                            },
-                            else => {},
-                        }
-
-                        returnWithoutSemicolonStart = -1;
-                    }
-                }
             }
 
             return stmts.items;

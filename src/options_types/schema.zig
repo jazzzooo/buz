@@ -1723,7 +1723,6 @@ pub const api = struct {
         serve_minify_identifiers: ?bool = null,
         serve_env_behavior: DotEnvBehavior = ._none,
         serve_env_prefix: ?[]const u8 = null,
-        serve_splitting: bool = false,
         serve_public_path: ?[]const u8 = null,
         serve_hmr: ?bool = null,
         serve_define: ?StringMap = null,

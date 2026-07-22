@@ -2130,8 +2130,7 @@ pub const JSValue = enum(i64) {
 
     pub const SerializedFlags = packed struct(u8) {
         forCrossProcessTransfer: bool = false,
-        forStorage: bool = false,
-        _padding: u6 = 0,
+        _padding: u7 = 0,
     };
 
     /// Throws a JSError if serialization fails, otherwise returns a SerializedScriptValue.
@@ -2139,7 +2138,6 @@ pub const JSValue = enum(i64) {
     pub inline fn serialize(this: JSValue, global: *JSGlobalObject, flags: SerializedFlags) bun.JSError!SerializedScriptValue {
         var flags_u8: u8 = 0;
         if (flags.forCrossProcessTransfer) flags_u8 |= 1 << 0;
-        if (flags.forStorage) flags_u8 |= 1 << 1;
 
         const value = try bun.jsc.fromJSHostCallGeneric(global, @src(), Bun__serializeJSValue, .{ global, this, flags_u8 });
         return .{ .data = value.bytes.?[0..value.size], .handle = value.handle.? };

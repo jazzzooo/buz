@@ -152,7 +152,6 @@ pub fn NewParser_(
         allow_private_identifiers: bool = false,
 
         has_top_level_return: bool = false,
-        latest_return_had_semicolon: bool = false,
         has_import_meta: bool = false,
         has_es_module_syntax: bool = false,
         top_level_await_keyword: logger.Range = logger.Range.None,

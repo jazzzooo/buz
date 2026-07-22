@@ -800,19 +800,6 @@ pub fn ParseSuffix(
                 return .done;
             }
 
-            // Warn about "!a instanceof b" instead of "!(a instanceof b)". Here's an
-            // example of code with this problem: https://github.com/mrdoob/three.js/pull/11182.
-            if (!p.options.suppress_warnings_about_weird_code) {
-                switch (left.data) {
-                    .e_unary => |unary| {
-                        if (unary.op == .un_not) {
-                            // TODO:
-                            // p.log.addRangeWarning(source: ?Source, r: Range, text: string)
-                        }
-                    },
-                    else => {},
-                }
-            }
             try p.lexer.next();
             left.* = p.newExpr(E.Binary{ .op = .bin_instanceof, .left = left.*, .right = try p.parseExpr(.compare) }, left.loc);
             return .next;

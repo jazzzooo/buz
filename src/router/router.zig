@@ -810,6 +810,7 @@ pub const Match = struct {
     basename: string,
 
     params: *Param.List,
+    /// TODO: Audit route matching so redirects populate this path before dispatch.
     redirect_path: ?string = null,
     query_string: string = "",
 

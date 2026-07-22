@@ -25,7 +25,6 @@ pub const Options = struct {
 
     // Debugging features
     dump_sources: ?[]const u8 = if (Environment.isDebug) ".bake-debug" else null,
-    dump_state_on_crash: ?bool = null,
 };
 
 // The fields `client_graph`, `server_graph`, `directory_watchers`, and `assets`
@@ -325,9 +324,7 @@ pub fn init(options: Options) bun.JSOOM!*DevServer {
         .emit_incremental_visualizer_events = 0,
         .emit_memory_visualizer_events = 0,
         .memory_visualizer_timer = .initPaused(.DevServerMemoryVisualizerTick),
-        .has_pre_crash_handler = bun.FeatureFlags.bake_debugging_features and
-            options.dump_state_on_crash orelse
-                bun.feature_flag.BUN_DUMP_STATE_ON_CRASH.get(),
+        .has_pre_crash_handler = bun.FeatureFlags.bake_debugging_features and bun.feature_flag.BUN_DUMP_STATE_ON_CRASH.get(),
         .frontend_only = options.framework.file_system_router_types.len == 0,
         .client_graph = .empty,
         .server_graph = .empty,

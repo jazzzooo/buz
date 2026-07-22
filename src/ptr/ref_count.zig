@@ -1,7 +1,6 @@
 pub const Options = struct {
     /// Defaults to the type basename.
     debug_name: ?[]const u8 = null,
-    destructor_ctx: ?type = null,
 };
 
 /// Add managed reference counting to a struct type. This implements a `ref()`
@@ -74,9 +73,6 @@ pub fn RefCount(T: type, field_name: []const u8, destructor: anytype, options: O
         pub const scope = bun.Output.Scoped(debug_name, .hidden);
         const debug_stack_trace = false;
 
-        const Destructor = if (options.destructor_ctx) |ctx| fn (*T, ctx) void else fn (*T) void;
-        const typed_destructor: Destructor = destructor;
-
         pub fn init() @This() {
             return .initExactRefs(1);
         }
@@ -115,10 +111,6 @@ pub fn RefCount(T: type, field_name: []const u8, destructor: anytype, options: O
         }
 
         pub fn deref(self: *T) void {
-            derefWithContext(self, {});
-        }
-
-        pub fn derefWithContext(self: *T, ctx: (options.destructor_ctx orelse void)) void {
             const count = getRefCount(self);
             if (enable_debug) {
                 count.debug.assertValid(); // Likely double deref.
@@ -142,11 +134,7 @@ pub fn RefCount(T: type, field_name: []const u8, destructor: anytype, options: O
                 if (enable_debug) {
                     count.debug.deinit();
                 }
-                if (comptime options.destructor_ctx != null) {
-                    destructor(self, ctx);
-                } else {
-                    destructor(self);
-                }
+                destructor(self);
             }
         }
 
@@ -193,7 +181,6 @@ pub fn RefCount(T: type, field_name: []const u8, destructor: anytype, options: O
 
         /// Private, allows RefPtr to assert that ref_count is a valid RefCount type.
         const is_ref_count = unique_symbol;
-        const ref_count_options = options;
     };
 }
 
@@ -301,7 +288,6 @@ pub fn ThreadSafeRefCount(T: type, field_name: []const u8, destructor: fn (*T) v
 
         /// Private, allows RefPtr to assert that ref_count is a valid RefCount type.
         const is_ref_count = unique_symbol;
-        const ref_count_options = options;
     };
 }
 
@@ -321,7 +307,6 @@ pub fn RefPtr(T: type) type {
         debug: DebugId,
 
         const RefCountMixin = @FieldType(T, "ref_count");
-        const options = RefCountMixin.ref_count_options;
         comptime {
             bun.assert(RefCountMixin.is_ref_count == unique_symbol);
         }
@@ -334,27 +319,12 @@ pub fn RefPtr(T: type) type {
             return uncheckedAndUnsafeInit(raw_ptr, @returnAddress());
         }
 
-        // NOTE: would be nice to use an if for deref.
-        //
-        // pub const deref = if (options.destructor_ctx == null) derefWithoutContext else derefWithContext;
-        //
-        // but ZLS doesn't realize it is function so the semantic tokens look bad.
-
         /// Decrement the reference count, and destroy the object if the count is 0.
         pub fn deref(self: *const @This()) void {
-            derefWithContext(self, {});
-        }
-
-        ///  Decrement the reference count, and destroy the object if the count is 0.
-        pub fn derefWithContext(self: *const @This(), ctx: (options.destructor_ctx orelse void)) void {
             if (enable_debug) {
                 self.data.ref_count.debug.release(self.debug);
             }
-            if (comptime options.destructor_ctx != null) {
-                RefCountMixin.derefWithContext(self.data, ctx);
-            } else {
-                RefCountMixin.deref(self.data);
-            }
+            RefCountMixin.deref(self.data);
             if (bun.Environment.isDebug) {
                 // make UAF fail faster (ideally integrate this with ASAN)
                 // this @constCast is "okay" because it makes no sense to store

@@ -159,8 +159,6 @@ pub const ImportRecord = struct {
         /// If true, this was originally written as a bare "import 'file'" statement
         was_originally_bare_import: bool = false,
 
-        was_originally_require: bool = false,
-
         /// If a macro used <import>, it will be tracked here.
         was_injected_by_macro: bool = false,
 
@@ -176,7 +174,7 @@ pub const ImportRecord = struct {
         wrap_with_to_esm: bool = false,
         wrap_with_to_commonjs: bool = false,
 
-        _padding: u1 = 0,
+        _padding: u2 = 0,
     };
 
     pub const List = bun.BabyList(ImportRecord);

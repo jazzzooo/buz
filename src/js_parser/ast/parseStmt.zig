@@ -1119,7 +1119,6 @@ pub fn ParseStmt(
             {
                 value = try p.parseExpr(.lowest);
             }
-            p.latest_return_had_semicolon = p.lexer.token == .t_semicolon;
             try p.lexer.expectOrInsertSemicolon();
 
             return p.s(S.Return{ .value = value }, loc);

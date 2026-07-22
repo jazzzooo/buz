@@ -61,7 +61,6 @@ pub const FileOperation = struct {
     pathname: string,
     fd: FileDescriptorType = bun.invalid_fd,
     dir: FileDescriptorType = bun.invalid_fd,
-    is_tmpdir: bool = false,
 
     pub fn fromFile(fd: bun.FD, pathname: string) FileOperation {
         return .{
@@ -71,11 +70,7 @@ pub const FileOperation = struct {
     }
 
     pub fn getPathname(file: *const FileOperation) string {
-        if (file.is_tmpdir) {
-            return resolve_path.joinAbsString(Fs.FileSystem.RealFS.tmpdirPath(), &.{file.pathname}, .auto);
-        } else {
-            return file.pathname;
-        }
+        return file.pathname;
     }
 };
 
@@ -310,7 +305,6 @@ pub const toBlob = @import("../bundler_jsc/output_file_jsc.zig").toBlob;
 
 const string = []const u8;
 
-const resolve_path = @import("../paths/resolve_path.zig");
 const resolver = @import("../resolver/resolver.zig");
 const std = @import("std");
 const Loader = @import("./options.zig").Loader;

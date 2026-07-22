@@ -88,7 +88,6 @@ pub const ContextData = struct {
 pub const Context = *ContextData;
 
 pub const DebugOptions = struct {
-    dump_environment_variables: bool = false,
     dump_limits: bool = false,
     fallback_only: bool = false,
     silent: bool = false,

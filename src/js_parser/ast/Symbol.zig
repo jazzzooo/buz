@@ -48,8 +48,6 @@ nested_scope_slot: u32 = invalid_nested_scope_slot,
 
 did_keep_name: bool = true,
 
-must_start_with_capital_letter_for_jsx: bool = false,
-
 /// The kind of symbol. This is used to determine how to print the symbol
 /// and how to deal with conflicts, renaming, etc.
 kind: Kind = Kind.other,

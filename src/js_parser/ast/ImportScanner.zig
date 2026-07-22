@@ -188,9 +188,8 @@ pub fn scan(
                     if ((is_typescript_enabled and found_imports and is_unused_in_typescript and !p.options.preserve_unused_imports_ts) or
                         (!is_typescript_enabled and p.options.features.trim_unused_imports and found_imports and st.star_name_loc == null and st.items.len == 0 and st.default_name == null))
                     {
-                        // internal imports are presumed to be always used
-                        // require statements cannot be stripped
-                        if (!record.flags.is_internal and !record.flags.was_originally_require) {
+                        // Internal imports are presumed to be always used.
+                        if (!record.flags.is_internal) {
                             record.flags.is_unused = true;
                             continue;
                         }
@@ -333,16 +332,6 @@ pub fn scan(
                                 .import_record_index = st.import_record_index,
                                 .was_originally_property_access = st.star_name_loc != null and existing_items.contains(symbol.original_name),
                             };
-                    }
-
-                    if (record.flags.was_originally_require) {
-                        var symbol = &p.symbols.items[namespace_ref.innerIndex()];
-                        symbol.namespace_alias = G.NamespaceAlias{
-                            .namespace_ref = namespace_ref,
-                            .alias = "",
-                            .import_record_index = st.import_record_index,
-                            .was_originally_property_access = false,
-                        };
                     }
                 }
 
