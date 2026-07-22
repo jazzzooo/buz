@@ -200,7 +200,7 @@ pub fn build(b: *std.Build) void {
 
         // There's a bug where building tables in ReleaseFast doesn't work,
         // that I'll be investigating in a follow up commit.
-        .Debug,
+        .debug,
         tables_path_opt,
         build_config_path,
     );
@@ -216,7 +216,7 @@ pub fn build(b: *std.Build) void {
 
         // There's a bug where building tables in ReleaseFast doesn't work,
         // that I'll be investigating in a follow up commit.
-        .Debug,
+        .debug,
         null,
         b.path("src/build/test_build_config.zig"),
     );
@@ -389,7 +389,7 @@ fn buildBuildConfig(
 fn buildTables(
     b: *std.Build,
     build_config_path: std.Build.LazyPath,
-    build_tables_optimize: std.builtin.OptimizeMode,
+    build_tables_optimize: std.builtin.Optimize,
 ) struct {
     build_tables: *std.Build.Module,
     tables: std.Build.LazyPath,
@@ -466,8 +466,8 @@ fn buildTables(
 fn createLibMod(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    build_tables_optimize: std.builtin.OptimizeMode,
+    optimize: std.builtin.Optimize,
+    build_tables_optimize: std.builtin.Optimize,
     tables_path_opt: ?std.Build.LazyPath,
     build_config_path: std.Build.LazyPath,
 ) struct {

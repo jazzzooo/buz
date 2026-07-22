@@ -14,7 +14,7 @@ pub const isMac = build_target == .native and builtin.target.os.tag == .macos;
 pub const isBrowser = !isWasi and isWasm;
 pub const isWindows = builtin.target.os.tag == .windows;
 pub const isPosix = !isWindows and !isWasm;
-pub const isDebug = builtin.mode == .Debug;
+pub const isDebug = builtin.optimize == .debug;
 pub const isTest = builtin.is_test;
 pub const isLinux = builtin.target.os.tag == .linux;
 pub const isFreeBSD = builtin.target.os.tag == .freebsd;
@@ -26,8 +26,8 @@ pub const isX64 = builtin.target.cpu.arch == .x86_64;
 pub const isMusl = builtin.target.abi.isMusl();
 pub const isAndroid = builtin.target.abi.isAndroid();
 pub const isGlibc = isLinux and builtin.target.abi.isGnu();
-pub const allow_assert = isDebug or isTest or std.builtin.OptimizeMode.ReleaseSafe == builtin.mode;
-pub const ci_assert = isNative and (isDebug or isTest or enable_asan or (std.builtin.OptimizeMode.ReleaseSafe == builtin.mode and is_canary));
+pub const allow_assert = isDebug or isTest or builtin.optimize == .safe;
+pub const ci_assert = isNative and (isDebug or isTest or enable_asan or (builtin.optimize == .safe and is_canary));
 pub const show_crash_trace = isNative and (isDebug or isTest or enable_asan);
 /// All calls to `@export` should be gated behind this check, so that code
 /// generators that compile Zig code know not to reference and compile a ton of

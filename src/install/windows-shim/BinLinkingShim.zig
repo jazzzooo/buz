@@ -262,7 +262,7 @@ pub fn encodeInto(options: @This(), buf: []u8) !void {
     @as(*align(1) Flags, @ptrCast(&wbuf[0])).* = flags;
     wbuf = wbuf[@sizeOf(Flags) / @sizeOf(u16) ..];
 
-    if (@import("builtin").mode == .Debug) {
+    if (@import("builtin").optimize == .debug) {
         if (wbuf.len != 0) std.debug.panic("wbuf.len != 0, got {d}", .{wbuf.len});
     }
 }

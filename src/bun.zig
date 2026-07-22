@@ -17,8 +17,8 @@ pub const DefaultAllocator = allocators.Default;
 /// Zeroing memory allocator
 pub const z_allocator: std.mem.Allocator = allocators.z_allocator;
 
-pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
-pub const callconv_inline: std.builtin.CallingConvention = if (builtin.mode == .Debug) .auto else .@"inline";
+pub const callmod_inline: std.builtin.CallModifier = if (builtin.optimize == .debug) .auto else .always_inline;
+pub const callconv_inline: std.builtin.CallingConvention = if (builtin.optimize == .debug) .auto else .@"inline";
 
 pub const debug_allocator_data = struct {
     comptime {

@@ -52,7 +52,7 @@ pub const deinit = void;
 
 const Impl = if (builtin.single_threaded)
     SingleThreadedImpl
-else if (builtin.mode == .Debug)
+else if (builtin.optimize == .debug)
     DebugImpl
 else
     ReleaseImpl;

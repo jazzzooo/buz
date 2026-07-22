@@ -26,7 +26,7 @@ const LazyPath = Build.LazyPath;
 const Target = std.Target;
 const ResolvedTarget = std.Build.ResolvedTarget;
 const CrossTarget = std.zig.CrossTarget;
-const OptimizeMode = std.builtin.OptimizeMode;
+const Optimize = std.builtin.Optimize;
 const Module = Build.Module;
 const fs = std.fs;
 const Version = std.SemanticVersion;
@@ -41,7 +41,7 @@ const zero_sha = "0000000000000000000000000000000000000000";
 
 const BunBuildOptions = struct {
     target: ResolvedTarget,
-    optimize: OptimizeMode,
+    optimize: Optimize,
     os: OperatingSystem,
     arch: Arch,
 
@@ -83,7 +83,7 @@ const BunBuildOptions = struct {
     }
 
     pub fn shouldEmbedCode(opts: *const BunBuildOptions) bool {
-        return opts.optimize != .Debug or opts.codegen_embed;
+        return opts.optimize != .debug or opts.codegen_embed;
     }
 
     pub fn freebsdSysroot(opts: *const BunBuildOptions) ?[]const u8 {
@@ -212,7 +212,7 @@ pub fn build(b: *Build) !void {
 
     // The full-executable graph: pinned inputs, codegen, C/C++, link, smoke
     // test. Every step (bun, check) consumes its generated code.
-    const mode: bun_exe.Mode = if (optimize == .Debug) .debug else .release;
+    const mode: bun_exe.Mode = if (optimize == .debug) .debug else .release;
     if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) {
         std.debug.panic("this build supports x86_64-linux hosts only", .{});
     }
@@ -293,7 +293,7 @@ pub fn build(b: *Build) !void {
 
             break :sha sha;
         },
-        .enable_logs = b.option(bool, "enable_logs", "Enable logs in release") orelse (optimize == .Debug),
+        .enable_logs = b.option(bool, "enable_logs", "Enable logs in release") orelse (optimize == .debug),
         .enable_valgrind = b.option(bool, "enable_valgrind", "Enable valgrind") orelse false,
         .enable_tinycc = b.option(bool, "enable_tinycc", "Enable TinyCC for FFI JIT compilation") orelse true,
         .use_mimalloc = b.option(bool, "use_mimalloc", "Use mimalloc as default allocator") orelse true,
@@ -364,7 +364,7 @@ pub fn build(b: *Build) !void {
             .{ .os = .windows, .arch = .aarch64 },
             .{ .os = .mac, .arch = .aarch64 },
             .{ .os = .linux, .arch = .x86_64 },
-        }, &.{.Debug});
+        }, &.{.debug});
     }
 
     // zig build check-all
@@ -379,7 +379,7 @@ pub fn build(b: *Build) !void {
             .{ .os = .linux, .arch = .aarch64 },
             .{ .os = .linux, .arch = .x86_64, .abi = .musl },
             .{ .os = .linux, .arch = .aarch64, .abi = .musl },
-        }, &.{ .Debug, .ReleaseFast });
+        }, &.{ .debug, .fast });
     }
 
     // zig build check-all-debug
@@ -394,7 +394,7 @@ pub fn build(b: *Build) !void {
             .{ .os = .linux, .arch = .aarch64 },
             .{ .os = .linux, .arch = .x86_64, .abi = .musl },
             .{ .os = .linux, .arch = .aarch64, .abi = .musl },
-        }, &.{.Debug});
+        }, &.{.debug});
     }
 
     // zig build check-windows
@@ -403,42 +403,42 @@ pub fn build(b: *Build) !void {
         addMultiCheck(b, step, build_options, &.{
             .{ .os = .windows, .arch = .x86_64 },
             .{ .os = .windows, .arch = .aarch64 },
-        }, &.{ .Debug, .ReleaseFast });
+        }, &.{ .debug, .fast });
     }
     {
         const step = b.step("check-windows-debug", "Check for semantic analysis errors on Windows");
         addMultiCheck(b, step, build_options, &.{
             .{ .os = .windows, .arch = .x86_64 },
             .{ .os = .windows, .arch = .aarch64 },
-        }, &.{.Debug});
+        }, &.{.debug});
     }
     {
         const step = b.step("check-macos", "Check for semantic analysis errors on macOS");
         addMultiCheck(b, step, build_options, &.{
             .{ .os = .mac, .arch = .x86_64 },
             .{ .os = .mac, .arch = .aarch64 },
-        }, &.{ .Debug, .ReleaseFast });
+        }, &.{ .debug, .fast });
     }
     {
         const step = b.step("check-macos-debug", "Check for semantic analysis errors on macOS in debug mode");
         addMultiCheck(b, step, build_options, &.{
             .{ .os = .mac, .arch = .x86_64 },
             .{ .os = .mac, .arch = .aarch64 },
-        }, &.{.Debug});
+        }, &.{.debug});
     }
     {
         const step = b.step("check-linux", "Check for semantic analysis errors on Linux");
         addMultiCheck(b, step, build_options, &.{
             .{ .os = .linux, .arch = .x86_64 },
             .{ .os = .linux, .arch = .aarch64 },
-        }, &.{ .Debug, .ReleaseFast });
+        }, &.{ .debug, .fast });
     }
     {
         const step = b.step("check-linux-debug", "Check for semantic analysis errors on Linux in debug mode");
         addMultiCheck(b, step, build_options, &.{
             .{ .os = .linux, .arch = .x86_64 },
             .{ .os = .linux, .arch = .aarch64 },
-        }, &.{.Debug});
+        }, &.{.debug});
     }
     // check-android needs the NDK sysroot for translate-c (zig doesn't
     // bundle bionic headers). Skip step creation entirely when none was
@@ -450,14 +450,14 @@ pub fn build(b: *Build) !void {
             addMultiCheck(b, step, build_options, &.{
                 .{ .os = .linux, .arch = .x86_64, .abi = .android },
                 .{ .os = .linux, .arch = .aarch64, .abi = .android },
-            }, &.{ .Debug, .ReleaseFast });
+            }, &.{ .debug, .fast });
         }
         {
             const step = b.step("check-android-debug", "Check for semantic analysis errors on Android");
             addMultiCheck(b, step, build_options, &.{
                 .{ .os = .linux, .arch = .x86_64, .abi = .android },
                 .{ .os = .linux, .arch = .aarch64, .abi = .android },
-            }, &.{.Debug});
+            }, &.{.debug});
         }
     }
     // check-freebsd needs the sysroot for translate-c (zig doesn't bundle
@@ -470,14 +470,14 @@ pub fn build(b: *Build) !void {
             addMultiCheck(b, step, build_options, &.{
                 .{ .os = .freebsd, .arch = .x86_64 },
                 .{ .os = .freebsd, .arch = .aarch64 },
-            }, &.{ .Debug, .ReleaseFast });
+            }, &.{ .debug, .fast });
         }
         {
             const step = b.step("check-freebsd-debug", "Check for semantic analysis errors on FreeBSD");
             addMultiCheck(b, step, build_options, &.{
                 .{ .os = .freebsd, .arch = .x86_64 },
                 .{ .os = .freebsd, .arch = .aarch64 },
-            }, &.{.Debug});
+            }, &.{.debug});
         }
     }
     {
@@ -487,7 +487,7 @@ pub fn build(b: *Build) !void {
             .cpu_model = .baseline,
             .os_tag = .freestanding,
         });
-        inline for (.{ std.builtin.OptimizeMode.Debug, std.builtin.OptimizeMode.ReleaseFast }) |wasm_mode| {
+        inline for (.{ std.builtin.Optimize.debug, std.builtin.Optimize.fast }) |wasm_mode| {
             var options: BunBuildOptions = .{
                 .target = wasm_target,
                 .optimize = wasm_mode,
@@ -519,7 +519,7 @@ pub fn build(b: *Build) !void {
         //     .name = "enum_extractor",
         //     .root_source_file = b.path("./src/generated_enum_extractor.zig"),
         //     .target = b.graph.host,
-        //     .optimize = .Debug,
+        //     .optimize = .debug,
         // });
         // const run = b.addRunArtifact(exe);
         // step.dependOn(&run.step);
@@ -568,7 +568,7 @@ pub fn build(b: *Build) !void {
         const build_tables_mod = b.createModule(.{
             .root_source_file = b.path("src/unicode/uucode_lib/src/build/tables.zig"),
             .target = b.graph.host,
-            .optimize = .Debug,
+            .optimize = .debug,
         });
         build_tables_mod.addImport("config.zig", bt_config_mod);
         build_tables_mod.addImport("build_config", bt_build_config_mod);
@@ -650,7 +650,7 @@ pub fn build(b: *Build) !void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/unicode/uucode/grapheme_gen.zig"),
                 .target = b.graph.host,
-                .optimize = .Debug,
+                .optimize = .debug,
                 .imports = &.{
                     .{ .name = "uucode", .module = uucode_mod },
                 },
@@ -687,7 +687,7 @@ fn addMultiCheck(
     parent_step: *Step,
     root_build_options: BunBuildOptions,
     to_check: []const TargetDescription,
-    optimize: []const std.builtin.OptimizeMode,
+    optimize: []const std.builtin.Optimize,
 ) void {
     for (to_check) |check| {
         for (optimize) |mode| {
@@ -720,7 +720,7 @@ fn addMultiCheck(
     }
 }
 
-fn getTranslateC(b: *Build, initial_target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, android_ndk_sysroot: ?[]const u8, freebsd_sysroot: ?[]const u8) LazyPath {
+fn getTranslateC(b: *Build, initial_target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, android_ndk_sysroot: ?[]const u8, freebsd_sysroot: ?[]const u8) LazyPath {
     const target = b.resolveTargetQuery(q: {
         var query = initial_target.query;
         if (query.os_tag == .windows)
@@ -803,7 +803,7 @@ fn getTranslateC(b: *Build, initial_target: std.Build.ResolvedTarget, optimize: 
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/codegen/process_windows_translate_c.zig"),
                 .target = b.graph.host,
-                .optimize = .Debug,
+                .optimize = .debug,
             }),
         });
         const in = translate_c.getOutput();
@@ -833,7 +833,7 @@ pub fn addBunObject(b: *Build, opts: *BunBuildOptions) *Compile {
     root.addImport("bun", bun);
 
     const obj = b.addObject(.{
-        .name = if (opts.optimize == .Debug) "bun-debug" else "bun",
+        .name = if (opts.optimize == .debug) "bun-debug" else "bun",
         .root_module = root,
     });
     configureObj(opts, obj);
@@ -858,7 +858,7 @@ fn addBunWasmObject(b: *Build, opts: *BunBuildOptions) *Compile {
     root.addImport("bun", bun);
 
     const obj = b.addObject(.{
-        .name = if (opts.optimize == .Debug) "bun-wasm-debug" else "bun-wasm",
+        .name = if (opts.optimize == .debug) "bun-wasm-debug" else "bun-wasm",
         .root_module = root,
     });
     configureObj(opts, obj);
@@ -901,7 +901,7 @@ fn configureObj(opts: *BunBuildOptions, obj: *Compile) void {
         obj.link_function_sections = true;
         obj.link_data_sections = true;
 
-        if (opts.optimize == .Debug and opts.enable_valgrind) {
+        if (opts.optimize == .debug and opts.enable_valgrind) {
             obj.root_module.valgrind = true;
         }
     }
@@ -1078,7 +1078,7 @@ const WindowsShim = struct {
             .root_module = b.createModule(.{
                 .root_source_file = path,
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .unwind_tables = .none,
                 .omit_frame_pointer = true,
                 .strip = true,
@@ -1096,7 +1096,7 @@ const WindowsShim = struct {
             .root_module = b.createModule(.{
                 .root_source_file = path,
                 .target = target,
-                .optimize = .Debug,
+                .optimize = .debug,
                 .single_threaded = true,
                 .link_libc = false,
             }),

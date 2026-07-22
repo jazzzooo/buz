@@ -16,7 +16,7 @@ const jsc_root = "vendor/webkit/Source/JavaScriptCore";
 
 const Named = struct { name: []const u8, file: LazyPath };
 
-pub fn addStep(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.OptimizeMode) *Step.WriteFile {
+pub fn addStep(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimize) *Step.WriteFile {
     const arena = b.graph.arena;
     const cmake = readCMakeLists(b);
 
@@ -284,7 +284,7 @@ pub const Ctx = struct {
 /// WebKit sync updates them without touching this file. bmalloc splits into a
 /// C and a C++ archive because the module-level libc-header policy differs
 /// (see newCppLib in exe.zig).
-pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: std.builtin.OptimizeMode, derived_wf: *Step.WriteFile) Ctx {
+pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: std.builtin.Optimize, derived_wf: *Step.WriteFile) Ctx {
     const arena = b.graph.arena;
     const cmake = readCMakeLists(b);
     const manifest = readManifest(b);
@@ -468,7 +468,7 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: st
     };
 }
 
-fn newLib(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.OptimizeMode, name: []const u8, is_cxx: bool, cmake: []const u8) *Step.Compile {
+fn newLib(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimize, name: []const u8, is_cxx: bool, cmake: []const u8) *Step.Compile {
     const mod = b.createModule(.{
         .target = exe.cppTarget(b, &.{}),
         .optimize = optimize,
@@ -575,7 +575,7 @@ fn writeLayer(b: *Build, base: []const Named, extra: []const Named) LazyPath {
 
 /// Target-compiled C++ whose object file the offlineasm scripts scan for
 /// magic-marker constant arrays; never linked or executed.
-fn extractorObject(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.OptimizeMode, cmake: []const u8, comptime name: []const u8, derived: LazyPath) *Step.Compile {
+fn extractorObject(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimize, cmake: []const u8, comptime name: []const u8, derived: LazyPath) *Step.Compile {
     const arena = b.graph.arena;
 
     const mod = b.createModule(.{

@@ -978,7 +978,7 @@ fn NewLexer_(
 
         pub fn expectContextualKeyword(noalias self: *LexerType, comptime keyword: string) !void {
             if (!self.isContextualKeyword(keyword)) {
-                if (@import("builtin").mode == std.builtin.OptimizeMode.Debug) {
+                if (@import("builtin").optimize == .debug) {
                     self.addError(self.start, "Expected \"{s}\" but found \"{s}\" (token: {s})", .{
                         keyword,
                         self.raw(),

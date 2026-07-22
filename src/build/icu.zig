@@ -43,8 +43,8 @@ pub const Ctx = struct {
     data: *Step.Compile,
 };
 
-pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.OptimizeMode) Ctx {
-    const library_optimize: std.builtin.OptimizeMode = if (optimize == .Debug) .ReleaseFast else optimize;
+pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimize) Ctx {
+    const library_optimize: std.builtin.Optimize = if (optimize == .debug) .fast else optimize;
     const uc = newLib(b, "icuuc", library_optimize);
     const i18n = newLib(b, "icui18n", library_optimize);
     for ([_]*Step.Compile{ uc, i18n }) |lib| {
@@ -95,7 +95,7 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimi
 /// (zig c++ links it so the C++ ABI matches the archives), list the package
 /// contents, and strip the unreachable entries.
 fn filterData(b: *Build, deps: *const exe.DepPkgs, uc: *Step.Compile, i18n: *Step.Compile) LazyPath {
-    const tool_lib = newLib(b, "icupkg-tool", .ReleaseFast);
+    const tool_lib = newLib(b, "icupkg-tool", .fast);
     tool_lib.root_module.addIncludePath(deps.icu.path("icu/source/common"));
     tool_lib.root_module.addIncludePath(deps.icu.path("icu/source/i18n"));
     tool_lib.root_module.addIncludePath(deps.icu.path("icu/source/tools/toolutil"));
@@ -135,7 +135,7 @@ fn filterData(b: *Build, deps: *const exe.DepPkgs, uc: *Step.Compile, i18n: *Ste
     return filter.addOutputFileArg("icudt75l.dat");
 }
 
-fn newLib(b: *Build, name: []const u8, optimize: std.builtin.OptimizeMode) *Step.Compile {
+fn newLib(b: *Build, name: []const u8, optimize: std.builtin.Optimize) *Step.Compile {
     const mod = b.createModule(.{
         .target = exe.cppTarget(b, &.{}),
         .optimize = optimize,
