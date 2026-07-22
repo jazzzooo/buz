@@ -179,6 +179,7 @@ fn errorUnlessFakeTimers(globalObject: *jsc.JSGlobalObject) bun.JSError!void {
 fn setFakeTimerMarker(globalObject: *jsc.JSGlobalObject, enabled: bool) void {
     const globalThis_value = globalObject.toJSValue();
     const setTimeout_fn = (globalThis_value.getOwnTruthy(globalObject, "setTimeout") catch return) orelse return;
+    if (!setTimeout_fn.isObject()) return;
     // testing-library/react checks Object.hasOwnProperty.call(setTimeout, 'clock')
     // to detect if fake timers are enabled.
     if (enabled) {
