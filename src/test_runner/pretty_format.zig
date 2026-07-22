@@ -1475,6 +1475,11 @@ pub const JestPrettyFormat = struct {
                     writer.writeAll("}");
                 },
                 .JSX => {
+                    const props = (try value.get(this.globalThis, "props")) orelse
+                        return this.printAs(.Object, Writer, writer_, value, jsType, enable_ansi_colors);
+                    const props_obj = props.getObject() orelse
+                        return this.printAs(.Object, Writer, writer_, value, jsType, enable_ansi_colors);
+
                     writer.writeAll(comptime Output.prettyFmt("<r>", enable_ansi_colors));
 
                     writer.writeAll("<");
@@ -1534,13 +1539,11 @@ pub const JestPrettyFormat = struct {
                         }
                     }
 
-                    if (try value.get(this.globalThis, "props")) |props| {
+                    {
                         const prev_quote_strings = this.quote_strings;
                         defer this.quote_strings = prev_quote_strings;
                         this.quote_strings = true;
 
-                        // SAFETY: JSX props are always an object.
-                        const props_obj = props.getObject().?;
                         var props_iter = try jsc.JSPropertyIterator(.{
                             .skip_empty_name = true,
                             .include_value = true,
