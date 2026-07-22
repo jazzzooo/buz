@@ -50,7 +50,7 @@ pub const ManifestBindings = struct {
     pub fn generate(global: *jsc.JSGlobalObject) jsc.JSValue {
         const obj = jsc.JSObject.createEmpty(global, 1);
         const parseManifestString = jsc.ZigString.static("parseManifest");
-        obj.putDirect(global, parseManifestString, jsc.JSFunction.create(global, "parseManifest", jsParseManifest, 2, .{}));
+        obj.putDirect(global, parseManifestString, jsc.JSFunction.create(global, "parseManifest", jsParseManifest, 2, .{}).toJS());
         return obj.toJS();
     }
 

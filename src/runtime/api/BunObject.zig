@@ -524,11 +524,11 @@ export fn Bun__inspect_singleline(globalThis: *JSGlobalObject, value: JSValue) b
 
 pub fn getInspect(globalObject: *jsc.JSGlobalObject, _: *jsc.JSObject) jsc.JSValue {
     const fun = jsc.JSFunction.create(globalObject, "inspect", inspect, 2, .{});
-    const fun_object = fun.getObject().?;
+    const fun_object = fun.toObject();
     var str = ZigString.init("nodejs.util.inspect.custom");
     fun_object.putDirect(globalObject, ZigString.static("custom"), jsc.JSValue.symbolFor(globalObject, &str));
-    fun_object.putDirect(globalObject, ZigString.static("table"), jsc.JSFunction.create(globalObject, "table", inspectTable, 3, .{}));
-    return fun;
+    fun_object.putDirect(globalObject, ZigString.static("table"), jsc.JSFunction.create(globalObject, "table", inspectTable, 3, .{}).toJS());
+    return fun.toJS();
 }
 
 pub fn registerMacro(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
@@ -1406,13 +1406,13 @@ const CSRFObject = struct {
         object.putDirect(
             globalThis,
             ZigString.static("generate"),
-            jsc.JSFunction.create(globalThis, "generate", @import("./csrf_jsc.zig").csrf__generate, 1, .{}),
+            jsc.JSFunction.create(globalThis, "generate", @import("./csrf_jsc.zig").csrf__generate, 1, .{}).toJS(),
         );
 
         object.putDirect(
             globalThis,
             ZigString.static("verify"),
-            jsc.JSFunction.create(globalThis, "verify", @import("./csrf_jsc.zig").csrf__verify, 1, .{}),
+            jsc.JSFunction.create(globalThis, "verify", @import("./csrf_jsc.zig").csrf__verify, 1, .{}).toJS(),
         );
 
         return object.toJS();

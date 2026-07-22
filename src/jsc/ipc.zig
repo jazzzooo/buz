@@ -983,7 +983,7 @@ fn doSendErr(globalObject: *jsc.JSGlobalObject, callback: jsc.JSValue, ex: jsc.J
     }
     if (from == .process) {
         const target = jsc.JSFunction.create(globalObject, bun.String.empty, emitProcessErrorEvent, 1, .{});
-        try target.callNextTick(globalObject, .{ex});
+        try target.toJS().callNextTick(globalObject, .{ex});
         return .false;
     }
     // Bun.spawn().send() should throw an error (unless callback is passed)

@@ -3,22 +3,22 @@ pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
     object.putDirect(
         globalThis,
         ZigString.static("html"),
-        jsc.JSFunction.create(globalThis, "html", renderToHTML, 1, .{}),
+        jsc.JSFunction.create(globalThis, "html", renderToHTML, 1, .{}).toJS(),
     );
     object.putDirect(
         globalThis,
         ZigString.static("ansi"),
-        jsc.JSFunction.create(globalThis, "ansi", renderToAnsi, 2, .{}),
+        jsc.JSFunction.create(globalThis, "ansi", renderToAnsi, 2, .{}).toJS(),
     );
     object.putDirect(
         globalThis,
         ZigString.static("render"),
-        jsc.JSFunction.create(globalThis, "render", render, 3, .{}),
+        jsc.JSFunction.create(globalThis, "render", render, 3, .{}).toJS(),
     );
     object.putDirect(
         globalThis,
         ZigString.static("react"),
-        jsc.JSFunction.create(globalThis, "react", renderReact, 3, .{}),
+        jsc.JSFunction.create(globalThis, "react", renderReact, 3, .{}).toJS(),
     );
     return object.toJS();
 }

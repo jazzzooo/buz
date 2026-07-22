@@ -23,13 +23,13 @@ pub fn toJS(globalObject: *jsc.JSGlobalObject) jsc.JSValue {
             object.putDirect(
                 globalObject,
                 comptime ZigString.static(field),
-                jsc.JSFunction.create(globalObject, field, func, 1, .{ .constructor = func }),
+                jsc.JSFunction.create(globalObject, field, func, 1, .{ .constructor = func }).toJS(),
             );
         } else {
             object.putDirect(
                 globalObject,
                 comptime ZigString.static(field),
-                jsc.JSFunction.create(globalObject, field, @field(fields, field), 1, .{}),
+                jsc.JSFunction.create(globalObject, field, @field(fields, field), 1, .{}).toJS(),
             );
         }
     }

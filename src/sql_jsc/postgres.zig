@@ -1,17 +1,17 @@
 pub fn createBinding(globalObject: *jsc.JSGlobalObject) JSValue {
     const binding = jsc.JSObject.createEmptyWithNullPrototype(globalObject);
     binding.putDirect(globalObject, ZigString.static("PostgresSQLConnection"), PostgresSQLConnection.js.getConstructor(globalObject));
-    binding.putDirect(globalObject, ZigString.static("init"), jsc.JSFunction.create(globalObject, "init", PostgresSQLContext.init, 0, .{}));
+    binding.putDirect(globalObject, ZigString.static("init"), jsc.JSFunction.create(globalObject, "init", PostgresSQLContext.init, 0, .{}).toJS());
     binding.putDirect(
         globalObject,
         ZigString.static("createQuery"),
-        jsc.JSFunction.create(globalObject, "createQuery", PostgresSQLQuery.call, 6, .{}),
+        jsc.JSFunction.create(globalObject, "createQuery", PostgresSQLQuery.call, 6, .{}).toJS(),
     );
 
     binding.putDirect(
         globalObject,
         ZigString.static("createConnection"),
-        jsc.JSFunction.create(globalObject, "createConnection", PostgresSQLConnection.call, 2, .{}),
+        jsc.JSFunction.create(globalObject, "createConnection", PostgresSQLConnection.call, 2, .{}).toJS(),
     );
 
     return binding.toJS();

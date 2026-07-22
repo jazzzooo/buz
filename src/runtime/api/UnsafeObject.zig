@@ -9,7 +9,7 @@ pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
         object.putDirect(
             globalThis,
             comptime ZigString.static(name),
-            jsc.JSFunction.create(globalThis, name, @field(fields, name), 1, .{}),
+            jsc.JSFunction.create(globalThis, name, @field(fields, name), 1, .{}).toJS(),
         );
     }
     return object.toJS();

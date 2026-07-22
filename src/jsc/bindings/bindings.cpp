@@ -5990,7 +5990,7 @@ extern "C" EncodedJSValue ExpectStatic__getPrototype(JSC::JSGlobalObject* global
     return JSValue::encode(static_cast<Zig::GlobalObject*>(globalObject)->JSExpectStaticPrototype());
 }
 
-extern "C" EncodedJSValue JSFunction__createFromZig(
+extern "C" JSC::JSFunction* JSFunction__createFromZig(
     JSC::JSGlobalObject* global,
     BunString fn_name,
     NativeFunction implementation,
@@ -6001,7 +6001,7 @@ extern "C" EncodedJSValue JSFunction__createFromZig(
 {
     VM& vm = global->vm();
     auto name = fn_name.toWTFString();
-    return JSValue::encode(JSFunction::create(
+    return JSFunction::create(
         vm,
         global,
         arg_count,
@@ -6010,7 +6010,7 @@ extern "C" EncodedJSValue JSFunction__createFromZig(
         implementation_visibility,
         intrinsic,
         constructorOrNull ? constructorOrNull : JSC::callHostFunctionAsConstructor,
-        nullptr));
+        nullptr);
 }
 
 extern "C" JSC::JSArray* JSC__JSArray__create(

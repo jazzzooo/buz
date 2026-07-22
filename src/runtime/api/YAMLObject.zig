@@ -9,7 +9,7 @@ pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
             parse,
             1,
             .{},
-        ),
+        ).toJS(),
     );
     object.putDirect(
         globalThis,
@@ -20,7 +20,7 @@ pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
             stringify,
             3,
             .{},
-        ),
+        ).toJS(),
     );
 
     return object.toJS();

@@ -70,7 +70,7 @@ pub fn generate(global: *jsc.JSGlobalObject) jsc.JSValue {
     exports.putDirect(
         global,
         bun.String.static("myersDiff"),
-        jsc.JSFunction.create(global, "myersDiff", myersDiff, 2, .{}),
+        jsc.JSFunction.create(global, "myersDiff", myersDiff, 2, .{}).toJS(),
     );
 
     return exports.toJS();

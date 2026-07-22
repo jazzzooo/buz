@@ -9,7 +9,7 @@ pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
             parse,
             1,
             .{},
-        ),
+        ).toJS(),
     );
 
     return object.toJS();

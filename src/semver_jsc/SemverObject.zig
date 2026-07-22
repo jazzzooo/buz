@@ -12,7 +12,7 @@ pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
             SemverObject.satisfies,
             2,
             .{},
-        ),
+        ).toJS(),
     );
 
     object.putDirect(
@@ -24,7 +24,7 @@ pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
             SemverObject.order,
             2,
             .{},
-        ),
+        ).toJS(),
     );
 
     return object.toJS();

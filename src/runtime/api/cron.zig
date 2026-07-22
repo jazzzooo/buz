@@ -1121,12 +1121,12 @@ pub const CronJob = struct {
 
 pub fn getCronObject(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) jsc.JSValue {
     const cron_fn = jsc.JSFunction.create(globalThis, "cron", CronRegisterJob.cronRegister, 3, .{});
-    const cron_object = cron_fn.getObject().?;
+    const cron_object = cron_fn.toObject();
     const remove_fn = jsc.JSFunction.create(globalThis, "remove", CronRemoveJob.cronRemove, 1, .{});
     const parse_fn = jsc.JSFunction.create(globalThis, "parse", cronParse, 1, .{});
-    cron_object.putDirect(globalThis, bun.String.static("remove"), remove_fn);
-    cron_object.putDirect(globalThis, bun.String.static("parse"), parse_fn);
-    return cron_fn;
+    cron_object.putDirect(globalThis, bun.String.static("remove"), remove_fn.toJS());
+    cron_object.putDirect(globalThis, bun.String.static("parse"), parse_fn.toJS());
+    return cron_fn.toJS();
 }
 
 pub fn cronParse(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {

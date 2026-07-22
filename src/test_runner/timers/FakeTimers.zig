@@ -362,8 +362,8 @@ pub fn putTimersFns(globalObject: *jsc.JSGlobalObject, jest: *jsc.JSObject, vi: 
     inline for (fake_timers_fns) |fake_timer_fn| {
         const str = bun.ZigString.static(fake_timer_fn[0]);
         const jsvalue = jsc.JSFunction.create(globalObject, fake_timer_fn[0], fake_timer_fn[2], fake_timer_fn[1], .{});
-        vi.putDirect(globalObject, str, jsvalue);
-        jest.putDirect(globalObject, str, jsvalue);
+        vi.putDirect(globalObject, str, jsvalue.toJS());
+        jest.putDirect(globalObject, str, jsvalue.toJS());
     }
 }
 

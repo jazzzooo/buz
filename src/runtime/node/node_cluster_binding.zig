@@ -64,7 +64,7 @@ pub fn sendHelperChild(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFram
         const ex = try globalThis.createTypeErrorInstance("sendInternal() failed", .{});
         ex.putDirect(globalThis, ZigString.static("syscall"), try bun.String.static("write").toJS(globalThis));
         const fnvalue = jsc.JSFunction.create(globalThis, "", S.impl, 1, .{});
-        try fnvalue.callNextTick(globalThis, .{ex.toJS()});
+        try fnvalue.toJS().callNextTick(globalThis, .{ex.toJS()});
         return .false;
     }
 

@@ -25,7 +25,7 @@ pub const JSFunction = opaque {
         implementation_visibility: ImplementationVisibility,
         intrinsic: Intrinsic,
         constructor: ?*const JSHostFn,
-    ) JSValue;
+    ) *JSFunction;
 
     pub fn create(
         global: *JSGlobalObject,
@@ -33,7 +33,7 @@ pub const JSFunction = opaque {
         comptime implementation: anytype,
         function_length: u32,
         options: CreateJSFunctionOptions,
-    ) JSValue {
+    ) *JSFunction {
         return JSFunction__createFromZig(
             global,
             switch (@TypeOf(fn_name)) {
@@ -50,6 +50,14 @@ pub const JSFunction = opaque {
             options.intrinsic,
             options.constructor,
         );
+    }
+
+    pub fn toObject(function: *JSFunction) *jsc.JSObject {
+        return @ptrCast(function);
+    }
+
+    pub fn toJS(function: *JSFunction) JSValue {
+        return JSValue.fromCell(function);
     }
 
     extern fn JSC__JSFunction__getSourceCode(value: JSValue, out: *ZigString) bool;

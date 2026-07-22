@@ -10,7 +10,7 @@ pub fn getDefaultAutoSelectFamily(global: *jsc.JSGlobalObject) jsc.JSValue {
             _ = callframe;
             return .jsBoolean(autoSelectFamilyDefault);
         }
-    }).getter, 0, .{});
+    }).getter, 0, .{}).toJS();
 }
 
 pub fn setDefaultAutoSelectFamily(global: *jsc.JSGlobalObject) jsc.JSValue {
@@ -28,7 +28,7 @@ pub fn setDefaultAutoSelectFamily(global: *jsc.JSGlobalObject) jsc.JSValue {
             autoSelectFamilyDefault = value;
             return .jsBoolean(value);
         }
-    }).setter, 1, .{});
+    }).setter, 1, .{}).toJS();
 }
 
 /// This is only used to provide the getDefaultAutoSelectFamilyAttemptTimeout and
@@ -47,7 +47,7 @@ pub fn getDefaultAutoSelectFamilyAttemptTimeout(global: *jsc.JSGlobalObject) jsc
             _ = callframe;
             return .jsNumber(autoSelectFamilyAttemptTimeoutDefault);
         }
-    }).getter, 0, .{});
+    }).getter, 0, .{}).toJS();
 }
 
 pub fn setDefaultAutoSelectFamilyAttemptTimeout(global: *jsc.JSGlobalObject) jsc.JSValue {
@@ -63,7 +63,7 @@ pub fn setDefaultAutoSelectFamilyAttemptTimeout(global: *jsc.JSGlobalObject) jsc
             autoSelectFamilyAttemptTimeoutDefault = @intCast(value);
             return .jsNumber(value);
         }
-    }).setter, 1, .{});
+    }).setter, 1, .{}).toJS();
 }
 
 pub const SocketAddress = bun.jsc.Codegen.JSSocketAddress.getConstructor;

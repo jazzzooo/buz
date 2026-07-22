@@ -48,7 +48,7 @@ pub const rapidhash = hashWrap(bun.deprecated.RapidHash);
 
 pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
     const function = jsc.JSFunction.create(globalThis, "hash", wyhash, 1, .{});
-    const function_object = function.getObject().?;
+    const function_object = function.toObject();
     const fns = comptime .{
         "wyhash",
         "adler32",
@@ -65,10 +65,10 @@ pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
     };
     inline for (fns) |name| {
         const value = jsc.JSFunction.create(globalThis, name, @field(HashObject, name), 1, .{});
-        function_object.putDirect(globalThis, comptime ZigString.static(name), value);
+        function_object.putDirect(globalThis, comptime ZigString.static(name), value.toJS());
     }
 
-    return function;
+    return function.toJS();
 }
 
 fn hashWrap(comptime Hasher_: anytype) jsc.JSHostFnZig {
