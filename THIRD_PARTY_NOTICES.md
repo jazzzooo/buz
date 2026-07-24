@@ -1,22 +1,27 @@
-Bun itself is MIT-licensed.
+# Licensing and third-party notices
+
+Original Buz contributions are released under [the Unlicense](UNLICENSE). This does not relicense code inherited from Bun or any third-party code.
+
+## Bun
+
+Code inherited from Bun is MIT-licensed.
 
 ## JavaScriptCore
 
-Bun statically links JavaScriptCore (and WebKit) which is LGPL-2 licensed. WebCore files from WebKit are also licensed under LGPL2. Per LGPL2:
+Buz statically links JavaScriptCore (and WebKit) which is LGPL-2 licensed. WebCore files from WebKit are also licensed under LGPL2. Per LGPL2:
 
 > (1) If you statically link against an LGPL’d library, you must also provide your application in an object (not necessarily source) format, so that a user has the opportunity to modify the library and relink the application.
 
-You can find the patched version of WebKit used by Bun here: <https://github.com/oven-sh/webkit>. If you would like to relink Bun with changes:
+The patched WebKit source used by Buz is vendored in `vendor/webkit`. To rebuild and relink Buz after modifying it:
 
-- `git submodule update --init --recursive`
-- `make jsc`
-- `zig build`
+- Bootstrap Zig as described in the [README](README.md#bootstrap-zig).
+- Run `./zig build` from the repository root.
 
-This compiles JavaScriptCore, compiles Bun’s `.cpp` bindings for JavaScriptCore (which are the object files using JavaScriptCore) and outputs a new `bun` binary with your changes.
+This compiles JavaScriptCore and Buz's C++ bindings, then outputs a new `bun-debug` binary containing your changes.
 
 ## Linked libraries
 
-Bun statically links these libraries:
+Buz statically links these libraries:
 
 | Library | License |
 |---------|---------|
@@ -35,7 +40,7 @@ Bun statically links these libraries:
 | [`uSockets`](https://github.com/uNetworking/uSockets) | Apache 2.0 |
 | [`zlib-ng`](https://github.com/zlib-ng/zlib-ng) | zlib |
 | [`c-ares`](https://github.com/c-ares/c-ares) | MIT licensed |
-| [`libicu`](https://github.com/unicode-org/icu) 72 | [license here](https://github.com/unicode-org/icu/blob/main/icu4c/LICENSE) |
+| [`libicu`](https://github.com/unicode-org/icu) 75.1 | [license here](https://github.com/unicode-org/icu/blob/release-75-1/icu4c/LICENSE) |
 | [`libbase64`](https://github.com/aklomp/base64/blob/master/LICENSE) | BSD 2-Clause |
 | [`libuv`](https://github.com/libuv/libuv) (on Windows) | MIT |
 | [`libdeflate`](https://github.com/ebiggers/libdeflate) | MIT |
@@ -50,7 +55,7 @@ Bun statically links these libraries:
 
 ## Polyfills
 
-For compatibility reasons, the following packages are embedded into Bun's binary and injected if imported.
+For compatibility reasons, the following packages are embedded into Buz's binary and injected if imported.
 
 | Package | License |
 |---------|---------|

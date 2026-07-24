@@ -80,6 +80,10 @@ Also install:
 BUN_AGENT_RULE_DISABLED=1 node scripts/runner.node.mjs --exec-path ./zig-out/bin/bun --retries 0 >test-sweep.log 2>&1
 ```
 
+## License
+
+Original Buz contributions are released under [the Unlicense](UNLICENSE). Inherited and third-party code retains its existing licensing; see [third-party notices](THIRD_PARTY_NOTICES.md) for details.
+
 ## Disclaimer
 
 Buz is not endorsed by or affiliated with Oven or its parent company, Anthropic. Any Bun branding, such as logos or URLs, will be removed on a best-effort basis.
