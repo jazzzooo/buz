@@ -1024,7 +1024,7 @@ function cp(src, dest, options, callback) {
 
   ensureCallback(callback);
 
-  promises.cp(src, dest, options).then(() => callback(), callback);
+  promises.cp(src, dest, options).then(() => callback(null), callback);
 }
 
 function _toUnixTimestamp(time: any, name = "time") {

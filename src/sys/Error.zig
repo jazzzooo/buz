@@ -19,11 +19,17 @@ from_libuv: if (Environment.isWindows) bool else void = if (Environment.isWindow
 path: []const u8 = "",
 syscall: sys.Tag = sys.Tag.TODO,
 dest: []const u8 = "",
+/// Node reports some failures with a documented `ERR_*` code and wording that
+/// owes nothing to the failing syscall. When set, these replace both for
+/// JavaScript; the shell keeps the errno presentation either way.
+node_code: ?bun.jsc.Node.ErrorCode = null,
+node_message: []const u8 = "",
 
 pub fn clone(this: *const Error, allocator: std.mem.Allocator) Error {
     var copy = this.*;
     copy.path = bun.handleOom(allocator.dupe(u8, copy.path));
     copy.dest = bun.handleOom(allocator.dupe(u8, copy.dest));
+    copy.node_message = bun.handleOom(allocator.dupe(u8, copy.node_message));
     return copy;
 }
 
@@ -114,6 +120,10 @@ pub fn deinitWithAllocator(this: *Error, allocator: std.mem.Allocator) void {
     if (this.dest.len > 0) {
         allocator.free(this.dest);
         this.dest = "";
+    }
+    if (this.node_message.len > 0) {
+        allocator.free(this.node_message);
+        this.node_message = "";
     }
 }
 
@@ -255,6 +265,14 @@ pub fn toSystemError(this: Error) SystemError {
         .syscall = bun.String.static(@tagName(this.syscall)),
         .message = .empty,
     };
+
+    if (this.node_code) |node_code| {
+        err.code = bun.String.static(@tagName(node_code));
+        err.message = bun.String.cloneUTF8(this.node_message);
+        if (this.path.len > 0) err.path = bun.String.cloneUTF8(this.path);
+        if (this.dest.len > 0) err.dest = bun.String.cloneUTF8(this.dest);
+        return err;
+    }
 
     // errno label
     var maybe_code: ?[:0]const u8 = null;

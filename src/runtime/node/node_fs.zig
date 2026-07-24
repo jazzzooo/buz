@@ -516,7 +516,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
                 brk: {
                     switch (result) {
                         .err => |err| {
-                            if (err.errno == @backingInt(E.EXIST) and !args.flags.errorOnExist) {
+                            if (err.errno == @backingInt(E.EXIST) and args.flags.skipsExisting()) {
                                 break :brk;
                             }
                             parent.finishConcurrently(result);
@@ -733,6 +733,11 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             defer this.onSubtaskDone();
 
             const args = this.args;
+            if (nodefs.cpValidate(args.src.slice(), args.dest.slice())) |err| {
+                this.finishConcurrently(.{ .err = err });
+                return;
+            }
+
             var src_buf: bun.OSPathBuffer = undefined;
             var dest_buf: bun.OSPathBuffer = undefined;
             const src = args.src.osPath(&src_buf);
@@ -761,7 +766,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
                         attributes,
                         this.args,
                     );
-                    if (r == .err and r.err.errno == @backingInt(E.EXIST) and !args.flags.errorOnExist) {
+                    if (r == .err and r.err.errno == @backingInt(E.EXIST) and args.flags.skipsExisting()) {
                         this.finishConcurrently(.success);
                         return;
                     }
@@ -788,7 +793,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
                         stat_,
                         this.args,
                     );
-                    if (r == .err and r.err.errno == @backingInt(E.EXIST) and !args.flags.errorOnExist) {
+                    if (r == .err and r.err.errno == @backingInt(E.EXIST) and args.flags.skipsExisting()) {
                         this.onCopy(src, dest);
                         this.finishConcurrently(.success);
                         return;
@@ -799,163 +804,65 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
                 }
             }
             if (!args.flags.recursive) {
-                this.finishConcurrently(.{ .err = .{
-                    .errno = @backingInt(E.ISDIR),
-                    .syscall = .copyfile,
-                    .path = nodefs.osPathIntoSyncErrorBuf(src),
-                } });
+                this.finishConcurrently(.{ .err = nodefs.cpRejected(.not_recursive, src, dest) });
                 return;
             }
 
-            _ = ThisAsyncCpTask._cpAsyncDirectory(nodefs, args.flags, this, &src_buf, @intCast(src.len), &dest_buf, @intCast(dest.len));
+            switch (nodefs.cpTree(&src_buf, src.len, &dest_buf, dest.len, AsyncCpVisitor{
+                .nodefs = nodefs,
+                .task = this,
+            })) {
+                // Success here does not finish the copy: each `SingleTask`
+                // holds a reference, and the last to drop it resolves the promise.
+                .result => {},
+                .err => |err| this.finishConcurrently(.{ .err = err }),
+            }
         }
 
-        // returns boolean `should_continue`
-        fn _cpAsyncDirectory(
+        const AsyncCpVisitor = struct {
             nodefs: *NodeFS,
-            args: Arguments.Cp.Flags,
-            this: *ThisAsyncCpTask,
-            src_buf: *bun.OSPathBuffer,
-            src_dir_len: PathString.PathInt,
-            dest_buf: *bun.OSPathBuffer,
-            dest_dir_len: PathString.PathInt,
-        ) bool {
-            const src = src_buf[0..src_dir_len :0];
-            const dest = dest_buf[0..dest_dir_len :0];
+            task: *ThisAsyncCpTask,
 
-            if (comptime Environment.isMac) {
-                if (Maybe(Return.Cp).errnoSysP(c.clonefile(src, dest, 0), .clonefile, src)) |err| {
-                    switch (err.getErrno()) {
-                        .ACCES,
-                        .NAMETOOLONG,
-                        .ROFS,
-                        .PERM,
-                        .INVAL,
-                        => {
-                            @memcpy(nodefs.sync_error_buf[0..src.len], src);
-                            this.finishConcurrently(.{ .err = err.err.withPath(nodefs.sync_error_buf[0..src.len]) });
-                            return false;
-                        },
-                        // Other errors may be due to clonefile() not being supported
-                        // We'll fall back to other implementations
-                        else => {},
+            fn enterDirectory(this: AsyncCpVisitor, src: bun.OSPathSliceZ, dest: bun.OSPathSliceZ) Maybe(bool) {
+                var buf: bun.OSPathBuffer = undefined;
+                const normdest: bun.OSPathSliceZ = if (Environment.isWindows)
+                    switch (bun.sys.normalizePathWindows(u16, bun.invalid_fd, dest, &buf, .{ .add_nt_prefix = false })) {
+                        .err => |err| return .{ .err = err },
+                        .result => |normdest| normdest,
                     }
-                } else {
-                    return true;
-                }
-            }
+                else
+                    dest;
 
-            const open_flags = bun.O.DIRECTORY | bun.O.RDONLY;
-            const fd = switch (Syscall.openatOSPath(bun.FD.cwd(), src, open_flags, 0)) {
-                .err => |err| {
-                    this.finishConcurrently(.{ .err = err.withPath(nodefs.osPathIntoSyncErrorBuf(src)) });
-                    return false;
-                },
-                .result => |fd_| fd_,
-            };
-            defer fd.close();
-
-            var buf: bun.OSPathBuffer = undefined;
-
-            const normdest: bun.OSPathSliceZ = if (Environment.isWindows)
-                switch (bun.sys.normalizePathWindows(u16, bun.invalid_fd, dest, &buf, .{ .add_nt_prefix = false })) {
-                    .err => |err| {
-                        this.finishConcurrently(.{ .err = err });
-                        return false;
-                    },
-                    .result => |normdest| normdest,
-                }
-            else
-                dest;
-
-            const mkdir_ = nodefs.mkdirRecursiveOSPath(normdest, Arguments.Mkdir.DefaultMode, false);
-            switch (mkdir_) {
-                .err => |err| {
-                    this.finishConcurrently(.{ .err = err });
-                    return false;
-                },
-                .result => {
-                    this.onCopy(src, normdest);
-                },
-            }
-
-            var iterator = DirIterator.iterate(fd, if (Environment.isWindows) .u16 else .u8);
-            var entry = iterator.next();
-            while (switch (entry) {
-                .err => |err| {
-                    // @memcpy(this.sync_error_buf[0..src.len], src);
-                    this.finishConcurrently(.{ .err = err.withPath(nodefs.osPathIntoSyncErrorBuf(src)) });
-                    return false;
-                },
-                .result => |ent| ent,
-            }) |current| : (entry = iterator.next()) {
-                const cname = current.name.slice();
-
-                // The accumulated path for deep directory trees can exceed the fixed
-                // OSPathBuffer. Bail out with ENAMETOOLONG instead of writing past the
-                // end of the buffer and corrupting the stack.
-                if (src_dir_len + 1 + cname.len >= src_buf.len or
-                    dest_dir_len + 1 + cname.len >= dest_buf.len)
-                {
-                    this.finishConcurrently(.{ .err = .{
-                        .errno = @backingInt(E.NAMETOOLONG),
-                        .syscall = .copyfile,
-                        .path = nodefs.osPathIntoSyncErrorBuf(src_buf[0..src_dir_len]),
-                    } });
-                    return false;
-                }
-
-                switch (current.kind) {
-                    .directory => {
-                        @memcpy(src_buf[src_dir_len + 1 .. src_dir_len + 1 + cname.len], cname);
-                        src_buf[src_dir_len] = std.fs.path.sep;
-                        src_buf[src_dir_len + 1 + cname.len] = 0;
-
-                        @memcpy(dest_buf[dest_dir_len + 1 .. dest_dir_len + 1 + cname.len], cname);
-                        dest_buf[dest_dir_len] = std.fs.path.sep;
-                        dest_buf[dest_dir_len + 1 + cname.len] = 0;
-
-                        const should_continue = ThisAsyncCpTask._cpAsyncDirectory(
-                            nodefs,
-                            args,
-                            this,
-                            src_buf,
-                            @truncate(src_dir_len + 1 + cname.len),
-                            dest_buf,
-                            @truncate(dest_dir_len + 1 + cname.len),
-                        );
-                        if (!should_continue) return false;
-                    },
-                    else => {
-                        _ = this.subtask_count.fetchAdd(1, .monotonic);
-
-                        // Allocate a path buffer for the path data
-                        var path_buf = bun.default_allocator.alloc(
-                            bun.OSPathChar,
-                            src_dir_len + 1 + cname.len + 1 + dest_dir_len + 1 + cname.len + 1,
-                        ) catch |err| bun.handleOom(err);
-
-                        @memcpy(path_buf[0..src_dir_len], src_buf[0..src_dir_len]);
-                        path_buf[src_dir_len] = std.fs.path.sep;
-                        @memcpy(path_buf[src_dir_len + 1 .. src_dir_len + 1 + cname.len], cname);
-                        path_buf[src_dir_len + 1 + cname.len] = 0;
-
-                        @memcpy(path_buf[src_dir_len + 1 + cname.len + 1 .. src_dir_len + 1 + cname.len + 1 + dest_dir_len], dest_buf[0..dest_dir_len]);
-                        path_buf[src_dir_len + 1 + cname.len + 1 + dest_dir_len] = std.fs.path.sep;
-                        @memcpy(path_buf[src_dir_len + 1 + cname.len + 1 + dest_dir_len + 1 .. src_dir_len + 1 + cname.len + 1 + dest_dir_len + 1 + cname.len], cname);
-                        path_buf[src_dir_len + 1 + cname.len + 1 + dest_dir_len + 1 + cname.len] = 0;
-
-                        SingleTask.create(
-                            this,
-                            path_buf[0 .. src_dir_len + 1 + cname.len :0],
-                            path_buf[src_dir_len + 1 + cname.len + 1 .. src_dir_len + 1 + cname.len + 1 + dest_dir_len + 1 + cname.len :0],
-                        );
+                switch (this.nodefs.cpPrepareDirectory(this.task.args, src, normdest)) {
+                    .err => |err| return .{ .err = err },
+                    .result => |cloned| {
+                        if (!cloned) this.task.onCopy(src, normdest);
+                        return .{ .result = cloned };
                     },
                 }
             }
 
-            return true;
-        }
+            /// Each file is copied by its own work pool task, so a failure is
+            /// reported through `finishConcurrently` rather than from here.
+            fn copyFile(this: AsyncCpVisitor, src: bun.OSPathSliceZ, dest: bun.OSPathSliceZ) Maybe(Return.Cp) {
+                _ = this.task.subtask_count.fetchAdd(1, .monotonic);
+
+                // The subtask outlives this walk step and frees the paths in
+                // `SingleTask.deinit`.
+                const paths = bun.default_allocator.alloc(bun.OSPathChar, src.len + dest.len + 2) catch |err| bun.handleOom(err);
+                @memcpy(paths[0..src.len], src);
+                paths[src.len] = 0;
+                @memcpy(paths[src.len + 1 ..][0..dest.len], dest);
+                paths[src.len + 1 + dest.len] = 0;
+
+                SingleTask.create(
+                    this.task,
+                    paths[0..src.len :0],
+                    paths[src.len + 1 ..][0..dest.len :0],
+                );
+                return .success;
+            }
+        };
     };
 }
 
@@ -3083,6 +2990,10 @@ pub const Arguments = struct {
             errorOnExist: bool,
             force: bool,
             deinit_paths: bool = true,
+
+            pub fn skipsExisting(this: Flags) bool {
+                return !this.force and !this.errorOnExist;
+            }
         };
 
         pub fn deinit(this: *const Cp) void {
@@ -3363,9 +3274,18 @@ pub const NodeFS = struct {
     /// That means a stack-allocated buffer won't suffice. Instead, we re-use
     /// the heap allocated buffer on the NodeFS struct
     sync_error_buf: bun.PathBuffer align(@alignOf(u16)) = undefined,
+    /// Message for errors carrying Node wording instead of an errno label.
+    /// Same lifetime as `sync_error_buf`.
+    sync_message_buf: [2048]u8 = undefined,
     vm: ?*jsc.VirtualMachine = null,
 
     pub const ReturnType = Return;
+
+    /// `vm` is only set on the JS thread; work pool tasks construct a bare
+    /// `NodeFS`. Both hold the `Io` that `Cli.start` installed.
+    pub fn io(this: *const NodeFS) std.Io {
+        return if (this.vm) |vm| vm.io else bun.cli.Cli.io;
+    }
 
     pub fn access(this: *NodeFS, args: Arguments.Access, _: Flavor) Maybe(Return.Access) {
         const path: bun.OSPathSliceZ = if (args.path.slice().len == 0)
@@ -3600,7 +3520,9 @@ pub const NodeFS = struct {
                         flags |= bun.O.EXCL;
                     }
 
-                    const dest_fd = switch (Syscall.open(dest, flags, jsc.Node.fs.default_permission)) {
+                    // Created with the source's permissions so the file is
+                    // never briefly readable.
+                    const dest_fd = switch (Syscall.open(dest, flags, @intCast(stat_.mode & 0o777))) {
                         .result => |result| result,
                         .err => |err| return Maybe(Return.CopyFile){ .err = err.withPath(args.dest.slice()) },
                     };
@@ -3653,7 +3575,9 @@ pub const NodeFS = struct {
             if (args.mode.shouldntOverwrite()) {
                 flags |= bun.O.EXCL;
             }
-            const dest_fd = switch (Syscall.open(dest, flags, jsc.Node.fs.default_permission)) {
+            // Created with the source's permissions so the file is never
+            // briefly readable.
+            const dest_fd = switch (Syscall.open(dest, flags, @intCast(stat_.mode & 0o777))) {
                 .result => |result| result,
                 .err => |err| return Maybe(Return.CopyFile){ .err = err },
             };
@@ -3726,7 +3650,9 @@ pub const NodeFS = struct {
                 flags |= bun.O.EXCL;
             }
 
-            const dest_fd = switch (Syscall.open(dest, flags, jsc.Node.fs.default_permission)) {
+            // Created with the source's permissions so the file is never
+            // briefly readable.
+            const dest_fd = switch (Syscall.open(dest, flags, @intCast(stat_.mode & 0o777))) {
                 .result => |result| result,
                 .err => |err| return Maybe(Return.CopyFile){ .err = err },
             };
@@ -5728,35 +5654,7 @@ pub const NodeFS = struct {
     pub fn rmdir(this: *NodeFS, args: Arguments.RmDir, _: Flavor) Maybe(Return.Rmdir) {
         if (args.recursive) {
             zigDeleteTree(this.vm.?.io, std.Io.Dir.cwd(), args.path.slice(), .directory) catch |err| {
-                var errno: bun.sys.E = switch (@as(anyerror, err)) {
-                    error.AccessDenied => .PERM,
-                    error.FileTooBig => .FBIG,
-                    error.SymLinkLoop => .LOOP,
-                    error.ProcessFdQuotaExceeded => .NFILE,
-                    error.NameTooLong => .NAMETOOLONG,
-                    error.SystemFdQuotaExceeded => .MFILE,
-                    error.SystemResources => .NOMEM,
-                    error.ReadOnlyFileSystem => .ROFS,
-                    error.FileSystem => .IO,
-                    error.FileBusy => .BUSY,
-                    error.DeviceBusy => .BUSY,
-
-                    // One of the path components was not a directory.
-                    // This error is unreachable if `sub_path` does not contain a path separator.
-                    error.NotDir => .NOTDIR,
-                    // On Windows, file paths must be valid WTF-8.
-                    error.InvalidUtf8 => .INVAL,
-                    error.InvalidWtf8 => .INVAL,
-
-                    // On Windows, file paths cannot contain these characters:
-                    // '/', '*', '?', '"', '<', '>', '|'
-                    error.BadPathName => .INVAL,
-
-                    error.FileNotFound => .NOENT,
-                    error.IsDir => .ISDIR,
-
-                    else => .FAULT,
-                };
+                var errno = errnoFromStdIo(err, .PERM);
                 if (Environment.isWindows and errno == .NOTDIR) {
                     errno = .NOENT;
                 }
@@ -5785,41 +5683,10 @@ pub const NodeFS = struct {
         if (args.recursive) {
             zigDeleteTree(this.vm.?.io, std.Io.Dir.cwd(), args.path.slice(), .file) catch |err| {
                 bun.handleErrorReturnTrace(err, @errorReturnTrace());
-                const errno: E = switch (@as(anyerror, err)) {
-                    // error.InvalidHandle => .BADF,
-                    error.AccessDenied => .ACCES,
-                    error.FileTooBig => .FBIG,
-                    error.SymLinkLoop => .LOOP,
-                    error.ProcessFdQuotaExceeded => .NFILE,
-                    error.NameTooLong => .NAMETOOLONG,
-                    error.SystemFdQuotaExceeded => .MFILE,
-                    error.SystemResources => .NOMEM,
-                    error.ReadOnlyFileSystem => .ROFS,
-                    error.FileSystem => .IO,
-                    error.FileBusy => .BUSY,
-                    error.DeviceBusy => .BUSY,
-
-                    // One of the path components was not a directory.
-                    // This error is unreachable if `sub_path` does not contain a path separator.
-                    error.NotDir => .NOTDIR,
-                    // On Windows, file paths must be valid WTF-8.
-                    error.InvalidUtf8 => .INVAL,
-                    error.InvalidWtf8 => .INVAL,
-
-                    // On Windows, file paths cannot contain these characters:
-                    // '/', '*', '?', '"', '<', '>', '|'
-                    error.BadPathName => .INVAL,
-
-                    error.FileNotFound => brk: {
-                        if (args.force) {
-                            return .success;
-                        }
-                        break :brk .NOENT;
-                    },
-                    error.IsDir => .ISDIR,
-
-                    else => .FAULT,
-                };
+                const errno = errnoFromStdIo(err, .ACCES);
+                if (errno == .NOENT and args.force) {
+                    return .success;
+                }
                 return Maybe(Return.Rm){
                     .err = bun.sys.Error.fromCode(errno, .rm).withPath(args.path.slice()),
                 };
@@ -6107,6 +5974,10 @@ pub const NodeFS = struct {
         var src_buf: bun.OSPathBuffer = undefined;
         var dest_buf: bun.OSPathBuffer = undefined;
 
+        if (this.cpValidate(args.src.slice(), args.dest.slice())) |err| {
+            return .{ .err = err };
+        }
+
         const src = args.src.osPath(&src_buf);
         const dest = args.dest.osPath(&dest_buf);
 
@@ -6130,6 +6001,378 @@ pub const NodeFS = struct {
             return bun.strings.fromWPath(&this.sync_error_buf, tmp[0..slice.len]);
         }
     }
+
+    /// A copy Node refuses to perform, rejected on inspection rather than by a
+    /// failing syscall. `EINVAL` covers three of these, so rejection sites name
+    /// the reason and not the code.
+    pub const CpReason = enum {
+        identical,
+        into_subdirectory_of_self,
+        symlink_into_subdirectory_of_self,
+        dir_to_non_dir,
+        non_dir_to_dir,
+        not_recursive,
+        exists,
+        fifo,
+        socket,
+        unknown_file_type,
+
+        fn code(this: CpReason) jsc.Node.ErrorCode {
+            return switch (this) {
+                .identical, .into_subdirectory_of_self => .ERR_FS_CP_EINVAL,
+                .symlink_into_subdirectory_of_self => .ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY,
+                .dir_to_non_dir => .ERR_FS_CP_DIR_TO_NON_DIR,
+                .non_dir_to_dir => .ERR_FS_CP_NON_DIR_TO_DIR,
+                .not_recursive => .ERR_FS_EISDIR,
+                .exists => .ERR_FS_CP_EEXIST,
+                .fifo => .ERR_FS_CP_FIFO_PIPE,
+                .socket => .ERR_FS_CP_SOCKET,
+                .unknown_file_type => .ERR_FS_CP_UNKNOWN,
+            };
+        }
+
+        fn errno(this: CpReason) E {
+            return switch (this) {
+                .not_recursive => .ISDIR,
+                .exists => .EXIST,
+                else => .INVAL,
+            };
+        }
+
+        /// Which of the two paths Node puts on the error.
+        fn reportsDest(this: CpReason) bool {
+            return this == .exists;
+        }
+    };
+
+    /// Wording is Node's verbatim; tests match on it.
+    ///
+    /// True when `dest` is `src` or sits underneath it. Compared component by
+    /// component, so `/a/bc` does not count as being under `/a/b`.
+    fn isPathUnder(src: []const u8, dest: []const u8) bool {
+        var src_components = std.mem.tokenizeScalar(u8, src, std.fs.path.sep);
+        var dest_components = std.mem.tokenizeScalar(u8, dest, std.fs.path.sep);
+        while (src_components.next()) |src_component| {
+            const dest_component = dest_components.next() orelse return false;
+            if (!bun.strings.eql(src_component, dest_component)) return false;
+        }
+        return true;
+    }
+
+    fn isSameFile(a: bun.Stat, b: bun.Stat) bool {
+        return a.ino == b.ino and a.dev == b.dev;
+    }
+
+    /// Resolves a directory through symlinks by asking the OS for the opened
+    /// directory's own path.
+    fn cpResolveDir(path: [:0]const u8, buf: *bun.PathBuffer) ?[]const u8 {
+        const fd = switch (Syscall.open(path, bun.O.DIRECTORY | bun.O.RDONLY, 0)) {
+            .result => |fd| fd,
+            .err => return null,
+        };
+        defer fd.close();
+        return bun.getFdPath(fd, buf) catch null;
+    }
+
+    /// Whether copying `src` into `dest` would nest the copy inside its own
+    /// source once every symlink on both paths is resolved.
+    fn cpNestsInsideSelf(src_abs: [:0]const u8, dest_abs: [:0]const u8) bool {
+        const src_buf = bun.path_buffer_pool.get();
+        defer bun.path_buffer_pool.put(src_buf);
+        const dest_buf = bun.path_buffer_pool.get();
+        defer bun.path_buffer_pool.put(dest_buf);
+
+        const src_real = cpResolveDir(src_abs, src_buf) orelse return false;
+
+        // `dest` need not exist yet, so resolve its parent and re-attach the
+        // final component.
+        const dest_dir = std.fs.path.dirname(dest_abs) orelse return false;
+        const dest_name = std.fs.path.basename(dest_abs);
+        const parent_buf = bun.path_buffer_pool.get();
+        defer bun.path_buffer_pool.put(parent_buf);
+        @memcpy(parent_buf[0..dest_dir.len], dest_dir);
+        parent_buf[dest_dir.len] = 0;
+
+        const dest_dir_real = cpResolveDir(parent_buf[0..dest_dir.len :0], dest_buf) orelse return false;
+        if (dest_dir_real.len + 1 + dest_name.len >= dest_buf.len) return false;
+        dest_buf[dest_dir_real.len] = std.fs.path.sep;
+        @memcpy(dest_buf[dest_dir_real.len + 1 ..][0..dest_name.len], dest_name);
+
+        return isPathUnder(src_real, dest_buf[0 .. dest_dir_real.len + 1 + dest_name.len]);
+    }
+
+    /// Copies that Node rejects on inspection, before anything is written.
+    /// Runs once per `cp` call, not once per entry.
+    fn cpValidate(this: *NodeFS, src: []const u8, dest: []const u8) ?Syscall.Error {
+        const src_buf = bun.path_buffer_pool.get();
+        defer bun.path_buffer_pool.put(src_buf);
+        const dest_buf = bun.path_buffer_pool.get();
+        defer bun.path_buffer_pool.put(dest_buf);
+        var cwd_buf: bun.PathBuffer = undefined;
+        const cwd = bun.getcwd(&cwd_buf) catch return null;
+
+        const src_abs = bun.path.joinAbsStringBufZ(cwd, src_buf, &.{src}, .auto);
+        const dest_abs = bun.path.joinAbsStringBufZ(cwd, dest_buf, &.{dest}, .auto);
+
+        // A source that cannot be stat'd is left to the copy, which reports the
+        // syscall's own error.
+        const src_stat = switch (Syscall.lstat(src_abs)) {
+            .result => |s| s,
+            .err => return null,
+        };
+        const src_is_dir = bun.S.ISDIR(@intCast(src_stat.mode));
+
+        switch (Syscall.lstat(dest_abs)) {
+            .err => {},
+            .result => |dest_stat| {
+                const dest_is_dir = bun.S.ISDIR(@intCast(dest_stat.mode));
+                if (isSameFile(src_stat, dest_stat)) {
+                    return this.cpRejected(.identical, src_abs, dest_abs);
+                }
+                if (src_is_dir and !dest_is_dir) {
+                    return this.cpRejected(.dir_to_non_dir, src_abs, dest_abs);
+                }
+                if (!src_is_dir and dest_is_dir) {
+                    return this.cpRejected(.non_dir_to_dir, src_abs, dest_abs);
+                }
+            },
+        }
+
+        if (!src_is_dir) return null;
+
+        // Resolving needs the destination's parent to exist; the lexical form
+        // does not.
+        if (isPathUnder(src_abs, dest_abs) or cpNestsInsideSelf(src_abs, dest_abs)) {
+            return this.cpRejected(.into_subdirectory_of_self, src_abs, dest_abs);
+        }
+
+        return null;
+    }
+
+    fn cpUnsupportedReason(mode: u32) CpReason {
+        if (bun.S.ISFIFO(mode)) return .fifo;
+        if (bun.S.ISSOCK(mode)) return .socket;
+        return .unknown_file_type;
+    }
+
+    /// Reports a path as UTF-8 whatever the platform's path encoding is.
+    fn cpPathToUtf8(buf: *bun.PathBuffer, path: anytype) []const u8 {
+        if (comptime std.meta.Elem(@TypeOf(path)) == u16) {
+            return bun.strings.fromWPath(buf, path);
+        }
+        @memcpy(buf[0..path.len], path);
+        return buf[0..path.len];
+    }
+
+    /// `src_path` and `dest_path` may be OS paths or UTF-8.
+    fn cpRejected(this: *NodeFS, reason: CpReason, src_path: anytype, dest_path: anytype) Syscall.Error {
+        const scratch = bun.path_buffer_pool.get();
+        defer bun.path_buffer_pool.put(scratch);
+
+        // The path on the error outlives this call, so it takes the long-lived
+        // buffer; the other only has to survive formatting.
+        const src_buf, const dest_buf = if (reason.reportsDest())
+            .{ scratch, &this.sync_error_buf }
+        else
+            .{ &this.sync_error_buf, scratch };
+
+        const src = cpPathToUtf8(src_buf, src_path);
+        const dest = cpPathToUtf8(dest_buf, dest_path);
+
+        var writer = std.Io.Writer.fixed(&this.sync_message_buf);
+        // Truncation is acceptable: only the code is load-bearing.
+        (switch (reason) {
+            .identical => writer.print("src and dest cannot be the same {s}", .{dest}),
+            .into_subdirectory_of_self => writer.print("cannot copy {s} to a subdirectory of self {s}", .{ src, dest }),
+            .symlink_into_subdirectory_of_self => writer.print("cannot overwrite {s} with {s}", .{ dest, src }),
+            .dir_to_non_dir => writer.print("cannot overwrite non-directory {s} with directory {s}", .{ dest, src }),
+            .non_dir_to_dir => writer.print("cannot overwrite directory {s} with non-directory {s}", .{ dest, src }),
+            .not_recursive => writer.print("Recursive option not enabled, cannot copy a directory: {s}", .{src}),
+            .exists => writer.print("{s} already exists", .{dest}),
+            .fifo => writer.print("cannot copy a FIFO pipe: {s}", .{src}),
+            .socket => writer.print("cannot copy a socket file: {s}", .{src}),
+            .unknown_file_type => writer.print("cannot copy an unknown file type: {s}", .{src}),
+        }) catch {};
+
+        return .{
+            .errno = @backingInt(reason.errno()),
+            .syscall = .copyfile,
+            .path = if (reason.reportsDest()) dest else src,
+            .node_code = reason.code(),
+            .node_message = writer.buffered(),
+        };
+    }
+
+    /// Appends `sep ++ rel` to the OS path held in `buf[0..base_len]`, encoding
+    /// the walker's WTF-8 relative path as `bun.OSPathChar`. Returns null when
+    /// the result would not fit, which callers report as ENAMETOOLONG.
+    ///
+    /// One UTF-16 code unit never takes fewer than one WTF-8 byte, so the byte
+    /// length of `rel` bounds the converted length on Windows too.
+    fn appendWalkPath(buf: *bun.OSPathBuffer, base_len: usize, rel: []const u8) ?[:0]const bun.OSPathChar {
+        if (base_len + rel.len + 2 > buf.len) return null;
+        buf[base_len] = std.fs.path.sep;
+        if (Environment.isWindows) {
+            const converted = bun.strings.toWPath(buf[base_len + 1 ..], rel);
+            return buf[0 .. base_len + 1 + converted.len :0];
+        }
+        @memcpy(buf[base_len + 1 ..][0..rel.len], rel);
+        buf[base_len + 1 + rel.len] = 0;
+        return buf[0 .. base_len + 1 + rel.len :0];
+    }
+
+    fn cpWalkError(this: *NodeFS, err: anyerror, path: []const bun.OSPathChar) Syscall.Error {
+        return bun.sys.Error.fromCode(errnoFromStdIo(err, .ACCES), .copyfile).withPath(this.osPathIntoSyncErrorBuf(path));
+    }
+
+    fn cpNameTooLong(this: *NodeFS, path: []const bun.OSPathChar) Syscall.Error {
+        return .{
+            .errno = @backingInt(E.NAMETOOLONG),
+            .syscall = .copyfile,
+            .path = this.osPathIntoSyncErrorBuf(path),
+        };
+    }
+
+    /// Creates `dest` for a directory that is about to be descended into.
+    /// Returns true when `clonefile` copied the whole subtree already, in which
+    /// case the caller must not descend.
+    fn cpPrepareDirectory(this: *NodeFS, args: Arguments.Cp, src: bun.OSPathSliceZ, dest: bun.OSPathSliceZ) Maybe(bool) {
+        if (comptime Environment.isMac) try_with_clonefile: {
+            if (Maybe(Return.Cp).errnoSysP(c.clonefile(src, dest, 0), .clonefile, src)) |err| {
+                switch (err.getErrno()) {
+                    .NAMETOOLONG, .ROFS, .INVAL, .ACCES, .PERM => |errno| {
+                        if (errno == .ACCES or errno == .PERM) {
+                            if (args.flags.force) {
+                                break :try_with_clonefile;
+                            }
+                        }
+
+                        @memcpy(this.sync_error_buf[0..src.len], src);
+                        return .{ .err = err.err.withPath(this.sync_error_buf[0..src.len]) };
+                    },
+
+                    // Other errors may be due to clonefile() not being supported
+                    // We'll fall back to other implementations
+                    else => {},
+                }
+            } else {
+                return .{ .result = true };
+            }
+        }
+
+        // A copied directory keeps the source's permissions. Windows has no
+        // mode to carry over.
+        const mode: Mode = if (comptime Environment.isWindows) Arguments.Mkdir.DefaultMode else switch (Syscall.stat(src)) {
+            .result => |s| @intCast(s.mode & 0o777),
+            .err => Arguments.Mkdir.DefaultMode,
+        };
+
+        switch (this.mkdirRecursiveOSPath(dest, mode, false)) {
+            .err => |err| return .{ .err = err },
+            .result => {},
+        }
+
+        // mkdir's mode is masked by the umask, and the directory may already
+        // exist.
+        if (comptime !Environment.isWindows) {
+            _ = Syscall.chmod(dest, mode);
+        }
+        return .{ .result = false };
+    }
+
+    /// Copies the contents of the directory `src_buf[0..src_root_len]` into
+    /// `dest_buf[0..dest_root_len]`.
+    ///
+    /// Nesting is bounded by what fits in `bun.OSPathBuffer`, not by the stack,
+    /// so traversal state lives on the heap in `std.Io.Dir.SelectiveWalker`.
+    /// Opting in to each descent is what lets `clonefile` skip a subtree it has
+    /// already copied wholesale.
+    ///
+    /// `visitor` decides what each entry means:
+    ///   fn enterDirectory(self, src, dest) Maybe(bool)  // true = do not descend
+    ///   fn copyFile(self, src, dest) Maybe(Return.Cp)
+    fn cpTree(
+        this: *NodeFS,
+        src_buf: *bun.OSPathBuffer,
+        src_root_len: usize,
+        dest_buf: *bun.OSPathBuffer,
+        dest_root_len: usize,
+        visitor: anytype,
+    ) Maybe(Return.Cp) {
+        switch (visitor.enterDirectory(src_buf[0..src_root_len :0], dest_buf[0..dest_root_len :0])) {
+            .err => |err| return .{ .err = err },
+            .result => |cloned| if (cloned) return .success,
+        }
+
+        const fd = switch (Syscall.openatOSPath(
+            .cwd(),
+            src_buf[0..src_root_len :0],
+            bun.O.DIRECTORY | bun.O.RDONLY,
+            0,
+        )) {
+            .err => |err| return .{ .err = err.withPath(this.osPathIntoSyncErrorBuf(src_buf[0..src_root_len])) },
+            .result => |fd_| fd_,
+        };
+        defer fd.close();
+
+        var walker = fd.stdDir().walkSelectively(bun.default_allocator) catch |err| bun.handleOom(err);
+        defer walker.deinit();
+
+        while (walker.next(this.io()) catch |err| {
+            return .{ .err = this.cpWalkError(err, src_buf[0..src_root_len]) };
+        }) |entry| {
+            const src = appendWalkPath(src_buf, src_root_len, entry.path) orelse
+                return .{ .err = this.cpNameTooLong(src_buf[0..src_root_len]) };
+            const dest = appendWalkPath(dest_buf, dest_root_len, entry.path) orelse
+                return .{ .err = this.cpNameTooLong(src_buf[0..src_root_len]) };
+
+            if (entry.kind == .directory) {
+                switch (visitor.enterDirectory(src, dest)) {
+                    .err => |err| return .{ .err = err },
+                    .result => |cloned| if (cloned) continue,
+                }
+                walker.enter(this.io(), entry) catch |err| {
+                    return .{ .err = this.cpWalkError(err, src) };
+                };
+            } else {
+                switch (visitor.copyFile(src, dest)) {
+                    .err => |err| return .{ .err = err },
+                    .result => {},
+                }
+            }
+        }
+
+        return .success;
+    }
+
+    const SyncCpVisitor = struct {
+        nodefs: *NodeFS,
+        args: Arguments.Cp,
+
+        fn enterDirectory(this: SyncCpVisitor, src: bun.OSPathSliceZ, dest: bun.OSPathSliceZ) Maybe(bool) {
+            return this.nodefs.cpPrepareDirectory(this.args, src, dest);
+        }
+
+        fn copyFile(this: SyncCpVisitor, src: bun.OSPathSliceZ, dest: bun.OSPathSliceZ) Maybe(Return.Cp) {
+            const cp_flags = this.args.flags;
+            const r = this.nodefs._copySingleFileSync(
+                src,
+                dest,
+                @fromBackingInt(@intCast((if (cp_flags.errorOnExist or !cp_flags.force) constants.COPYFILE_EXCL else @as(u8, 0)))),
+                null,
+                this.args,
+            );
+            switch (r) {
+                .err => |err| {
+                    if (err.errno == @backingInt(E.EXIST) and cp_flags.skipsExisting()) {
+                        return .success;
+                    }
+                    return .{ .err = err };
+                },
+                .result => return .success,
+            }
+        }
+    };
 
     fn cpSyncInner(
         this: *NodeFS,
@@ -6161,7 +6404,7 @@ pub const NodeFS = struct {
                     attributes,
                     args,
                 );
-                if (r == .err and r.err.errno == @backingInt(E.EXIST) and !cp_flags.errorOnExist) {
+                if (r == .err and r.err.errno == @backingInt(E.EXIST) and cp_flags.skipsExisting()) {
                     return .success;
                 }
                 return r;
@@ -6183,7 +6426,7 @@ pub const NodeFS = struct {
                     stat_,
                     args,
                 );
-                if (r == .err and r.err.errno == @backingInt(E.EXIST) and !cp_flags.errorOnExist) {
+                if (r == .err and r.err.errno == @backingInt(E.EXIST) and cp_flags.skipsExisting()) {
                     return .success;
                 }
                 return r;
@@ -6191,120 +6434,13 @@ pub const NodeFS = struct {
         }
 
         if (!cp_flags.recursive) {
-            return .{ .err = .{
-                .errno = @backingInt(E.ISDIR),
-                .syscall = .copyfile,
-                .path = this.osPathIntoSyncErrorBuf(src),
-            } };
+            return .{ .err = this.cpRejected(.not_recursive, src, dest) };
         }
 
-        if (comptime Environment.isMac) try_with_clonefile: {
-            if (Maybe(Return.Cp).errnoSysP(c.clonefile(src, dest, 0), .clonefile, src)) |err| {
-                switch (err.getErrno()) {
-                    .NAMETOOLONG, .ROFS, .INVAL, .ACCES, .PERM => |errno| {
-                        if (errno == .ACCES or errno == .PERM) {
-                            if (args.flags.force) {
-                                break :try_with_clonefile;
-                            }
-                        }
-
-                        @memcpy(this.sync_error_buf[0..src.len], src);
-                        return .{ .err = err.err.withPath(this.sync_error_buf[0..src.len]) };
-                    },
-
-                    // Other errors may be due to clonefile() not being supported
-                    // We'll fall back to other implementations
-                    else => {},
-                }
-            } else {
-                return .success;
-            }
-        }
-
-        const fd = switch (Syscall.openatOSPath(
-            .cwd(),
-            src,
-            bun.O.DIRECTORY | bun.O.RDONLY,
-            0,
-        )) {
-            .err => |err| {
-                return .{ .err = err.withPath(this.osPathIntoSyncErrorBuf(src)) };
-            },
-            .result => |fd_| fd_,
-        };
-        defer fd.close();
-
-        switch (this.mkdirRecursiveOSPath(dest, Arguments.Mkdir.DefaultMode, false)) {
-            .err => |err| return .{ .err = err },
-            .result => {},
-        }
-
-        var iterator = DirIterator.iterate(fd, if (Environment.isWindows) .u16 else .u8);
-        var entry = iterator.next();
-        while (switch (entry) {
-            .err => |err| {
-                return .{ .err = err.withPath(this.osPathIntoSyncErrorBuf(src)) };
-            },
-            .result => |ent| ent,
-        }) |current| : (entry = iterator.next()) {
-            const name_slice = current.name.slice();
-
-            // The accumulated path for deep directory trees can exceed the fixed
-            // OSPathBuffer. Bail out with ENAMETOOLONG instead of writing past the
-            // end of the buffer and corrupting the stack.
-            if (src_dir_len + 1 + name_slice.len >= src_buf.len or
-                dest_dir_len + 1 + name_slice.len >= dest_buf.len)
-            {
-                return .{ .err = .{
-                    .errno = @backingInt(E.NAMETOOLONG),
-                    .syscall = .copyfile,
-                    .path = this.osPathIntoSyncErrorBuf(src_buf[0..src_dir_len]),
-                } };
-            }
-
-            @memcpy(src_buf[src_dir_len + 1 .. src_dir_len + 1 + name_slice.len], name_slice);
-            src_buf[src_dir_len] = std.fs.path.sep;
-            src_buf[src_dir_len + 1 + name_slice.len] = 0;
-
-            @memcpy(dest_buf[dest_dir_len + 1 .. dest_dir_len + 1 + name_slice.len], name_slice);
-            dest_buf[dest_dir_len] = std.fs.path.sep;
-            dest_buf[dest_dir_len + 1 + name_slice.len] = 0;
-
-            switch (current.kind) {
-                .directory => {
-                    const r = this.cpSyncInner(
-                        src_buf,
-                        src_dir_len + @as(PathString.PathInt, @intCast(1 + name_slice.len)),
-                        dest_buf,
-                        dest_dir_len + @as(PathString.PathInt, @intCast(1 + name_slice.len)),
-                        args,
-                    );
-                    switch (r) {
-                        .err => return r,
-                        .result => {},
-                    }
-                },
-                else => {
-                    const r = this._copySingleFileSync(
-                        src_buf[0 .. src_dir_len + 1 + name_slice.len :0],
-                        dest_buf[0 .. dest_dir_len + 1 + name_slice.len :0],
-                        @fromBackingInt(@intCast((if (cp_flags.errorOnExist or !cp_flags.force) constants.COPYFILE_EXCL else @as(u8, 0)))),
-                        null,
-                        args,
-                    );
-                    switch (r) {
-                        .err => {
-                            if (r.err.errno == @backingInt(E.EXIST) and !cp_flags.errorOnExist) {
-                                continue;
-                            }
-                            return r;
-                        },
-                        .result => {},
-                    }
-                },
-            }
-        }
-        return .success;
+        return this.cpTree(src_buf, src_dir_len, dest_buf, dest_dir_len, SyncCpVisitor{
+            .nodefs = this,
+            .args = args,
+        });
     }
 
     /// On Windows, copying a file onto itself will return EBUSY, which is an
@@ -6362,27 +6498,9 @@ pub const NodeFS = struct {
             },
         };
 
-        if (std.fs.path.isAbsolute(link_target)) {
-            return Syscall.symlink(link_target, dest);
-        }
-
-        var cwd_buf: bun.PathBuffer = undefined;
-        var resolved_buf: bun.PathBuffer = undefined;
-        const src_dir = std.fs.path.dirnamePosix(src) orelse "";
-        const cwd = bun.getcwd(&cwd_buf) catch {
-            // If we can't resolve cwd, preserve the link target as-is rather
-            // than pointing the copied link back at the source path.
-            return Syscall.symlink(link_target, dest);
-        };
-        // link_target is user-controlled and can approach PATH_MAX on its own,
-        // so prepending src_dir may exceed resolved_buf. Use the bounds-checked
-        // join and surface ENAMETOOLONG instead of corrupting the stack.
-        const resolved = bun.path.joinAbsStringBufChecked(
-            cwd,
-            resolved_buf[0 .. resolved_buf.len - 1],
-            &.{ src_dir, link_target },
-            .posix,
-        ) orelse {
+        const resolved_buf = bun.path_buffer_pool.get();
+        defer bun.path_buffer_pool.put(resolved_buf);
+        const resolved_src = cpResolveLinkTarget(src, link_target, resolved_buf) orelse {
             @memcpy(this.sync_error_buf[0..src.len], src);
             return .{ .err = .{
                 .errno = @backingInt(E.NAMETOOLONG),
@@ -6390,8 +6508,114 @@ pub const NodeFS = struct {
                 .path = this.sync_error_buf[0..src.len],
             } };
         };
-        resolved_buf[resolved.len] = 0;
-        return Syscall.symlink(resolved_buf[0..resolved.len :0], dest);
+
+        // Anything at the destination that is not a link is left alone, so that
+        // `symlink` below fails with EEXIST rather than discarding a file.
+        const dest_target_buf = bun.path_buffer_pool.get();
+        defer bun.path_buffer_pool.put(dest_target_buf);
+        switch (Syscall.readlink(dest, dest_target_buf)) {
+            .err => {},
+            .result => |dest_target| {
+                if (this.cpSymlinkOverLink(resolved_src, dest, dest_target)) |err| return .{ .err = err };
+                _ = Syscall.unlink(dest);
+            },
+        }
+
+        return Syscall.symlink(resolved_src, dest);
+    }
+
+    /// Resolves a symlink's target the way Node does when `verbatimSymlinks` is
+    /// not set: absolute targets stand, relative ones resolve against the
+    /// directory holding the link. Returns null when the result does not fit,
+    /// which callers report as ENAMETOOLONG.
+    fn cpResolveLinkTarget(link_path: []const u8, target: []const u8, buf: *bun.PathBuffer) ?[:0]const u8 {
+        if (std.fs.path.isAbsolute(target)) {
+            if (target.len >= buf.len) return null;
+            @memcpy(buf[0..target.len], target);
+            buf[target.len] = 0;
+            return buf[0..target.len :0];
+        }
+
+        var cwd_buf: bun.PathBuffer = undefined;
+        const cwd = bun.getcwd(&cwd_buf) catch return null;
+        const link_dir = std.fs.path.dirnamePosix(link_path) orelse "";
+        // `target` can approach PATH_MAX on its own, so prepending `link_dir`
+        // may not fit.
+        const resolved = bun.path.joinAbsStringBufChecked(
+            cwd,
+            buf[0 .. buf.len - 1],
+            &.{ link_dir, target },
+            .posix,
+        ) orelse return null;
+        buf[resolved.len] = 0;
+        return buf[0..resolved.len :0];
+    }
+
+    /// Whether replacing the existing link at `dest`, which points at
+    /// `dest_target`, with one pointing at `resolved_src` would put either tree
+    /// inside the other.
+    fn cpSymlinkOverLink(this: *NodeFS, resolved_src: [:0]const u8, dest: [:0]const u8, dest_target: []const u8) ?Syscall.Error {
+        // Only a link that resolves to a directory can nest a tree.
+        switch (Syscall.stat(resolved_src)) {
+            .result => |s| if (!bun.S.ISDIR(@intCast(s.mode))) return null,
+            .err => return null,
+        }
+
+        const resolved_buf = bun.path_buffer_pool.get();
+        defer bun.path_buffer_pool.put(resolved_buf);
+        const resolved_dest = cpResolveLinkTarget(dest, dest_target, resolved_buf) orelse return null;
+
+        if (isPathUnder(resolved_src, resolved_dest)) {
+            return this.cpRejected(.into_subdirectory_of_self, resolved_src, resolved_dest);
+        }
+
+        const dest_is_dir = switch (Syscall.stat(dest)) {
+            .result => |s| bun.S.ISDIR(@intCast(s.mode)),
+            .err => false,
+        };
+        if (dest_is_dir and isPathUnder(resolved_dest, resolved_src)) {
+            return this.cpRejected(.symlink_into_subdirectory_of_self, resolved_src, resolved_dest);
+        }
+
+        return null;
+    }
+
+    /// Opens the destination of a single-file copy, created with the source's
+    /// permissions so the file is never briefly readable. A missing parent
+    /// directory is created, which `cp` promises and `copyFile` does not.
+    ///
+    /// `O_EXCL` is set by the caller exactly when it must not clobber, so an
+    /// EEXIST here always means the caller asked to be told.
+    fn openCopyDest(this: *NodeFS, src: bun.OSPathSliceZ, dest: bun.OSPathSliceZ, flags: i32, mode: Mode) Maybe(FD) {
+        switch (Syscall.open(dest, flags, mode)) {
+            .result => |fd| return .{ .result = fd },
+            .err => |err| {
+                if (err.getErrno() == .EXIST) {
+                    return .{ .err = this.cpRejected(.exists, src, dest) };
+                }
+
+                if (err.getErrno() == .NOENT) {
+                    var len = dest.len;
+                    while (len > 0 and dest[len - 1] != std.fs.path.sep) {
+                        len -= 1;
+                    }
+                    const mkdir_result = this.mkdirRecursive(.{
+                        .path = PathLike{ .string = PathString.init(dest[0..len]) },
+                        .recursive = true,
+                    });
+                    if (mkdir_result == .err) {
+                        return .{ .err = mkdir_result.err };
+                    }
+
+                    if (Syscall.open(dest, flags, mode).asValue()) |fd| {
+                        return .{ .result = fd };
+                    }
+                }
+
+                @memcpy(this.sync_error_buf[0..dest.len], dest);
+                return .{ .err = err.withPath(this.sync_error_buf[0..dest.len]) };
+            },
+        }
     }
 
     /// This is `copyFile`, but it copies symlinks as-is
@@ -6429,12 +6653,7 @@ pub const NodeFS = struct {
 
                         return ret.errnoSysP(c.copyfile(src, dest, null, mode_), .copyfile, src) orelse ret.success;
                     }
-                    @memcpy(this.sync_error_buf[0..src.len], src);
-                    return Maybe(Return.CopyFile){ .err = .{
-                        .errno = @backingInt(SystemErrno.ENOTSUP),
-                        .path = this.sync_error_buf[0..src.len],
-                        .syscall = .copyfile,
-                    } };
+                    return .{ .err = this.cpRejected(cpUnsupportedReason(@intCast(stat_.mode)), src, dest) };
                 }
 
                 // 64 KB is about the break-even point for clonefile() to be worth it
@@ -6461,40 +6680,15 @@ pub const NodeFS = struct {
                         src_fd.close();
                     }
 
-                    var flags: Mode = bun.O.CREAT | bun.O.WRONLY;
+                    var flags: i32 = bun.O.CREAT | bun.O.WRONLY;
                     var wrote: usize = 0;
                     if (mode.shouldntOverwrite()) {
                         flags |= bun.O.EXCL;
                     }
 
-                    const dest_fd = dest_fd: {
-                        switch (Syscall.open(dest, flags, jsc.Node.fs.default_permission)) {
-                            .result => |result| break :dest_fd result,
-                            .err => |err| {
-                                if (err.getErrno() == .NOENT) {
-                                    // Create the parent directory if it doesn't exist
-                                    var len = dest.len;
-                                    while (len > 0 and dest[len - 1] != std.fs.path.sep) {
-                                        len -= 1;
-                                    }
-                                    const mkdirResult = this.mkdirRecursive(.{
-                                        .path = PathLike{ .string = PathString.init(dest[0..len]) },
-                                        .recursive = true,
-                                    });
-                                    if (mkdirResult == .err) {
-                                        return Maybe(Return.CopyFile){ .err = mkdirResult.err };
-                                    }
-
-                                    switch (Syscall.open(dest, flags, jsc.Node.fs.default_permission)) {
-                                        .result => |result| break :dest_fd result,
-                                        .err => {},
-                                    }
-                                }
-
-                                @memcpy(this.sync_error_buf[0..dest.len], dest);
-                                return Maybe(Return.CopyFile){ .err = err.withPath(this.sync_error_buf[0..dest.len]) };
-                            },
-                        }
+                    const dest_fd = switch (this.openCopyDest(src, dest, flags, @intCast(stat_.mode & 0o777))) {
+                        .result => |fd| fd,
+                        .err => |err| return .{ .err = err },
                     };
                     defer {
                         _ = Syscall.ftruncate(dest_fd, @intCast(@as(u63, @truncate(wrote))));
@@ -6532,13 +6726,24 @@ pub const NodeFS = struct {
                 return Maybe(Return.CopyFile).todo();
             }
 
-            const src_fd = switch (Syscall.open(src, bun.O.RDONLY | bun.O.NOFOLLOW, 0o644)) {
+            // O_NONBLOCK so that opening a FIFO returns instead of waiting for a
+            // writer that will never arrive; the file type is rejected below.
+            const src_fd = switch (Syscall.open(src, bun.O.RDONLY | bun.O.NOFOLLOW | bun.O.NONBLOCK, 0o644)) {
                 .result => |result| result,
                 .err => |err| {
-                    if (err.getErrno() == .LOOP) {
+                    switch (err.getErrno()) {
                         // ELOOP is returned when you open a symlink with NOFOLLOW.
                         // as in, it does not actually let you open it.
-                        return this._cpSymlink(src, dest);
+                        .LOOP => return this._cpSymlink(src, dest),
+                        // Sockets and some device nodes cannot be opened at all.
+                        // Report what the file is rather than how opening it failed.
+                        .NXIO, .NODEV => switch (Syscall.lstat(src)) {
+                            .result => |stat_| return .{
+                                .err = this.cpRejected(cpUnsupportedReason(@intCast(stat_.mode)), src, dest),
+                            },
+                            .err => {},
+                        },
+                        else => {},
                     }
 
                     return .{ .err = err };
@@ -6554,10 +6759,7 @@ pub const NodeFS = struct {
             };
 
             if (!posix.S.ISREG(@intCast(stat_.mode))) {
-                return Maybe(Return.CopyFile){ .err = .{
-                    .errno = @backingInt(SystemErrno.ENOTSUP),
-                    .syscall = .copyfile,
-                } };
+                return .{ .err = this.cpRejected(cpUnsupportedReason(@intCast(stat_.mode)), src, dest) };
             }
 
             var flags: i32 = bun.O.CREAT | bun.O.WRONLY;
@@ -6566,34 +6768,9 @@ pub const NodeFS = struct {
                 flags |= bun.O.EXCL;
             }
 
-            const dest_fd = dest_fd: {
-                switch (Syscall.open(dest, flags, jsc.Node.fs.default_permission)) {
-                    .result => |result| break :dest_fd result,
-                    .err => |err| {
-                        if (err.getErrno() == .NOENT) {
-                            // Create the parent directory if it doesn't exist
-                            var len = dest.len;
-                            while (len > 0 and dest[len - 1] != std.fs.path.sep) {
-                                len -= 1;
-                            }
-                            const mkdirResult = this.mkdirRecursive(.{
-                                .path = PathLike{ .string = PathString.init(dest[0..len]) },
-                                .recursive = true,
-                            });
-                            if (mkdirResult == .err) {
-                                return Maybe(Return.CopyFile){ .err = mkdirResult.err };
-                            }
-
-                            switch (Syscall.open(dest, flags, jsc.Node.fs.default_permission)) {
-                                .result => |result| break :dest_fd result,
-                                .err => {},
-                            }
-                        }
-
-                        @memcpy(this.sync_error_buf[0..dest.len], dest);
-                        return Maybe(Return.CopyFile){ .err = err.withPath(this.sync_error_buf[0..dest.len]) };
-                    },
-                }
+            const dest_fd = switch (this.openCopyDest(src, dest, flags, @intCast(stat_.mode & 0o777))) {
+                .result => |fd| fd,
+                .err => |err| return .{ .err = err },
             };
 
             var size: usize = @intCast(@max(stat_.size, 0));
@@ -6710,31 +6887,9 @@ pub const NodeFS = struct {
                 flags |= bun.O.EXCL;
             }
 
-            const dest_fd = dest_fd: {
-                switch (Syscall.open(dest, flags, jsc.Node.fs.default_permission)) {
-                    .result => |result| break :dest_fd result,
-                    .err => |err| {
-                        if (err.getErrno() == .NOENT) {
-                            var len = dest.len;
-                            while (len > 0 and dest[len - 1] != std.fs.path.sep) {
-                                len -= 1;
-                            }
-                            const mkdirResult = this.mkdirRecursive(.{
-                                .path = PathLike{ .string = PathString.init(dest[0..len]) },
-                                .recursive = true,
-                            });
-                            if (mkdirResult == .err) {
-                                return Maybe(Return.CopyFile){ .err = mkdirResult.err };
-                            }
-                            switch (Syscall.open(dest, flags, jsc.Node.fs.default_permission)) {
-                                .result => |result| break :dest_fd result,
-                                .err => {},
-                            }
-                        }
-                        @memcpy(this.sync_error_buf[0..dest.len], dest);
-                        return Maybe(Return.CopyFile){ .err = err.withPath(this.sync_error_buf[0..dest.len]) };
-                    },
-                }
+            const dest_fd = switch (this.openCopyDest(src, dest, flags, @intCast(stat_.mode & 0o777))) {
+                .result => |fd| fd,
+                .err => |err| return .{ .err = err },
             };
 
             // No O_TRUNC at open: if src and dest resolve to the same inode,
@@ -6877,6 +7032,39 @@ pub export fn Bun__mkdirp(globalThis: *jsc.JSGlobalObject, path: [*:0]const u8) 
 
 comptime {
     _ = Bun__mkdirp;
+}
+
+/// Maps the error sets of `std.Io` filesystem calls onto the errno the caller
+/// reports. `access_denied` is a parameter because `rmdir` answers EPERM where
+/// everything else answers EACCES.
+pub fn errnoFromStdIo(err: anyerror, access_denied: E) E {
+    return switch (err) {
+        error.AccessDenied, error.PermissionDenied => access_denied,
+        error.FileTooBig => .FBIG,
+        error.SymLinkLoop => .LOOP,
+        error.ProcessFdQuotaExceeded => .NFILE,
+        error.NameTooLong => .NAMETOOLONG,
+        error.SystemFdQuotaExceeded => .MFILE,
+        error.SystemResources, error.OutOfMemory => .NOMEM,
+        error.ReadOnlyFileSystem => .ROFS,
+        error.FileSystem => .IO,
+        error.FileBusy, error.DeviceBusy => .BUSY,
+        error.NoDevice => .NXIO,
+        error.Canceled => .INTR,
+
+        // One of the path components was not a directory. Unreachable when the
+        // path holds no separator.
+        error.NotDir => .NOTDIR,
+
+        // On Windows a path must be valid WTF-8, and cannot contain any of
+        // '/', '*', '?', '"', '<', '>', '|'.
+        error.InvalidUtf8, error.InvalidWtf8, error.BadPathName => .INVAL,
+
+        error.FileNotFound => .NOENT,
+        error.IsDir => .ISDIR,
+
+        else => .FAULT,
+    };
 }
 
 /// Copied from std.Io.Dir.deleteTree. This function returns `FileNotFound` instead of ignoring it, which
