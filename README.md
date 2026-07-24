@@ -16,6 +16,7 @@ Buz is an early-stage experimental fork of pre-Rust Bun. The goal of the fork is
 - Currently only native `x86_64-linux-gnu` builds and tests are in scope.
 - The full upstream test suite does not pass yet.
 - The codebase is still being refactored and deslopified. It is not ready for human review. It will take at least a few weeks of LLM-assisted cleanup before it's worthy of human contributor attention.
+- This codebase contains numerous known, unpatched vulnerabilities and uses an outdated version of JavaScriptCore that lacks the latest security fixes. Do not use in production.
 
 ## Contributing
 
