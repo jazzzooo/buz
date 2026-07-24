@@ -4,6 +4,7 @@ const EventEmitter = require("node:events");
 const fs = $zig("node_fs_binding.zig", "createBinding") as $ZigGeneratedClasses.NodeJSFS;
 const { glob } = require("internal/fs/glob");
 const { validateInteger } = require("internal/validators");
+const { validateCpOptions, needsJavaScriptCopier } = require("internal/fs/cp-options");
 
 const constants = $processBindingConstants.fs;
 
@@ -99,18 +100,13 @@ function watch(
   };
 }
 
-// attempt to use the native code version if possible
-// and on MacOS, simple cases of recursive directory trees can be done in a single `clonefile()`
-// using filter and other options uses a lazily loaded js fallback ported from node.js
-function cp(src, dest, options) {
-  if (!options) return fs.cp(src, dest);
-  if (typeof options !== "object") {
-    throw new TypeError("options must be an object");
-  }
-  if (options.dereference || options.filter || options.preserveTimestamps || options.verbatimSymlinks) {
+// `async` so that a rejected option is reported as a rejection rather than a throw.
+async function cp(src, dest, options) {
+  options = validateCpOptions(options);
+  if (needsJavaScriptCopier(options)) {
     return require("internal/fs/cp")(src, dest, options);
   }
-  return fs.cp(src, dest, options.recursive, options.errorOnExist, options.force ?? true, options.mode);
+  return fs.cp(src, dest, options.recursive, options.errorOnExist, options.force, options.mode);
 }
 
 async function opendir(dir: string, options) {

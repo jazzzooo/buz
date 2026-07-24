@@ -4,6 +4,7 @@ const EventEmitter = require("node:events");
 const promises = require("node:fs/promises");
 const types = require("node:util/types");
 const { validateFunction, validateInteger } = require("internal/validators");
+const { validateCpOptions, needsJavaScriptCopier } = require("internal/fs/cp-options");
 
 const kEmptyObject = Object.freeze(Object.create(null));
 
@@ -1002,18 +1003,12 @@ realpath.native = function realpath(p, options, callback) {
 };
 realpathSync.native = fs.realpathNativeSync.bind(fs);
 
-// attempt to use the native code version if possible
-// and on MacOS, simple cases of recursive directory trees can be done in a single `clonefile()`
-// using filter and other options uses a lazily loaded js fallback ported from node.js
 function cpSync(src, dest, options) {
-  if (!options) return fs.cpSync(src, dest);
-  if (typeof options !== "object") {
-    throw new TypeError("options must be an object");
-  }
-  if (options.dereference || options.filter || options.preserveTimestamps || options.verbatimSymlinks) {
+  options = validateCpOptions(options);
+  if (needsJavaScriptCopier(options)) {
     return require("internal/fs/cp-sync")(src, dest, options);
   }
-  return fs.cpSync(src, dest, options.recursive, options.errorOnExist, options.force ?? true, options.mode);
+  return fs.cpSync(src, dest, options.recursive, options.errorOnExist, options.force, options.mode);
 }
 
 function cp(src, dest, options, callback) {
@@ -1023,6 +1018,8 @@ function cp(src, dest, options, callback) {
   }
 
   ensureCallback(callback);
+  // The callback form has to throw; `promises.cp` reports through a rejection.
+  options = validateCpOptions(options);
 
   promises.cp(src, dest, options).then(() => callback(null), callback);
 }
