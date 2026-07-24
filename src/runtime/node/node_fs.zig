@@ -6209,6 +6209,13 @@ pub const NodeFS = struct {
     ///
     /// One UTF-16 code unit never takes fewer than one WTF-8 byte, so the byte
     /// length of `rel` bounds the converted length on Windows too.
+    ///
+    /// TODO: this caps nesting at whatever fits in `bun.OSPathBuffer`.
+    /// `std.Io.Dir.Walker.Entry` carries the containing directory handle, so the
+    /// copy could work from that and a basename instead, with no accumulated
+    /// path and no limit. It needs `_copySingleFileSync` to become fd-relative:
+    /// `clonefileat`/`fcopyfile` on macOS, `openat` on Linux, and `NtCreateFile`
+    /// with a root handle on Windows.
     fn appendWalkPath(buf: *bun.OSPathBuffer, base_len: usize, rel: []const u8) ?[:0]const bun.OSPathChar {
         if (base_len + rel.len + 2 > buf.len) return null;
         buf[base_len] = std.fs.path.sep;
