@@ -1279,7 +1279,7 @@ async function spawnSafe(options) {
       error = signalCode;
     }
   } else if (exitCode === 1) {
-    const match = buffer.match(/\x1b\[31m\s(\d+) fail/);
+    const match = buffer.match(/\x1b\[31m\s*(\d+) fail/);
     if (match) {
       error = `${match[1]} failing`;
     } else {
