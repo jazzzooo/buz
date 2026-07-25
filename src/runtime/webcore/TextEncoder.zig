@@ -221,7 +221,14 @@ pub export fn TextEncoder__encodeInto16(
     const output = buf_ptr[0..buf_len];
     const input = input_ptr[0..input_len];
     var result: strings.EncodeIntoResult = strings.copyUTF16IntoUTF8(output, input);
-    if (output.len >= 3 and (result.read == 0 or result.written == 0)) {
+    const first_is_unpaired_surrogate = if (input.len == 0)
+        false
+    else if (input[0] >= 0xdc00 and input[0] <= 0xdfff)
+        true
+    else
+        input[0] >= 0xd800 and input[0] <= 0xdbff and
+            (input.len == 1 or input[1] < 0xdc00 or input[1] > 0xdfff);
+    if (output.len >= 3 and result.read == 0 and result.written == 0 and first_is_unpaired_surrogate) {
         const replacement_char = [_]u8{ 239, 191, 189 };
         @memcpy(buf_ptr[0..replacement_char.len], &replacement_char);
         result.read = 1;

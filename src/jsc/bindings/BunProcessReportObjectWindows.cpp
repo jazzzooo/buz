@@ -15,6 +15,12 @@
 #include "JavaScriptCore/JSGlobalObject.h"
 #include "JavaScriptCore/TopExceptionScope.h"
 #include "JavaScriptCore/VM.h"
+#include "JavaScriptCore/NumberPrototype.h"
+#include "wtf-bindings.h"
+
+#define STRINGIFY_IMPL(x) #x
+#define STRINGIFY(x) STRINGIFY_IMPL(x)
+#include "wtf/Scope.h"
 #include "wtf/text/WTFString.h"
 #include "wtf/text/StringView.h"
 #include "wtf/text/ASCIILiteral.h"
@@ -107,9 +113,9 @@ JSValue constructReportObjectWindows(VM& vm, Zig::GlobalObject* globalObject, Pr
         // Component versions - just add the minimum needed
         JSObject* versions = constructEmptyObject(globalObject, globalObject->objectPrototype());
         versions->putDirect(vm, Identifier::fromString(vm, "node"_s), jsString(vm, String(REPORTED_NODEJS_VERSION ""_s)), 0);
-        versions->putDirect(vm, Identifier::fromString(vm, "v8"_s), jsString(vm, String(REPORTED_NODEJS_V8_VERSION ""_s)), 0);
+        versions->putDirect(vm, Identifier::fromString(vm, "v8"_s), jsString(vm, String(ASCIILiteral::fromLiteralUnsafe(REPORTED_NODEJS_V8_VERSION))), 0);
         versions->putDirect(vm, Identifier::fromString(vm, "uv"_s), jsString(vm, String::fromLatin1(uv_version_string())), 0);
-        versions->putDirect(vm, Identifier::fromString(vm, "modules"_s), jsString(vm, String::number(REPORTED_NODEJS_ABI_VERSION)), 0);
+        versions->putDirect(vm, Identifier::fromString(vm, "modules"_s), jsString(vm, String(ASCIILiteral::fromLiteralUnsafe(STRINGIFY(REPORTED_NODEJS_ABI_VERSION)))), 0);
         header->putDirect(vm, Identifier::fromString(vm, "componentVersions"_s), versions, 0);
         RETURN_IF_EXCEPTION(scope, {});
 

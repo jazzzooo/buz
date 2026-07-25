@@ -232,7 +232,7 @@ pub fn resolveDeps(b: *Build) ?DepPkgs {
     const nodejs_headers = blk: {
         const run = b.addRunFile(bun_exe);
         run.addFileArg(b.path("src/build/apply-patches.ts"));
-        run.addDirectoryArg(nodejs.?.path(""));
+        run.addDirectoryArg(nodejs.?.path(b.fmt("node-v{s}", .{zonRef(b, "nodejs_headers")})));
         const out = run.addOutputDirectoryArg("nodejs-headers");
         run.addArgs(&.{ "--delete=include/node/openssl", "--delete=include/node/uv", "--delete=include/node/uv.h" });
         run.step.name = "strip nodejs bundled headers";
@@ -379,8 +379,8 @@ fn zonRef(b: *Build, dep_name: []const u8) []const u8 {
 pub fn nodejsCompatibility(b: *Build) !NodejsCompatibility {
     return .{
         .version = try std.SemanticVersion.parse(zonRef(b, "nodejs_headers")),
-        .abi_version = 137,
-        .v8_version = "13.6.233.10-node.18",
+        .abi_version = 147,
+        .v8_version = "14.6.202.34-node.20",
     };
 }
 

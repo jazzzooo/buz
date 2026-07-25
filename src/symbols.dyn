@@ -1,5 +1,13 @@
 {
     _ZN2v811HandleScope12CreateHandleEPNS_8internal7IsolateEm;
+    _ZN2v811HandleScope12CreateHandleEPNS_7IsolateEm;
+    _ZN2v811HandleScope10InitializeEPNS_7IsolateE;
+    _ZNK2v85Value16QuickIsUndefinedEv;
+    _ZNK2v85Value11QuickIsNullEv;
+    _ZNK2v85Value22QuickIsNullOrUndefinedEv;
+    _ZNK2v85Value13QuickIsStringEv;
+    _ZN2v811HandleScope16DeleteExtensionsEPNS_7IsolateE;
+    _ZN2v811HandleScope6ExtendEPNS_7IsolateE;
     _ZN2v811HandleScopeC1EPNS_7IsolateE;
     _ZN2v811HandleScopeD1Ev;
     _ZN2v811HandleScopeD2Ev;
@@ -22,8 +30,11 @@
     _ZN2v85Array3NewEPNS_7IsolateEPNS_5LocalINS_5ValueEEEm;
     _ZNK2v85Array6LengthEv;
     _ZN2v85Array3NewEPNS_7IsolateEi;
+    _ZN2v85Array3NewENS_5LocalINS_7ContextEEEmNSt3__18functionIFNS_10MaybeLocalINS_5ValueEEEvEEE;
     _ZN2v85Array7IterateENS_5LocalINS_7ContextEEEPFNS0_14CallbackResultEjNS1_INS_5ValueEEEPvES7_;
     _ZN2v85Array9CheckCastEPNS_5ValueE;
+    _ZN2v86Number12NewFromInt32EPNS_7IsolateEi;
+    _ZN2v86Number13NewFromUint32EPNS_7IsolateEj;
     _ZN2v86Number3NewEPNS_7IsolateEd;
     _ZN2v86Object16GetInternalFieldEi;
     _ZN2v86Object16SetInternalFieldEiNS_5LocalINS_4DataEEE;
@@ -41,6 +52,7 @@
     _ZN2v87Isolate13TryGetCurrentEv;
     _ZN2v87Isolate17GetCurrentContextEv;
     _ZN2v88External3NewEPNS_7IsolateEPv;
+    _ZN2v88External3NewEPNS_7IsolateEPvt;
     _ZN2v88Function7SetNameENS_5LocalINS_6StringEEE;
     _ZN2v88internal35IsolateFromNeverReadOnlySpaceObjectEm;
     _ZN3JSC9CallFrame13describeFrameEv;
@@ -69,13 +81,18 @@
     _ZNK2v86Number5ValueEv;
     _ZNK2v86String10IsExternalEv;
     _ZNK2v86String10Utf8LengthEPNS_7IsolateE;
+    _ZNK2v86String11WriteUtf8V2EPNS_7IsolateEPcmiPm;
+    _ZNK2v86String12Utf8LengthV2EPNS_7IsolateE;
+    _ZNK2v86String14WriteOneByteV2EPNS_7IsolateEjjPhi;
     _ZNK2v86String17IsExternalOneByteEv;
     _ZNK2v86String17IsExternalTwoByteEv;
     _ZNK2v86String19ContainsOnlyOneByteEv;
     _ZNK2v86String6LengthEv;
+    _ZNK2v86String7WriteV2EPNS_7IsolateEjjPti;
     _ZNK2v86String9IsOneByteEv;
     _ZNK2v86String9WriteUtf8EPNS_7IsolateEPciPii;
     _ZNK2v87Boolean5ValueEv;
+    _ZNK2v88External5ValueEt;
     _ZNK2v88External5ValueEv;
     _ZNK2v88Function7GetNameEv;
     dumpBtjsTrace;

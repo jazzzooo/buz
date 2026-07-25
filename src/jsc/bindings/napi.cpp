@@ -639,9 +639,7 @@ extern "C" napi_status napi_create_arraybuffer(napi_env env,
     Zig::GlobalObject* globalObject = toJS(env);
     auto& vm = JSC::getVM(globalObject);
 
-    // Node probably doesn't create uninitialized array buffers
-    // but the node-api docs don't specify whether memory is initialized or not.
-    RefPtr<ArrayBuffer> arrayBuffer = ArrayBuffer::tryCreateUninitialized(byte_length, 1);
+    RefPtr<ArrayBuffer> arrayBuffer = ArrayBuffer::tryCreate(byte_length, 1);
     if (!arrayBuffer) {
         return napi_set_last_error(env, napi_generic_failure);
     }
@@ -2274,6 +2272,23 @@ napi_status napi_get_value_string_any_encoding(napi_env env, napi_value napiValu
     if (bufsize == 0) [[unlikely]] {
         if (writtenPtr) *writtenPtr = 0;
         return napi_set_last_error(env, napi_ok);
+    }
+
+    // An over-large bufsize (in particular NAPI_AUTO_LENGTH == SIZE_MAX) means the
+    // caller promises the buffer is big enough for the whole string; Node forwards
+    // such sizes to V8's WriteUtf8V2, which simply stops at the end of the string.
+    // Clamp to the worst-case number of code units the encoder can produce so that
+    // `bufsize - 1` (and `2 * (bufsize - 1)` for UTF-16, which would otherwise wrap
+    // around size_t) stays within the destination the caller actually guarantees.
+    // The encoders already stop at min(input, output), so this never changes how
+    // many code units get written for buffers that really are this large.
+    const size_t max_encoded_units = EncodeTo == NapiStringEncoding::utf8
+        // Latin-1 → UTF-8 expands at most 2x per byte; UTF-16 → UTF-8 at most 3x per code unit
+        ? (view->is8Bit() ? 2 : 3) * static_cast<size_t>(view->length())
+        // latin1/utf16 destinations: at most one code unit per source code unit
+        : static_cast<size_t>(view->length());
+    if (bufsize - 1 > max_encoded_units) [[unlikely]] {
+        bufsize = max_encoded_units + 1;
     }
 
     size_t written;

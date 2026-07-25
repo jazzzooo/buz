@@ -11,8 +11,8 @@
             .lazy = true,
         },
         .nodejs_headers = .{
-            .url = "https://nodejs.org/dist/v24.3.0/node-v24.3.0-headers.tar.gz",
-            .hash = "N-V-__8AAF8cCgNPd0LiDy1T5pVgCof711ERmVxa3hl9UdpO",
+            .url = "https://nodejs.org/dist/v26.3.0/node-v26.3.0-headers.tar.gz",
+            .hash = "N-V-__8AAHE5hAPefK_SavCJsq60ipiLHVQGtuoTlxEoe9_D",
             .lazy = true,
         },
         .icu = .{
