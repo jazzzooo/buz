@@ -53,7 +53,7 @@ const BunBuildOptions = struct {
     enable_valgrind: bool,
     enable_tinycc: bool,
     use_mimalloc: bool,
-    reported_nodejs_version: Version,
+    nodejs_compatibility: bun_exe.NodejsCompatibility,
     /// To make iterating on some '@embedFile's faster, we load them at runtime
     /// instead of at compile time. This is disabled in release or if this flag
     /// is set (to allow CI to build a portable executable). Affected files:
@@ -117,7 +117,7 @@ const BunBuildOptions = struct {
         opts.addOption(bool, "enable_valgrind", this.enable_valgrind);
         opts.addOption(bool, "enable_tinycc", this.enable_tinycc);
         opts.addOption(bool, "use_mimalloc", this.use_mimalloc);
-        opts.addOption([]const u8, "reported_nodejs_version", b.fmt("{f}", .{this.reported_nodejs_version}));
+        opts.addOption([]const u8, "reported_nodejs_version", b.fmt("{f}", .{this.nodejs_compatibility.version}));
         opts.addOption(bool, "override_no_export_cpp_apis", this.override_no_export_cpp_apis);
 
         const mod = opts.createModule();
@@ -272,10 +272,7 @@ pub fn build(b: *Build) !void {
             const rev = b.option(u32, "canary", "Treat this as a canary build (0 = release)") orelse 1;
             break :canary if (rev == 0) null else rev;
         },
-        .reported_nodejs_version = try Version.parse(
-            b.option([]const u8, "reported_nodejs_version", "Reported Node.js version") orelse
-                bun_exe.nodejsVersionFromZon(b),
-        ),
+        .nodejs_compatibility = try bun_exe.nodejsCompatibility(b),
         // Dev builds bake the zero sha so commits never invalidate compiles;
         // CI passes the real revision.
         .sha = sha: {
@@ -317,6 +314,7 @@ pub fn build(b: *Build) !void {
             .codegen_embed = o.shouldEmbedCode(),
             .version = bun_version,
             .sha = if (std.mem.eql(u8, build_options.sha, zero_sha)) null else build_options.sha,
+            .nodejs = o.nodejs_compatibility,
             .target = o.target,
             .webkit = webkit_ctx,
             .icu = icu_ctx,
@@ -500,7 +498,7 @@ pub fn build(b: *Build) !void {
                 .enable_valgrind = false,
                 .enable_tinycc = false,
                 .use_mimalloc = build_options.use_mimalloc,
-                .reported_nodejs_version = build_options.reported_nodejs_version,
+                .nodejs_compatibility = build_options.nodejs_compatibility,
                 .codegen_embed = build_options.codegen_embed,
                 .codegen_path = build_options.codegen_path,
                 .codegen = build_options.codegen,
@@ -701,7 +699,7 @@ fn addMultiCheck(
                 .canary_revision = root_build_options.canary_revision,
                 .sha = root_build_options.sha,
                 .version = root_build_options.version,
-                .reported_nodejs_version = root_build_options.reported_nodejs_version,
+                .nodejs_compatibility = root_build_options.nodejs_compatibility,
                 .codegen_path = root_build_options.codegen_path,
                 .enable_valgrind = root_build_options.enable_valgrind,
                 .enable_tinycc = root_build_options.enable_tinycc,

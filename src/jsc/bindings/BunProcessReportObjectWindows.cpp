@@ -4,6 +4,7 @@
 
 #include "BunProcess.h"
 #include "ZigGlobalObject.h"
+#include "bun_dependency_versions.h"
 #include "FormatStackTraceForJS.h"
 #include "headers.h" // For Bun__Process__createExecArgv and other exports
 #include "JavaScriptCore/JSCJSValue.h"
@@ -106,9 +107,9 @@ JSValue constructReportObjectWindows(VM& vm, Zig::GlobalObject* globalObject, Pr
         // Component versions - just add the minimum needed
         JSObject* versions = constructEmptyObject(globalObject, globalObject->objectPrototype());
         versions->putDirect(vm, Identifier::fromString(vm, "node"_s), jsString(vm, String(REPORTED_NODEJS_VERSION ""_s)), 0);
-        versions->putDirect(vm, Identifier::fromString(vm, "v8"_s), jsString(vm, String("13.6.233.10-node.18"_s)), 0);
+        versions->putDirect(vm, Identifier::fromString(vm, "v8"_s), jsString(vm, String(REPORTED_NODEJS_V8_VERSION ""_s)), 0);
         versions->putDirect(vm, Identifier::fromString(vm, "uv"_s), jsString(vm, String::fromLatin1(uv_version_string())), 0);
-        versions->putDirect(vm, Identifier::fromString(vm, "modules"_s), jsString(vm, String("137"_s)), 0);
+        versions->putDirect(vm, Identifier::fromString(vm, "modules"_s), jsString(vm, String::number(REPORTED_NODEJS_ABI_VERSION)), 0);
         header->putDirect(vm, Identifier::fromString(vm, "componentVersions"_s), versions, 0);
         RETURN_IF_EXCEPTION(scope, {});
 

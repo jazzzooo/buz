@@ -3,6 +3,7 @@
 
 #include "JavaScriptCore/ObjectConstructor.h"
 #include "JSCommonJSModule.h"
+#include "bun_dependency_versions.h"
 
 #include "node/node_version.h"
 
