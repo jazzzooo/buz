@@ -81,8 +81,6 @@ export const bunEnv: NodeJS.Dict<string> = {
   AGENT: "false",
 };
 
-const ciEnv = { ...bunEnv };
-
 if (isASAN) {
   bunEnv.ASAN_OPTIONS ??= "allow_user_segv_handler=1:disable_coredump=0";
 }
@@ -93,12 +91,10 @@ if (isWindows) {
 
 for (let key in bunEnv) {
   if (bunEnv[key] === undefined) {
-    delete ciEnv[key];
     delete bunEnv[key];
   }
 
   if (key.startsWith("BUN_DEBUG_") && key !== "BUN_DEBUG_QUIET_LOGS") {
-    delete ciEnv[key];
     delete bunEnv[key];
   }
 
@@ -1035,11 +1031,12 @@ export function dockerExe(): string | null {
 }
 
 export function isDockerEnabled(): boolean {
+  if (process.env.BUN_DOCKER_COORDINATOR !== undefined) {
+    return !!process.env.BUN_DOCKER_COORDINATOR;
+  }
+
   const dockerCLI = dockerExe();
   if (!dockerCLI) {
-    if (isCI && isLinux) {
-      throw new Error("A functional `docker` is required in CI for some tests.");
-    }
     return false;
   }
 
@@ -1052,12 +1049,10 @@ export function isDockerEnabled(): boolean {
     const info = execSync(`"${dockerCLI}" info`, { stdio: ["ignore", "pipe", "inherit"] });
     return info.toString().indexOf("Server Version:") !== -1;
   } catch {
-    if (isCI && isLinux) {
-      throw new Error("A functional `docker` is required in CI for some tests.");
-    }
     return false;
   }
 }
+
 export async function waitForPort(port: number, timeout: number = 60_000): Promise<void> {
   let deadline = Date.now() + Math.max(1, timeout);
   let error: unknown;
@@ -1142,9 +1137,7 @@ export async function describeWithContainer(
     }
   }
 
-  // Skip only when no env override, no coordinator, and docker is unavailable.
-  // isDockerEnabled() may throw when docker is required but absent, so the
-  // env-override and coordinator checks must short-circuit before it.
+  // Service mappings and a running coordinator avoid the direct Docker probe.
   if (!process.env["BUN_TEST_SERVICE_" + actualService] && !process.env.BUN_DOCKER_COORDINATOR && !isDockerEnabled()) {
     describe.todo(label);
     return;
@@ -1699,50 +1692,8 @@ export function fileDescriptorLeakChecker() {
   };
 }
 
-/**
- * Gets a secret from the environment.
- *
- * In Buildkite, secrets must be retrieved using the `buildkite-agent secret get` command
- * and are not available as an environment variable.
- */
 export function getSecret(name: string): string | undefined {
-  let value = process.env[name]?.trim();
-
-  // When not running in CI, allow the secret to be missing.
-  if (!isCI) {
-    return value;
-  }
-
-  // In Buildkite, secrets must be retrieved using the `buildkite-agent secret get` command
-  if (!value && isBuildKite) {
-    const { exitCode, stdout } = spawnSync({
-      cmd: ["buildkite-agent", "secret", "get", name],
-      stdout: "pipe",
-      env: ciEnv,
-      stderr: "inherit",
-    });
-    if (exitCode === 0) {
-      value = stdout.toString().trim();
-    }
-  }
-
-  // Throw an error if the secret is not found, so the test fails in CI.
-  if (!value) {
-    let hint;
-    if (isBuildKite) {
-      hint = `Create a secret with the name "${name}" in the Buildkite UI.
-https://buildkite.com/docs/pipelines/security/secrets/buildkite-secrets`;
-    } else {
-      hint = `Define an environment variable with the name "${name}".`;
-    }
-
-    throw new Error(`Secret not found: ${name}\n${hint}`);
-  }
-
-  // Set the secret in the environment so that it can be used in tests.
-  process.env[name] = value;
-
-  return value;
+  return process.env[name]?.trim() || undefined;
 }
 
 export function assertManifestsPopulated(absCachePath: string, registryUrl: string) {

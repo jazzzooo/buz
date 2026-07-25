@@ -76,10 +76,10 @@ Also install:
 - Docker with Compose V2.
 - ApacheBench (`ab`).
 - FUSE 2, its Python bindings, and fusermount.
-- GNOME Keyring, D-Bus, and libsecret, with an active and unlocked Secret Service session.
+- GNOME Keyring, D-Bus, and libsecret.
 
 ```sh
-BUN_AGENT_RULE_DISABLED=1 node scripts/runner.node.mjs --exec-path ./zig-out/bin/bun --retries 0 >test-sweep.log 2>&1
+BUN_AGENT_RULE_DISABLED=1 node scripts/runner.node.mjs --exec-path ./zig-out/bin/bun >test-sweep.log 2>&1
 ```
 
 ## License

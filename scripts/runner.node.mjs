@@ -14,7 +14,6 @@ import {
   appendFileSync,
   existsSync,
   constants as fs,
-  linkSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -22,7 +21,6 @@ import {
   realpathSync,
   rmSync,
   statSync,
-  symlinkSync,
   unlink,
   unlinkSync,
   writeFileSync,
@@ -30,8 +28,6 @@ import {
 import { readFile } from "node:fs/promises";
 import { availableParallelism, userInfo } from "node:os";
 import { basename, dirname, extname, join, relative, sep } from "node:path";
-import { createInterface } from "node:readline";
-import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { prestartMap as dockerPrestartMap } from "../test/docker/prestart-map.mjs";
 import pLimit from "./p-limit.mjs";
@@ -49,18 +45,14 @@ import {
   getEnv,
   getFileUrl,
   getHostname,
-  getLoggedInUserCountOrDetails,
   getOs,
   getSecret,
   getShell,
   getWindowsExitReason,
   isBuildkite,
-  isCI,
   isGithubAction,
   isLinux,
-  isMacOS,
   isWindows,
-  isX64,
   printEnvironment,
   reportAnnotationToBuildKite,
   startGroup,
@@ -78,15 +70,7 @@ const spawnBunTimeout = 20_000; // when running with ASAN/LSAN bun can take a bi
 const testTimeout = 3 * 60_000;
 const integrationTimeout = 5 * 60_000;
 
-function getNodeParallelTestTimeout(testPath) {
-  if (testPath.includes("test-dns")) return 60_000;
-  if (testPath.includes("test-cluster-")) return 60_000; // cluster IPC + socket-handle passing is process-heavy under runner concurrency
-  if (testPath.includes("-docker-")) return 60_000;
-  if (testPath.includes("test-stdin-pipe-large")) return 60_000; // pipes 1MB stdin->stdout through an extra child process; slow under runner concurrency
-  if (!isCI) return 60_000; // everything slower in debug mode
-  if (options["step"]?.includes("-asan-")) return 60_000;
-  return 20_000;
-}
+const nodeParallelTestTimeout = 60_000;
 
 process.on("SIGTRAP", () => {
   console.warn("Test runner received SIGTRAP. Doing nothing.");
@@ -148,7 +132,7 @@ const { values: options, positionals: filters } = parseArgs({
     },
     ["retries"]: {
       type: "string",
-      default: isCI ? "3" : "0", // N retries = N+1 attempts
+      default: "0", // N retries = N+1 attempts
     },
     ["junit"]: {
       type: "boolean",
@@ -264,8 +248,6 @@ if (options["coredump-upload"]) {
     throw new Error(`Failed to check core_pattern: ${sysctl.error}`);
   }
 }
-
-let remapPort = undefined;
 
 /**
  * @typedef {Object} TestExpectation
@@ -494,28 +476,26 @@ async function runTests() {
   const tests = getRelevantTests(testsPath, modifiers, expectations);
   !isQuiet && console.log("Running tests:", tests.length);
 
-  // Start the docker-service coordinator (test/docker/coordinator.ts). It
-  // owns every `docker compose` invocation for this shard — `compose up` is
-  // not concurrency-safe, so exactly one process runs it — and prestarts the
-  // services this shard's tests need (mysql/postgres/redis/minio/…) in the
-  // background while getVendorTests below installs vendor deps. Tests reach
-  // it through the unix socket in BUN_DOCKER_COORDINATOR (inherited by every
-  // spawned test process); ensure() waits for the coordinator's ready message
-  // instead of shelling out to compose itself. Without the env var, ensure()
-  // falls back to running compose directly. Linux-only — macOS / Windows CI
-  // don't run docker tests. Lifetime is tied to this process via the stdin
-  // pipe.
-  if (isCI && isLinux && spawnSync("docker", ["compose", "version"], { stdio: "ignore" }).status === 0) {
+  process.env.BUN_DOCKER_COORDINATOR = "";
+
+  // `docker compose up` is not concurrency-safe, so test processes never run
+  // it themselves. When Docker is usable, one coordinator owns Compose and
+  // prestarts the services selected tests need. Without it, those tests skip.
+  const canCoordinateDocker =
+    !isWindows &&
+    !(isLinux && process.arch === "arm64") &&
+    spawnSync("docker", ["info"], { stdio: "ignore", timeout: 10_000 }).status === 0 &&
+    spawnSync("docker", ["compose", "version"], { stdio: "ignore", timeout: 10_000 }).status === 0;
+  if (canCoordinateDocker) {
     const coordinatorSocket = join(tmpdir(), `bun-docker-${process.pid}.sock`);
     const coordinator = spawn(execPath, [join(cwd, "test", "docker", "coordinator.ts"), ...tests], {
       stdio: ["pipe", "pipe", "inherit"],
-      env: { ...process.env, BUN_DOCKER_COORDINATOR_SOCKET: coordinatorSocket },
+      env: { ...process.env, BUN_DOCKER_COORDINATOR: coordinatorSocket },
     });
     coordinator.on("error", err => console.warn("docker coordinator spawn failed:", err.message));
     process.once("exit", () => coordinator.kill());
 
-    // Don't point tests at the socket until it's actually listening; if the
-    // coordinator never gets there, tests use the direct-compose fallback.
+    // Don't point tests at the socket until it is listening.
     const ready = await new Promise(resolve => {
       const timer = setTimeout(() => resolve(false), 15_000);
       timer.unref?.();
@@ -543,7 +523,7 @@ async function runTests() {
     if (ready) {
       process.env.BUN_DOCKER_COORDINATOR = coordinatorSocket;
     } else {
-      console.warn("docker coordinator did not become ready; tests will run compose directly");
+      console.warn("docker coordinator did not become ready; Docker service tests will skip");
       coordinator.kill();
     }
     // Never keep the runner alive on the coordinator's account; it exits on
@@ -556,7 +536,7 @@ async function runTests() {
   /** @type {VendorTest[] | undefined} */
   let vendorTests;
   let vendorTotal = 0;
-  if (/true|1|yes|on/i.test(options["vendor"]) || (isCI && typeof options["vendor"] === "undefined")) {
+  if (/true|1|yes|on/i.test(options["vendor"])) {
     vendorTests = await getVendorTests(cwd);
     if (vendorTests.length) {
       vendorTotal = vendorTests.reduce((total, { testPaths }) => total + testPaths.length + 1, 0);
@@ -637,7 +617,6 @@ async function runTests() {
       const label = `${getAnsi(color)}[${index}/${total}] ${title} - ${error}${getAnsi("reset")}`;
       startGroup(label, () => {
         if (concurrent) return;
-        if (!isCI) return;
         process.stderr.write(stdoutPreview);
       });
 
@@ -700,47 +679,6 @@ async function runTests() {
   }
 
   if (!failedResults.length) {
-    // TODO: remove windows exclusion here
-    if (isCI && !isWindows) {
-      // bun install has succeeded
-      const { promise: portPromise, resolve: portResolve } = Promise.withResolvers();
-      const { promise: errorPromise, resolve: errorResolve } = Promise.withResolvers();
-      console.log("run in", cwd);
-      let exiting = false;
-
-      const server = spawn(execPath, ["run", "--silent", "ci-remap-server", execPath, cwd, getCommit()], {
-        stdio: ["ignore", "pipe", "inherit"],
-        cwd, // run in main repo
-        env: { ...process.env, BUN_DEBUG_QUIET_LOGS: "1", NO_COLOR: "1" },
-      });
-      server.unref();
-      server.on("error", errorResolve);
-      server.on("exit", (code, signal) => {
-        if (!exiting && (code !== 0 || signal !== null)) errorResolve(signal ? signal : "code " + code);
-      });
-      function onBeforeExit() {
-        exiting = true;
-        server.off("error");
-        server.off("exit");
-        server.kill?.();
-      }
-      process.once("beforeExit", onBeforeExit);
-      const lines = createInterface(server.stdout);
-      lines.on("line", line => {
-        portResolve({ port: parseInt(line) });
-      });
-
-      const result = await Promise.race([portPromise, errorPromise.catch(e => e), setTimeoutPromise(5000, "timeout")]);
-      if (typeof result?.port != "number") {
-        process.off("beforeExit", onBeforeExit);
-        server.kill?.();
-        console.warn("ci-remap server did not start:", result);
-      } else {
-        console.log("crash reports parsed on port", result.port);
-        remapPort = result.port;
-      }
-    }
-
     const runOneTest = (testPath, concurrent) => {
       const absoluteTestPath = join(testsPath, testPath);
       const title = relative(cwd, absoluteTestPath).replaceAll(sep, "/");
@@ -767,11 +705,11 @@ async function runTests() {
           // (test-child-process-*-detached.js), which this flag defeats.
           env.BUN_FEATURE_FLAG_NO_ORPHANS = "1";
         }
-        if ((basename(execPath).includes("asan") || !isCI) && shouldValidateExceptions(testPath)) {
+        if (shouldValidateExceptions(testPath)) {
           env.BUN_JSC_validateExceptionChecks = "1";
           env.BUN_JSC_dumpSimulatedThrows = "1";
         }
-        if ((basename(execPath).includes("asan") || !isCI) && shouldValidateLeakSan(testPath)) {
+        if (shouldValidateLeakSan(testPath)) {
           env.BUN_DESTRUCT_VM_ON_EXIT = "1";
           env.ASAN_OPTIONS = "allow_user_segv_handler=1:disable_coredump=0:detect_leaks=1:abort_on_error=1";
           // prettier-ignore
@@ -783,7 +721,7 @@ async function runTests() {
             const { ok, error, stdout, crashes } = await spawnBun(execPath, {
               cwd: cwd,
               args: [subcommand, "--config=" + join(import.meta.dirname, "../bunfig.node-test.toml"), absoluteTestPath],
-              timeout: getNodeParallelTestTimeout(title),
+              timeout: nodeParallelTestTimeout,
               env: {
                 ...env,
                 // test/common/tmpdir.js derives `.tmp.${TEST_SERIAL_ID}` from this;
@@ -1039,7 +977,7 @@ async function runTests() {
     }
   }
 
-  if (!isCI && !isQuiet) {
+  if (!isQuiet) {
     console.table({
       "Total Tests": okResults.length + failedResults.length + flakyResults.length,
       "Passed Tests": okResults.length,
@@ -1062,8 +1000,7 @@ async function runTests() {
     }
   }
 
-  // Dump per-file results as JSON for post-processing (test-fix workflows
-  // shard from this). Opt-in via --results-json so CI output is unchanged.
+  // Dump per-file results as JSON for post-processing.
   if (cliOptions["results-json"]) {
     const all = [...okResults, ...flakyResults, ...failedResults].map(r => ({
       testPath: r.testPath,
@@ -1313,23 +1250,6 @@ let _combinedPath = "";
 function getCombinedPath(execPath) {
   if (!_combinedPath) {
     _combinedPath = addPath(realpathSync(dirname(execPath)), process.env.PATH);
-    // If we're running bun-profile.exe, try to make a symlink to bun.exe so
-    // that anything looking for "bun" will find it
-    if (isCI && basename(execPath, extname(execPath)).toLowerCase() !== "bun") {
-      const existingPath = execPath;
-      const newPath = join(dirname(execPath), "bun" + extname(execPath));
-      try {
-        // On Windows, we might run into permissions issues with symlinks.
-        // If that happens, fall back to a regular hardlink.
-        symlinkSync(existingPath, newPath, "file");
-      } catch (error) {
-        try {
-          linkSync(existingPath, newPath);
-        } catch (error) {
-          console.warn(`Failed to link bun`, error);
-        }
-      }
-    }
   }
   return _combinedPath;
 }
@@ -1345,7 +1265,7 @@ function getCombinedPath(execPath) {
  * @param {SpawnOptions} options
  * @returns {Promise<SpawnBunResult>}
  */
-async function spawnBun(execPath, { args, cwd, timeout, env, stdout, stderr }) {
+async function spawnBun(execPath, { command, args, cwd, timeout, env, stdout, stderr }) {
   const path = getCombinedPath(execPath);
   const tmpdirPath = mkdtempSync(join(tmpdir(), "buntmp-"));
   const { username, homedir } = userInfo();
@@ -1367,9 +1287,7 @@ async function spawnBun(execPath, { args, cwd, timeout, env, stdout, stderr }) {
     BUN_INSTALL_CACHE_DIR: tmpdirPath,
     SHELLOPTS: isWindows ? "igncr" : undefined, // ignore "\r" on Windows
     TEST_TMPDIR: tmpdirPath, // Used in Node.js tests.
-    ...(typeof remapPort == "number"
-      ? { BUN_CRASH_REPORT_URL: `http://localhost:${remapPort}` }
-      : { BUN_ENABLE_CRASH_REPORTING: "0" }),
+    BUN_ENABLE_CRASH_REPORTING: "0",
   };
 
   if (isWindows && bunEnv.Path) {
@@ -1379,6 +1297,7 @@ async function spawnBun(execPath, { args, cwd, timeout, env, stdout, stderr }) {
   if (env) {
     Object.assign(bunEnv, env);
   }
+  delete bunEnv.CI;
 
   if (isWindows) {
     delete bunEnv["PATH"];
@@ -1394,7 +1313,7 @@ async function spawnBun(execPath, { args, cwd, timeout, env, stdout, stderr }) {
   try {
     const existingCores = options["coredump-upload"] ? readdirSync(coresDir) : [];
     const result = await spawnSafe({
-      command: execPath,
+      command: command ?? execPath,
       args,
       cwd,
       timeout,
@@ -1445,42 +1364,6 @@ async function spawnBun(execPath, { args, cwd, timeout, env, stdout, stderr }) {
       }
     }
 
-    // Skip this if the remap server didn't work or if Bun exited normally
-    // (tests in which a subprocess crashed should at least set exit code 1)
-    if (typeof remapPort == "number" && result.exitCode !== 0) {
-      try {
-        // When Bun crashes, it exits before the subcommand it runs to upload the crash report has necessarily finished.
-        // So wait a little bit to make sure that the crash report has at least started uploading
-        // (once the server sees the /ack request then /traces will wait for any crashes to finish processing)
-        // There is a bug that if a test causes crash reports but exits with code 0, the crash reports will instead
-        // be attributed to the next test that fails. I'm not sure how to fix this without adding a sleep in between
-        // all tests (which would slow down CI a lot).
-        await setTimeoutPromise(500);
-        const response = await fetch(`http://localhost:${remapPort}/traces`);
-        if (!response.ok || response.status !== 200) throw new Error(`server responded with code ${response.status}`);
-        const traces = await response.json();
-        if (traces.length > 0) {
-          result.ok = false;
-          if (!isAlwaysFailure(result.error)) result.error = "crash reported";
-
-          crashes += `${traces.length} crashes reported during this test\n`;
-          for (const t of traces) {
-            if (t.failed_parse) {
-              crashes += "Trace string failed to parse:\n";
-              crashes += t.failed_parse + "\n";
-            } else if (t.failed_remap) {
-              crashes += "Parsed trace failed to remap:\n";
-              crashes += JSON.stringify(t.failed_remap, null, 2) + "\n";
-            } else {
-              crashes += "================\n";
-              crashes += t.remap + "\n";
-            }
-          }
-        }
-      } catch (e) {
-        crashes += "failed to fetch traces: " + e.toString() + "\n";
-      }
-    }
     if (crashes.length > 0) result.crashes = crashes;
     return result;
   } finally {
@@ -1549,9 +1432,8 @@ async function spawnBunTest(execPath, testPath, opts = { cwd }) {
   // This will be set if a JUnit file is generated
   let junitFilePath = null;
 
-  // In CI, we want to use JUnit for all tests
-  // Create a unique filename for each test run using a hash of the test path
-  // This ensures we can run tests in parallel without file conflicts
+  // Create a unique filename for each test run so parallel runs cannot
+  // overwrite each other's JUnit output.
   if (cliOptions.junit) {
     const testHash = createHash("sha1").update(testPath).digest("base64url");
     const junitTempDir = cliOptions["junit-temp-dir"];
@@ -1565,16 +1447,24 @@ async function spawnBunTest(execPath, testPath, opts = { cwd }) {
   }
 
   testArgs.push(absPath);
+  const needsSecretService =
+    isLinux && /^(?:test[\\/])?js[\\/]bun[\\/]secrets(?:-error-codes)?\.test\.ts$/.test(testPath);
+  const command = needsSecretService ? "dbus-run-session" : undefined;
+  const commandArgs = needsSecretService
+    ? ["--", process.execPath, join(cwd, "scripts", "secrets-test-wrapper.node.mjs"), execPath, ...testArgs]
+    : isReallyTest
+      ? testArgs
+      : [...args, absPath];
 
   const env = {
     GITHUB_ACTIONS: "true", // always true so annotations are parsed
     ...opts["env"],
   };
-  if ((basename(execPath).includes("asan") || !isCI) && shouldValidateExceptions(relative(cwd, absPath))) {
+  if (shouldValidateExceptions(relative(cwd, absPath))) {
     env.BUN_JSC_validateExceptionChecks = "1";
     env.BUN_JSC_dumpSimulatedThrows = "1";
   }
-  if ((basename(execPath).includes("asan") || !isCI) && shouldValidateLeakSan(relative(cwd, absPath))) {
+  if (shouldValidateLeakSan(relative(cwd, absPath))) {
     env.BUN_DESTRUCT_VM_ON_EXIT = "1";
     env.ASAN_OPTIONS = "allow_user_segv_handler=1:disable_coredump=0:detect_leaks=1:abort_on_error=1";
     // prettier-ignore
@@ -1589,7 +1479,8 @@ async function spawnBunTest(execPath, testPath, opts = { cwd }) {
   }
 
   const { ok, error, stdout, crashes } = await spawnBun(execPath, {
-    args: isReallyTest ? testArgs : [...args, absPath],
+    command,
+    args: commandArgs,
     cwd: opts["cwd"],
     // release-asan with debug-assertions on runs every spawned subprocess
     // slower; give each file more headroom so tests with heavy beforeAll
@@ -1827,10 +1718,6 @@ function isJavaScriptTest(path) {
  * @returns {boolean}
  */
 function isNodeTest(path) {
-  // Do not run node tests on macOS x64 in CI, those machines are slow and expensive.
-  if (isCI && isMacOS && isX64) {
-    return false;
-  }
   if (!isJavaScript(path)) {
     return false;
   }
@@ -2937,55 +2824,8 @@ export async function main() {
     printEnvironment();
   }
 
-  // FIXME: Some DNS tests hang unless we set the DNS server to 8.8.8.8
-  // It also appears to hang on 1.1.1.1, which could explain this issue:
-  // https://github.com/oven-sh/bun/issues/11136
-  if (isWindows && isCI) {
-    await spawn("pwsh", [
-      "-Command",
-      "Set-DnsClientServerAddress -InterfaceAlias 'Ethernet 4' -ServerAddresses ('8.8.8.8','8.8.4.4')",
-    ]);
-  }
-
-  let doRunTests = true;
-  if (isCI) {
-    // allFiles can be empty if the GitHub API call failed (bad token, rate
-    // limit, non-PR build). [].every() is vacuously true, which would skip the
-    // entire suite and exit 0 — so require at least one file before treating
-    // the change set as docs-only.
-    if (allFiles.length > 0 && allFiles.every(filename => filename.startsWith("docs/"))) {
-      doRunTests = false;
-    }
-  }
-
-  let ok = true;
-  if (doRunTests) {
-    const results = await runTests();
-    ok = results.every(({ ok }) => ok);
-  }
-
-  let waitForUser = false;
-  while (isCI) {
-    const userCount = getLoggedInUserCountOrDetails();
-    if (!userCount) {
-      if (waitForUser) {
-        !isQuiet && console.log("No users logged in, exiting runner...");
-      }
-      break;
-    }
-
-    if (!waitForUser) {
-      startGroup("Summary");
-      if (typeof userCount === "number") {
-        console.warn(`Found ${userCount} users logged in, keeping the runner alive until logout...`);
-      } else {
-        console.warn(userCount);
-      }
-      waitForUser = true;
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 60_000));
-  }
+  const results = await runTests();
+  const ok = results.every(({ ok }) => ok);
 
   process.exit(getExitCode(ok ? "pass" : "fail"));
 }

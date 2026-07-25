@@ -217,9 +217,8 @@ class DockerComposeHelper {
   }
 
   private async doUp(service: ServiceName): Promise<void> {
-    // Pre-build the service (a no-op for image-only services) so build time
-    // doesn't eat into the `up --wait` timeout below. CI pre-bakes everything
-    // via buildServices(); this covers local dev where that wasn't run.
+    // Pre-build the service so build time does not consume the health-check
+    // timeout below. This is a no-op for image-only services.
     const buildResult = await this.exec(["build", service]);
     if (buildResult.exitCode !== 0) {
       throw new Error(`Failed to build service ${service}: ${buildResult.stderr}`);
@@ -303,9 +302,9 @@ class DockerComposeHelper {
   // message with the port mapping. The coordinator owns every `compose up`
   // for the shard, so concurrent processes can't race duplicate invocations
   // into the daemon. Resolves null when no coordinator is configured or the
-  // socket is unreachable; the caller then runs compose directly (local dev,
-  // or the coordinator died). A reply of ok=false is a real service failure
-  // and is thrown rather than retried through the fallback.
+  // socket is unreachable; direct callers then run compose themselves, while
+  // the repository runner refuses the fallback. A reply of ok=false is a real
+  // service failure and is thrown rather than retried through the fallback.
   private ensureViaCoordinator(service: ServiceName): Promise<ServiceInfo | null> {
     const socketPath = process.env.BUN_DOCKER_COORDINATOR;
     if (!socketPath) {
@@ -313,7 +312,7 @@ class DockerComposeHelper {
     }
 
     return new Promise((resolve, reject) => {
-      const socket = net.connect(socketPath);
+      const socket = new net.Socket();
       let buffer = "";
       let replied = false;
       socket.setEncoding("utf8");
@@ -339,11 +338,16 @@ class DockerComposeHelper {
         }
       });
       socket.on("error", () => {
-        if (!replied) resolve(null);
+        if (replied) return;
+        replied = true;
+        resolve(null);
       });
       socket.on("close", () => {
-        if (!replied) resolve(null);
+        if (replied) return;
+        replied = true;
+        resolve(null);
       });
+      socket.connect(socketPath);
     });
   }
 
@@ -354,6 +358,10 @@ class DockerComposeHelper {
     const viaCoordinator = await this.ensureViaCoordinator(service);
     if (viaCoordinator !== null) {
       return viaCoordinator;
+    }
+
+    if (process.env.BUN_DOCKER_COORDINATOR !== undefined) {
+      throw new Error(`Docker service ${service} requires the test runner's coordinator`);
     }
 
     try {
@@ -491,40 +499,6 @@ class DockerComposeHelper {
 
     throw new Error(`TCP connection to ${host}:${port} timed out`);
   }
-
-  /**
-   * Pull all Docker images explicitly - useful for CI
-   */
-  async pullImages(): Promise<void> {
-    console.log("Pulling Docker images...");
-    const { exitCode, stderr } = await this.exec(["pull", "--ignore-pull-failures"]);
-
-    if (exitCode !== 0) {
-      // Don't fail on pull errors since some services need building
-      console.warn(`Warning during image pull: ${stderr}`);
-    }
-  }
-
-  /**
-   * Build all services that need building - useful for CI
-   */
-  async buildServices(): Promise<void> {
-    // Bare `compose build` builds every service that has a `build:` section,
-    // so there's no hardcoded list to keep in sync as services are converted.
-    console.log("Building all services with a build section...");
-    const { exitCode, stderr } = await this.exec(["build"]);
-    if (exitCode !== 0) {
-      throw new Error(`Failed to build services: ${stderr}`);
-    }
-  }
-
-  /**
-   * Prepare all images (pull and build) - useful for CI
-   */
-  async prepareImages(): Promise<void> {
-    await this.pullImages();
-    await this.buildServices();
-  }
 }
 
 // Global instance
@@ -560,18 +534,6 @@ export async function down(): Promise<void> {
 
 export async function waitTcp(host: string, port: number, timeout?: number): Promise<void> {
   return getHelper().waitTcp(host, port, timeout);
-}
-
-export async function pullImages(): Promise<void> {
-  return getHelper().pullImages();
-}
-
-export async function buildServices(): Promise<void> {
-  return getHelper().buildServices();
-}
-
-export async function prepareImages(): Promise<void> {
-  return getHelper().prepareImages();
 }
 
 // Higher-level wrappers for tests
