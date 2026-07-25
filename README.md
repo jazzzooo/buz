@@ -34,7 +34,7 @@ All accepted contributions must conform to the following:
 
 ### Bootstrap Zig
 
-You will need CMake >=3.15 and LLVM + Clang + LLD at Zig's currently supported version, 22.x as of writing.
+You will need CMake >=3.15, LLVM + Clang + LLD at Zig's currently supported version (22.x as of writing), Git, Ruby, Python 3, and Perl.
 
 ```sh
 git submodule update --init --recursive
@@ -73,9 +73,10 @@ nvm install
 
 Also install:
 
-- Docker Compose V2.
+- Docker with Compose V2.
+- ApacheBench (`ab`).
 - FUSE 2, its Python bindings, and fusermount.
-- GNOME Keyring, D-Bus, and libsecret.
+- GNOME Keyring, D-Bus, and libsecret, with an active and unlocked Secret Service session.
 
 ```sh
 BUN_AGENT_RULE_DISABLED=1 node scripts/runner.node.mjs --exec-path ./zig-out/bin/bun --retries 0 >test-sweep.log 2>&1
