@@ -393,7 +393,13 @@ pub fn crashHandler(
                     }
                     const desired_begin_addr = begin_addr orelse @returnAddress();
                     const captured = std.debug.captureCurrentStackTrace(
-                        .{ .first_address = desired_begin_addr },
+                        .{
+                            .first_address = desired_begin_addr,
+                            // Unwinding falls back to frame pointers, which are
+                            // refused as unsafe unless asked for. The build
+                            // always keeps them.
+                            .allow_unsafe_unwind = true,
+                        },
                         &addr_buf,
                     );
                     var best_trace = captured;
