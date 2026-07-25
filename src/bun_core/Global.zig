@@ -153,6 +153,13 @@ pub fn raiseIgnoringPanicHandler(sig: bun.SignalCode) noreturn {
             .flags = std.posix.SA.RESETHAND,
         };
         bun.sys.sigaction(posix_signal, &sa, null);
+
+        // A faulting signal is blocked while its own handler runs, and this is
+        // reachable from inside one; raising it while blocked would only mark
+        // it pending and return.
+        var unblock = bun.sys.sigemptyset();
+        bun.sys.sigaddset(&unblock, posix_signal);
+        std.posix.sigprocmask(std.posix.SIG.UNBLOCK, &unblock, null);
     }
 
     // kill self

@@ -112,6 +112,24 @@ pub const CrashReason = union(enum) {
 
     out_of_memory,
 
+    /// The signal to die under. This is what a core dump records and what
+    /// anything supervising the process observes.
+    pub fn terminalSignal(reason: CrashReason) bun.SignalCode {
+        return switch (reason) {
+            .segmentation_fault => .SIGSEGV,
+            .illegal_instruction => .SIGILL,
+            .bus_error => .SIGBUS,
+            .floating_point_error => .SIGFPE,
+            .panic,
+            .@"unreachable",
+            .datatype_misalignment,
+            .stack_overflow,
+            .zig_error,
+            .out_of_memory,
+            => .SIGABRT,
+        };
+    }
+
     pub fn format(reason: CrashReason, writer: *std.Io.Writer) !void {
         switch (reason) {
             .panic => |message| try writer.print("{s}", .{message}),
@@ -536,7 +554,7 @@ pub fn crashHandler(
         },
     };
 
-    crash();
+    crash(reason);
 }
 
 /// This is called when `main` returns a Zig error.
@@ -1606,7 +1624,7 @@ fn report(url: []const u8) void {
 
 /// Crash. Make sure segfault handlers are off so that this doesnt trigger the crash handler.
 /// This causes a segfault on posix systems to try to get a core dump.
-fn crash() noreturn {
+fn crash(reason: CrashReason) noreturn {
     switch (bun.Environment.os) {
         .windows => {
             // Node.js exits with code 134 (128 + SIGABRT) instead. We use abort() as it includes a
@@ -1614,7 +1632,7 @@ fn crash() noreturn {
             std.process.abort();
         },
         else => {
-            // Install default handler so that the tkill below will terminate.
+            // Install default handler so that the raise below will terminate.
             const sigact = bun.sys.Sigaction{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = bun.sys.sigemptyset(), .flags = 0 };
             inline for (.{
                 std.posix.SIG.SEGV,
@@ -1628,7 +1646,7 @@ fn crash() noreturn {
                 bun.sys.sigaction(sig, &sigact, null);
             }
 
-            @trap();
+            bun.Global.raiseIgnoringPanicHandler(reason.terminalSignal());
         },
     }
 }
