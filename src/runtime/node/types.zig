@@ -868,7 +868,10 @@ pub fn modeFromJS(ctx: *jsc.JSGlobalObject, value: jsc.JSValue) bun.JSError!?Mod
 
         var zig_str = jsc.ZigString.Empty;
         try value.toZigString(&zig_str, ctx);
-        var slice = zig_str.slice();
+        const utf8 = zig_str.toSlice(bun.default_allocator);
+        defer utf8.deinit();
+
+        var slice = utf8.slice();
         if (strings.hasPrefix(slice, "0o")) {
             slice = slice[2..];
         }
