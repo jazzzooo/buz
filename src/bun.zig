@@ -1869,9 +1869,7 @@ pub fn appendOptionsEnv(env: []const u8, comptime ArgType: type, args: *std.arra
                 try args.insert(offset_in_args, bun.String.cloneUTF8(buf.items));
             },
             [:0]const u8 => {
-                try buf.append(0);
-                const owned = try buf.toOwnedSlice();
-                try args.insert(offset_in_args, owned[0 .. owned.len - 1 :0]);
+                try args.insert(offset_in_args, try buf.toOwnedSliceSentinel(0));
             },
             else => @compileError("unexpected arg type"),
         }

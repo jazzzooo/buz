@@ -451,10 +451,9 @@ fn addScriptConfigs(
         if (pre_content) |pc| {
             var cmd_buf = try std.array_list.Managed(u8).initCapacity(allocator, pc.len + 1);
             try RunCommand.replacePackageManagerRun(&cmd_buf, pc);
-            try cmd_buf.append(0);
             try configs.append(.{
                 .label = label,
-                .command = cmd_buf.items[0 .. cmd_buf.items.len - 1 :0],
+                .command = try cmd_buf.toOwnedSliceSentinel(0),
                 .cwd = cwd,
                 .PATH = PATH,
             });
@@ -464,10 +463,9 @@ fn addScriptConfigs(
         {
             var cmd_buf = try std.array_list.Managed(u8).initCapacity(allocator, content.len + 1);
             try RunCommand.replacePackageManagerRun(&cmd_buf, content);
-            try cmd_buf.append(0);
             try configs.append(.{
                 .label = label,
-                .command = cmd_buf.items[0 .. cmd_buf.items.len - 1 :0],
+                .command = try cmd_buf.toOwnedSliceSentinel(0),
                 .cwd = cwd,
                 .PATH = PATH,
             });
@@ -476,10 +474,9 @@ fn addScriptConfigs(
         if (post_content) |pc| {
             var cmd_buf = try std.array_list.Managed(u8).initCapacity(allocator, pc.len + 1);
             try RunCommand.replacePackageManagerRun(&cmd_buf, pc);
-            try cmd_buf.append(0);
             try configs.append(.{
                 .label = label,
-                .command = cmd_buf.items[0 .. cmd_buf.items.len - 1 :0],
+                .command = try cmd_buf.toOwnedSliceSentinel(0),
                 .cwd = cwd,
                 .PATH = PATH,
             });

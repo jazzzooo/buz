@@ -35,15 +35,10 @@ pub const InitCommand = struct {
         if (strings.endsWithChar(input.items, '\r')) {
             _ = input.pop();
         }
-        if (input.items.len > 0) {
-            try input.append(0);
-            return input.items[0 .. input.items.len - 1 :0];
-        } else {
-            input.clearRetainingCapacity();
+        if (input.items.len == 0) {
             try input.appendSlice(default);
-            try input.append(0);
-            return input.items[0 .. input.items.len - 1 :0];
         }
+        return input.toOwnedSliceSentinel(0);
     }
     fn processRadioButton(io: std.Io, label: string, comptime Choices: type) !Choices {
         const colors = Output.enable_ansi_colors_stdout;

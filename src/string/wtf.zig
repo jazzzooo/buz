@@ -157,7 +157,7 @@ pub const WTFStringImplStruct = extern struct {
     pub fn toOwnedSliceZ(this: WTFStringImpl, allocator: std.mem.Allocator) [:0]u8 {
         if (this.is8Bit()) {
             if (bun.handleOom(bun.strings.toUTF8FromLatin1Z(allocator, this.latin1Slice()))) |utf8| {
-                return utf8.items[0 .. utf8.items.len - 1 :0];
+                return utf8;
             }
 
             return bun.handleOom(allocator.dupeSentinel(u8, this.latin1Slice(), 0));

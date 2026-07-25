@@ -652,9 +652,7 @@ pub const FFI = struct {
                     bun.handleOom(flags.append(' '));
                     bun.handleOom(flags.appendSlice(slice.slice()));
                 }
-                bun.handleOom(flags.append(0));
-                compile_c.flags = flags.items[0 .. flags.items.len - 1 :0];
-                flags = std.array_list.Managed(u8).init(allocator);
+                compile_c.flags = bun.handleOom(flags.toOwnedSliceSentinel(0));
             } else {
                 if (!flags_value.isString()) {
                     return globalThis.throwInvalidArgumentTypeValue("flags", "string", flags_value);

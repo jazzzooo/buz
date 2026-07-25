@@ -359,14 +359,13 @@ pub fn toUTF8FromLatin1(allocator: std.mem.Allocator, latin1: []const u8) !?std.
     return try allocateLatin1IntoUTF8WithList(list, 0, latin1);
 }
 
-pub fn toUTF8FromLatin1Z(allocator: std.mem.Allocator, latin1: []const u8) !?std.array_list.Managed(u8) {
+pub fn toUTF8FromLatin1Z(allocator: std.mem.Allocator, latin1: []const u8) !?[:0]u8 {
     if (isAllASCII(latin1))
         return null;
 
     const list = try std.array_list.Managed(u8).initCapacity(allocator, latin1.len + 1);
     var list1 = try allocateLatin1IntoUTF8WithList(list, 0, latin1);
-    try list1.append(0);
-    return list1;
+    return try list1.toOwnedSliceSentinel(0);
 }
 
 pub fn toUTF8ListWithTypeBun(list: *std.array_list.Managed(u8), utf16: []const u16, comptime skip_trailing_replacement: bool) OOM!(if (skip_trailing_replacement) ?u16 else std.array_list.Managed(u8)) {
@@ -866,8 +865,7 @@ pub fn toUTF8Alloc(allocator: std.mem.Allocator, js: []const u16) OOM![]u8 {
 pub fn toUTF8AllocZ(allocator: std.mem.Allocator, js: []const u16) OOM![:0]u8 {
     var list = std.array_list.Managed(u8).init(allocator);
     try toUTF8AppendToList(&list, js);
-    try list.append(0);
-    return list.items[0 .. list.items.len - 1 :0];
+    return list.toOwnedSliceSentinel(0);
 }
 
 pub fn appendUTF8MachineWordToUTF16MachineWord(output: *[@sizeOf(usize) / 2]u16, input: *const [@sizeOf(usize) / 2]u8) callconv(bun.callconv_inline) void {
@@ -1178,9 +1176,7 @@ pub fn toUTF16Alloc(allocator: std.mem.Allocator, bytes: []const u8, comptime fa
         }
 
         if (comptime sentinel) {
-            try output.ensureUnusedCapacity(1);
-            output.appendAssumeCapacity(0);
-            return output.items[0 .. output.items.len - 1 :0];
+            return try output.toOwnedSliceSentinel(0);
         }
 
         return output.items;

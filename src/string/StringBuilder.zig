@@ -55,8 +55,7 @@ pub fn append16(this: *StringBuilder, slice: []const u16, fallback_allocator: st
     } else {
         var list = std.array_list.Managed(u8).init(fallback_allocator);
         var out = bun.strings.toUTF8ListWithTypeBun(&list, slice, false) catch return null;
-        out.append(0) catch return null;
-        return out.items[0 .. out.items.len - 1 :0];
+        return out.toOwnedSliceSentinel(0) catch null;
     }
 }
 
