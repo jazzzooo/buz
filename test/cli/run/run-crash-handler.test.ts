@@ -10,7 +10,7 @@ const { getMachOImageZeroOffset } = crash_handler;
 const noReportEnv = { ...bunEnv, BUN_CRASH_REPORT_URL: "", BUN_ENABLE_CRASH_REPORTING: "0" };
 
 // On Linux, debug builds symbolize crash traces by spawning llvm-symbolizer;
-// without it the fallback printer has no Rust symbol names to assert on.
+// without it the fallback printer has no symbol names to assert on.
 const hasSymbolizer = !!(Bun.which("llvm-symbolizer") || Bun.which("llvm-symbolizer-21"));
 
 test.if(isDebug && isLinux && hasSymbolizer)(
@@ -29,15 +29,11 @@ test.if(isDebug && isLinux && hasSymbolizer)(
     expect(stderr).toContain("panic(main thread): invoked crashByPanic() handler");
     expect(exitCode).not.toBe(0);
 
-    // The innermost frame of the trace must be the code that crashed (the
-    // js_panic test hook)...
+    // The innermost frame must be the crash site (the jsPanic test hook), and
+    // the handler's own frames must be trimmed off entirely.
     const firstFrame = stdout.split("\n").find(line => line.trim().length > 0);
-    expect(firstFrame ?? "<no frames printed>").toContain("js_panic");
-
-    // ...not the capture machinery. A mismatched trim anchor used to leave
-    // `capture_stack_trace` → `crash_handler` → `panic_impl` as the innermost
-    // frames of every report, burying the real crash site.
-    expect(stdout).not.toContain("capture_stack_trace");
+    expect(firstFrame ?? "<no frames printed>").toContain("jsPanic");
+    expect(stdout).not.toContain("captureLibcBacktrace");
   },
   60_000, // symbolizing the debug binary takes several seconds
 );
