@@ -1584,7 +1584,7 @@ fn report(url: []const u8) void {
             var argv = [_:null]?[*:0]const u8{
                 curl,
                 "-fsSL",
-                cmd_line.buffer[0..cmd_line.len :0],
+                cmd_line.buffer[0 .. cmd_line.len - 1 :0],
             };
             const result = std.c.fork();
             switch (result) {
