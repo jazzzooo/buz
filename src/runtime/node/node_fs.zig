@@ -2261,10 +2261,7 @@ pub const Arguments = struct {
                         mode = try jsc.Node.modeFromJS(ctx, mode_) orelse mode;
                     }
                 } else if (val != .zero) {
-                    if (!val.isUndefinedOrNull()) {
-                        // error is handled below
-                        flags = try FileSystemFlags.fromJS(ctx, val) orelse flags;
-                    }
+                    flags = try FileSystemFlags.fromJS(ctx, val) orelse flags;
 
                     if (arguments.nextEat()) |next| {
                         mode = try jsc.Node.modeFromJS(ctx, next) orelse mode;
@@ -2644,9 +2641,7 @@ pub const Arguments = struct {
                     encoding = try getEncoding(arg, ctx, encoding);
 
                     if (try arg.getOptional(ctx, "flag", jsc.JSValue)) |flag_| {
-                        flag = try FileSystemFlags.fromJS(ctx, flag_) orelse {
-                            return ctx.throwInvalidArguments("Invalid flag", .{});
-                        };
+                        flag = try FileSystemFlags.fromJS(ctx, flag_) orelse flag;
                     }
 
                     if (try arg.getOptional(ctx, "signal", jsc.JSValue)) |value| {
@@ -2747,9 +2742,7 @@ pub const Arguments = struct {
                     encoding = try getEncoding(arg, ctx, encoding);
 
                     if (try arg.getOptional(ctx, "flag", jsc.JSValue)) |flag_| {
-                        flag = try FileSystemFlags.fromJS(ctx, flag_) orelse {
-                            return ctx.throwInvalidArguments("Invalid flag", .{});
-                        };
+                        flag = try FileSystemFlags.fromJS(ctx, flag_) orelse flag;
                     }
 
                     if (try arg.getOptional(ctx, "mode", jsc.JSValue)) |mode_| {

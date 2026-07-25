@@ -951,36 +951,15 @@ pub const FileSystemFlags = enum(c_int) {
 
     /// Open file for appending. The file is created if it does not exist.
     a = O.APPEND | O.WRONLY | O.CREAT,
-    /// Like 'a' but fails if the path exists.
-    // @"ax" = bun.O.APPEND | bun.O.EXCL,
-    /// Open file for reading and appending. The file is created if it does not exist.
-    // @"a+" = bun.O.APPEND | bun.O.RDWR,
-    /// Like 'a+' but fails if the path exists.
-    // @"ax+" = bun.O.APPEND | bun.O.RDWR | bun.O.EXCL,
-    /// Open file for appending in synchronous mode. The file is created if it does not exist.
-    // @"as" = bun.O.APPEND,
-    /// Open file for reading and appending in synchronous mode. The file is created if it does not exist.
-    // @"as+" = bun.O.APPEND | bun.O.RDWR,
     /// Open file for reading. An exception occurs if the file does not exist.
     r = O.RDONLY,
-    /// Open file for reading and writing. An exception occurs if the file does not exist.
-    // @"r+" = bun.O.RDWR,
-    /// Open file for reading and writing in synchronous mode. Instructs the operating system to bypass the local file system cache.
-    /// This is primarily useful for opening files on NFS mounts as it allows skipping the potentially stale local cache. It has a very real impact on I/O performance so using this flag is not recommended unless it is needed.
-    /// This doesn't turn fs.open() or fsPromises.open() into a synchronous blocking call. If synchronous operation is desired, something like fs.openSync() should be used.
-    // @"rs+" = bun.O.RDWR,
     /// Open file for writing. The file is created (if it does not exist) or truncated (if it exists).
     w = O.WRONLY | O.CREAT,
-    /// Like 'w' but fails if the path exists.
-    // @"wx" = bun.O.WRONLY | bun.O.TRUNC,
-    // ///  Open file for reading and writing. The file is created (if it does not exist) or truncated (if it exists).
-    // @"w+" = bun.O.RDWR | bun.O.CREAT,
-    // ///  Like 'w+' but fails if the path exists.
-    // @"wx+" = bun.O.RDWR | bun.O.EXCL,
 
     _,
 
-    const map = bun.ComptimeStringMap(i32, .{
+    /// https://nodejs.org/api/fs.html#file-system-flags
+    const map = bun.ComptimeStringMap(tag_type, .{
         .{ "r", O.RDONLY },
         .{ "rs", O.RDONLY | O.SYNC },
         .{ "sr", O.RDONLY | O.SYNC },
@@ -988,110 +967,52 @@ pub const FileSystemFlags = enum(c_int) {
         .{ "rs+", O.RDWR | O.SYNC },
         .{ "sr+", O.RDWR | O.SYNC },
 
-        .{ "R", O.RDONLY },
-        .{ "RS", O.RDONLY | O.SYNC },
-        .{ "SR", O.RDONLY | O.SYNC },
-        .{ "R+", O.RDWR },
-        .{ "RS+", O.RDWR | O.SYNC },
-        .{ "SR+", O.RDWR | O.SYNC },
-
         .{ "w", O.TRUNC | O.CREAT | O.WRONLY },
         .{ "wx", O.TRUNC | O.CREAT | O.WRONLY | O.EXCL },
         .{ "xw", O.TRUNC | O.CREAT | O.WRONLY | O.EXCL },
-
-        .{ "W", O.TRUNC | O.CREAT | O.WRONLY },
-        .{ "WX", O.TRUNC | O.CREAT | O.WRONLY | O.EXCL },
-        .{ "XW", O.TRUNC | O.CREAT | O.WRONLY | O.EXCL },
-
         .{ "w+", O.TRUNC | O.CREAT | O.RDWR },
         .{ "wx+", O.TRUNC | O.CREAT | O.RDWR | O.EXCL },
         .{ "xw+", O.TRUNC | O.CREAT | O.RDWR | O.EXCL },
-
-        .{ "W+", O.TRUNC | O.CREAT | O.RDWR },
-        .{ "WX+", O.TRUNC | O.CREAT | O.RDWR | O.EXCL },
-        .{ "XW+", O.TRUNC | O.CREAT | O.RDWR | O.EXCL },
 
         .{ "a", O.APPEND | O.CREAT | O.WRONLY },
         .{ "ax", O.APPEND | O.CREAT | O.WRONLY | O.EXCL },
         .{ "xa", O.APPEND | O.CREAT | O.WRONLY | O.EXCL },
         .{ "as", O.APPEND | O.CREAT | O.WRONLY | O.SYNC },
         .{ "sa", O.APPEND | O.CREAT | O.WRONLY | O.SYNC },
-
-        .{ "A", O.APPEND | O.CREAT | O.WRONLY },
-        .{ "AX", O.APPEND | O.CREAT | O.WRONLY | O.EXCL },
-        .{ "XA", O.APPEND | O.CREAT | O.WRONLY | O.EXCL },
-        .{ "AS", O.APPEND | O.CREAT | O.WRONLY | O.SYNC },
-        .{ "SA", O.APPEND | O.CREAT | O.WRONLY | O.SYNC },
-
         .{ "a+", O.APPEND | O.CREAT | O.RDWR },
         .{ "ax+", O.APPEND | O.CREAT | O.RDWR | O.EXCL },
         .{ "xa+", O.APPEND | O.CREAT | O.RDWR | O.EXCL },
         .{ "as+", O.APPEND | O.CREAT | O.RDWR | O.SYNC },
         .{ "sa+", O.APPEND | O.CREAT | O.RDWR | O.SYNC },
-
-        .{ "A+", O.APPEND | O.CREAT | O.RDWR },
-        .{ "AX+", O.APPEND | O.CREAT | O.RDWR | O.EXCL },
-        .{ "XA+", O.APPEND | O.CREAT | O.RDWR | O.EXCL },
-        .{ "AS+", O.APPEND | O.CREAT | O.RDWR | O.SYNC },
-        .{ "SA+", O.APPEND | O.CREAT | O.RDWR | O.SYNC },
     });
 
+    /// `null` means no value was given, so the caller's own default applies:
+    /// `fs.open` and `fs.readFile` default to `r`, `fs.writeFile` to `w`.
     pub fn fromJS(ctx: *jsc.JSGlobalObject, val: jsc.JSValue) bun.JSError!?FileSystemFlags {
+        if (val.isUndefinedOrNull()) return null;
+
         if (val.isNumber()) {
-            if (!val.isInt32()) {
-                return ctx.throwValue(ctx.ERR(.OUT_OF_RANGE, "The value of \"flags\" is out of range. It must be an integer. Received {d}", .{val.asNumber()}).toJS());
+            const flags = try node.validators.validateInt32(ctx, val, "flags", .{}, null, null);
+            // fs.constants exposes the platform's native MSVC/libuv values on
+            // Windows, which differ from the internal bun.O representation.
+            if (comptime Environment.isWindows) {
+                return @fromBackingInt(windows.libuv.O.toBunO(flags));
             }
-            const number = try val.coerce(i32, ctx);
-            const flags = @max(number, 0);
-            // On Windows, numeric flags from fs.constants (e.g. O_CREAT=0x100)
-            // use the platform's native MSVC/libuv values which differ from the
-            // internal bun.O representation. Convert them here so downstream
-            // code that operates on bun.O flags works correctly.
-            if (comptime bun.Environment.isWindows) {
-                return @as(FileSystemFlags, @fromBackingInt(@intCast(bun.windows.libuv.O.toBunO(flags))));
-            }
-            return @as(FileSystemFlags, @fromBackingInt(@intCast(flags)));
+            return @fromBackingInt(flags);
         }
 
-        const jsType = val.jsType();
-        if (jsType.isStringLike()) {
+        // A boxed `new String("w")` must not match: node switches on the
+        // primitive with strict equality.
+        if (val.isStringLiteral()) {
             const str = try val.getZigString(ctx);
-            if (str.isEmpty()) {
-                return ctx.throwInvalidArguments("Expected flags to be a non-empty string. Learn more at https://nodejs.org/api/fs.html#fs_file_system_flags", .{});
+            if (map.getWithEql(str, jsc.ZigString.eqlComptime)) |flags| {
+                return @fromBackingInt(flags);
             }
-            // it's definitely wrong when the string is super long
-            else if (str.len > 12) {
-                return ctx.throwInvalidArguments("Invalid flag '{f}'. Learn more at https://nodejs.org/api/fs.html#fs_file_system_flags", .{str});
-            }
-
-            const flags: i32 = brk: {
-                switch (str.is16Bit()) {
-                    inline else => |is_16bit| {
-                        const chars = if (is_16bit) str.utf16SliceAligned() else str.slice();
-
-                        if (std.ascii.isDigit(@as(u8, @truncate(chars[0])))) {
-                            // node allows "0o644" as a string :(
-                            if (is_16bit) {
-                                const slice = str.toSlice(bun.default_allocator);
-                                defer slice.deinit();
-
-                                break :brk @as(i32, @intCast(std.fmt.parseInt(Mode, slice.slice(), 10) catch break :brk null));
-                            } else {
-                                break :brk @as(i32, @intCast(std.fmt.parseInt(Mode, chars, 10) catch break :brk null));
-                            }
-                        }
-                    },
-                }
-
-                break :brk map.getWithEql(str, jsc.ZigString.eqlComptime) orelse break :brk null;
-            } orelse {
-                return ctx.throwInvalidArguments("Invalid flag '{f}'. Learn more at https://nodejs.org/api/fs.html#fs_file_system_flags", .{str});
-            };
-
-            return @fromBackingInt(@intCast(flags));
         }
 
-        return null;
+        var formatter = jsc.ConsoleObject.Formatter{ .globalThis = ctx, .quote_strings = true };
+        defer formatter.deinit();
+        return ctx.ERR(.INVALID_ARG_VALUE, "The argument 'flags' is invalid. Received {f}", .{val.toFmt(&formatter)}).throw();
     }
 
     /// Equivalent of GetValidFileMode, which is used to implement fs.access and copyFile
