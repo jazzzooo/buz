@@ -615,7 +615,8 @@ fn getAST(
             ast.import_records = import_records;
             return ast;
         },
-        // TODO:
+        // TODO: Investigate why the base64 and data URL loaders can silently
+        // export an empty string.
         .dataurl, .base64, .bunsh => {
             return try getEmptyAST(log, transpiler, opts, allocator, source, E.String);
         },

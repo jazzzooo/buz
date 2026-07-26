@@ -991,6 +991,8 @@ pub const Lexer = struct {
 
                             // variable-length
                             if (c3 == '{') {
+                                // TODO: Audit the range underflow when parsing \u{...} escapes
+                                // at the start of a TOML string.
                                 const hex_start = iter.i - width - width2 - width3;
                                 var is_first = true;
                                 var is_out_of_range = false;
