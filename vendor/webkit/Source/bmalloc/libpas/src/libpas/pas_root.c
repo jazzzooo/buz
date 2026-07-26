@@ -46,7 +46,6 @@
 
 #if PAS_OS(DARWIN)
 #include <mach/mach_init.h>
-#include <mach/vm_param.h>
 #endif
 
 static bool count_static_heaps_callback(pas_heap* heap, void* arg)

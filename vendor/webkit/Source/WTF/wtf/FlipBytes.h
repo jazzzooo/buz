@@ -30,7 +30,6 @@
 #include <bit>
 #include <cstddef>
 #include <type_traits>
-#include <wtf/Compiler.h>
 #include <wtf/Platform.h>
 
 namespace WTF {

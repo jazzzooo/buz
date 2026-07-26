@@ -858,19 +858,29 @@ void JIT::compileOpStrictEq(const JSInstruction* currentInstruction)
     boxBoolean(regT5, JSValueRegs { regT5 });
     emitPutVirtualRegister(dst, regT5);
 #else // if !USE(BIGINT32)
-    // Jump slow if both are cells (to cover strings).
+    // Cells are slow only when they actually need value-based equality (Strings, HeapBigInts).
+    // For other cell pairs we can answer with a pointer compare directly.
     or64(regT1, regT0, regT2);
-    addSlowCase(branchIfCell(regT2));
+    Jump includesNonCell = branchIfNotCell(regT2);
+
+    // Now both are cells. Cell comparison is complicated only when they are Strings / HeapBigInts.
+    // If either cell is something else, the pointer compare answers correctly. Check the first cell and if it's already a high
+    // type we can skip the second check entirely.
+    JumpList comparePointers;
+    comparePointers.append(branch8(Above, Address(regT0, JSCell::typeInfoTypeOffset()), TrustedImm32(LastValueCompareCellType)));
+    comparePointers.append(branch8(Above, Address(regT1, JSCell::typeInfoTypeOffset()), TrustedImm32(LastValueCompareCellType)));
+    addSlowCase(jump());
 
     // Jump slow if either is a double. First test if it's an integer, which is fine, and then test
     // if it's a double.
+    includesNonCell.link(this);
     Jump leftOK = branchIfInt32(regT0);
     addSlowCase(branchIfNumber(regT0));
     leftOK.link(this);
     Jump rightOK = branchIfInt32(regT1);
     addSlowCase(branchIfNumber(regT1));
     rightOK.link(this);
-
+    comparePointers.link(this);
     if constexpr (std::is_same_v<Op, OpStricteq>)
         compare64(Equal, regT1, regT0, regT0);
     else
@@ -1026,22 +1036,51 @@ void JIT::compileOpStrictEqJump(const JSInstruction* currentInstruction)
         areEqual.link(this);
     }
 #else // if !USE(BIGINT32)
-    // Jump slow if both are cells (to cover strings).
+    JumpList taken;
+    JumpList notTaken;
+
+    // Cells are slow only when they actually need value-based equality (Strings, HeapBigInts).
+    // For other cell pairs we can answer with a pointer compare directly.
     or64(regT1, regT0, regT2);
-    addSlowCase(branchIfCell(regT2));
+    Jump includesNonCell = branchIfNotCell(regT2);
+
+    // Now both are cells. Identical pointers mean the same cell, which is strictly equal
+    // (cells never carry the NaN bit pattern that breaks pointer-based equality for doubles).
+    if constexpr (std::same_as<Op, OpJstricteq>)
+        taken.append(branch64(Equal, regT1, regT0));
+    else
+        notTaken.append(branch64(Equal, regT1, regT0));
+
+    // Pointers differ. Cell comparison is complicated only when they are Strings / HeapBigInts.
+    // If either cell is something else, the pointer compare answers correctly.
+    if constexpr (std::same_as<Op, OpJstricteq>) {
+        notTaken.append(branch8(Above, Address(regT0, JSCell::typeInfoTypeOffset()), TrustedImm32(LastValueCompareCellType)));
+        notTaken.append(branch8(Above, Address(regT1, JSCell::typeInfoTypeOffset()), TrustedImm32(LastValueCompareCellType)));
+    } else {
+        taken.append(branch8(Above, Address(regT0, JSCell::typeInfoTypeOffset()), TrustedImm32(LastValueCompareCellType)));
+        taken.append(branch8(Above, Address(regT1, JSCell::typeInfoTypeOffset()), TrustedImm32(LastValueCompareCellType)));
+    }
+    addSlowCase(jump());
 
     // Jump slow if either is a double. First test if it's an integer, which is fine, and then test
-    // if it's a double.
+    // if it's a double. We must filter doubles before doing the bitwise identity check below,
+    // since NaN === NaN must be false even when both sides have identical encoded bits.
+    includesNonCell.link(this);
     Jump leftOK = branchIfInt32(regT0);
     addSlowCase(branchIfNumber(regT0));
     leftOK.link(this);
     Jump rightOK = branchIfInt32(regT1);
     addSlowCase(branchIfNumber(regT1));
     rightOK.link(this);
+
+    // No doubles. At least one operand is a non-cell, so identical encoded bits imply strict equality.
     if constexpr (std::same_as<Op, OpJstricteq>)
         addJump(branch64(Equal, regT1, regT0), target);
     else
         addJump(branch64(NotEqual, regT1, regT0), target);
+
+    notTaken.link(this);
+    addJump(taken, target);
 #endif
 }
 

@@ -56,12 +56,28 @@ size_t numCommittedPagesInTLC()
         &allocationConfig);
 }
 
+struct ExpectedPages {
+    unsigned at4KiBPages;
+    unsigned at16KiBPages;
+
+    unsigned forThisSystem() const
+    {
+        size_t pageSize = pas_page_malloc_alignment();
+        if (pageSize == 4096)
+            return at4KiBPages;
+        if (pageSize == 16384)
+            return at16KiBPages;
+        PAS_ASSERT(!"unsupported native page size for TLCDecommitTests; add a calibration");
+        return 0;
+    }
+};
+
 void testTLCDecommit(unsigned numHeaps,
                      function<bool(unsigned)> shouldStopAllocatorAtIndex,
                      bool commitWithFree,
-                     unsigned numCommittedPagesInitially,
-                     unsigned numCommittedPagesAfterDecommit,
-                     unsigned numCommittedPagesAfterRecommit)
+                     ExpectedPages numCommittedPagesInitially,
+                     ExpectedPages numCommittedPagesAfterDecommit,
+                     ExpectedPages numCommittedPagesAfterRecommit)
 {
     pas_scavenger_suspend();
     pas_local_allocator_should_stop_count_for_suspend = 100; /* request_stop should not actually stop. */
@@ -134,7 +150,7 @@ void testTLCDecommit(unsigned numHeaps,
         CHECK(pas_bitvector_get(hasAllocator, index));
     }
 
-    CHECK_EQUAL(numCommittedPagesInTLC(), numCommittedPagesInitially);
+    CHECK_EQUAL(numCommittedPagesInTLC(), numCommittedPagesInitially.forThisSystem());
 
     pas_heap_lock_lock();
     cache = pas_thread_local_cache_try_get();
@@ -160,7 +176,7 @@ void testTLCDecommit(unsigned numHeaps,
                                    pas_deallocator_scavenge_no_action,
                                    pas_thread_local_cache_decommit_if_possible_action);
 
-    CHECK_EQUAL(numCommittedPagesInTLC(), numCommittedPagesAfterDecommit);
+    CHECK_EQUAL(numCommittedPagesInTLC(), numCommittedPagesAfterDecommit.forThisSystem());
 
     if (commitWithFree) {
         for (void* object : objects)
@@ -180,7 +196,7 @@ void testTLCDecommit(unsigned numHeaps,
             CHECK_EQUAL(ptr, objects[index]);
     }
 
-    CHECK_EQUAL(numCommittedPagesInTLC(), numCommittedPagesAfterRecommit);
+    CHECK_EQUAL(numCommittedPagesInTLC(), numCommittedPagesAfterRecommit.forThisSystem());
 }
 
 void testChaosThenDecommit(unsigned numHeaps, unsigned typeSize, unsigned maxObjectsAtATime,
@@ -445,22 +461,23 @@ void addTLCDecommitTests()
                     pas_heap_runtime_config_aggressive_view_cache_capacity;
             });
     
+        /* Calibrations: {4 KiB-page count, 16 KiB-page count}. */
         ADD_TEST(testTLCDecommit(10000, [] (unsigned index) { return index < 10000; }, false,
-                                 588, 300, 304));
+                                 { 2349, 588 }, { 1196, 300 }, { 1213, 304 }));
         ADD_TEST(testTLCDecommit(10000, [] (unsigned index) { return index < 10000; }, true,
-                                 588, 300, 304));
+                                 { 2349, 588 }, { 1196, 300 }, { 1213, 304 }));
         ADD_TEST(testTLCDecommit(10000, [] (unsigned index) { return index > 10000; }, false,
-                                 588, 6, 304));
+                                 { 2349, 588 }, { 20, 6 }, { 1214, 304 }));
         ADD_TEST(testTLCDecommit(10000, [] (unsigned index) { return index > 10000; }, true,
-                                 588, 6, 304));
+                                 { 2349, 588 }, { 20, 6 }, { 1214, 304 }));
         ADD_TEST(testTLCDecommit(10000, [] (unsigned index) { return index < 100000; }, false,
-                                 588, 256, 304));
+                                 { 2349, 588 }, { 1020, 256 }, { 1213, 304 }));
         ADD_TEST(testTLCDecommit(10000, [] (unsigned index) { return index < 100000; }, true,
-                                 588, 256, 304));
+                                 { 2349, 588 }, { 1020, 256 }, { 1213, 304 }));
         ADD_TEST(testTLCDecommit(10000, [] (unsigned index) { return index > 100000; }, false,
-                                 588, 50, 304));
+                                 { 2349, 588 }, { 196, 50 }, { 1214, 304 }));
         ADD_TEST(testTLCDecommit(10000, [] (unsigned index) { return index > 100000; }, true,
-                                 588, 50, 304));
+                                 { 2349, 588 }, { 196, 50 }, { 1214, 304 }));
         ADD_TEST(testChaosThenDecommit(10000, 16, 1000, 100, 400000000, 500000));
         ADD_TEST(testChaosThenDecommit(10000, 16, 1000, 10000, 400000000, 1000000));
         ADD_TEST(testChaosThenDecommit(10000, 512, 10, 50, 500000000, 3000000));

@@ -373,7 +373,7 @@ ALWAYS_INLINE bool ParserBase::parseExternalKind(ExternalKind& result)
     return true;
 }
 
-ALWAYS_INLINE I32InitExpr makeI32InitExpr(uint8_t opcode, bool isExtendedConstantExpression, uint32_t bits)
+ALWAYS_INLINE I32InitExpr makeI32InitExpr(uint8_t opcode, bool isExtendedConstantExpression, uint64_t bits)
 {
     RELEASE_ASSERT(opcode == I32Const || opcode == GetGlobal);
     if (isExtendedConstantExpression)
@@ -381,6 +381,16 @@ ALWAYS_INLINE I32InitExpr makeI32InitExpr(uint8_t opcode, bool isExtendedConstan
     if (opcode == I32Const)
         return I32InitExpr::constValue(bits);
     return I32InitExpr::globalImport(bits);
+}
+
+ALWAYS_INLINE I64InitExpr makeI64InitExpr(uint8_t opcode, bool isExtendedConstantExpression, uint64_t bits)
+{
+    RELEASE_ASSERT(opcode == I64Const || opcode == GetGlobal);
+    if (isExtendedConstantExpression)
+        return I64InitExpr::extendedExpression(bits);
+    if (opcode == I64Const)
+        return I64InitExpr::constValue(bits);
+    return I64InitExpr::globalImport(bits);
 }
 
 } } // namespace JSC::Wasm

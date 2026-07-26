@@ -205,7 +205,7 @@ void OpcodeStats::resetLastInstruction()
 
 #endif
 
-static constexpr auto metadataSizes = std::to_array<unsigned>({
+static constexpr auto metadataSizes = WTF::toArray<unsigned>({
 
 #define METADATA_SIZE(size) size,
     FOR_EACH_BYTECODE_METADATA_SIZE(METADATA_SIZE)
@@ -213,7 +213,7 @@ static constexpr auto metadataSizes = std::to_array<unsigned>({
 
 });
 
-static constexpr auto metadataAlignments = std::to_array<unsigned>({
+static constexpr auto metadataAlignments = WTF::toArray<unsigned>({
 
 #define METADATA_ALIGNMENT(size) size,
     FOR_EACH_BYTECODE_METADATA_ALIGNMENT(METADATA_ALIGNMENT)

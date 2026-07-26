@@ -27,6 +27,7 @@
 #include "JITNegGenerator.h"
 
 #include "ArithProfile.h"
+#include "JITMathIC.h"
 
 #if ENABLE(JIT)
 

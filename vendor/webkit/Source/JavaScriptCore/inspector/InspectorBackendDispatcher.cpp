@@ -230,7 +230,7 @@ void BackendDispatcher::sendResponse(long requestId, Ref<JSON::Object>&& result,
 void BackendDispatcher::sendPendingErrors()
 {
     // These error codes are specified in JSON-RPC 2.0, Section 5.1.
-    static constexpr auto errorCodes = std::to_array<int>({
+    static constexpr auto errorCodes = WTF::toArray<int>({
         -32700, // ParseError
         -32600, // InvalidRequest
         -32601, // MethodNotFound

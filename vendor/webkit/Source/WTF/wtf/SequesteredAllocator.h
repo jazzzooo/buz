@@ -46,12 +46,12 @@
 
 namespace WTF {
 
-constexpr size_t minArenaGranuleSize { 512 * KB };
+constexpr size_t minArenaGranuleSize { inlineGranuleSize };
 constexpr size_t sequesteredArenaAllocatorAlignment { 128 };
 
 class alignas(sequesteredArenaAllocatorAlignment) SequesteredArenaAllocator {
 private:
-    using AllocationFailureMode = SequesteredImmortalHeap::AllocationFailureMode;
+    using AllocationFailureMode = SequesteredGranuleProvider::AllocationFailureMode;
 
     constexpr static bool verbose { false };
     constexpr static bool trackAllocationDebugInfo { false };
@@ -215,69 +215,69 @@ private:
                 if (!granule)
                     return nullptr;
             }
-
+            if (granule->m_type == GranuleHeader::Type::Large)
+                return granule->payload();
             uintptr_t allocation = m_allocHead;
             m_allocHead = headIncrementedBy(bytes);
             ASSERT(m_allocHead <= m_allocBound);
-
             return reinterpret_cast<void*>(allocation);
         }
 
         template<AllocationFailureMode mode>
         NEVER_INLINE void* alignedAllocateImplSlowPath(size_t alignment, size_t bytes)
         {
-            auto* granule = addGranule<mode>(bytes);
+            auto* granule = addGranule<mode>(alignment + bytes);
             if constexpr (mode == AllocationFailureMode::ReturnNull) {
                 if (!granule)
                     return nullptr;
             }
-
+            if (granule->m_type == GranuleHeader::Type::Large)
+                return granule->payload();
             uintptr_t allocation = headAlignedUpTo(alignment);
             m_allocHead = headIncrementedBy((allocation - m_allocHead) + bytes);
             ASSERT(m_allocHead <= m_allocBound);
-
             return reinterpret_cast<void*>(allocation);
         }
 
         template<AllocationFailureMode mode>
-        GranuleHeader* addGranule([[maybe_unused]] size_t minSize)
+        GranuleHeader* addGranule(size_t minSizeBytes)
         {
-            ASSERT(minSize <= minArenaGranuleSize);
-            GranuleHeader* granule = reinterpret_cast<GranuleHeader*>(mapGranule<mode>(minArenaGranuleSize));
+            GranuleHeader* granule = parent().mapGranule<mode>(minSizeBytes);
             if constexpr (mode == AllocationFailureMode::ReturnNull) {
                 if (!granule) [[unlikely]]
                     return nullptr;
             }
 
-            m_granules.push(granule);
-            setBoundsFromGranule(granule);
-
-            static_assert(sizeof(GranuleHeader) >= minHeadAlignment);
-            dataLogLnIf(verbose,
-                "Allocator ", parent().id(),
-                ": Arena ", parent().debugIndexOfArena(*this),
-                ": expanded: granule was (", granule->prev(),
-                "), now (", granule,
-                "); allocHead (",
-                RawPointer(reinterpret_cast<void*>(m_allocHead)),
-                "), allocBound (",
-                RawPointer(reinterpret_cast<void*>(m_allocBound)),
-                ")");
+            if (granule->m_type == GranuleHeader::Type::Large) {
+                m_granules.append(granule);
+                dataLogLnIf(verbose,
+                    "Allocator ", parent().id(),
+                    ": Arena ", parent().debugIndexOfArena(*this),
+                    ": large allocation: ", granule->m_largeSize, "B at ",
+                    RawPointer(granule->payload()));
+            } else {
+                m_granules.push(granule);
+                setBoundsFromGranule(granule);
+                dataLogLnIf(verbose,
+                    "Allocator ", parent().id(),
+                    ": Arena ", parent().debugIndexOfArena(*this),
+                    ": expanded: granule was (", granule->prev(),
+                    "), now (", granule,
+                    "); allocHead (",
+                    RawPointer(reinterpret_cast<void*>(m_allocHead)),
+                    "), allocBound (",
+                    RawPointer(reinterpret_cast<void*>(m_allocBound)),
+                    ")");
+            }
 
             return granule;
         }
 
         void setBoundsFromGranule(GranuleHeader* granule)
         {
-            static_assert(sizeof(GranuleHeader) >= minHeadAlignment);
-            m_allocHead = reinterpret_cast<uintptr_t>(granule) + sizeof(GranuleHeader);
-            m_allocBound = reinterpret_cast<uintptr_t>(granule) + (pageSize * (1 + granule->additionalPageCount));
-        }
-
-        template<AllocationFailureMode mode>
-        void* mapGranule(size_t bytes)
-        {
-            return parent().mapGranule<mode>(bytes);
+            auto* base = granule->payload();
+            m_allocHead = reinterpret_cast<uintptr_t>(base);
+            m_allocBound = reinterpret_cast<uintptr_t>(base) + granule->size();
         }
 
         SequesteredArenaAllocator& parent()
@@ -402,7 +402,7 @@ public:
         ASSERT(!m_alive);
         m_alive = true;
         m_liveAllocations = 0;
-        dataLogLnIf(verbose, "Allocator ", id(), " in thread ", Thread::currentSingleton(),
+        dataLogLnIf(verbose, "Allocator ", id(), " in thread ", currentThreadID(),
             ": starting lifetime");
     }
 
@@ -423,7 +423,7 @@ public:
             m_decommitQueue.decommit();
 
         dataLogLnIf(verbose, "Allocator ", id(), " in thread ",
-            Thread::currentSingleton(), " ended lifetime: ", m_totalAllocatedBytes, "B allocated");
+            currentThreadID(), " ended lifetime: ", m_totalAllocatedBytes, "B allocated");
 
         if constexpr (verbose)
             m_totalAllocatedBytes = 0;
@@ -531,9 +531,9 @@ private:
     }
 
     template<AllocationFailureMode mode>
-    void* mapGranule(size_t bytes)
+    GranuleHeader* mapGranule(size_t minSizeBytes)
     {
-        return SequesteredImmortalHeap::instance().mapGranule<mode>(bytes);
+        return SequesteredImmortalHeap::instance().granuleProvider().mapGranule<mode>(minSizeBytes);
     }
 
     void* reallocateInto(void* from, void* to, size_t toSize)

@@ -854,7 +854,7 @@ void URL::setPath(StringView path)
 
     parseAllowingC0AtEnd(makeString(
         StringView(m_string).left(pathStart()),
-        path.startsWith('/') || (path.startsWith('\\') && (hasSpecialScheme() || protocolIsFile())) || (!hasSpecialScheme() && path.isEmpty() && m_schemeEnd + 1U < pathStart()) ? ""_s : "/"_s,
+        path.startsWith('/') || (path.startsWith('\\') && hasSpecialScheme()) || (!hasSpecialScheme() && path.isEmpty() && m_schemeEnd + 1U < pathStart()) ? ""_s : "/"_s,
         !hasSpecialScheme() && host().isEmpty() && path.startsWith("//"_s) && path.length() > 2 ? "/."_s : ""_s,
         escapePathWithoutCopying(path),
         StringView(m_string).substring(m_pathEnd)
@@ -1086,7 +1086,7 @@ bool portAllowed(const URL& url)
 
     // This blocked port list is defined by the Fetch spec, with the addition of port 0.
     // See https://fetch.spec.whatwg.org/#port-blocking for more information.
-    static constexpr auto blockedPortList = std::to_array<uint16_t>({
+    static constexpr auto blockedPortList = WTF::toArray<uint16_t>({
         0, // reserved
         1, // tcpmux
         7, // echo

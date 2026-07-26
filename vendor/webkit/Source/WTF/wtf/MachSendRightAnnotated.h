@@ -25,6 +25,10 @@
 
 #pragma once
 
+#import <wtf/Platform.h>
+
+#if PLATFORM(COCOA)
+
 #import <wtf/FixedVector.h>
 #import <wtf/MachSendRight.h>
 
@@ -36,3 +40,5 @@ struct MachSendRightAnnotated {
 };
 
 }
+
+#endif // PLATFORM(COCOA)

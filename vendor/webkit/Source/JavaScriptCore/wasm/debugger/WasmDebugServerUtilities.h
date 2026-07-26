@@ -181,6 +181,12 @@ struct DebugState {
         stopData = makeUnique<StopData>(callee, instance, callFrame);
     }
 
+    void setAtomicsWaitStopData(IPIntCallee* callee, JSWebAssemblyInstance* instance, CallFrame* callFrame, uint8_t* pc, uint8_t* mc, IPInt::IPIntStackEntry* stack)
+    {
+        stopReason = Reason::Interrupted;
+        stopData = makeUnique<StopData>(VirtualAddress::toVirtual(instance, callee->functionIndex(), pc), *pc, pc, mc, stack, callee, instance, callFrame);
+    }
+
     void setBreakpointStopData(Breakpoint::Type type, VirtualAddress address, uint8_t originalBytecode, uint8_t* pc, uint8_t* mc, IPInt::IPIntStackEntry* stack, IPIntCallee* callee, JSWebAssemblyInstance* instance, CallFrame* callFrame)
     {
         switch (type) {
@@ -217,10 +223,23 @@ struct DebugState {
     }
     bool isStoppedAtBytecode() const
     {
-        bool result = stopData && stopData->pc;
-        if (result)
-            RELEASE_ASSERT(stopReason == Reason::Breakpoint || stopReason == Reason::Step || stopReason == Reason::WasmTrap);
+        bool result = stopData && !!stopData->pc;
+        if (result) {
+            // FIXME: Reason::Interrupted is only valid here because setAtomicsWaitStopData uses it.
+            // All other Interrupted stops have no stopData->pc. Consider introducing a dedicated
+            // Reason::AtomicsWaitBlocked to keep that case distinct and tighten this assertion.
+            RELEASE_ASSERT(stopReason == Reason::Breakpoint || stopReason == Reason::Step || stopReason == Reason::WasmTrap || stopReason == Reason::Interrupted);
+        }
         return result;
+    }
+    bool isAtomicsWaitStop() const
+    {
+        if (!isStoppedAtBytecode())
+            return false;
+        if (stopData->originalBytecode != OpType::ExtAtomic)
+            return false;
+        auto extOp = static_cast<ExtAtomicOpType>(*(stopData->pc + 1));
+        return extOp == ExtAtomicOpType::MemoryAtomicWait32 || extOp == ExtAtomicOpType::MemoryAtomicWait64;
     }
 
     // WHY-based helpers — determined by stopReason:

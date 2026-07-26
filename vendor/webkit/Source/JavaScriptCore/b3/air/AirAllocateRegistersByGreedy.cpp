@@ -871,26 +871,38 @@ public:
 
         dataLogLnIf(verbose() || shouldDumpFunction(), "Greedy register allocator: function ", m_code.proc().name(), " input IR:\n", m_code);
 
+        // Many functions do not have any FPs. We can easily reduce the cost by skipping FP version of setup completely when we have zero FP tmps.
+        bool hasFPTmps = m_code.numTmps(FP);
+        dataLogLnIf(Options::airGreedyRegAllocVerbose(), "Greedy: ", m_code.proc().name(), " GP tmps=", m_code.numTmps(GP), " FP tmps=", m_code.numTmps(FP), " (FP path ", hasFPTmps ? "RUN" : "SKIPPED", ")");
+
         // FIXME: reconsider use of padIntereference, https://bugs.webkit.org/show_bug.cgi?id=288122
         padInterference(m_code);
         buildRegisterSets();
         buildIndices();
-        buildLiveRanges();
-        initSpillCosts<GP>();
-        initSpillCosts<FP>();
+        {
+            IndexSet<Tmp::AbsolutelyIndexed<GP>> cannotSpillInPlaceGP;
+            IndexSet<Tmp::AbsolutelyIndexed<FP>> cannotSpillInPlaceFP;
+            buildLiveRanges(cannotSpillInPlaceGP, cannotSpillInPlaceFP);
+            initSpillCosts<GP>(cannotSpillInPlaceGP);
+            if (hasFPTmps)
+                initSpillCosts<FP>(cannotSpillInPlaceFP);
+        }
         coalesceWithPinnedRegisters();
         coalesceTmps<GP>();
-        coalesceTmps<FP>();
+        if (hasFPTmps)
+            coalesceTmps<FP>();
 
         dataLogLnIf(verbose() || shouldDumpFunction(), "Greedy register allocator: function ", m_code.proc().name(), " state before allocate registers:\n", *this, "IR:\n", m_code);
 
         allocateRegisters<GP>();
-        allocateRegisters<FP>();
+        if (hasFPTmps)
+            allocateRegisters<FP>();
 
         insertFixupCode();
 
         validateAssignments<GP>();
-        validateAssignments<FP>();
+        if (hasFPTmps)
+            validateAssignments<FP>();
 
         dataLogLnIf(verbose() || shouldDumpFunction(), "Greedy register allocator: function ", m_code.proc().name(), " about to assign registers:\n", *this, "IR:\n", m_code);
 
@@ -1257,7 +1269,7 @@ private:
         }
     }
 
-    void buildLiveRanges()
+    void buildLiveRanges(IndexSet<Tmp::AbsolutelyIndexed<GP>>& cannotSpillInPlaceGP, IndexSet<Tmp::AbsolutelyIndexed<FP>>& cannotSpillInPlaceFP)
     {
         CompilerTimingScope timingScope("Air"_s, "GreedyRegAlloc::buildLiveRanges"_s);
         UnifiedTmpLiveness liveness(m_code);
@@ -1296,7 +1308,7 @@ private:
         };
 
         auto coalescableMoveSrc = [&](Inst& inst) {
-            return mayBeCoalescable(inst) ? inst.args[0].tmp() : Tmp();
+            return mayBeCoalescable(inst) ? inst.args()[0].tmp() : Tmp();
         };
 
         auto isLiveAt = [&](Tmp tmp, Point point) {
@@ -1352,28 +1364,40 @@ private:
             activeEnds[tmp] = 0;
         };
 
-        // First pass: collect all the potential coalescable pairs of Tmps.
+        // First pass: collect coalescable pairs and the cannot-spill-in-place set.
         for (BasicBlock* block : m_code) {
             for (Inst& inst : block->insts()) {
+                inst.forEachArg([&](Arg& arg, Arg::Role, Bank, Width) {
+                    if (arg.isTmp() && inst.admitsStack(arg))
+                        return;
+
+                    // Arg cannot be spilled in-place.
+                    arg.forEachTmpFast([&](Tmp& tmp) {
+                        if (tmp.bank() == GP)
+                            cannotSpillInPlaceGP.add(tmp);
+                        else
+                            cannotSpillInPlaceFP.add(tmp);
+                    });
+                });
                 if (mayBeCoalescable(inst)) {
-                    ASSERT(inst.args.size() == 2);
-                    if (inst.args[0].isReg() || inst.args[1].isReg()) {
-                        unsigned regIdx = inst.args[0].isReg() ? 0 : 1;
-                        Reg reg = inst.args[regIdx].reg();
-                        Tmp other = inst.args[regIdx ^ 1].tmp();
+                    ASSERT(inst.args().size() == 2);
+                    if (inst.args()[0].isReg() || inst.args()[1].isReg()) {
+                        unsigned regIdx = inst.args()[0].isReg() ? 0 : 1;
+                        Reg reg = inst.args()[regIdx].reg();
+                        Tmp other = inst.args()[regIdx ^ 1].tmp();
                         if (other.isReg())
                             continue;
                         if (m_allAllowedRegisters.contains(reg, IgnoreVectors)) {
                             if (!m_map[other].preferredReg)
-                                m_map[other].preferredReg = inst.args[regIdx].reg();
+                                m_map[other].preferredReg = inst.args()[regIdx].reg();
                             continue;
                         }
                         if (!m_code.isPinned(reg))
                             continue;
                         // Pinned registers fall-through
                     }
-                    ASSERT(inst.args[0].isTmp() && inst.args[1].isTmp());
-                    addMaybeCoalescable(inst.args[0].tmp(), inst.args[1].tmp(), block);
+                    ASSERT(inst.args()[0].isTmp() && inst.args()[1].isTmp());
+                    addMaybeCoalescable(inst.args()[0].tmp(), inst.args()[1].tmp(), block);
                 }
             }
         }
@@ -1983,8 +2007,8 @@ private:
         auto isSameGroupMove = [&](Inst& inst) {
             if (!mayBeCoalescable(inst))
                 return false;
-            Tmp src = inst.args[0].tmp();
-            Tmp dst = inst.args[1].tmp();
+            Tmp src = inst.args()[0].tmp();
+            Tmp dst = inst.args()[1].tmp();
             if (src.isReg() || dst.isReg() || src.bank() != bank || dst.bank() != bank)
                 return false;
             auto srcGroup = tmpToGroup[src];
@@ -2098,8 +2122,8 @@ private:
                     ASSERT(!group.isEmpty() && group.m_representative);
                     tmp = group.m_representative;
                 });
-                if (maybeCoalescable && inst.args[0].tmp() == inst.args[1].tmp()) {
-                    Tmp tmp = inst.args[0].tmp();
+                if (maybeCoalescable && inst.args()[0].tmp() == inst.args()[1].tmp()) {
+                    Tmp tmp = inst.args()[0].tmp();
                     if (tmp.isReg() || tmp.bank() != bank)
                         continue;
                     inst = Inst();
@@ -2113,29 +2137,10 @@ private:
         }
     }
 
-    template<Bank bank>
-    void initSpillCosts()
+    template <Bank bank>
+    void initSpillCosts(const IndexSet<Tmp::AbsolutelyIndexed<bank>>& cannotSpillInPlace)
     {
         CompilerTimingScope timingScope("Air"_s, "GreedyRegAlloc::initSpillCosts"_s);
-
-        IndexSet<Tmp::AbsolutelyIndexed<bank>> cannotSpillInPlace;
-        for (BasicBlock* block : m_code) {
-            for (Inst& inst : block->insts()) {
-                inst.forEachArg([&](Arg& arg, Arg::Role, Bank, Width) {
-                    if (arg.isTmp() && (arg.tmp().bank() != bank || inst.admitsStack(arg)))
-                        return;
-                    // Arg cannot be spilled in-place.
-                    arg.forEachTmpFast([&](Tmp& tmp) {
-                        if (tmp.bank() != bank)
-                            return;
-                        if (!cannotSpillInPlace.contains(tmp)) {
-                            dataLogLnIf(verbose(), tmp, " cannot be spilled in-place: ", inst);
-                            cannotSpillInPlace.add(tmp);
-                        }
-                    });
-                });
-            }
-        }
 
         for (Reg reg : m_allowedRegistersInPriorityOrder[bank])
             m_map.get<bank>(Tmp(reg)).spillability = TmpData::Spillability::Unspillable;
@@ -3063,8 +3068,8 @@ private:
                 Tmp scratchForTmp;
 
                 if (bank == GP && inst.kind.opcode == Move) {
-                    Arg& srcArg = inst.args[0];
-                    Arg& dstArg = inst.args[1];
+                    Arg& srcArg = inst.args()[0];
+                    Arg& dstArg = inst.args()[1];
                     if (dstArg.isTmp() && spillSlot(dstArg.tmp())) {
                         // Storing to spill. If storing to a 4-byte slot, use store32, otherwise storePtr.
                         useMove32IfDidSpill = spillSlot(dstArg.tmp())->byteSize() == 4;
@@ -3095,10 +3100,10 @@ private:
                             case MoveDouble:
                             case MoveFloat:
                             case MoveVector: {
-                                unsigned argIndex = &arg - &inst.args[0];
+                                unsigned argIndex = &arg - &inst.args()[0];
                                 unsigned otherArgIndex = argIndex ^ 1;
-                                Arg otherArg = inst.args[otherArgIndex];
-                                if (inst.args.size() == 2
+                                Arg otherArg = inst.args()[otherArgIndex];
+                                if (inst.args().size() == 2
                                     && otherArg.isStack()
                                     && otherArg.stackSlot()->isSpill()) {
                                     needScratchIfSpilledInPlace = true;
@@ -3144,8 +3149,8 @@ private:
                             // ZDef32 to 64 slot would require two 32-bit accesses (second one for zero extend), so
                             // usually it will be better to ZDef into a register and then storePtr the register.
                             // Unless, this move can have its live range coalesced.
-                            ASSERT_IMPLIES(maybeCoalescable, &arg == &inst.args[1]);
-                            if (!maybeCoalescable || spilledArg != inst.args[0]) {
+                            ASSERT_IMPLIES(maybeCoalescable, &arg == &inst.args()[1]);
+                            if (!maybeCoalescable || spilledArg != inst.args()[0]) {
                                 m_stats[bank].numInPlaceSpillGiveUpSpillWidth++;
                                 return;
                             }
@@ -3167,14 +3172,15 @@ private:
                     ASSERT(scratchForTmp != Tmp());
                     // This has become a Move spillN, spillM. If N==M, we can remove this instruction. Otherwise,
                     // a scratch register is needed in order to execute the move between spill slots.
-                    if (maybeCoalescable && inst.args[0] == inst.args[1]) {
+                    if (maybeCoalescable && inst.args()[0] == inst.args()[1]) {
                         m_stats[bank].numCoalescedStackSlotMoves++;
                         inst = Inst(); // Will be removed during assignRegisters final pass
                         continue;
                     }
                     Tmp tmp = addSpillTmpWithInterval(scratchForTmp, intervalForSpill(indexOfEarly, Arg::Scratch));
-                    inst.args.append(tmp);
-                    RELEASE_ASSERT(inst.args.size() == 3);
+                    ASSERT(inst.args().size() == 2);
+                    inst.setArgs(inst.args()[0], inst.args()[1], tmp);
+                    RELEASE_ASSERT(inst.args().size() == 3);
                     m_stats[bank].numMoveSpillSpillInsts++;
                     ASSERT(inst.isValidForm());
                     // WTF::Liveness and Air::LivenessAdapter do not handle a late-def/use followed by early-def
@@ -3278,7 +3284,7 @@ private:
                             ASSERT(inst.kind.opcode == Move || inst.kind.opcode == Move32
                                 || inst.kind.opcode == MoveFloat || inst.kind.opcode == MoveDouble
                                 || inst.kind.opcode == MoveVector);
-                            ASSERT(inst.args[0].isSomeImm() && inst.args[1] == originalTmp);
+                            ASSERT(inst.args()[0].isSomeImm() && inst.args()[1] == originalTmp);
                             doKillInst = true;
                             dataLogLnIf(verbose(), "Rematerialized BB", *block, " removing def inst: ", inst);
                         } else {
@@ -3315,10 +3321,13 @@ private:
             for (auto& metadata : m_aroundLoopMetadata)
                 insertSplitAroundLoopFixupCode(metadata, loopTmpToMetadataIndex, loopEntryFixups, loopExitFixups);
 
+            if (!loopEntryFixups.isEmpty() || !loopExitFixups.isEmpty())
+                m_code.proc().setUsesShuffle(true);
+
             for (auto& [block, shufflePairs] : loopEntryFixups)
-                m_insertionSets[block].insertInst(block->size() - 1, AroundLoopEntryFixup, createShuffle(block->at(block->size() - 1).origin, shufflePairs));
+                m_insertionSets[block].insertInst(block->size() - 1, AroundLoopEntryFixup, createShuffle(block->at(block->size() - 1).origin, shufflePairs.span()));
             for (auto& [block, shufflePairs] : loopExitFixups)
-                m_insertionSets[block].insertInst(0, AroundLoopExitFixup, createShuffle(block->at(0).origin, shufflePairs));
+                m_insertionSets[block].insertInst(0, AroundLoopExitFixup, createShuffle(block->at(0).origin, shufflePairs.span()));
         }
 
         for (BasicBlock* block : m_code)
@@ -3518,16 +3527,16 @@ private:
         }
 
         // Avoid the three-argument coalescable spill moves.
-        if (inst.args.size() != 2)
+        if (inst.args().size() != 2)
             return false;
 
-        if (!inst.args[0].isTmp() || !inst.args[1].isTmp())
+        if (!inst.args()[0].isTmp() || !inst.args()[1].isTmp())
             return false;
 
         // We can coalesce a Move32 so long as either of the following holds:
         // - The input is already zero-filled.
         // - The output only cares about the low 32 bits.
-        if (inst.kind.opcode == Move32 && !is32Bit() && m_tmpWidth.defWidth(inst.args[0].tmp()) > Width32)
+        if (inst.kind.opcode == Move32 && !is32Bit() && m_tmpWidth.defWidth(inst.args()[0].tmp()) > Width32)
             return false;
         return true;
     }
@@ -3545,8 +3554,8 @@ private:
                     // Move32 is cheaper if we know that it's equivalent to a Move in x86_64. It's
                     // equivalent if the destination's high bits are not observable or if the source's high
                     // bits are all zero.
-                    if (inst.kind.opcode == Move && inst.args[0].isTmp() && inst.args[1].isTmp()) {
-                        if (m_tmpWidth.useWidth(inst.args[1].tmp()) <= Width32 || m_tmpWidth.defWidth(inst.args[0].tmp()) <= Width32)
+                    if (inst.kind.opcode == Move && inst.args()[0].isTmp() && inst.args()[1].isTmp()) {
+                        if (m_tmpWidth.useWidth(inst.args()[1].tmp()) <= Width32 || m_tmpWidth.defWidth(inst.args()[0].tmp()) <= Width32)
                             inst.kind.opcode = Move32;
                     }
                 }
@@ -3554,8 +3563,8 @@ private:
                     // On the other hand, on ARM64, Move is cheaper than Move32. We would like to use Move instead of Move32.
                     // Move32 on ARM64 is explicitly selected in B3LowerToAir for ZExt32 for example. But using ZDef information
                     // here can optimize it from Move32 to Move.
-                    if (inst.kind.opcode == Move32 && inst.args[0].isTmp() && inst.args[1].isTmp()) {
-                        if (m_tmpWidth.defWidth(inst.args[0].tmp()) <= Width32)
+                    if (inst.kind.opcode == Move32 && inst.args()[0].isTmp() && inst.args()[1].isTmp()) {
+                        if (m_tmpWidth.defWidth(inst.args()[0].tmp()) <= Width32)
                             inst.kind.opcode = Move;
                     }
                 }
@@ -3573,9 +3582,9 @@ private:
                 });
                 ASSERT(inst.isValidForm());
 
-                if (mayBeCoalescable && inst.args[0].isTmp() && inst.args[1].isTmp()
-                    && inst.args[0].tmp() == inst.args[1].tmp()) {
-                    m_stats[inst.args[0].tmp().bank()].numCoalescedRegisterMoves++;
+                if (mayBeCoalescable && inst.args()[0].isTmp() && inst.args()[1].isTmp()
+                    && inst.args()[0].tmp() == inst.args()[1].tmp()) {
+                    m_stats[inst.args()[0].tmp().bank()].numCoalescedRegisterMoves++;
                     inst = Inst();
                 }
             }

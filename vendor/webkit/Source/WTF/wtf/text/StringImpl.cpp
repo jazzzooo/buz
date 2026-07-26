@@ -186,24 +186,6 @@ template<typename CharacterType> inline Ref<StringImpl> StringImpl::createUninit
     return createUninitializedInternalNonEmpty(length, data);
 }
 
-template<typename CharacterType> inline Ref<StringImpl> StringImpl::createUninitializedInternalNonEmpty(size_t length, std::span<CharacterType>& data)
-{
-    ASSERT(length);
-
-    // Allocate a single buffer large enough to contain the StringImpl
-    // struct as well as the data which it contains. This removes one
-    // heap allocation from this call.
-    if (!isValidLength<CharacterType>(length))
-        CRASH();
-
-    SUPPRESS_UNCOUNTED_LOCAL StringImpl* string = static_cast<StringImpl*>(StringImplMalloc::malloc(allocationSize<CharacterType>(length)));
-    data = unsafeMakeSpan(string->tailPointer<CharacterType>(), length);
-    return constructInternal<CharacterType>(*string, length);
-}
-
-template Ref<StringImpl> StringImpl::createUninitializedInternalNonEmpty(size_t length, std::span<Latin1Character>& data);
-template Ref<StringImpl> StringImpl::createUninitializedInternalNonEmpty(size_t length, std::span<char16_t>& data);
-
 Ref<StringImpl> StringImpl::createUninitialized(size_t length, std::span<Latin1Character>& data)
 {
     return createUninitializedInternal(length, data);

@@ -39,9 +39,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include "WasmModule.h"
 #include "WasmModuleInformation.h"
 #include <wtf/DataLog.h>
-#include <wtf/HashMap.h>
 #include <wtf/HexNumber.h>
-#include <wtf/IterationStatus.h>
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/StringBuilder.h>
 #include <wtf/text/WTFString.h>

@@ -15,7 +15,6 @@
  *  along with this library; see the file COPYING.LIB.  If not, write to
  *  the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
  *  Boston, MA 02110-1301, USA.
- *
  */
 
 #pragma once
@@ -94,9 +93,11 @@ public:
     template<typename U> RetainPtr(const RetainPtr<U>&);
 
     constexpr RetainPtr(RetainPtr&& o) : m_ptr(o.leakRef()) { }
-    template<typename U, typename = std::enable_if_t<std::is_convertible_v<typename RetainPtr<RetainPtrType<U>>::PtrType, PtrType>>>
+    template<typename U>
+        requires std::convertible_to<typename RetainPtr<RetainPtrType<U>>::PtrType, PtrType>
     constexpr RetainPtr(RetainPtr<U>&& o) : m_ptr(o.leakRef()) { }
-    template<typename U, typename = std::enable_if_t<std::is_convertible_v<typename RetainRef<RetainPtrType<U>>::PtrType, PtrType>>>
+    template<typename U>
+        requires std::convertible_to<typename RetainRef<RetainPtrType<U>>::PtrType, PtrType>
     constexpr RetainPtr(RetainRef<U>&& o) : m_ptr(o.leakRef()) { }
 
     // Hash table deleted values, which are only constructed and never copied or destroyed.
@@ -162,10 +163,12 @@ private:
 #if __has_feature(objc_arc)
     // ARC will try to retain/release this value, but it looks like a tagged immediate, so retain/release ends up being a no-op -- see _objc_isTaggedPointer() in <objc-internal.h>.
     template<typename U = PtrType>
-    static constexpr std::enable_if_t<IsNSType<U> && std::is_same_v<U, PtrType>, PtrType> hashTableDeletedValue() { return (__bridge PtrType)(void*)-1; }
+        requires (std::same_as<U, PtrType> && NSType<U>)
+    static constexpr PtrType hashTableDeletedValue() { return (__bridge PtrType)(void*)-1; }
 
     template<typename U = PtrType>
-    static constexpr std::enable_if_t<!IsNSType<U> && std::is_same_v<U, PtrType>, PtrType> hashTableDeletedValue() { return reinterpret_cast<PtrType>(-1); }
+        requires (std::same_as<U, PtrType> && !NSType<U>)
+    static constexpr PtrType hashTableDeletedValue() { return reinterpret_cast<PtrType>(-1); }
 #else
     static constexpr PtrType hashTableDeletedValue() { return reinterpret_cast<PtrType>(-1); }
 #endif
@@ -336,8 +339,7 @@ template<typename T> inline RetainPtr<RetainPtrType<T>> retainPtr(T ptr)
 }
 
 #if USE(CF)
-template<typename T>
-    requires IsCFType<T>
+template<CFType T>
 ALWAYS_INLINE CLANG_POINTER_CONVERSION RetainPtr<RetainPtrType<T>> protect(T ptr)
 {
     return ptr;
@@ -345,8 +347,7 @@ ALWAYS_INLINE CLANG_POINTER_CONVERSION RetainPtr<RetainPtrType<T>> protect(T ptr
 #endif
 
 #ifdef __OBJC__
-template<typename T>
-    requires IsNSType<T>
+template<NSType T>
 ALWAYS_INLINE CLANG_POINTER_CONVERSION RetainPtr<RetainPtrType<T>> protect(T ptr)
 {
     return ptr;
@@ -418,7 +419,7 @@ inline CFHashCode safeCFHash(CFTypeRef a)
 }
 
 template<typename T, typename U>
-ALWAYS_INLINE void lazyInitialize(const RetainPtr<T>& ptr, RetainPtr<U>&& obj)
+SUPPRESS_NODELETE ALWAYS_INLINE void NODELETE lazyInitialize(const RetainPtr<T>& ptr, RetainPtr<U>&& obj)
 {
     RELEASE_ASSERT(!ptr);
     const_cast<RetainPtr<T>&>(ptr) = std::move(obj);

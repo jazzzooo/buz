@@ -30,6 +30,7 @@
 #if USE(CF)
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <concepts>
 #include <type_traits>
 
 namespace WTF {
@@ -47,7 +48,7 @@ struct WTF::CFTypeTrait<ClassName##Ref> { \
 };
 
 // Macro for CF types that don't have a GetTypeID function but are still CF types.
-// This enables IsCFType and protect() but dynamic_cf_cast / checked_cf_cast will not work.
+// This enables IsCFType / CFType and protect() but dynamic_cf_cast / checked_cf_cast will not work.
 #define WTF_DECLARE_CF_TYPE_TRAIT_WITHOUT_TYPE_ID(ClassName) \
 template <> \
 struct WTF::CFTypeTrait<ClassName##Ref> { \
@@ -104,14 +105,16 @@ inline constexpr bool HasCFTypeTraitHelper<T, std::void_t<decltype(CFTypeTrait<T
 template<typename T>
 inline constexpr bool HasCFTypeTrait = detail::HasCFTypeTraitHelper<T>;
 
-// IsCFType: true for CFTypeRef or any type with a CFTypeTrait specialization.
+// IsCFType / CFType: true for CFTypeRef or any type with a CFTypeTrait specialization.
 template<typename T>
-concept IsCFType = std::is_pointer_v<T> && (
-    std::is_same_v<std::remove_cv_t<T>, CFTypeRef> || HasCFTypeTrait<T>
+inline constexpr bool IsCFType = std::is_pointer_v<T> && (
+    std::same_as<std::remove_cv_t<T>, CFTypeRef> || HasCFTypeTrait<T>
 );
+template<typename T> concept CFType = IsCFType<T>;
 
 } // namespace WTF
 
+using WTF::CFType;
 using WTF::HasCFTypeTrait;
 using WTF::IsCFType;
 

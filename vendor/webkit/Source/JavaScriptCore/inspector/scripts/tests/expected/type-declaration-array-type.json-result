@@ -470,7 +470,7 @@ namespace Protocol {
 
 namespace TestHelpers {
 
-static const auto enum_constant_values = std::to_array<ASCIILiteral>({
+static const auto enum_constant_values = WTF::toArray<ASCIILiteral>({
     "Died"_s,
     "Fainted"_s,
     "Hungry"_s,
@@ -484,7 +484,7 @@ String getEnumConstantValue(int code) {
 
 template<> std::optional<Protocol::Debugger::Reason> parseEnumValueFromString<Protocol::Debugger::Reason>(const String& protocolString)
 {
-    static const auto constantValues = std::to_array<size_t>({
+    static const auto constantValues = WTF::toArray<size_t>({
         (size_t)Protocol::Debugger::Reason::Died,
         (size_t)Protocol::Debugger::Reason::Fainted,
         (size_t)Protocol::Debugger::Reason::Hungry,
@@ -877,7 +877,7 @@ inline String toProtocolString(TestProtocolDebuggerReason value)
 template<>
 inline std::optional<TestProtocolDebuggerReason> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDebuggerReason>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDebuggerReason>>({
         { "Died"_s, TestProtocolDebuggerReasonDied },
         { "Fainted"_s, TestProtocolDebuggerReasonFainted },
         { "Hungry"_s, TestProtocolDebuggerReasonHungry },

@@ -21,7 +21,6 @@
 
 #pragma once
 
-#include <JavaScriptCore/JSCast.h>
 #include <JavaScriptCore/VM.h>
 #include <wtf/CheckedArithmetic.h>
 #include <wtf/ForbidHeapAllocation.h>
@@ -332,8 +331,8 @@ public:
     template<typename U = T>
     U* data() { return std::bit_cast<U*>(m_buffer); }
 
-    [[nodiscard]] std::span<const T> span() const LIFETIME_BOUND { return { data(), size() }; }
-    [[nodiscard]] std::span<T> mutableSpan() LIFETIME_BOUND { return { data(), size() }; }
+    [[nodiscard]] std::span<const T> span() const LIFETIME_BOUND { return std::span<const T>(data(), size()); }
+    [[nodiscard]] std::span<T> mutableSpan() LIFETIME_BOUND { return std::span<T>(data(), size()); }
 
     T* begin() { return std::bit_cast<T*>(m_buffer); }
     T* end() { return std::bit_cast<T*>(m_buffer) + m_size; }

@@ -31,6 +31,7 @@
 #include "VMAllocate.h"
 #include <cstddef>
 #include <cstring>
+#include <limits>
 
 namespace bmalloc {
 

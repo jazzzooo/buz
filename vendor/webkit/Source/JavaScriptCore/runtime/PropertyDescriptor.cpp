@@ -29,6 +29,9 @@
 
 #include "GetterSetter.h"
 #include "JSCJSValueInlines.h"
+#include "JSCustomGetterFunction.h"
+#include "JSCustomSetterFunction.h"
+#include "JSGlobalObjectInlines.h"
 #include <wtf/TZoneMallocInlines.h>
 
 namespace JSC {

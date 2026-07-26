@@ -30,7 +30,6 @@
 #include "pas_page_malloc.h"
 
 #include <errno.h>
-#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #if !PAS_OS(WINDOWS)
@@ -38,7 +37,6 @@
 #include <unistd.h>
 #endif
 #if PAS_OS(DARWIN)
-#include <mach/vm_page_size.h>
 #include <mach/vm_statistics.h>
 #endif
 #if PAS_OS(LINUX)
@@ -360,7 +358,7 @@ void pas_page_malloc_zero_fill(void* base, size_t size)
 #endif /* PAS_OS(WINDOWS) */
 }
 
-static void commit_impl(void* ptr, size_t size, bool do_mprotect, bool is_symmetric, pas_mmap_capability mmap_capability)
+static void commit_impl(void* ptr, size_t size, bool do_mprotect, bool is_symmetric, pas_page_flags page_flags)
 {
     uintptr_t base_as_int;
     uintptr_t end_as_int;
@@ -377,7 +375,7 @@ static void commit_impl(void* ptr, size_t size, bool do_mprotect, bool is_symmet
     if (end_as_int == base_as_int)
         return;
 
-    if (PAS_MPROTECT_DECOMMITTED && do_mprotect && mmap_capability) {
+    if (PAS_MPROTECT_DECOMMITTED && do_mprotect && !pas_page_flags_client_owns_permissions(page_flags)) {
 #if PAS_OS(WINDOWS)
         PAS_ASSERT(virtual_alloc_with_retry(ptr, size, MEM_COMMIT, PAGE_READWRITE));
 #else
@@ -393,14 +391,20 @@ static void commit_impl(void* ptr, size_t size, bool do_mprotect, bool is_symmet
         /*
          * Symmetric: re-commit pages that the matching decommit released via
          * MEM_DECOMMIT. Loop because the range may span multiple reservations.
+         *
+         * Windows MEM_COMMIT always sets the page's protection, so if this range
+         * holds executable code we must explicitly request PAGE_EXECUTE_READWRITE
+         * here - otherwise previously-executable pages come back as data pages
+         * after each commit/decommit cycle.
          */
+        DWORD protection = pas_page_flags_is_executable(page_flags) ? PAGE_EXECUTE_READWRITE : PAGE_READWRITE;
         size_t totalSeen = 0;
         void *currentPtr = ptr;
         while (totalSeen < size) {
             MEMORY_BASIC_INFORMATION memInfo;
             virtual_query_checked(currentPtr, &memInfo);
             PAS_ASSERT(memInfo.State != 0x10000);
-            PAS_ASSERT(virtual_alloc_with_retry(currentPtr, PAS_MIN(memInfo.RegionSize, size - totalSeen), MEM_COMMIT, PAGE_READWRITE));
+            PAS_ASSERT(virtual_alloc_with_retry(currentPtr, PAS_MIN(memInfo.RegionSize, size - totalSeen), MEM_COMMIT, protection));
             currentPtr = (void*) ((uintptr_t) currentPtr + memInfo.RegionSize);
             totalSeen += memInfo.RegionSize;
         }
@@ -421,27 +425,28 @@ static void commit_impl(void* ptr, size_t size, bool do_mprotect, bool is_symmet
 #endif
 }
 
-void pas_page_malloc_commit(void* ptr, size_t size, pas_mmap_capability mmap_capability)
+void pas_page_malloc_commit(void* ptr, size_t size, pas_page_flags page_flags)
 {
     static const bool do_mprotect = true;
     static const bool is_symmetric = !!PAS_USE_SYMMETRIC_PAGE_ALLOCATION;
-    commit_impl(ptr, size, do_mprotect, is_symmetric, mmap_capability);
+    commit_impl(ptr, size, do_mprotect, is_symmetric, page_flags);
 }
 
-void pas_page_malloc_commit_without_mprotect(void* ptr, size_t size, bool is_symmetric, pas_mmap_capability mmap_capability)
+void pas_page_malloc_commit_without_mprotect(void* ptr, size_t size, bool is_symmetric, pas_page_flags page_flags)
 {
     static const bool do_mprotect = false;
-    commit_impl(ptr, size, do_mprotect, is_symmetric, mmap_capability);
+    commit_impl(ptr, size, do_mprotect, is_symmetric, page_flags);
 }
 
 static void decommit_impl(void* ptr, size_t size,
                           bool do_mprotect, bool is_symmetric,
-                          pas_mmap_capability mmap_capability)
+                          pas_page_flags page_flags)
 {
     static const bool verbose = PAS_SHOULD_LOG(PAS_LOG_OTHER);
 
     uintptr_t base_as_int;
     uintptr_t end_as_int;
+    bool client_owns_permissions;
 
     if (verbose)
         pas_log("Decommitting %p...%p\n", ptr, (char*)ptr + size);
@@ -455,9 +460,11 @@ static void decommit_impl(void* ptr, size_t size,
     PAS_ASSERT(
         end_as_int == pas_round_down_to_power_of_2(end_as_int, pas_page_malloc_alignment()));
 
+    client_owns_permissions = pas_page_flags_client_owns_permissions(page_flags);
+
 #if PAS_OS(DARWIN)
     PAS_ASSERT(!is_symmetric);
-    if (pas_page_malloc_decommit_zero_fill && mmap_capability)
+    if (pas_page_malloc_decommit_zero_fill && !client_owns_permissions)
         pas_page_malloc_zero_fill(ptr, size);
     else
         PAS_SYSCALL(madvise(ptr, size, MADV_FREE_REUSABLE));
@@ -521,7 +528,7 @@ static void decommit_impl(void* ptr, size_t size,
     PAS_SYSCALL(madvise(ptr, size, MADV_DONTNEED));
 #endif
 
-    if (PAS_MPROTECT_DECOMMITTED && do_mprotect && mmap_capability) {
+    if (PAS_MPROTECT_DECOMMITTED && do_mprotect && !client_owns_permissions) {
 #if PAS_OS(WINDOWS)
         PAS_ASSERT(virtual_alloc_with_retry(ptr, size, MEM_COMMIT, PAGE_NOACCESS));
 #else
@@ -530,17 +537,17 @@ static void decommit_impl(void* ptr, size_t size,
     }
 }
 
-void pas_page_malloc_decommit(void* ptr, size_t size, pas_mmap_capability mmap_capability)
+void pas_page_malloc_decommit(void* ptr, size_t size, pas_page_flags page_flags)
 {
     static const bool do_mprotect = true;
     static const bool is_symmetric = !!PAS_USE_SYMMETRIC_PAGE_ALLOCATION;
-    decommit_impl(ptr, size, do_mprotect, is_symmetric, mmap_capability);
+    decommit_impl(ptr, size, do_mprotect, is_symmetric, page_flags);
 }
 
-void pas_page_malloc_decommit_without_mprotect(void* ptr, size_t size, bool is_symmetric, pas_mmap_capability mmap_capability)
+void pas_page_malloc_decommit_without_mprotect(void* ptr, size_t size, bool is_symmetric, pas_page_flags page_flags)
 {
     static const bool do_mprotect = false;
-    decommit_impl(ptr, size, do_mprotect, is_symmetric, mmap_capability);
+    decommit_impl(ptr, size, do_mprotect, is_symmetric, page_flags);
 }
 
 void pas_page_malloc_deallocate(void* ptr, size_t size)

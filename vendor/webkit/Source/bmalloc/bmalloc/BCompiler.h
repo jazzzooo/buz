@@ -44,6 +44,7 @@
 #endif
 
 #define BASAN_ENABLED BCOMPILER_HAS_CLANG_FEATURE(address_sanitizer)
+#define BTSAN_ENABLED BCOMPILER_HAS_CLANG_FEATURE(thread_sanitizer)
 
 /* BCOMPILER_HAS_CLANG_DECLSPEC() - whether the compiler supports a Microsoft style __declspec attribute. */
 /* https://clang.llvm.org/docs/LanguageExtensions.html#has-declspec-attribute */
@@ -132,6 +133,17 @@
 #else
 #define BALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #define BALLOW_UNSAFE_BUFFER_USAGE_END
+#endif
+
+/* BIGNORE_CLANG_STATIC_ANALYZER_WARNINGS_ATTRIBUTE() - suppress a clang static analyzer warning on the following statement.
+ * https://clang.llvm.org/docs/AttributeReference.html#suppress */
+#if defined(__has_cpp_attribute)
+#if __has_cpp_attribute(clang::suppress)
+#define BIGNORE_CLANG_STATIC_ANALYZER_WARNINGS_ATTRIBUTE(warning, ...) [[clang::suppress]]
+#endif
+#endif
+#if !defined(BIGNORE_CLANG_STATIC_ANALYZER_WARNINGS_ATTRIBUTE)
+#define BIGNORE_CLANG_STATIC_ANALYZER_WARNINGS_ATTRIBUTE(warning, ...)
 #endif
 
 /* MUST_TAIL_CALL */

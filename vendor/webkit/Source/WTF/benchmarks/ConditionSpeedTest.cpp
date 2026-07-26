@@ -24,7 +24,16 @@
  */
 
 // On Mac, you can build this like so:
-// xcrun clang++ -o ConditionSpeedTest Source/WTF/benchmarks/ConditionSpeedTest.cpp -O3 -W -ISource/WTF -ISource/WTF/icu -LWebKitBuild/Release -lWTF -framework Foundation -licucore -std=c++14 -fvisibility=hidden
+// INTERNAL_SDK=$(xcrun --sdk macosx.internal --show-sdk-path) && \
+// xcrun clang++ -o ConditionSpeedTest Source/WTF/benchmarks/ConditionSpeedTest.cpp \
+//     -W -ISource/WTF -ISource/WTF/icu \
+//     -I"$INTERNAL_SDK/usr/local/include" -IWebKitBuild/Release/usr/local/include \
+//     -LWebKitBuild/Release -lWTF -lbmalloc \
+//     -framework Foundation -framework Security -licucore \
+//     -std=c++2b -fvisibility=hidden -DNDEBUG -O3 -arch arm64e
+//
+// For an OSS build (no internal SDK), drop the INTERNAL_SDK line and the
+// -I"$INTERNAL_SDK/usr/local/include" flag, and use -arch arm64 instead of arm64e.
 
 #include "config.h"
 

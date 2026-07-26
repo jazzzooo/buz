@@ -39,14 +39,14 @@ namespace JSC { namespace FTL {
 
 using namespace B3;
 
-Location Location::forValueRep(const ValueRep& rep)
+Location Location::forValueRep(const B3::ValueRep& rep)
 {
     switch (rep.kind()) {
-    case ValueRep::Register:
+    case B3::ValueRep::Register:
         return forRegister(rep.reg(), 0);
-    case ValueRep::Stack:
+    case B3::ValueRep::Stack:
         return forIndirect(GPRInfo::callFrameRegister, rep.offsetFromFP());
-    case ValueRep::Constant:
+    case B3::ValueRep::Constant:
         return forConstant(rep.value());
     default:
         RELEASE_ASSERT_NOT_REACHED();

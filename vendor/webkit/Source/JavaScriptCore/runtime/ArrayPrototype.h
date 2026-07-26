@@ -20,7 +20,8 @@
 
 #pragma once
 
-#include "JSArray.h"
+#include <JavaScriptCore/JSArray.h>
+#include <wtf/text/ASCIILiteral.h>
 
 namespace JSC {
 
@@ -48,5 +49,10 @@ STATIC_ASSERT_ISO_SUBSPACE_SHARABLE(ArrayPrototype, ArrayPrototype::Base);
 
 JSC_DECLARE_HOST_FUNCTION(arrayProtoFuncToString);
 JSC_DECLARE_HOST_FUNCTION(arrayProtoFuncValues);
+
+JSArray* tryConcatAppendArrayFastWithWatchpoints(JSGlobalObject*, VM&, JSArray* firstArray, JSArray* secondArray);
+JSArray* tryConcatOneArgFast(JSGlobalObject*, VM&, JSArray* firstArray, JSValue argument);
+
+inline constexpr ASCIILiteral unshiftArrayLengthExceeded { "unshift cannot produce an array of length larger than (2 ** 53) - 1"_s };
 
 } // namespace JSC

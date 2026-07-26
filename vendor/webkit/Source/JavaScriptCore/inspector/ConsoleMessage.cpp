@@ -35,6 +35,7 @@
 #include "InjectedScript.h"
 #include "InjectedScriptManager.h"
 #include "InspectorFrontendDispatchers.h"
+#include "JSCellInlines.h"
 #include "JSGlobalObject.h"
 #include "JSString.h"
 #include "ScriptArguments.h"

@@ -26,15 +26,23 @@
 #pragma once
 
 #include "JSInternalFieldObjectImpl.h"
+#include <JavaScriptCore/JSObject.h>
+#include <JavaScriptCore/Microtask.h>
+#include <wtf/CompactPointerTuple.h>
 
 namespace JSC {
 
-enum class InternalMicrotask : uint8_t;
-
 class JSPromiseConstructor;
-class JSPromise : public JSInternalFieldObjectImpl<2> {
+class JSPromiseReaction;
+
+// JSPromise stores its state in two machine words:
+//   m_packed: CompactPointerTuple<JSCell*, uint16_t>
+//       Lower 48 bits: payload cell pointer (may be null)
+//       Upper 16 bits: flags (see Flags layout below)
+//   m_slot: JSValue (as WriteBarrier<Unknown>)
+class JSPromise : public JSNonFinalObject {
 public:
-    using Base = JSInternalFieldObjectImpl<2>;
+    using Base = JSNonFinalObject;
 
     template<typename CellType, SubspaceAccess mode>
     static GCClient::IsoSubspace* subspaceFor(VM& vm)
@@ -46,53 +54,65 @@ public:
     static JSPromise* createWithInitialValues(VM&, Structure*);
     static Structure* createStructure(VM&, JSGlobalObject*, JSValue);
 
+    static size_t allocationSize(Checked<size_t> inlineCapacity)
+    {
+        ASSERT_UNUSED(inlineCapacity, !inlineCapacity);
+        return sizeof(JSPromise);
+    }
+
     DECLARE_EXPORT_INFO;
 
-    enum class Status : int32_t {
+    // Flags layout (upper 16 bits of m_packed):
+    //   bits 0-1:   Status
+    //   bit 2:      isHandled
+    //   bit 3:      isFirstResolvingFunctionCalled
+    //   bits 4-5:   InlineReactionKind (4 values, 2 bits)
+    //   bits 6-13:  InternalMicrotask (only when kind == InternalMicrotask)
+    //   bits 14-15: reserved
+
+    enum class Status : uint16_t {
         Pending = 0, // Making this as 0, so that, we can change the status from Pending to others without masking.
         Fulfilled = 1,
         Rejected = 2,
     };
-    static constexpr int32_t isHandledFlag = 4;
-    static constexpr int32_t isFirstResolvingFunctionCalledFlag = 8;
-    static constexpr int32_t stateMask = 0b11;
 
-    enum class Field : unsigned {
-        Flags = 0,
-        ReactionsOrResult = 1,
+    enum class InlineReactionKind : uint8_t {
+        None = 0,
+        InternalMicrotask = 1,
+        FulfillHandler = 2,
+        RejectHandler = 3,
     };
-    static_assert(numberOfInternalFields == 2);
 
-    static std::array<JSValue, numberOfInternalFields> initialValues()
+    static constexpr uint16_t stateMask                          = 0b0000000000000011;
+    static constexpr uint16_t isHandledFlag                      = 0b0000000000000100;
+    static constexpr uint16_t isFirstResolvingFunctionCalledFlag = 0b0000000000001000;
+    static constexpr uint16_t inlineReactionKindMask             = 0b0000000000110000;
+    static constexpr uint16_t inlineReactionMicrotaskMask        = 0b0011111111000000;
+    static constexpr unsigned inlineReactionKindShift = 4;
+    static constexpr unsigned inlineReactionMicrotaskShift = 6;
+
+    static constexpr ptrdiff_t offsetOfPacked() { return OBJECT_OFFSETOF(JSPromise, m_packed); }
+    static constexpr ptrdiff_t offsetOfSlot() { return OBJECT_OFFSETOF(JSPromise, m_slot); }
+
+    inline uint16_t flags() const { return m_packed.type(); }
+
+    inline Status status() const { return static_cast<Status>(flags() & stateMask); }
+    inline bool isHandled() const { return flags() & isHandledFlag; }
+
+    // Value accessors — meaningful only after settlement.
+    inline JSValue settlementValue() const
     {
-        return { {
-            jsNumber(static_cast<int32_t>(Status::Pending)),
-            JSValue(),
-        } };
+        ASSERT(status() != Status::Pending);
+        return m_slot.get();
     }
-
-    const WriteBarrier<Unknown>& internalField(Field field) const { return Base::internalField(static_cast<uint32_t>(field)); }
-    WriteBarrier<Unknown>& internalField(Field field) { return Base::internalField(static_cast<uint32_t>(field)); }
-
-    inline Status status() const
-    {
-        JSValue value = internalField(Field::Flags).get();
-        int32_t flags = value.asInt32AsAnyInt();
-        return static_cast<Status>(flags & stateMask);
-    }
-
-    inline bool isHandled() const
-    {
-        return flags() & isHandledFlag;
-    }
-
     inline JSValue result() const
     {
-        Status status = this->status();
-        if (status == Status::Pending)
+        if (status() == Status::Pending)
             return jsUndefined();
-        return internalField(Field::ReactionsOrResult).get();
+        return m_slot.get();
     }
+
+    JSValue asyncStackTraceContext() const;
 
     JS_EXPORT_PRIVATE static JSPromise* resolvedPromise(JSGlobalObject*, JSValue);
     JS_EXPORT_PRIVATE static JSPromise* rejectedPromise(JSGlobalObject*, JSValue);
@@ -103,27 +123,20 @@ public:
 #endif
 
     JS_EXPORT_PRIVATE void resolve(JSGlobalObject*, VM&, JSValue);
-    JS_EXPORT_PRIVATE void reject(VM&, JSGlobalObject*, JSValue);
-    JS_EXPORT_PRIVATE void fulfill(VM&, JSGlobalObject*, JSValue);
+    JS_EXPORT_PRIVATE void reject(VM&, JSValue);
+    JS_EXPORT_PRIVATE void fulfill(VM&, JSValue);
     // Pipes its settlement to this promise via internal microtask. Otherwise directly
     // fulfills. Never triggers user-observable behavior.
     JS_EXPORT_PRIVATE void pipeFrom(VM&, JSPromise* from);
-    JS_EXPORT_PRIVATE void rejectAsHandled(VM&, JSGlobalObject*, JSValue);
-    JS_EXPORT_PRIVATE void reject(VM&, JSGlobalObject*, Exception*);
-    JS_EXPORT_PRIVATE void rejectAsHandled(VM&, JSGlobalObject*, Exception*);
+    JS_EXPORT_PRIVATE void rejectAsHandled(VM&, JSValue);
+    JS_EXPORT_PRIVATE void reject(VM&, Exception*);
+    JS_EXPORT_PRIVATE void rejectAsHandled(VM&, Exception*);
     JS_EXPORT_PRIVATE void performPromiseThenExported(VM&, JSGlobalObject*, JSValue onFulfilled, JSValue onRejected, JSValue);
 
-    JS_EXPORT_PRIVATE JSPromise* rejectWithCaughtException(JSGlobalObject*, ThrowScope&);
-
-    JSValue reactionsOrResult() const { return internalField(Field::ReactionsOrResult).get(); };
-    void setReactionsOrResult(VM& vm, JSValue value) { internalField(Field::ReactionsOrResult).set(vm, this, value); };
+    JS_EXPORT_PRIVATE JSPromise* rejectWithCaughtException(VM&, ThrowScope&);
 
     // https://webidl.spec.whatwg.org/#mark-a-promise-as-handled
-    void markAsHandled()
-    {
-        int32_t flags = this->flags();
-        internalField(Field::Flags).setWithoutWriteBarrier(jsNumber(flags | isHandledFlag));
-    }
+    void markAsHandled() { m_packed.setType(flags() | isHandledFlag); }
 
     struct DeferredData {
         WTF_FORBID_HEAP_ALLOCATION;
@@ -142,8 +155,8 @@ public:
 #if USE(BUN_JSC_ADDITIONS)
     void performPromiseThenWithContext(VM&, JSGlobalObject*, JSValue onFulfilled, JSValue onRejected, JSValue, JSValue context);
 #endif
-    void rejectPromise(VM&, JSGlobalObject*, JSValue);
-    void fulfillPromise(VM&, JSGlobalObject*, JSValue);
+    void rejectPromise(VM&, JSValue);
+    void fulfillPromise(VM&, JSValue);
     void resolvePromise(JSGlobalObject*, VM&, JSValue);
 
     static void resolveWithInternalMicrotaskForAsyncAwait(JSGlobalObject*, VM&, JSValue resolution, InternalMicrotask, JSValue context);
@@ -151,12 +164,14 @@ public:
     static void rejectWithInternalMicrotask(VM&, JSGlobalObject*, JSValue argument, InternalMicrotask, JSValue context);
     static void fulfillWithInternalMicrotask(VM&, JSGlobalObject*, JSValue argument, InternalMicrotask, JSValue context);
 
-    void performPromiseThenWithInternalMicrotask(VM&, JSGlobalObject*, InternalMicrotask, JSValue promise, JSValue context);
+    void performPromiseThenWithInternalMicrotask(VM&, InternalMicrotask, JSCell*, JSValue context);
 
     bool isThenFastAndNonObservable();
 
     std::tuple<JSFunction*, JSFunction*> createResolvingFunctions(VM&, JSGlobalObject*);
     std::tuple<JSFunction*, JSFunction*> createFirstResolvingFunctions(VM&, JSGlobalObject*);
+    JSFunction* createFirstResolveFunction(VM&, JSGlobalObject*);
+    JSFunction* createFirstRejectFunction(VM&, JSGlobalObject*);
     static std::tuple<JSFunction*, JSFunction*> createResolvingFunctionsWithInternalMicrotask(VM&, JSGlobalObject*, InternalMicrotask, JSValue context);
     static std::tuple<JSObject*, JSObject*, JSObject*> newPromiseCapability(JSGlobalObject*, JSValue constructor);
     static JSValue createPromiseCapability(VM&, JSGlobalObject*, JSObject* promise, JSObject* resolve, JSObject* reject);
@@ -164,18 +179,80 @@ public:
     static JSObject* promiseReject(JSGlobalObject*, JSObject* constructor, JSValue);
 
     JS_EXPORT_PRIVATE JSObject* then(JSGlobalObject*, JSValue onFulfilled, JSValue onRejected);
+
 protected:
     JSPromise(VM&, Structure*);
-    void finishCreation(VM&);
 
-    inline int32_t flags() const
-    {
-        JSValue value = internalField(Field::Flags).get();
-        return value.asInt32AsAnyInt();
-    }
+    DECLARE_DEFAULT_FINISH_CREATION;
 
 private:
+    inline bool isFirstResolvingFunctionCalled() const { return flags() & isFirstResolvingFunctionCalledFlag; }
+
+#if USE(BUN_JSC_ADDITIONS)
+    // Embedder bindings (JSC__JSPromise__*) construct already-settled promises,
+    // twiddle handled/first-resolved bits directly, and walk the pending
+    // reaction list (heap or inline) for async stack traces — without going
+    // through the resolve/reject machinery.
+public:
+#endif
+    inline InlineReactionKind inlineReactionKind() const
+    {
+        return static_cast<InlineReactionKind>((flags() & inlineReactionKindMask) >> inlineReactionKindShift);
+    }
+    inline bool hasInlineReaction() const { return inlineReactionKind() != InlineReactionKind::None; }
+    inline bool hasInlineHandlerReaction() const
+    {
+        auto kind = inlineReactionKind();
+        return kind == InlineReactionKind::FulfillHandler || kind == InlineReactionKind::RejectHandler;
+    }
+
+    // Pending-state accessors. The caller is responsible for checking state.
+    inline JSValue inlineReactionContext() const
+    {
+        ASSERT(inlineReactionKind() == InlineReactionKind::InternalMicrotask);
+        return m_slot.get();
+    }
+    inline JSValue inlineHandlerHandler() const
+    {
+        ASSERT(hasInlineHandlerReaction());
+        return m_slot.get();
+    }
+    inline JSPromise* inlineHandlerResultPromise() const
+    {
+        ASSERT(hasInlineHandlerReaction());
+        return uncheckedDowncast<JSPromise>(payloadCell());
+    }
+    inline JSCell* payloadCell() const { return m_packed.pointer(); }
+
+    void setFlags(uint16_t newFlags) { m_packed.setType(newFlags); }
+    void setPackedCell(VM& vm, uint16_t newFlags, JSCell* cell)
+    {
+        m_packed = CompactPointerTuple<JSCell*, uint16_t> { cell, newFlags };
+        if (cell)
+            vm.writeBarrier(this, cell);
+    }
+    void setSlot(VM& vm, JSValue value) { m_slot.set(vm, this, value); }
+    void clearSlot() { m_slot.clear(); }
+#if USE(BUN_JSC_ADDITIONS)
+private:
+#endif
+
+    void setInlineMicrotaskReaction(VM&, InternalMicrotask, JSCell*, JSValue context);
+    void setInlineHandlerReaction(VM&, InlineReactionKind, JSPromise*, JSValue handler);
+    JSPromiseReaction* spillInlineReaction(VM&);
+    JSPromiseReaction* reactionHead(VM&);
+    void settleInlineInternalMicrotask(VM&, JSGlobalObject*, Status, JSValue argument, uint16_t flags);
+    void settleInlineHandler(VM&, JSGlobalObject*, Status, JSValue argument, uint16_t flags);
     static void triggerPromiseReactions(VM&, JSGlobalObject*, JSPromise::Status, JSPromiseReaction* head, JSValue argument);
+
+    InternalMicrotask inlineReactionMicrotask() const
+    {
+        ASSERT(inlineReactionKind() == InlineReactionKind::InternalMicrotask);
+        return static_cast<InternalMicrotask>((flags() & inlineReactionMicrotaskMask) >> inlineReactionMicrotaskShift);
+    }
+
+    CompactPointerTuple<JSCell*, uint16_t> m_packed;
+    WriteBarrier<Unknown> m_slot;
 };
 
 static constexpr PropertyOffset promiseCapabilityResolvePropertyOffset = 0;

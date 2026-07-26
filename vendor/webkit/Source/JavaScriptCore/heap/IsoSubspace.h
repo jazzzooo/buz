@@ -30,6 +30,7 @@
 #include "Subspace.h"
 #include "SubspaceAccess.h"
 #include <wtf/SinglyLinkedListWithTail.h>
+#include <JavaScriptCore/AllocatorForMode.h>
 #include <wtf/TZoneMalloc.h>
 
 namespace JSC {

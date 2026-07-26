@@ -835,7 +835,7 @@ namespace Protocol {
 
 namespace TestHelpers {
 
-static const auto enum_constant_values = std::to_array<ASCIILiteral>({
+static const auto enum_constant_values = WTF::toArray<ASCIILiteral>({
     "red"_s,
     "green"_s,
     "blue"_s,
@@ -853,7 +853,7 @@ String getEnumConstantValue(int code) {
 
 template<> std::optional<Protocol::Database::PrimaryColors> parseEnumValueFromString<Protocol::Database::PrimaryColors>(const String& protocolString)
 {
-    static const auto constantValues = std::to_array<size_t>({
+    static const auto constantValues = WTF::toArray<size_t>({
         (size_t)Protocol::Database::PrimaryColors::Red,
         (size_t)Protocol::Database::PrimaryColors::Green,
         (size_t)Protocol::Database::PrimaryColors::Blue,
@@ -1540,7 +1540,7 @@ inline String toProtocolString(TestProtocolDatabasePrimaryColors value)
 template<>
 inline std::optional<TestProtocolDatabasePrimaryColors> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDatabasePrimaryColors>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDatabasePrimaryColors>>({
         { "blue"_s, TestProtocolDatabasePrimaryColorsBlue },
         { "green"_s, TestProtocolDatabasePrimaryColorsGreen },
         { "red"_s, TestProtocolDatabasePrimaryColorsRed },
@@ -1567,7 +1567,7 @@ inline String toProtocolString(TestProtocolDatabaseExecuteSQLSyncOptionalReturnV
 template<>
 inline std::optional<TestProtocolDatabaseExecuteSQLSyncOptionalReturnValuesPrintColor> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteSQLSyncOptionalReturnValuesPrintColor>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteSQLSyncOptionalReturnValuesPrintColor>>({
         { "black"_s, TestProtocolDatabaseExecuteSQLSyncOptionalReturnValuesPrintColorBlack },
         { "cyan"_s, TestProtocolDatabaseExecuteSQLSyncOptionalReturnValuesPrintColorCyan },
         { "magenta"_s, TestProtocolDatabaseExecuteSQLSyncOptionalReturnValuesPrintColorMagenta },
@@ -1595,7 +1595,7 @@ inline String toProtocolString(TestProtocolDatabaseExecuteSQLAsyncOptionalReturn
 template<>
 inline std::optional<TestProtocolDatabaseExecuteSQLAsyncOptionalReturnValuesPrintColor> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteSQLAsyncOptionalReturnValuesPrintColor>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteSQLAsyncOptionalReturnValuesPrintColor>>({
         { "black"_s, TestProtocolDatabaseExecuteSQLAsyncOptionalReturnValuesPrintColorBlack },
         { "cyan"_s, TestProtocolDatabaseExecuteSQLAsyncOptionalReturnValuesPrintColorCyan },
         { "magenta"_s, TestProtocolDatabaseExecuteSQLAsyncOptionalReturnValuesPrintColorMagenta },
@@ -1623,7 +1623,7 @@ inline String toProtocolString(TestProtocolDatabaseExecuteSQLSyncPrintColor valu
 template<>
 inline std::optional<TestProtocolDatabaseExecuteSQLSyncPrintColor> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteSQLSyncPrintColor>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteSQLSyncPrintColor>>({
         { "black"_s, TestProtocolDatabaseExecuteSQLSyncPrintColorBlack },
         { "cyan"_s, TestProtocolDatabaseExecuteSQLSyncPrintColorCyan },
         { "magenta"_s, TestProtocolDatabaseExecuteSQLSyncPrintColorMagenta },
@@ -1651,7 +1651,7 @@ inline String toProtocolString(TestProtocolDatabaseExecuteSQLAsyncPrintColor val
 template<>
 inline std::optional<TestProtocolDatabaseExecuteSQLAsyncPrintColor> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteSQLAsyncPrintColor>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteSQLAsyncPrintColor>>({
         { "black"_s, TestProtocolDatabaseExecuteSQLAsyncPrintColorBlack },
         { "cyan"_s, TestProtocolDatabaseExecuteSQLAsyncPrintColorCyan },
         { "magenta"_s, TestProtocolDatabaseExecuteSQLAsyncPrintColorMagenta },

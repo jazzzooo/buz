@@ -57,7 +57,11 @@ public:
 
     void initializeEnvironment(JSGlobalObject*, RefPtr<ScriptFetcher>);
     void link(JSGlobalObject*, RefPtr<ScriptFetcher>);
+#if USE(BUN_JSC_ADDITIONS)
+    JSPromise* evaluate(JSGlobalObject*, int64_t referrerAsyncOrder = -1);
+#else
     JSPromise* evaluate(JSGlobalObject*);
+#endif
     void execute(JSGlobalObject*, JSPromise* = nullptr);
     void executeAsync(JSGlobalObject*);
     void asyncExecutionFulfilled(JSGlobalObject*);

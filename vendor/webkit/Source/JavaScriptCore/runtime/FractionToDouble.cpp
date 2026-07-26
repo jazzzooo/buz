@@ -145,4 +145,61 @@ double fractionToDouble(const Int128& numerator, double denominator)
     return fractionToDoubleSlow(numerator, denominator);
 }
 
+// Extends section 3.5 of the Hida-Li-Bailey paper to an Int128 denominator.
+static double fractionToDoubleSlow(const Int128& numerator, const Int128& denominator)
+{
+    // n0 + n1 = N exactly, d0 + d1 = D exactly.
+    DD n = int128ToDD(numerator);
+    DD d = int128ToDD(denominator);
+
+    // We want Q = N / D, where Q = q0 + q1.
+    // => (q0 + q1) * D = N
+    // => residual = q1 * D = N - q0 * D
+    // => q1 = (N - q0 * D) / D
+
+    // Step 1: q0 = first approximation of Q.
+    // n0 and d0 are the best doubles for N and D; n0/d0 is the best
+    // double approximation of N/D using regular double division.
+    // (Can't divide N/D directly — both may exceed 2^53 as Int128.)
+    double q0 = n[0] / d[0];
+
+    // Step 2: residual = N - q0 * D, split as r0 + error.
+    //
+    // Expand: N - q0 * D
+    // => (n0 + n1) - q0 * (d0 + d1)
+    // => (n0 - q0 * d0) + n1 - q0 * d1
+    //
+    DD p = ddProduct(q0, d[0]); // p0 + p1 = q0 * d0
+    DD r = ddSum(n[0], -p[0]); // r0 + r1 = n0 - p0
+    // Expand: n0 - q0 * d0
+    // => n0 - p0 - p1
+    // => r0 + r1 - p1
+    //
+    // Substituting back:
+    //   residual = r0 + r1 - p1 + n1 - q0 * d1
+    //            = r0 + error
+    double error = r[1] + n[1] - p[1] - q0 * d[1];
+
+    // Step 3: q1 = residual / D ≈ (r[0] + error) / d0.
+    // Using d0 instead of D: error ≈ q1 * (d1 / d0) ≈ Q*2^-104, negligible.
+    double q1 = (r[0] + error) / d[0];
+
+    // Discard DD renormalization (Shewchuk Fast-Two-Sum, theorem 6):
+    // single-precision result is sufficient here.
+    return q0 + q1;
+}
+
+double fractionToDouble(const Int128& numerator, const Int128& denominator)
+{
+    ASSERT(denominator > 0);
+
+    if (!numerator)
+        return 0;
+    if (denominator == 1)
+        return static_cast<double>(numerator);
+    if (isSafeInteger(static_cast<double>(numerator)) && isSafeInteger(static_cast<double>(denominator))) [[likely]]
+        return static_cast<double>(numerator) / static_cast<double>(denominator);
+    return fractionToDoubleSlow(numerator, denominator);
+}
+
 } // namespace JSC

@@ -16,7 +16,7 @@ const jsc_root = "vendor/webkit/Source/JavaScriptCore";
 
 const Named = struct { name: []const u8, file: LazyPath };
 
-pub fn addStep(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimize) *Step.WriteFile {
+pub fn addStep(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: std.builtin.Optimize) *Step.WriteFile {
     const arena = b.graph.arena;
     const cmake = readCMakeLists(b);
 
@@ -63,6 +63,17 @@ pub fn addStep(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimi
         const out = run.addOutputDirectoryArg("builtins");
         run.addArg("--combined");
         for (cmakeList(arena, cmake, "JavaScriptCore_BUILTINS_SOURCES")) |f| run.addFileArg(jscPath(b, f));
+        break :blk out;
+    };
+
+    const preferences_dir = blk: {
+        const run = b.addSystemCommand(&.{"ruby"});
+        run.addFileArg(b.path("vendor/webkit/Source/WTF/Scripts/GeneratePreferences.rb"));
+        run.addArgs(&.{ "--frontend", "JavaScriptCore", "--outputDir" });
+        const out = run.addOutputDirectoryArg("preferences");
+        run.addArg("--template");
+        run.addFileArg(jscPath(b, "Scripts/PreferencesTemplates/JSCWebPreferenceOptions.h.erb"));
+        run.addFileArg(b.path("vendor/webkit/Source/WTF/Scripts/Preferences/UnifiedWebPreferences.yaml"));
         break :blk out;
     };
 
@@ -136,8 +147,9 @@ pub fn addStep(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimi
         .{ .name = "WasmOps.h", .file = wasm_ops_h },
         .{ .name = "WasmOMGIRGeneratorInlines.h", .file = wasm_omg_h },
         .{ .name = "JSCBuiltins.h", .file = builtins_dir.path(b, "JSCBuiltins.h") },
+        .{ .name = "JSCWebPreferenceOptions.h", .file = preferences_dir.path(b, "JSCWebPreferenceOptions.h") },
         .{ .name = "KeywordLookup.h", .file = keyword_lookup_h },
-        .{ .name = "cmakeconfig.h", .file = b.path("vendor/webkit/cmakeconfig.h") },
+        .{ .name = "cmakeconfig.h", .file = configDir(b, mode).path(b, "cmakeconfig.h") },
     }) catch @panic("OOM");
 
     // ─── offlineasm: settings → settings extractor → offsets → offsets
@@ -156,7 +168,7 @@ pub fn addStep(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimi
     };
 
     const wf1 = writeLayer(b, base.items, &.{.{ .name = "LLIntDesiredSettings.h", .file = settings_h }});
-    const settings_obj = extractorObject(b, deps, optimize, cmake, "LLIntSettingsExtractor", wf1);
+    const settings_obj = extractorObject(b, deps, mode, optimize, cmake, "LLIntSettingsExtractor", wf1);
 
     const offsets_h = blk: {
         const run = b.addSystemCommand(&.{"ruby"});
@@ -175,7 +187,7 @@ pub fn addStep(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimi
         .{ .name = "LLIntDesiredSettings.h", .file = settings_h },
         .{ .name = "LLIntDesiredOffsets.h", .file = offsets_h },
     });
-    const offsets_obj = extractorObject(b, deps, optimize, cmake, "LLIntOffsetsExtractor", wf2);
+    const offsets_obj = extractorObject(b, deps, mode, optimize, cmake, "LLIntOffsetsExtractor", wf2);
 
     const llint_assembly_h = blk: {
         const run = b.addSystemCommand(&.{"ruby"});
@@ -274,8 +286,8 @@ pub const Ctx = struct {
     sync: *Step,
     /// Include dirs replacing the prebuilt tarball's include/: source headers
     /// through the forwarding farm (same-inode for both include spellings),
-    /// derived headers through the stable mirror, cmakeconfig.h at the vendor
-    /// root, and the WTF/bmalloc source layouts.
+    /// derived headers through the stable mirror, the mode-specific
+    /// cmakeconfig.h, and the WTF/bmalloc source layouts.
     includes: []const LazyPath,
 };
 
@@ -289,9 +301,9 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: st
     const cmake = readCMakeLists(b);
     const manifest = readManifest(b);
 
-    const bmalloc_c = newLib(b, deps, optimize, "webkit-bmalloc-c", false, cmake);
-    const bmalloc_cxx = newLib(b, deps, optimize, "webkit-bmalloc-cxx", true, cmake);
-    const wtf = newLib(b, deps, optimize, "webkit-wtf", true, cmake);
+    const bmalloc_c = newLib(b, deps, mode, optimize, "webkit-bmalloc-c", false, cmake);
+    const bmalloc_cxx = newLib(b, deps, mode, optimize, "webkit-bmalloc-cxx", true, cmake);
+    const wtf = newLib(b, deps, mode, optimize, "webkit-wtf", true, cmake);
 
     const bmalloc_includes = [_][]const u8{ "bmalloc", "bmalloc/bmalloc", "bmalloc/libpas/src/libpas" };
     const wtf_includes = [_][]const u8{ "WTF", "WTF/wtf", "WTF/wtf/dtoa", "WTF/wtf/fast_float", "WTF/wtf/persistence", "WTF/wtf/simdutf", "WTF/wtf/text", "WTF/wtf/text/icu", "WTF/wtf/threads", "WTF/wtf/unicode", "bmalloc" };
@@ -300,10 +312,16 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: st
     }
     for (wtf_includes) |inc| wtf.root_module.addIncludePath(b.path(b.fmt("vendor/webkit/Source/{s}", .{inc})));
 
-    const bmalloc_c_flags: []const []const u8 = &(common_flags ++ [_][]const u8{ "-D_GNU_SOURCE", "-DBUILDING_bmalloc" });
+    const bmalloc_c_flags: []const []const u8 = blk: {
+        var flags: std.ArrayList([]const u8) = .empty;
+        flags.appendSlice(arena, &(common_flags ++ [_][]const u8{ "-D_GNU_SOURCE", "-DBUILDING_bmalloc" })) catch @panic("OOM");
+        if (mode == .release) flags.append(arena, "-DUSE_MIMALLOC=1") catch @panic("OOM");
+        break :blk flags.items;
+    };
     const bmalloc_cxx_flags: []const []const u8 = blk: {
         var flags: std.ArrayList([]const u8) = .empty;
         flags.appendSlice(arena, &(common_cxx_flags ++ [_][]const u8{ "-D_GNU_SOURCE", "-DBUILDING_bmalloc" })) catch @panic("OOM");
+        if (mode == .release) flags.append(arena, "-DUSE_MIMALLOC=1") catch @panic("OOM");
         break :blk flags.items;
     };
     const wtf_flags: []const []const u8 = blk: {
@@ -362,8 +380,8 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: st
     sync.has_side_effects = true;
     sync.step.name = "sync webkit-derived";
 
-    const jsc = newLib(b, deps, optimize, "webkit-jsc", true, cmake);
-    const jsc_c = newLib(b, deps, optimize, "webkit-jsc-c", false, cmake);
+    const jsc = newLib(b, deps, mode, optimize, "webkit-jsc", true, cmake);
+    const jsc_c = newLib(b, deps, mode, optimize, "webkit-jsc-c", false, cmake);
     for ([_]*Step.Compile{ jsc, jsc_c }) |lib| {
         lib.step.dependOn(&sync.step);
         const m = lib.root_module;
@@ -455,6 +473,7 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: st
         .{ .cwd_relative = b.fmt("{s}/webkit-derived", .{stable_root}) },
         .{ .cwd_relative = derived_stable },
         .{ .cwd_relative = b.fmt("{s}/inspector", .{derived_stable}) },
+        configDir(b, mode),
         b.path("vendor/webkit"),
         b.path("vendor/webkit/Source/WTF"),
         b.path("vendor/webkit/Source/bmalloc"),
@@ -468,7 +487,7 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: st
     };
 }
 
-fn newLib(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimize, name: []const u8, is_cxx: bool, cmake: []const u8) *Step.Compile {
+fn newLib(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: std.builtin.Optimize, name: []const u8, is_cxx: bool, cmake: []const u8) *Step.Compile {
     const mod = b.createModule(.{
         .target = exe.cppTarget(b, &.{}),
         .optimize = optimize,
@@ -477,12 +496,19 @@ fn newLib(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimize, n
         .link_libcpp = is_cxx,
         .sanitize_c = .off,
     });
-    // cmakeconfig.h; the vendor root holds the copy.
-    mod.addIncludePath(b.path("vendor/webkit"));
+    mod.addIncludePath(configDir(b, mode));
     mod.addIncludePath(forwardingDir(b, deps, cmake));
+    if (mode == .release) mod.addIncludePath(b.path("vendor/webkit/Source/bmalloc/mimalloc/mimalloc/include"));
     const lib = b.addLibrary(.{ .name = name, .root_module = mod, .linkage = .static });
     lib.incremental = false;
     return lib;
+}
+
+fn configDir(b: *Build, mode: exe.Mode) LazyPath {
+    return b.path(switch (mode) {
+        .debug => "vendor/webkit/config/debug",
+        .release => "vendor/webkit/config/release",
+    });
 }
 
 const Tu = struct { path: []const u8, cxx: bool, derived: bool = false };
@@ -575,7 +601,7 @@ fn writeLayer(b: *Build, base: []const Named, extra: []const Named) LazyPath {
 
 /// Target-compiled C++ whose object file the offlineasm scripts scan for
 /// magic-marker constant arrays; never linked or executed.
-fn extractorObject(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimize, cmake: []const u8, comptime name: []const u8, derived: LazyPath) *Step.Compile {
+fn extractorObject(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: std.builtin.Optimize, cmake: []const u8, comptime name: []const u8, derived: LazyPath) *Step.Compile {
     const arena = b.graph.arena;
 
     const mod = b.createModule(.{
@@ -603,6 +629,7 @@ fn extractorObject(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Op
     mod.addIncludePath(b.path("vendor/webkit/Source/WTF"));
     mod.addIncludePath(b.path("vendor/webkit/Source/bmalloc"));
     mod.addIncludePath(forwardingDir(b, deps, cmake));
+    if (mode == .release) mod.addIncludePath(b.path("vendor/webkit/Source/bmalloc/mimalloc/mimalloc/include"));
 
     mod.addCSourceFile(.{ .file = jscPath(b, "llint/" ++ name ++ ".cpp"), .flags = flags.items, .language = .cpp });
 
@@ -656,6 +683,12 @@ fn forwardingDir(b: *Build, deps: *const exe.DepPkgs, cmake: []const u8) LazyPat
             };
         }
     }
+    cwd.symLink(
+        io,
+        b.fmt("{s}/mimalloc/mimalloc/include/mimalloc.h", .{bmalloc_abs}),
+        b.fmt("{s}/bmalloc/mimalloc.h", .{fwd}),
+        .{},
+    ) catch |err| std.debug.panic("symlink mimalloc.h: {t}", .{err});
     // ICU headers live in two source dirs; merge them into one unicode/ view.
     cwd.createDirPath(io, b.fmt("{s}/unicode", .{fwd})) catch @panic("mkdir webkit-fwd/unicode");
     const icu_abs = depRootAbs(b, deps.icu);
@@ -717,7 +750,15 @@ fn rootJoin(b: *Build, rel: []const u8) []const u8 {
 /// variable are skipped.
 fn cmakeList(arena: std.mem.Allocator, text: []const u8, name: []const u8) []const []const u8 {
     const header = std.fmt.allocPrint(arena, "set({s}", .{name}) catch @panic("OOM");
-    const start = std.mem.indexOf(u8, text, header) orelse std.debug.panic("cmake list not found: {s}", .{name});
+    const start = blk: {
+        var from: usize = 0;
+        while (std.mem.indexOfPos(u8, text, from, header)) |candidate| {
+            const end = candidate + header.len;
+            if (end == text.len or std.ascii.isWhitespace(text[end]) or text[end] == ')') break :blk candidate;
+            from = end;
+        }
+        std.debug.panic("cmake list not found: {s}", .{name});
+    };
     var out: std.ArrayList([]const u8) = .empty;
     var lines = std.mem.splitScalar(u8, text[start + header.len ..], '\n');
     while (lines.next()) |raw| {

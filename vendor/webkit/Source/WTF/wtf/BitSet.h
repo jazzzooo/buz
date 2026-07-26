@@ -50,7 +50,8 @@ public:
         return bitSetSize;
     }
 
-    constexpr bool get(size_t, Dependency = Dependency()) const;
+    constexpr bool get(size_t) const;
+    constexpr bool concurrentGet(size_t, Dependency = Dependency()) const;
     constexpr void set(size_t);
     constexpr void set(size_t, bool);
     constexpr bool testAndSet(size_t); // Returns the previous bit value.
@@ -162,9 +163,16 @@ private:
 };
 
 template<size_t bitSetSize, typename WordType>
-inline constexpr bool BitSet<bitSetSize, WordType>::get(size_t n, Dependency dependency) const
+inline constexpr bool BitSet<bitSetSize, WordType>::get(size_t n) const
 {
-    return !!(dependency.consume(this)->bits[n / wordSize] & (one << (n % wordSize)));
+    return !!(bits[n / wordSize] & (one << (n % wordSize)));
+}
+
+template<size_t bitSetSize, typename WordType>
+ALWAYS_INLINE constexpr bool BitSet<bitSetSize, WordType>::concurrentGet(size_t n, Dependency dependency) const
+{
+    const WordType* data = dependency.consume(&bits[n / wordSize]);
+    return !!(std::bit_cast<const Atomic<WordType>*>(data)->loadRelaxed() & (one << (n % wordSize)));
 }
 
 template<size_t bitSetSize, typename WordType>

@@ -114,19 +114,13 @@ pub const JSType = enum(u8) {
     /// ```
     HeapBigInt = 3,
 
-    /// Heap-allocated double values (new in recent WebKit).
-    HeapDouble = 4,
-
-    /// Heap-allocated int32 values (new in recent WebKit).
-    HeapInt32 = 5,
-
     /// JavaScript Symbol primitive - unique identifiers.
     /// ```js
     /// Symbol()
     /// Symbol('description')
     /// Symbol.for('key')
     /// ```
-    Symbol = 6,
+    Symbol = 4,
 
     /// Accessor property descriptor containing getter and/or setter functions.
     /// ```js
@@ -135,7 +129,7 @@ pub const JSType = enum(u8) {
     ///   set(v) { this._value = v; }
     /// })
     /// ```
-    GetterSetter = 7,
+    GetterSetter = 5,
 
     /// Custom native getter/setter implementation for built-in properties.
     /// ```js
@@ -143,10 +137,10 @@ pub const JSType = enum(u8) {
     /// const arr = [1, 2, 3];
     /// arr.length; // uses CustomGetterSetter
     /// ```
-    CustomGetterSetter = 8,
+    CustomGetterSetter = 6,
 
     /// Wrapper for native API values exposed to JavaScript.
-    APIValueWrapper = 9,
+    APIValueWrapper = 7,
 
     /// Compiled native code executable for built-in functions.
     /// ```js
@@ -154,72 +148,76 @@ pub const JSType = enum(u8) {
     /// parseInt("42")
     /// Array.from([1, 2, 3])
     /// ```
-    NativeExecutable = 10,
+    NativeExecutable = 8,
 
     /// Compiled executable for top-level program code.
-    ProgramExecutable = 11,
+    ProgramExecutable = 9,
 
     /// Compiled executable for ES6 module code.
-    ModuleProgramExecutable = 12,
+    ModuleProgramExecutable = 10,
 
     /// Compiled executable for eval() expressions.
     /// ```js
     /// eval('var x = 42; console.log(x);')
     /// ```
-    EvalExecutable = 13,
+    EvalExecutable = 11,
 
     /// Compiled executable for function bodies.
     /// ```js
     /// function foo() { return 42; }
     /// const bar = () => 123
     /// ```
-    FunctionExecutable = 14,
+    FunctionExecutable = 12,
 
-    UnlinkedFunctionExecutable = 15,
-    UnlinkedProgramCodeBlock = 16,
-    UnlinkedModuleProgramCodeBlock = 17,
-    UnlinkedEvalCodeBlock = 18,
-    UnlinkedFunctionCodeBlock = 19,
+    UnlinkedFunctionExecutable = 13,
+    UnlinkedProgramCodeBlock = 14,
+    UnlinkedModuleProgramCodeBlock = 15,
+    UnlinkedEvalCodeBlock = 16,
+    UnlinkedFunctionCodeBlock = 17,
 
     /// Compiled bytecode block ready for execution.
-    CodeBlock = 20,
+    CodeBlock = 18,
 
-    JSCellButterfly = 21,
-    JSSourceCode = 22,
+    JSCellButterfly = 19,
+    JSSourceCode = 20,
 
     /// Slim promise reaction (no rejection handler / context payload).
     /// Internal object used in the promise resolution mechanism.
-    SlimPromiseReaction = 23,
+    SlimPromiseReaction = 21,
 
     /// Full promise reaction (carries onFulfilled/onRejected and async context).
     /// Internal object used in the promise resolution mechanism.
-    FullPromiseReaction = 24,
+    FullPromiseReaction = 22,
 
     /// Context object for Promise.all() operations.
     /// Internal object used to track the state of Promise.all() resolution.
     /// Note: Moved before ObjectType in recent WebKit.
-    PromiseAllContext = 25,
+    PromiseAllContext = 23,
 
     /// Global context for Promise.all() (new in recent WebKit).
-    PromiseAllGlobalContext = 26,
+    PromiseAllGlobalContext = 24,
+
+    WebAssemblyStreamingContext = 25,
 
     /// Microtask dispatcher for promise/microtask queue management.
-    JSMicrotaskDispatcher = 27,
+    JSMicrotaskDispatcher = 26,
 
     /// Module loader registry entry (new C++ module loader).
-    ModuleRegistryEntry = 28,
+    ModuleRegistryEntry = 27,
 
     /// Module loading context (new C++ module loader).
-    ModuleLoadingContext = 29,
+    ModuleLoadingContext = 28,
 
     /// Module loader payload (new C++ module loader).
-    ModuleLoaderPayload = 30,
+    ModuleLoaderPayload = 29,
 
     /// Module graph loading state (new C++ module loader).
-    ModuleGraphLoadingState = 31,
+    ModuleGraphLoadingState = 30,
 
     /// JSModuleLoader cell type (new C++ module loader).
-    JSModuleLoader = 32,
+    JSModuleLoader = 31,
+
+    Sentinel = 32,
 
     /// Base JavaScript object type.
     /// ```js
@@ -468,17 +466,19 @@ pub const JSType = enum(u8) {
     ///   yield await promise;
     /// }
     /// ```
-    AsyncGenerator = 76,
+    AsyncFunctionGenerator = 76,
+
+    AsyncGenerator = 77,
 
     /// Iterator for Array objects.
     /// ```js
     /// [1,2,3][Symbol.iterator]()
     /// for (const x of array) {}
     /// ```
-    JSArrayIterator = 77,
+    JSArrayIterator = 78,
 
-    Iterator = 78,
-    IteratorHelper = 79,
+    Iterator = 79,
+    IteratorHelper = 80,
 
     /// Iterator for Map objects.
     /// ```js
@@ -487,32 +487,32 @@ pub const JSType = enum(u8) {
     /// map.entries()
     /// for (const [k,v] of map) {}
     /// ```
-    MapIterator = 80,
+    MapIterator = 81,
 
     /// Iterator for Set objects.
     /// ```js
     /// set.values()
     /// for (const value of set) {}
     /// ```
-    SetIterator = 81,
+    SetIterator = 82,
 
     /// Iterator for String objects.
     /// ```js
     /// 'hello'[Symbol.iterator]()
     /// for (const char of string) {}
     /// ```
-    StringIterator = 82,
+    StringIterator = 83,
 
-    WrapForValidIterator = 83,
+    WrapForValidIterator = 84,
 
     /// Iterator for RegExp string matching.
     /// ```js
     /// 'abc'.matchAll(/./g)
     /// for (const match of string.matchAll(regex)) {}
     /// ```
-    RegExpStringIterator = 84,
+    RegExpStringIterator = 85,
 
-    AsyncFromSyncIterator = 85,
+    AsyncFromSyncIterator = 86,
 
     /// JavaScript Promise object for asynchronous operations.
     /// ```js
@@ -520,7 +520,7 @@ pub const JSType = enum(u8) {
     /// Promise.resolve(42)
     /// async function foo() { await promise; }
     /// ```
-    JSPromise = 86,
+    JSPromise = 87,
 
     /// JavaScript Map object for key-value storage.
     /// ```js
@@ -528,7 +528,7 @@ pub const JSType = enum(u8) {
     /// map.set(key, value)
     /// map.get(key)
     /// ```
-    Map = 87,
+    Map = 88,
 
     /// JavaScript Set object for unique value storage.
     /// ```js
@@ -536,34 +536,34 @@ pub const JSType = enum(u8) {
     /// set.add(value)
     /// set.has(value)
     /// ```
-    Set = 88,
+    Set = 89,
 
     /// WeakMap for weak key-value references.
     /// ```js
     /// new WeakMap()
     /// weakMap.set(object, value)
     /// ```
-    WeakMap = 89,
+    WeakMap = 90,
 
     /// WeakSet for weak value references.
     /// ```js
     /// new WeakSet()
     /// weakSet.add(object)
     /// ```
-    WeakSet = 90,
+    WeakSet = 91,
 
-    WebAssemblyModule = 91,
-    WebAssemblyInstance = 92,
-    WebAssemblyGCObject = 93,
+    WebAssemblyModule = 92,
+    WebAssemblyInstance = 93,
+    WebAssemblyGCObject = 94,
 
     /// Boxed String object.
     /// ```js
     /// new String("hello")
     /// ```
-    StringObject = 94,
+    StringObject = 95,
 
-    DerivedStringObject = 95,
-    InternalFieldTuple = 96,
+    DerivedStringObject = 96,
+    InternalFieldTuple = 97,
 
     MaxJS = 0b11111111,
     Event = 0b11101111,
@@ -601,6 +601,7 @@ pub const JSType = enum(u8) {
             .Int8Array,
             .InternalFunction,
             .JSArrayIterator,
+            .AsyncFunctionGenerator,
             .AsyncGenerator,
             .JSDate,
             .JSFunction,
@@ -731,7 +732,7 @@ pub const JSType = enum(u8) {
         };
     }
 
-    pub const LastMaybeFalsyCellPrimitive = JSType.HeapBigInt;
+    pub const LastValueCompareCell = JSType.HeapBigInt;
     pub const LastJSCObject = JSType.InternalFieldTuple; // This is the last "JSC" Object type. After this, we have embedder's (e.g., WebCore) extended object types.
 
     pub inline fn isString(this: JSType) bool {

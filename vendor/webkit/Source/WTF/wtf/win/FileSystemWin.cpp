@@ -159,7 +159,7 @@ static String generateTemporaryPath(const Function<bool(const String&)>& action)
     return proposedPath;
 }
 
-std::pair<String, FileHandle> openTemporaryFile(StringView, StringView suffix)
+std::pair<String, FileHandle> openTemporaryFile(StringView, StringView suffix, const String&)
 {
     // FIXME: Suffix is not supported, but OK for now since the code using it is macOS-port-only.
     ASSERT_UNUSED(suffix, suffix.isEmpty());

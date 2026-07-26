@@ -40,7 +40,7 @@ ASCIILiteral errorTypeName(ErrorType errorType)
 
 ASCIILiteral errorTypeName(ErrorTypeWithExtension errorType)
 {
-    static constexpr auto errorTypeNames = std::to_array<ASCIILiteral>({
+    static constexpr auto errorTypeNames = WTF::toArray<ASCIILiteral>({
 #define DECLARE_ERROR_TYPES_STRING(name) #name ""_s,
         JSC_ERROR_TYPES_WITH_EXTENSION(DECLARE_ERROR_TYPES_STRING)
 #undef DECLARE_ERROR_TYPES_STRING

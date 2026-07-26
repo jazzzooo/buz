@@ -25,7 +25,6 @@
 
 #include "config.h"
 #include "JSCConfig.h"
-#include <wtf/WTFConfig.h>
 
 namespace JSC {
 

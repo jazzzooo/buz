@@ -157,6 +157,7 @@ public:
     LValue add(LValue, LValue);
     LValue sub(LValue, LValue);
     LValue mul(LValue, LValue);
+    LValue uMulHigh(LValue, LValue);
     LValue div(LValue, LValue);
     LValue chillDiv(LValue, LValue);
     LValue mod(LValue, LValue);

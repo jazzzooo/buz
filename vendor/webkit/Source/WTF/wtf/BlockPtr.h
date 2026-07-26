@@ -25,6 +25,10 @@
 
 #pragma once
 
+#include <wtf/Platform.h>
+
+#if PLATFORM(COCOA)
+
 #include <Block.h>
 #include <utility>
 #include <wtf/Assertions.h>
@@ -243,3 +247,5 @@ inline auto makeBlockPtr(F&& function)
 
 using WTF::BlockPtr;
 using WTF::makeBlockPtr;
+
+#endif // PLATFORM(COCOA)

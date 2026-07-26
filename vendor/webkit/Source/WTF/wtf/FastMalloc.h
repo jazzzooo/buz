@@ -482,6 +482,28 @@ using WTF::fastCompactAlignedMalloc;
     { \
         ::WTF::fastFree(p); \
     } \
+    \
+    /* Over-aligned types (e.g. alignas(64)) select these; without them the */ \
+    /* plain operator new above is chosen and the alignment is silently lost. */ \
+    void* operator new(size_t size, std::align_val_t alignment) \
+    { \
+        return ::WTF::fastAlignedMalloc(static_cast<size_t>(alignment), size); \
+    } \
+    \
+    void operator delete(void* p, std::align_val_t) \
+    { \
+        ::WTF::fastFree(p); \
+    } \
+    \
+    void* operator new[](size_t size, std::align_val_t alignment) \
+    { \
+        return ::WTF::fastAlignedMalloc(static_cast<size_t>(alignment), size); \
+    } \
+    \
+    void operator delete[](void* p, std::align_val_t) \
+    { \
+        ::WTF::fastFree(p); \
+    } \
     void* operator new(size_t, NotNullTag, void* location) \
     { \
         ASSERT(location); \
@@ -516,6 +538,28 @@ using WTF::fastCompactAlignedMalloc;
     } \
     \
     void operator delete[](void* p) \
+    { \
+        ::WTF::fastFree(p); \
+    } \
+    \
+    /* Over-aligned types (e.g. alignas(64)) select these; without them the */ \
+    /* plain operator new above is chosen and the alignment is silently lost. */ \
+    void* operator new(size_t size, std::align_val_t alignment) \
+    { \
+        return ::WTF::fastCompactAlignedMalloc(static_cast<size_t>(alignment), size); \
+    } \
+    \
+    void operator delete(void* p, std::align_val_t) \
+    { \
+        ::WTF::fastFree(p); \
+    } \
+    \
+    void* operator new[](size_t size, std::align_val_t alignment) \
+    { \
+        return ::WTF::fastCompactAlignedMalloc(static_cast<size_t>(alignment), size); \
+    } \
+    \
+    void operator delete[](void* p, std::align_val_t) \
     { \
         ::WTF::fastFree(p); \
     } \

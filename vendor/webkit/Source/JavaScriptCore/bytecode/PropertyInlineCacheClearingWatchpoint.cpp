@@ -31,6 +31,7 @@
 #include "CodeBlockInlines.h"
 #include "JSCellInlines.h"
 #include "PropertyInlineCache.h"
+#include "StructureInlinesLight.h"
 #include <wtf/TZoneMallocInlines.h>
 
 namespace JSC {
@@ -75,6 +76,12 @@ void StructureTransitionPropertyInlineCacheClearingWatchpoint::fireInternal(VM& 
     }
 
     m_key.object()->structure()->addTransitionWatchpoint(this);
+}
+
+AdaptiveValuePropertyInlineCacheClearingWatchpoint::AdaptiveValuePropertyInlineCacheClearingWatchpoint(ClangVTableWorkaroundTag, WatchpointSet& watchpointSet)
+    : m_owner(nullptr)
+    , m_watchpointSet(watchpointSet)
+{
 }
 
 void AdaptiveValuePropertyInlineCacheClearingWatchpoint::handleFire(VM& vm, const FireDetail&)

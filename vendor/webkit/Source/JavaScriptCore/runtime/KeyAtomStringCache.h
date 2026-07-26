@@ -26,7 +26,6 @@
 #pragma once
 
 #include <array>
-#include <wtf/text/AtomStringImpl.h>
 
 namespace JSC {
 

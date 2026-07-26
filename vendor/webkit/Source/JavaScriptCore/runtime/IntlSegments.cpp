@@ -32,9 +32,6 @@
 #include "IntlWorkaround.h"
 #include "JSCInlines.h"
 #include "ObjectConstructor.h"
-#include <unicode/ucurr.h>
-#include <unicode/uloc.h>
-#include <wtf/unicode/icu/ICUHelpers.h>
 
 namespace JSC {
 

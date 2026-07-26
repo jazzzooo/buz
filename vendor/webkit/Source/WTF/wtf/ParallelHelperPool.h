@@ -33,7 +33,6 @@
 #include <wtf/SharedTask.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/ThreadSafeRefCounted.h>
-#include <wtf/Threading.h>
 #include <wtf/Vector.h>
 #include <wtf/WeakRandom.h>
 #include <wtf/text/CString.h>

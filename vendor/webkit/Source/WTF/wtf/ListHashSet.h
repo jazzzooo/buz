@@ -262,8 +262,8 @@ inline void ListHashSetLink::unlink()
 
 inline void ListHashSetLink::insertAfter(ListHashSetLink* prev)
 {
-    ASSERT(m_prev = this);
-    ASSERT(m_next = this);
+    ASSERT(m_prev == this);
+    ASSERT(m_next == this);
 
     m_prev = prev;
     m_next = prev->m_next;
@@ -274,8 +274,8 @@ inline void ListHashSetLink::insertAfter(ListHashSetLink* prev)
 
 inline void ListHashSetLink::insertBefore(ListHashSetLink* next)
 {
-    ASSERT(m_prev = this);
-    ASSERT(m_next = this);
+    ASSERT(m_prev == this);
+    ASSERT(m_next == this);
 
     m_prev = next->m_prev;
     m_next = next;
@@ -582,12 +582,14 @@ inline bool ListHashSet<T, U>::isEmpty() const
 template<typename T, typename U>
 inline T& ListHashSet<T, U>::first() LIFETIME_BOUND
 {
+    RELEASE_ASSERT(!isEmpty());
     return *begin();
 }
 
 template<typename T, typename U>
 inline const T& ListHashSet<T, U>::first() const LIFETIME_BOUND
 {
+    RELEASE_ASSERT(!isEmpty());
     return *begin();
 }
 
@@ -611,6 +613,7 @@ inline T ListHashSet<T, U>::takeFirst()
 template<typename T, typename U>
 inline T& ListHashSet<T, U>::last() LIFETIME_BOUND
 {
+    RELEASE_ASSERT(!isEmpty());
     auto last = --end();
     return *last;
 }
@@ -618,6 +621,7 @@ inline T& ListHashSet<T, U>::last() LIFETIME_BOUND
 template<typename T, typename U>
 inline const T& ListHashSet<T, U>::last() const LIFETIME_BOUND
 {
+    RELEASE_ASSERT(!isEmpty());
     auto last = --end();
     return *last;
 }

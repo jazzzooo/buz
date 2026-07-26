@@ -66,9 +66,7 @@ void ModuleRegistryEntry::visitChildrenImpl(JSCell* cell, Visitor& visitor)
     visitor.append(thisObject->m_fetchPromise);
     visitor.append(thisObject->m_modulePromise);
     visitor.append(thisObject->m_loadPromise);
-    visitor.append(thisObject->m_fetchError);
-    visitor.append(thisObject->m_instantiationError);
-    visitor.append(thisObject->m_evaluationError);
+    visitor.append(thisObject->m_error);
 }
 
 DEFINE_VISIT_CHILDREN(ModuleRegistryEntry);
@@ -110,8 +108,8 @@ JSPromise* ModuleRegistryEntry::ensureFetchPromise(JSGlobalObject* globalObject)
     JSPromise* promise = JSPromise::create(vm, globalObject->promiseStructure());
     promise->markAsHandled();
 
-    if (m_fetchError)
-        promise->reject(vm, globalObject, m_fetchError.get());
+    if (m_status == Status::FetchFailed && m_error)
+        promise->reject(vm, m_error.get());
 
     m_fetchPromise.set(vm, this, promise);
     return promise;
@@ -131,7 +129,7 @@ JSPromise* ModuleRegistryEntry::ensureModulePromise(JSGlobalObject* globalObject
     m_modulePromise.set(vm, this, modulePromise);
 
     JSPromise* fetchPromise = ensureFetchPromise(globalObject);
-    fetchPromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::ModuleRegistryFetchSettled, modulePromise, this);
+    fetchPromise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::ModuleRegistryFetchSettled, modulePromise, this);
 
     return modulePromise;
 }
@@ -145,15 +143,13 @@ JSValue ModuleRegistryEntry::error(JSGlobalObject* globalObject) const
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-    if (JSValue fetchError = m_fetchError.get()) {
-        if (auto* errorInstance = dynamicDowncast<ErrorInstance>(fetchError))
-            RELEASE_AND_RETURN(scope, JSModuleLoader::duplicateError(globalObject, errorInstance));
-        RELEASE_AND_RETURN(scope, fetchError);
+    if (JSValue error = m_error.get()) {
+        if (m_status == Status::FetchFailed) {
+            if (auto* errorInstance = dynamicDowncast<ErrorInstance>(error))
+                RELEASE_AND_RETURN(scope, JSModuleLoader::duplicateError(globalObject, errorInstance));
+        }
+        RELEASE_AND_RETURN(scope, error);
     }
-    if (m_instantiationError)
-        RELEASE_AND_RETURN(scope, m_instantiationError.get());
-    if (m_evaluationError)
-        RELEASE_AND_RETURN(scope, m_evaluationError.get());
     if (m_record) {
         if (auto* cyclic = dynamicDowncast<CyclicModuleRecord>(m_record.get()))
             RELEASE_AND_RETURN(scope, cyclic->evaluationError());
@@ -163,17 +159,9 @@ JSValue ModuleRegistryEntry::error(JSGlobalObject* globalObject) const
 
 JSValue ModuleRegistryEntry::fetchError() const
 {
-    return m_fetchError.get();
-}
-
-JSValue ModuleRegistryEntry::instantiationError() const
-{
-    return m_instantiationError.get();
-}
-
-JSValue ModuleRegistryEntry::evaluationError() const
-{
-    return m_evaluationError.get();
+    if (m_status == Status::FetchFailed)
+        return m_error.get();
+    return { };
 }
 
 auto ModuleRegistryEntry::status() const -> Status
@@ -195,28 +183,30 @@ void ModuleRegistryEntry::setFetchError(JSGlobalObject* globalObject, JSValue er
 {
     ASSERT(error);
     VM& vm = globalObject->vm();
-    m_fetchError.set(vm, this, error);
+    m_error.set(vm, this, error);
     if (m_status == Status::New && m_fetchPromise)
-        m_fetchPromise->reject(vm, globalObject, error);
+        m_fetchPromise->reject(vm, error);
     setStatus(Status::FetchFailed);
 }
 
 void ModuleRegistryEntry::setInstantiationError(JSGlobalObject* globalObject, JSValue error)
 {
     ASSERT(error);
+    if (m_status == Status::FetchFailed)
+        return;
     VM& vm = globalObject->vm();
-    m_instantiationError.set(vm, this, error);
-    if (m_status != Status::FetchFailed)
-        setStatus(Status::InstantiationFailed);
+    m_error.set(vm, this, error);
+    setStatus(Status::InstantiationFailed);
 }
 
 void ModuleRegistryEntry::setEvaluationError(JSGlobalObject* globalObject, JSValue error)
 {
     ASSERT(error);
+    if (m_status == Status::FetchFailed)
+        return;
     VM& vm = globalObject->vm();
-    m_evaluationError.set(vm, this, error);
-    if (m_status != Status::FetchFailed)
-        setStatus(Status::EvaluationFailed);
+    m_error.set(vm, this, error);
+    setStatus(Status::EvaluationFailed);
 }
 
 void ModuleRegistryEntry::setStatus(Status status)
@@ -241,7 +231,7 @@ void ModuleRegistryEntry::provideFetch(JSGlobalObject* globalObject, JSSourceCod
 
     scope.release();
     m_status = Status::Fetching;
-    m_fetchPromise->fulfill(vm, globalObject, jsSourceCode);
+    m_fetchPromise->fulfill(vm, jsSourceCode);
 }
 
 void ModuleRegistryEntry::fetchComplete(JSGlobalObject* globalObject, AbstractModuleRecord* record)

@@ -53,6 +53,13 @@ Symbol::Symbol(VM& vm, SymbolImpl& uid)
 {
 }
 
+Symbol::Symbol(VM& vm, const String& string, JSString* description)
+    : Base(vm, vm.symbolStructure.get())
+    , m_privateName(PrivateName::Description, string)
+    , m_description(description, WriteBarrierEarlyInit)
+{
+}
+
 void Symbol::finishCreation(VM& vm)
 {
     Base::finishCreation(vm);
@@ -79,10 +86,39 @@ double Symbol::toNumber(JSGlobalObject* globalObject) const
     return 0.0;
 }
 
+JSString* Symbol::toString(JSGlobalObject* globalObject)
+{
+    VM& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    if (auto* string = m_string.get())
+        return string;
+
+    auto description = tryGetDescriptiveString();
+    if (!description) [[unlikely]] {
+        throwOutOfMemoryError(globalObject, scope);
+        return nullptr;
+    }
+    auto* string = jsNontrivialString(vm, description.value());
+    m_string.set(vm, this, string);
+    ASSERT(!string->isRope());
+    return string;
+}
+
 void Symbol::destroy(JSCell* cell)
 {
     static_cast<Symbol*>(cell)->Symbol::~Symbol();
 }
+
+template<typename Visitor>
+void Symbol::visitChildrenImpl(JSCell* cell, Visitor& visitor)
+{
+    auto* thisCell = uncheckedDowncast<Symbol>(cell);
+    ASSERT_GC_OBJECT_INHERITS(thisCell, info());
+    Base::visitChildren(thisCell, visitor);
+    visitor.append(thisCell->m_description);
+    visitor.append(thisCell->m_string);
+}
+DEFINE_VISIT_CHILDREN(Symbol);
 
 Expected<String, ErrorTypeWithExtension> Symbol::tryGetDescriptiveString() const
 {
@@ -92,10 +128,18 @@ Expected<String, ErrorTypeWithExtension> Symbol::tryGetDescriptiveString() const
     return description;
 }
 
-String Symbol::description() const
+JSString* Symbol::description(VM& vm)
 {
+    if (auto* string = m_description.get())
+        return string;
+
     auto& uid = m_privateName.uid();
-    return uid.isNullSymbol() ? String() : uid;
+    if (uid.isNullSymbol())
+        return nullptr;
+
+    auto* string = jsString(vm, String(uid));
+    m_description.set(vm, this, string);
+    return string;
 }
 
 Symbol* Symbol::create(VM& vm)
@@ -108,6 +152,13 @@ Symbol* Symbol::create(VM& vm)
 Symbol* Symbol::createWithDescription(VM& vm, const String& description)
 {
     Symbol* symbol = new (NotNull, allocateCell<Symbol>(vm)) Symbol(vm, description);
+    symbol->finishCreation(vm);
+    return symbol;
+}
+
+Symbol* Symbol::createWithDescription(VM& vm, const String& description, JSString* string)
+{
+    Symbol* symbol = new (NotNull, allocateCell<Symbol>(vm)) Symbol(vm, description, string);
     symbol->finishCreation(vm);
     return symbol;
 }

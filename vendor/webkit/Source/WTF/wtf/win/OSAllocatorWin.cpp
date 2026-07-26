@@ -145,7 +145,24 @@ bool OSAllocator::tryProtect(void* address, size_t bytes, bool readable, bool wr
         ASSERT(!readable && !writable);
         protection = PAGE_NOACCESS;
     }
-    return VirtualAlloc(address, bytes, MEM_COMMIT, protection);
+
+    // VirtualAlloc(MEM_COMMIT) cannot span multiple MEM_RESERVE regions, so walk
+    // the range with VirtualQuery and commit one region at a time. See 306171@main.
+    size_t totalSeen = 0;
+    char* currentPtr = static_cast<char*>(address);
+    while (totalSeen < bytes) {
+        MEMORY_BASIC_INFORMATION memInfo;
+        if (!VirtualQuery(currentPtr, &memInfo, sizeof(memInfo)))
+            return false;
+        ASSERT(memInfo.RegionSize > 0);
+        ASSERT(static_cast<char*>(memInfo.BaseAddress) == currentPtr);
+        size_t chunkSize = std::min(static_cast<size_t>(memInfo.RegionSize), bytes - totalSeen);
+        if (!VirtualAlloc(currentPtr, chunkSize, MEM_COMMIT, protection))
+            return false;
+        currentPtr += chunkSize;
+        totalSeen += chunkSize;
+    }
+    return true;
 }
 
 void OSAllocator::protect(void* address, size_t bytes, bool readable, bool writable)

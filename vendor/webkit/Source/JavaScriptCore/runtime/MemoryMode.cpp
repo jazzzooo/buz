@@ -27,7 +27,6 @@
 #include "MemoryMode.h"
 
 #include <wtf/Assertions.h>
-#include <wtf/DataLog.h>
 #include <wtf/PrintStream.h>
 
 namespace WTF {

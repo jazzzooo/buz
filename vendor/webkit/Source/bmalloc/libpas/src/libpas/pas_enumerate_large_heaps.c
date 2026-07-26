@@ -29,7 +29,6 @@
 
 #include "pas_enumerate_large_heaps.h"
 
-#include "pas_enumerator_internal.h"
 #include "pas_large_map.h"
 #include "pas_range_begin_min_heap.h"
 #include "pas_ptr_hash_map.h"

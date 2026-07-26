@@ -8,7 +8,6 @@ b3/testb3_3.cpp
 b3/testb3_6.cpp
 b3/testb3_7.cpp
 bytecode/BytecodeDumper.h
-bytecode/CodeOrigin.h
 bytecode/GetByStatus.h
 bytecode/ICStatusMap.h
 bytecode/Repatch.cpp

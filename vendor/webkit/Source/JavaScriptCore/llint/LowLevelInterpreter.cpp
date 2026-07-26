@@ -143,6 +143,8 @@ public:
     ALWAYS_INLINE uintptr_t u() const { return m_value; }
     ALWAYS_INLINE int32_t i32() const { return m_value; }
     ALWAYS_INLINE uint32_t u32() const { return m_value; }
+    ALWAYS_INLINE int16_t i16() const { return m_value; }
+    ALWAYS_INLINE uint16_t u16() const { return m_value; }
     ALWAYS_INLINE int8_t i8() const { return m_value; }
     ALWAYS_INLINE uint8_t u8() const { return m_value; }
 
@@ -172,7 +174,8 @@ public:
     operator CallLinkInfo*() { return std::bit_cast<CallLinkInfo*>(m_value); }
     operator void*() { return reinterpret_cast<void*>(m_value); }
 
-    template<typename T, typename = std::enable_if_t<sizeof(T) == sizeof(uintptr_t)>>
+    template<typename T>
+        requires (sizeof(T) == sizeof(uintptr_t))
     ALWAYS_INLINE void operator=(T value) { m_value = std::bit_cast<uintptr_t>(value); }
 #if USE(JSVALUE64)
     ALWAYS_INLINE void operator=(int32_t value) { m_value = static_cast<intptr_t>(value); }
@@ -203,7 +206,8 @@ public:
 
     ALWAYS_INLINE void operator=(double value) { m_value = value; }
 
-    template<typename T, typename = std::enable_if_t<sizeof(T) == sizeof(uintptr_t) && std::is_integral<T>::value>>
+    template<typename T>
+        requires (sizeof(T) == sizeof(uintptr_t) && std::integral<T>)
     ALWAYS_INLINE void operator=(T value) { m_value = std::bit_cast<double>(value); }
 
 private:

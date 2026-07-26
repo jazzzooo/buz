@@ -72,27 +72,49 @@ enum class CanonicalShuffle : uint8_t {
 
 class SIMDShuffle {
 public:
-    static std::optional<unsigned> isOnlyOneSideMask(v128_t pattern)
+    static std::optional<std::tuple<unsigned, v128_t>> isOnlyOneSideMask(v128_t pattern)
     {
-        unsigned first = pattern.u8x16[0];
-        if (first < 16) {
-            for (unsigned i = 1; i < 16; ++i) {
-                if (pattern.u8x16[i] >= 16)
+        std::optional<unsigned> index;
+        for (unsigned i = 0; i < 16; ++i) {
+            unsigned element = pattern.u8x16[i];
+            if (element < 16) {
+                if (index && index.value() != 0)
                     return std::nullopt;
+                index = 0;
+            } else if (element < 32) {
+                if (index && index.value() != 1)
+                    return std::nullopt;
+                index = 1;
+            } else {
+                // Accept OOB.
             }
-            return 0;
         }
 
-        if (first >= 32)
-            return std::nullopt;
+        if (!index)
+            return std::tuple { 2, vectorAllOnes() };
 
-        for (unsigned i = 1; i < 16; ++i) {
-            if (pattern.u8x16[i] < 16)
-                return std::nullopt;
-            if (pattern.u8x16[i] >= 32)
-                return std::nullopt;
+        if (index.value() == 0) {
+            auto newPattern = pattern;
+            for (unsigned i = 0; i < 16; ++i) {
+                unsigned element = pattern.u8x16[i];
+                if (element < 16)
+                    newPattern.u8x16[i] = element;
+                else
+                    newPattern.u8x16[i] = 0xFF; // OOB
+            }
+            return std::tuple { 0, newPattern };
         }
-        return 1;
+
+        ASSERT(index.value() == 1);
+        auto newPattern = pattern;
+        for (unsigned i = 0; i < 16; ++i) {
+            unsigned element = pattern.u8x16[i];
+            if (element < 32)
+                newPattern.u8x16[i] = element - 16;
+            else
+                newPattern.u8x16[i] = 0xFF; // OOB
+        }
+        return std::tuple { 1, newPattern };
     }
 
     static std::optional<uint8_t> isI8x16SameElement(v128_t pattern)
@@ -362,6 +384,15 @@ public:
             }
         }
         return result;
+    }
+
+    static v128_t toCanonicalUnaryPattern(v128_t pattern)
+    {
+        for (unsigned i = 0; i < 16; ++i) {
+            if (pattern.u8x16[i] > 15)
+                pattern.u8x16[i] = 0xFF; // Force OOB
+        }
+        return pattern;
     }
 
 private:

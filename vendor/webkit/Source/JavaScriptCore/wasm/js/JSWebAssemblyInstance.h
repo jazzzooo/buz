@@ -292,6 +292,7 @@ public:
     JSValue getFunctionWrapper(unsigned) const;
     typename FunctionWrapperMap::ValuesConstIteratorRange functionWrappers() const { return m_functionWrappers.values(); }
     void setFunctionWrapper(unsigned, JSValue);
+    JSValue ensureFunctionWrapper(Wasm::FunctionSpaceIndex);
     void setBuiltinCalleeBits(uint32_t builtinID, CalleeBits calleeBits) { m_builtinCalleeBits[builtinID] = calleeBits; }
 
     Wasm::Global* getGlobalBinding(unsigned i)

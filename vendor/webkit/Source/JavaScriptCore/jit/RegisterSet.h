@@ -129,7 +129,7 @@ public:
     }
 
     [[nodiscard]] inline constexpr ScalarRegisterSet toScalarRegisterSet() const;
-    [[nodiscard]] inline constexpr ScalarRegisterSet normalizeWidths() const;
+    [[nodiscard]] inline constexpr RegisterSet normalizeWidths() const;
 
     inline constexpr void forEach(const Invocable<void(Reg)> auto& func) const
     {
@@ -286,6 +286,7 @@ public:
     JS_EXPORT_PRIVATE static RegisterSet NODELETE calleeSaveRegisters();
     JS_EXPORT_PRIVATE static RegisterSet NODELETE vmCalleeSaveRegisters();
     JS_EXPORT_PRIVATE static RegisterAtOffsetList* vmCalleeSaveRegisterOffsets();
+    JS_EXPORT_PRIVATE static std::span<const int8_t> vmCalleeSaveBufferSlotsByRegIndex();
     JS_EXPORT_PRIVATE static RegisterSet NODELETE llintBaselineCalleeSaveRegisters();
     JS_EXPORT_PRIVATE static RegisterSet NODELETE dfgCalleeSaveRegisters();
     JS_EXPORT_PRIVATE static RegisterSet NODELETE ftlCalleeSaveRegisters();
@@ -455,11 +456,11 @@ constexpr ScalarRegisterSet RegisterSet::toScalarRegisterSet() const
     return ScalarRegisterSet(*this);
 }
 
-constexpr ScalarRegisterSet RegisterSet::normalizeWidths() const
+constexpr RegisterSet RegisterSet::normalizeWidths() const
 {
-    auto bits = m_bits;
-    bits.merge(m_upperBits);
-    return ScalarRegisterSet { bits };
+    RegisterSet result = *this;
+    result.m_bits.merge(result.m_upperBits);
+    return result;
 }
 
 struct ScalarRegisterSetHash {

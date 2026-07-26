@@ -28,6 +28,7 @@
 
 #if ENABLE(JIT)
 
+#include "JITOperations.h"
 #include "LinkBuffer.h"
 #include "MaxFrameExtentForSlowPathCall.h"
 #include "ShadowChicken.h"

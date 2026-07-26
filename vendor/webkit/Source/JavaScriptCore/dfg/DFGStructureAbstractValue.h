@@ -96,7 +96,7 @@ public:
     void assertIsRegistered(Graph&) const { }
 #endif
     
-    void clobber();
+    void clobber(Graph&);
     void observeInvalidationPoint() { setClobbered(false); }
     
     void observeTransition(RegisteredStructure from, RegisteredStructure to);

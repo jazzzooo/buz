@@ -58,6 +58,7 @@
 #include "JavaScriptCore/StackFrame.h"
 #include "JavaScriptCore/StackVisitor.h"
 #include "JavaScriptCore/VM.h"
+#include "wtf/TimeZone.h"
 #include "AddEventListenerOptions.h"
 #include "AsyncContextFrame.h"
 #include "BunClientData.h"
@@ -310,6 +311,7 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
             JSC::Options::heapGrowthMaxIncrease() = 2.0;
             JSC::Options::useAsyncStackTrace() = true;
             JSC::Options::useExplicitResourceManagement() = true;
+            JSC::Options::useTemporal() = false;
             JSC::dangerouslyOverrideJSCBytecodeCacheVersion(getWebKitBytecodeCacheVersion());
 
 #ifdef BUN_DEBUG
@@ -1605,6 +1607,9 @@ JSC_DECLARE_HOST_FUNCTION(makeDOMExceptionForBuiltins);
 JSC_DECLARE_HOST_FUNCTION(createWritableStreamFromInternal);
 JSC_DECLARE_HOST_FUNCTION(getInternalWritableStream);
 JSC_DECLARE_HOST_FUNCTION(isAbortSignal);
+JSC_DECLARE_HOST_FUNCTION(jsBunPeekPromiseStatus);
+JSC_DECLARE_HOST_FUNCTION(jsBunPeekPromiseSettledValue);
+JSC_DECLARE_HOST_FUNCTION(jsBunPokePromiseAsHandled);
 
 JSC_DEFINE_HOST_FUNCTION(makeGetterTypeErrorForBuiltins, (JSGlobalObject * globalObject, CallFrame* callFrame))
 {
@@ -1704,6 +1709,42 @@ JSC_DEFINE_HOST_FUNCTION(isAbortSignal, (JSGlobalObject*, CallFrame* callFrame))
 {
     ASSERT(callFrame->argumentCount() == 1);
     return JSValue::encode(jsBoolean(callFrame->uncheckedArgument(0).inherits<JSAbortSignal>()));
+}
+
+static inline JSC::JSPromise* peekPromiseArgument(CallFrame* callFrame)
+{
+    static_assert(static_cast<unsigned>(JSC::JSPromise::Status::Pending) == 0);
+    static_assert(static_cast<unsigned>(JSC::JSPromise::Status::Fulfilled) == 1);
+    static_assert(static_cast<unsigned>(JSC::JSPromise::Status::Rejected) == 2);
+
+    ASSERT(callFrame->argumentCount() == 1);
+    JSValue value = callFrame->uncheckedArgument(0);
+    if (!value.inherits<JSC::JSPromise>()) [[unlikely]]
+        return nullptr;
+    return static_cast<JSC::JSPromise*>(value.asCell());
+}
+
+JSC_DEFINE_HOST_FUNCTION(jsBunPeekPromiseStatus, (JSGlobalObject*, CallFrame* callFrame))
+{
+    auto* promise = peekPromiseArgument(callFrame);
+    if (!promise) [[unlikely]]
+        return JSValue::encode(jsNumber(0));
+    return JSValue::encode(jsNumber(static_cast<unsigned>(promise->status())));
+}
+
+JSC_DEFINE_HOST_FUNCTION(jsBunPeekPromiseSettledValue, (JSGlobalObject*, CallFrame* callFrame))
+{
+    auto* promise = peekPromiseArgument(callFrame);
+    if (!promise) [[unlikely]]
+        return JSValue::encode(jsUndefined());
+    return JSValue::encode(promise->result());
+}
+
+JSC_DEFINE_HOST_FUNCTION(jsBunPokePromiseAsHandled, (JSGlobalObject*, CallFrame* callFrame))
+{
+    if (auto* promise = peekPromiseArgument(callFrame))
+        promise->markAsHandled();
+    return JSValue::encode(jsUndefined());
 }
 
 extern "C" JSC::EncodedJSValue Bun__Jest__createTestModuleObject(JSC::JSGlobalObject*);
@@ -2833,6 +2874,9 @@ void GlobalObject::addBuiltinGlobals(JSC::VM& vm)
         GlobalPropertyInfo(builtinNames.cloneArrayBufferPrivateName(), JSFunction::create(vm, this, 3, String(), cloneArrayBuffer, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
         GlobalPropertyInfo(builtinNames.structuredCloneForStreamPrivateName(), JSFunction::create(vm, this, 1, String(), structuredCloneForStream, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
         GlobalPropertyInfo(builtinNames.isAbortSignalPrivateName(), JSFunction::create(vm, this, 1, String(), isAbortSignal, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
+        GlobalPropertyInfo(builtinNames.peekPromiseStatusPrivateName(), JSFunction::create(vm, this, 1, String(), jsBunPeekPromiseStatus, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
+        GlobalPropertyInfo(builtinNames.peekPromiseSettledValuePrivateName(), JSFunction::create(vm, this, 1, String(), jsBunPeekPromiseSettledValue, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
+        GlobalPropertyInfo(builtinNames.pokePromiseAsHandledPrivateName(), JSFunction::create(vm, this, 1, String(), jsBunPokePromiseAsHandled, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
         GlobalPropertyInfo(builtinNames.getInternalWritableStreamPrivateName(), JSFunction::create(vm, this, 1, String(), getInternalWritableStream, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
         GlobalPropertyInfo(builtinNames.createWritableStreamFromInternalPrivateName(), JSFunction::create(vm, this, 1, String(), createWritableStreamFromInternal, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
         GlobalPropertyInfo(builtinNames.fulfillModuleSyncPrivateName(), JSFunction::create(vm, this, 1, String(), functionFulfillModuleSync, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
@@ -3089,7 +3133,8 @@ extern "C" bool JSGlobalObject__setTimeZone(JSC::JSGlobalObject* globalObject, c
     auto& vm = JSC::getVM(globalObject);
 
     if (WTF::setTimeZoneOverride(Zig::toString(*timeZone))) {
-        vm.dateCache.resetIfNecessarySlow();
+        WTF::timeZoneDidChange();
+        vm.dateCache.clearForTimeZoneChange();
         return true;
     }
 
@@ -3350,11 +3395,13 @@ JSC::Identifier GlobalObject::moduleLoaderResolve(JSGlobalObject* jsGlobalObject
 }
 
 JSC::JSPromise* GlobalObject::moduleLoaderImportModule(JSGlobalObject* jsGlobalObject,
-    JSModuleLoader*,
+    JSModuleLoader* moduleLoader,
     JSString* moduleNameValue,
     RefPtr<JSC::ScriptFetchParameters> parameters,
-    const SourceOrigin& sourceOrigin)
+    const SourceOrigin& sourceOrigin,
+    bool deferred)
 {
+    UNUSED_PARAM(deferred);
     auto* globalObject = static_cast<Zig::GlobalObject*>(jsGlobalObject);
 
     VM& vm = JSC::getVM(globalObject);
@@ -3372,11 +3419,31 @@ JSC::JSPromise* GlobalObject::moduleLoaderImportModule(JSGlobalObject* jsGlobalO
 
     auto moduleName = moduleNameValue->value(globalObject);
     RETURN_IF_EXCEPTION(scope, nullptr);
+
+    auto sourceURL = sourceOrigin.url();
+    String sourceOriginStringHolder;
+    int64_t referrerAsyncOrder = -1;
+    if (sourceURL.isEmpty()) {
+        sourceOriginStringHolder = "."_s;
+    } else if (sourceURL.protocolIsFile()) {
+        sourceOriginStringHolder = sourceURL.fileSystemPath();
+        auto query = sourceURL.queryWithLeadingQuestionMark();
+        auto referrerKey = query.isEmpty()
+            ? JSC::Identifier::fromString(vm, sourceOriginStringHolder)
+            : JSC::Identifier::fromString(vm, makeString(sourceOriginStringHolder, query));
+        referrerAsyncOrder = moduleLoader->asyncEvaluationOrderForKey(referrerKey);
+    } else if (sourceURL.protocol() == "builtin"_s) {
+        ASSERT(sourceURL.string().startsWith("builtin://"_s));
+        sourceOriginStringHolder = sourceURL.string().substringSharingImpl(10);
+    } else {
+        sourceOriginStringHolder = sourceURL.path().toString();
+    }
+
     if (globalObject->onLoadPlugins.hasVirtualModules()) {
-        if (auto resolution = globalObject->onLoadPlugins.resolveVirtualModule(moduleName, sourceOrigin.url().protocolIsFile() ? sourceOrigin.url().fileSystemPath() : String())) {
+        if (auto resolution = globalObject->onLoadPlugins.resolveVirtualModule(moduleName, sourceURL.protocolIsFile() ? sourceOriginStringHolder : String())) {
             resolvedIdentifier = JSC::Identifier::fromString(vm, resolution.value());
 
-            auto result = JSC::importModule(globalObject, resolvedIdentifier, JSC::Identifier(), parameters, nullptr);
+            auto result = JSC::importModule(globalObject, resolvedIdentifier, JSC::Identifier(), parameters, nullptr, /* deferred */ false, referrerAsyncOrder);
             if (scope.exception()) [[unlikely]] {
                 return JSC::JSPromise::rejectedPromiseWithCaughtException(globalObject, scope);
             }
@@ -3388,7 +3455,6 @@ JSC::JSPromise* GlobalObject::moduleLoaderImportModule(JSGlobalObject* jsGlobalO
         ErrorableString resolved;
         memset(&resolved, 0, sizeof(resolved));
 
-        auto sourceURL = sourceOrigin.url();
         BunString moduleNameZ;
         String moduleStringHolder;
         if (moduleName->startsWith("file://"_s)) {
@@ -3404,18 +3470,6 @@ JSC::JSPromise* GlobalObject::moduleLoaderImportModule(JSGlobalObject* jsGlobalO
         }
 
         BunString queryString = { BunStringTag::Empty, nullptr };
-        String sourceOriginStringHolder;
-
-        if (sourceURL.isEmpty()) {
-            sourceOriginStringHolder = String("."_s);
-        } else if (sourceURL.protocolIsFile()) {
-            sourceOriginStringHolder = sourceURL.fileSystemPath();
-        } else if (sourceURL.protocol() == "builtin"_s) {
-            ASSERT(sourceURL.string().startsWith("builtin://"_s));
-            sourceOriginStringHolder = sourceURL.string().substringSharingImpl(10 /* builtin:// */);
-        } else {
-            sourceOriginStringHolder = sourceURL.path().toString();
-        }
 
         auto sourceOriginZ = Bun::toStringRef(sourceOriginStringHolder);
 
@@ -3446,11 +3500,8 @@ JSC::JSPromise* GlobalObject::moduleLoaderImportModule(JSGlobalObject* jsGlobalO
         sourceOriginZ.deref();
     }
 
-    // The C++ module loader now extracts `with.type` into a
-    // ScriptFetchParameters before calling this hook, so `parameters` is
-    // already the parsed RefPtr (or null). Just forward it.
     auto result = JSC::importModule(globalObject, resolvedIdentifier,
-        JSC::Identifier(), WTF::move(parameters), nullptr);
+        JSC::Identifier(), WTF::move(parameters), nullptr, /* deferred */ false, referrerAsyncOrder);
     if (scope.exception()) [[unlikely]] {
         return JSC::JSPromise::rejectedPromiseWithCaughtException(globalObject, scope);
     }
@@ -3463,7 +3514,7 @@ static JSC::JSPromise* rejectedInternalPromise(JSC::JSGlobalObject* globalObject
 {
     auto& vm = JSC::getVM(globalObject);
     JSPromise* promise = JSPromise::create(vm, globalObject->promiseStructure());
-    promise->rejectAsHandled(vm, globalObject, value);
+    promise->rejectAsHandled(vm, value);
     return promise;
 }
 
@@ -3471,7 +3522,7 @@ static JSC::JSPromise* resolvedInternalPromise(JSC::JSGlobalObject* globalObject
 {
     auto& vm = JSC::getVM(globalObject);
     JSPromise* promise = JSPromise::create(vm, globalObject->promiseStructure());
-    promise->fulfill(vm, globalObject, value);
+    promise->fulfill(vm, value);
     return promise;
 }
 
@@ -3625,32 +3676,31 @@ extern "C" void JSC__Wasm__StreamingCompiler__addBytes(JSC::Wasm::StreamingCompi
     compiler->addBytes(std::span(spanPtr, spanSize));
 }
 
-static JSC::JSPromise* handleResponseOnStreamingAction(JSGlobalObject* lexicalGlobalObject, JSC::JSValue source, JSC::Wasm::CompilerMode mode, JSC::JSObject* importObject, std::optional<JSC::WebAssemblyCompileOptions>&& compileOptions)
+static void handleResponseOnStreamingAction(JSGlobalObject* lexicalGlobalObject, JSC::JSPromise* promise, JSC::JSValue source, JSC::Wasm::CompilerMode mode, JSC::JSObject* importObject, std::optional<JSC::WebAssemblyCompileOptions>&& compileOptions)
 {
     auto globalObject = defaultGlobalObject(lexicalGlobalObject);
     auto& vm = JSC::getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
     JSC::JSLockHolder locker(vm);
 
-    auto promise = JSC::JSPromise::create(vm, globalObject->promiseStructure());
     auto sourceCode = makeSource("[wasm code]"_s, SourceOrigin(), SourceTaintedOrigin::Untainted);
     auto compiler = JSC::Wasm::StreamingCompiler::create(vm, mode, globalObject, promise, importObject, WTF::move(compileOptions), sourceCode);
-
-    // getBodyStreamOrBytesForWasmStreaming throws the proper exception. Since this is being
-    // executed in a .then(...) callback, throwing is perfectly fine.
 
     auto readableStreamMaybe = JSC::JSValue::decode(Zig__GlobalObject__getBodyStreamOrBytesForWasmStreaming(
         globalObject, JSC::JSValue::encode(source), compiler.ptr()));
 
-    RETURN_IF_EXCEPTION(scope, nullptr);
+    if (scope.exception()) [[unlikely]] {
+        promise->rejectWithCaughtException(vm, scope);
+        return;
+    }
 
     // We were able to get the slice synchronously.
     if (readableStreamMaybe.isNull()) {
         compiler->finalize(globalObject);
 
-        // Apparently rejecting a Promise (done in JSC::Wasm::StreamingCompiler#fail) can throw
-        RETURN_IF_EXCEPTION(scope, nullptr);
-        return promise;
+        if (scope.exception()) [[unlikely]]
+            promise->rejectWithCaughtException(vm, scope);
+        return;
     }
 
     auto wrapper = WebCore::toJSNewlyCreated(globalObject, globalObject, WTF::move(compiler));
@@ -3660,18 +3710,18 @@ static JSC::JSPromise* handleResponseOnStreamingAction(JSGlobalObject* lexicalGl
 
     arguments.append(readableStreamMaybe);
     JSC::call(globalObject, builtin, callData, wrapper, arguments);
-    scope.assertNoException();
-    return promise;
+    if (scope.exception()) [[unlikely]]
+        promise->rejectWithCaughtException(vm, scope);
 }
 
-JSC::JSPromise* GlobalObject::compileStreaming(JSGlobalObject* globalObject, JSC::JSValue source, std::optional<JSC::WebAssemblyCompileOptions>&& compileOptions)
+void GlobalObject::compileStreaming(JSGlobalObject* globalObject, JSC::JSPromise* promise, JSC::JSValue source, std::optional<JSC::WebAssemblyCompileOptions>&& compileOptions)
 {
-    return handleResponseOnStreamingAction(globalObject, source, JSC::Wasm::CompilerMode::Validation, nullptr, WTF::move(compileOptions));
+    handleResponseOnStreamingAction(globalObject, promise, source, JSC::Wasm::CompilerMode::Validation, nullptr, WTF::move(compileOptions));
 }
 
-JSC::JSPromise* GlobalObject::instantiateStreaming(JSGlobalObject* globalObject, JSC::JSValue source, JSC::JSObject* importObject, std::optional<JSC::WebAssemblyCompileOptions>&& compileOptions)
+void GlobalObject::instantiateStreaming(JSGlobalObject* globalObject, JSC::JSPromise* promise, JSC::JSValue source, JSC::JSObject* importObject, std::optional<JSC::WebAssemblyCompileOptions>&& compileOptions)
 {
-    return handleResponseOnStreamingAction(globalObject, source, JSC::Wasm::CompilerMode::FullCompile, importObject, WTF::move(compileOptions));
+    handleResponseOnStreamingAction(globalObject, promise, source, JSC::Wasm::CompilerMode::FullCompile, importObject, WTF::move(compileOptions));
 }
 
 GlobalObject::PromiseFunctions GlobalObject::promiseHandlerID(Zig::FFIFunction handler)

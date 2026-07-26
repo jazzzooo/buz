@@ -41,11 +41,12 @@
 #include <wtf/Assertions.h>
 #include <wtf/Atomics.h>
 #include <wtf/Compiler.h>
+#include <wtf/CurrentThread.h>
 #include <wtf/DataLog.h>
 #include <wtf/DoublyLinkedList.h>
+#include <wtf/HashMap.h>
 #include <wtf/Lock.h>
 #include <wtf/PageBlock.h>
-#include <wtf/Threading.h>
 
 #if OS(DARWIN)
 #include <pthread/tsd_private.h>
@@ -53,14 +54,53 @@
 
 namespace WTF {
 
+static constexpr size_t inlineGranuleSize { 512 * KB };
+
 struct GranuleHeader : public DoublyLinkedListNode<GranuleHeader> {
-    // non-inclusive of the page this is on
-    // so a value of 0 encodes 1 total pages
+    enum class Type : uint8_t { Inline, Large };
+
     GranuleHeader* m_prev;
     GranuleHeader* m_next;
-    size_t additionalPageCount;
+    Type m_type { Type::Inline };
+    void* m_largeBase { nullptr };
+    size_t m_largeSize { 0 };
+
+    void* payload() const
+    {
+        if (m_type == Type::Inline) [[likely]]
+            return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(this) + sizeof(GranuleHeader));
+        RELEASE_ASSERT(m_type == Type::Large);
+        return m_largeBase;
+    }
+
+    size_t size() const
+    {
+        if (m_type == Type::Inline) [[likely]]
+            return inlineGranuleSize - sizeof(GranuleHeader);
+        RELEASE_ASSERT(m_type == Type::Large);
+        return m_largeSize;
+    }
 };
 using GranuleList = DoublyLinkedList<GranuleHeader>;
+
+static constexpr size_t largeAlignShift = 20; // 1 MiB
+
+class SequesteredLargeHeap {
+public:
+    WTF_EXPORT_PRIVATE GranuleHeader* allocate(size_t bytes);
+    WTF_EXPORT_PRIVATE void decommit(GranuleHeader* gran);
+
+private:
+    WTF_EXPORT_PRIVATE GranuleHeader* acquireHeader();
+    void releaseHeader(GranuleHeader* h) { m_emptyHeaders.push(h); }
+
+    void insertSorted(GranuleHeader*);
+
+    UncheckedKeyHashMap<uintptr_t, GranuleHeader*> m_liveMap;
+    GranuleList m_decommittedList;
+    GranuleList m_emptyHeaders;
+    Lock m_lock;
+};
 
 
 class ConcurrentDecommitQueue {
@@ -98,7 +138,7 @@ private:
 // FIXME: a lot of this, but not all, can be de-duped with SequesteredArenaAllocator::Arena
 class SequesteredImmortalAllocator {
     constexpr static bool verbose { false };
-    constexpr static size_t minGranuleSize { 16 * KB };
+    constexpr static size_t minGranuleSize { inlineGranuleSize };
     constexpr static size_t minHeadAlignment { alignof(std::max_align_t) };
 public:
     SequesteredImmortalAllocator() = default;
@@ -175,30 +215,32 @@ private:
 
     NEVER_INLINE void* allocateImplSlowPath(size_t bytes)
     {
-        addGranule(bytes);
+        // FIXME: routing through the GranuleProvider mixes up concerns.
+        // Extract this into some common logic instead
+        auto* granule = addGranule(bytes);
+        RELEASE_ASSERT(granule->m_type == GranuleHeader::Type::Inline);
 
         uintptr_t allocation = m_allocHead;
         m_allocHead = headIncrementedBy(bytes);
         ASSERT(m_allocHead <= m_allocBound);
-
         return reinterpret_cast<void*>(allocation);
     }
 
     NEVER_INLINE void* alignedAllocateImplSlowPath(size_t alignment, size_t bytes)
     {
-        // FIXME: store granule headers out-of-line to avoid wasting
-        // up to alignment bytes per granule on header padding.
-        addGranule(alignment + bytes);
+        // FIXME: if alignment-wasteage from the inline GranuleHeader
+        // is too high, fall back to large heap instead.
+        auto* granule = addGranule(alignment + bytes);
+        RELEASE_ASSERT(granule->m_type == GranuleHeader::Type::Inline);
 
         alignment = std::max(alignment, minHeadAlignment);
         uintptr_t allocation = WTF::roundUpToMultipleOf(alignment, m_allocHead);
         m_allocHead = headIncrementedBy((allocation - m_allocHead) + bytes);
         ASSERT(m_allocHead <= m_allocBound);
-
         return reinterpret_cast<void*>(allocation);
     }
 
-    WTF_EXPORT_PRIVATE GranuleHeader* addGranule(size_t minSize);
+    WTF_EXPORT_PRIVATE GranuleHeader* addGranule(size_t minSizeBytes);
 
     GranuleList m_granules { };
     uintptr_t m_allocHead { 0 };
@@ -341,6 +383,64 @@ private:
     Lock m_lock;
 };
 
+class SequesteredGranuleProvider {
+public:
+    enum class AllocationFailureMode {
+        Assert,
+        ReturnNull
+    };
+
+    SequesteredGranuleProvider() = default;
+
+    template<AllocationFailureMode mode>
+    GranuleHeader* mapGranule(size_t minSizeBytes)
+    {
+        if (minSizeBytes <= inlineGranuleSize - sizeof(GranuleHeader)) [[likely]]
+            return mapInlineGranule<mode>();
+        return mapLargeGranule(minSizeBytes);
+    }
+
+    size_t decommitGranule(GranuleHeader* gran)
+    {
+        switch (gran->m_type) {
+        case GranuleHeader::Type::Large: {
+            size_t bytes = gran->m_largeSize;
+            m_largeHeap.decommit(gran);
+            return bytes / pageSize();
+        }
+        case GranuleHeader::Type::Inline:
+            munmap(gran, inlineGranuleSize);
+            return inlineGranuleSize / pageSize();
+        }
+        RELEASE_ASSERT_NOT_REACHED();
+    }
+
+private:
+    friend class SequesteredImmortalHeap;
+
+    template<AllocationFailureMode mode>
+    GranuleHeader* mapInlineGranule()
+    {
+        void* p = mmap(nullptr, inlineGranuleSize, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (p == MAP_FAILED) [[unlikely]] {
+            if constexpr (mode == AllocationFailureMode::ReturnNull)
+                return nullptr;
+            RELEASE_ASSERT_NOT_REACHED();
+        }
+        auto* gran = reinterpret_cast<GranuleHeader*>(p);
+        gran->m_type = GranuleHeader::Type::Inline;
+        return gran;
+    }
+
+    GranuleHeader* mapLargeGranule(size_t bytes)
+    {
+        return m_largeHeap.allocate(bytes);
+    }
+
+    SequesteredLargeHeap m_largeHeap { };
+};
+
 class alignas(16 * KB) SequesteredImmortalHeap {
     friend class WTF::LazyNeverDestroyed<SequesteredImmortalHeap>;
     friend class SlotManager;
@@ -350,11 +450,6 @@ class alignas(16 * KB) SequesteredImmortalHeap {
 public:
     static constexpr size_t slotSize { 128 };
     static constexpr size_t numSlots { 110 };
-
-    enum class AllocationFailureMode {
-        Assert,
-        ReturnNull
-    };
 
     WTF_EXPORT_PRIVATE static SequesteredImmortalHeap& instance();
 
@@ -374,7 +469,7 @@ public:
         _pthread_setspecific_direct(key, reinterpret_cast<void*>(slot));
         pthread_key_init_np(key, nullptr);
 
-        dataLogLnIf(verbose, "SequesteredImmortalHeap: thread (", Thread::currentSingleton(), ") allocated slot ", slotIndex, " (", slot, ")");
+        dataLogLnIf(verbose, "SequesteredImmortalHeap: thread (", currentThreadID(), ") allocated slot ", slotIndex, " (", slot, ")");
         return slot;
     }
 
@@ -389,6 +484,7 @@ public:
     }
 
     SequesteredStackAllocator& stackAllocator() LIFETIME_BOUND { return m_stackAllocator; }
+    SequesteredGranuleProvider& granuleProvider() LIFETIME_BOUND { return m_granuleProvider; }
 
     void* getSlot()
     {
@@ -406,33 +502,6 @@ public:
         return sih.scavengeImpl(userdata);
     }
 
-    template<AllocationFailureMode mode>
-    GranuleHeader* mapGranule(size_t bytes)
-    {
-        void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANON, -1, 0);
-        if (p == MAP_FAILED) [[unlikely]] {
-            if constexpr (mode == AllocationFailureMode::ReturnNull)
-                return nullptr;
-            RELEASE_ASSERT_NOT_REACHED();
-        }
-        auto* gran = reinterpret_cast<GranuleHeader*>(p);
-        gran->additionalPageCount = bytes / pageSize() - 1;
-        return gran;
-    }
-
-    size_t decommitGranule(GranuleHeader* gran)
-    {
-        size_t pageCount = 1 + gran->additionalPageCount;
-        size_t bytes = pageCount * pageSize();
-
-        // FIXME: experiment with other decommit strategies
-        auto success = munmap(gran, bytes);
-        RELEASE_ASSERT(!success);
-
-        return pageCount;
-    }
-
 private:
     SequesteredImmortalHeap()
     {
@@ -448,11 +517,11 @@ private:
 
         // Cannot use dataLog here as it takes a lock
         if constexpr (verbose)
-            SAFE_FPRINTF(stderr, "SequesteredImmortalHeap: initialized by thread (%u)\n", Thread::currentSingleton().uid());
+            SAFE_FPRINTF(stderr, "SequesteredImmortalHeap: initialized by thread (%u)\n", currentThreadID());
     }
 
-    void installScavenger();
-    bool scavengeImpl(void* userdata);
+    WTF_EXPORT_PRIVATE void installScavenger();
+    WTF_EXPORT_PRIVATE bool scavengeImpl(void* userdata);
 
     static void* getUnchecked()
     {
@@ -463,6 +532,7 @@ private:
     SequesteredImmortalAllocator m_immortalAllocator { };
     SlotManager m_slotManager { };
     SequesteredStackAllocator m_stackAllocator { };
+    SequesteredGranuleProvider m_granuleProvider { };
 };
 
 }

@@ -26,6 +26,7 @@
 #include "IncrementalSweeper.h"
 #include "MarkedBlockInlines.h"
 #include "MarkedSpaceInlines.h"
+#include "WeakSetInlines.h"
 #include <wtf/ListDump.h>
 #include <wtf/SimpleStats.h>
 
@@ -327,6 +328,10 @@ void MarkedSpace::stopAllocatingForGood()
 
 void MarkedSpace::prepareForConservativeScan()
 {
+    if (m_conservativeScanIsPrepared)
+        return;
+    m_conservativeScanIsPrepared = true;
+
     m_preciseAllocationsForThisCollectionBegin = m_preciseAllocations.begin() + m_preciseAllocationsOffsetForThisCollection;
     m_preciseAllocationsForThisCollectionSize = m_preciseAllocations.size() - m_preciseAllocationsOffsetForThisCollection;
     m_preciseAllocationsForThisCollectionEnd = m_preciseAllocations.end();
@@ -355,6 +360,7 @@ void MarkedSpace::prepareForMarking()
 
 void MarkedSpace::resumeAllocating()
 {
+    m_conservativeScanIsPrepared = false;
     forEachDirectory(
         [&] (BlockDirectory& directory) -> IterationStatus {
             directory.resumeAllocating();

@@ -114,12 +114,14 @@ pas_basic_heap_page_caches* pas_create_basic_heap_page_caches_with_reserved_memo
     pas_large_heap_physical_page_sharing_cache_construct(
         &caches->megapage_large_heap_cache,
         pas_reserved_memory_provider_try_allocate,
-        provider);
+        provider,
+        pas_decommitted);
 
     pas_large_heap_physical_page_sharing_cache_construct(
         &caches->large_heap_cache,
         pas_reserved_memory_provider_try_allocate,
-        provider);
+        provider,
+        pas_decommitted);
     
     pas_megapage_cache_construct(
         &caches->small_exclusive_segregated_megapage_cache,

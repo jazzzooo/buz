@@ -169,6 +169,7 @@ public:
     void setHasTailCalls() { m_hasTailCalls = true; }
     bool allowDirectEvalCache() const { return !(m_features & NoEvalCacheFeature); }
     bool usesImportMeta() const { return m_features & ImportMetaFeature; }
+    bool isBuiltinDefaultClassConstructor() const { return m_isBuiltinDefaultClassConstructor; }
 
     bool hasExpressionInfo() { return !m_expressionInfo->isEmpty(); }
 
@@ -424,6 +425,7 @@ private:
     unsigned m_hasCapturedVariables : 1;
 
     unsigned m_isBuiltinFunction : 1;
+    unsigned m_isBuiltinDefaultClassConstructor : 1;
     unsigned m_superBinding : 1;
     unsigned m_scriptMode: 1;
     unsigned m_isArrowFunctionContext : 1;

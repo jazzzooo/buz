@@ -75,8 +75,6 @@ public:
     JSPromise* loadPromise() const;
     JSValue error(JSGlobalObject*) const;
     JSValue fetchError() const;
-    JSValue instantiationError() const;
-    JSValue evaluationError() const;
     Status status() const;
 
     void setRecord(VM&, AbstractModuleRecord*);
@@ -102,9 +100,9 @@ private:
     WriteBarrier<JSPromise> m_fetchPromise;
     WriteBarrier<JSPromise> m_modulePromise;
     WriteBarrier<JSPromise> m_loadPromise;
-    WriteBarrier<Unknown> m_fetchError;
-    WriteBarrier<Unknown> m_instantiationError;
-    WriteBarrier<Unknown> m_evaluationError;
+    // The fetch / instantiation / evaluation errors are mutually exclusive: m_status
+    // disambiguates which kind m_error holds (FetchFailed / InstantiationFailed / EvaluationFailed).
+    WriteBarrier<Unknown> m_error;
     Status m_status { Status::New };
 };
 

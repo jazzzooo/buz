@@ -25,12 +25,12 @@
 
 #pragma once
 
-#include "OrderedHashTable.h"
+#include <JavaScriptCore/JSOrderedHashTable.h>
 
 namespace JSC {
 
-class JSSet final : public OrderedHashSet {
-    using Base = OrderedHashSet;
+class JSSet final : public JSOrderedHashSet {
+    using Base = JSOrderedHashSet;
 public:
 
     DECLARE_EXPORT_INFO;

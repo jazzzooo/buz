@@ -101,18 +101,7 @@ public:
         return FunctionCodeIndex(spaceIndex - functionImportCount());
     }
 
-    // These two callee getters are only valid once the callees have been populated.
-
-    JSToWasmCallee& jsToWasmCalleeFromFunctionIndexSpace(FunctionSpaceIndex functionIndexSpace)
-    {
-        ASSERT(runnable());
-        ASSERT(functionIndexSpace >= functionImportCount());
-        unsigned calleeIndex = functionIndexSpace - functionImportCount();
-
-        auto callee = m_jsToWasmCallees.get(calleeIndex);
-        RELEASE_ASSERT(callee);
-        return *callee;
-    }
+    JSToWasmCallee& ensureJSToWasmCallee(const ModuleInformation&, FunctionSpaceIndex functionIndexSpace);
 
     RefPtr<JITCallee> replacement(const AbstractLocker& locker, FunctionSpaceIndex functionIndexSpace) WTF_REQUIRES_LOCK(m_lock)
     {
@@ -266,7 +255,8 @@ private:
     OptimizedCallees m_currentlyInstallingOptimizedCallees WTF_GUARDED_BY_LOCK(m_lock) { };
     FixedVector<OptimizedCallees> m_optimizedCallees WTF_GUARDED_BY_LOCK(m_lock);
     const Ref<IPIntCallees> m_ipintCallees;
-    UncheckedKeyHashMap<uint32_t, RefPtr<JSToWasmCallee>, DefaultHash<uint32_t>, WTF::UnsignedWithZeroKeyHashTraits<uint32_t>> m_jsToWasmCallees;
+    UncheckedKeyHashMap<uint32_t, RefPtr<JSToWasmCallee>, DefaultHash<uint32_t>, WTF::UnsignedWithZeroKeyHashTraits<uint32_t>> m_jsToWasmCallees WTF_GUARDED_BY_LOCK(m_jsToWasmCalleesLock);
+    mutable Lock m_jsToWasmCalleesLock;
 #if ENABLE(WEBASSEMBLY_BBQJIT) || ENABLE(WEBASSEMBLY_OMGJIT)
     // FIXME: We should probably find some way to prune dead entries periodically.
     UncheckedKeyHashMap<uint32_t, ThreadSafeWeakPtr<OMGOSREntryCallee>, DefaultHash<uint32_t>, WTF::UnsignedWithZeroKeyHashTraits<uint32_t>> m_osrEntryCallees WTF_GUARDED_BY_LOCK(m_lock);

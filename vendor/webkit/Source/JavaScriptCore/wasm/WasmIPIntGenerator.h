@@ -211,6 +211,7 @@ struct TableCopyMetadata {
 // Metadata structure for calls:
 
 struct CallSignatureMetadata {
+    SUPPRESS_UNCOUNTED_MEMBER const Wasm::RTT* rtt; // 8B -- owner of shared call bytecode
     uint32_t stackFrameSize; // 4B for stack frame size
     uint16_t numExtraResults; // 2B for number of spots we need to reserve for returns
     uint16_t numArguments; // 2B for number of arguments, to figure out how much to move SP down by
@@ -248,24 +249,21 @@ struct CallMetadata {
     uint32_t callProfileIndex; // 4B for call profile index
     Wasm::FunctionSpaceIndex functionIndex; // 4B for decoded index
     CallSignatureMetadata signature;
-    CallArgumentBytecode argumentBytecode[0];
 };
 
 struct TailCallMetadata {
     uint8_t length; // 1B for instruction length
     uint32_t callProfileIndex; // 4B for call profile index
     Wasm::FunctionSpaceIndex functionIndex; // 4B for decoded index
+    SUPPRESS_UNCOUNTED_MEMBER const Wasm::RTT* rtt; // 8B for RTT
     int32_t callerStackArgSize; // 4B for caller stack size
-    CallArgumentBytecode argumentBytecode[0];
 };
 
 struct CallIndirectMetadata {
     uint8_t length; // 1B for length
     uint32_t callProfileIndex; // 4B for call profile index
     uint32_t tableIndex; // 4B for table index
-    SUPPRESS_UNCOUNTED_MEMBER const Wasm::RTT* rtt; // 8B for RTT
     CallSignatureMetadata signature;
-    CallArgumentBytecode argumentBytecode[0];
 };
 
 struct TailCallIndirectMetadata {
@@ -274,21 +272,19 @@ struct TailCallIndirectMetadata {
     uint32_t tableIndex; // 4B for table index
     SUPPRESS_UNCOUNTED_MEMBER const Wasm::RTT* rtt; // 8B for RTT
     int32_t callerStackArgSize; // 4B for caller stack size
-    CallArgumentBytecode argumentBytecode[0];
 };
 
 struct CallRefMetadata {
     uint8_t length; // 1B for length
     uint32_t callProfileIndex; // 4B for call profile index
     CallSignatureMetadata signature;
-    CallArgumentBytecode argumentBytecode[0];
 };
 
 struct TailCallRefMetadata {
     uint8_t length; // 1B for length
     uint32_t callProfileIndex; // 4B for call profile index
+    SUPPRESS_UNCOUNTED_MEMBER const Wasm::RTT* rtt; // 8B for RTT
     int32_t callerStackArgSize; // 4B for caller stack size
-    CallArgumentBytecode argumentBytecode[0];
 };
 
 // Metadata structure for returns:
@@ -306,7 +302,6 @@ enum class CallResultBytecode : uint8_t { // (mINT)
 struct CallReturnMetadata {
     uint32_t stackFrameSize; // 4B for stack frame size
     uint32_t firstStackResultSPOffset; // 4B for stack argument offset
-    CallResultBytecode resultBytecode[0];
 };
 
 // argumINT / uINT
@@ -321,7 +316,7 @@ enum class ArgumINTBytecode: uint8_t {
     NumOpcodes // this must be the last element of the enum!
 };
 
-enum class UIntBytecode: uint8_t {
+enum class UINTBytecode: uint8_t {
     RetGPR = 0x0, // 0x00 - 0x07: r0 - r7
     RetFPR = 0x8, // 0x08 - 0x0f: fr0 - fr7
     Stack = 0x10,

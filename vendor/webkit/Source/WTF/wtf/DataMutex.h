@@ -20,9 +20,10 @@
 
 #pragma once
 
+#include <wtf/CurrentThread.h>
+#include <wtf/Function.h>
 #include <wtf/Lock.h>
 #include <wtf/ThreadSanitizerSupport.h>
-#include <wtf/Threading.h>
 
 namespace WTF {
 
@@ -59,7 +60,7 @@ private:
     Lock m_mutex;
     T m_data WTF_GUARDED_BY_LOCK(m_mutex);
 #if ENABLE_DATA_MUTEX_CHECKS
-    Thread* m_currentMutexHolder { nullptr };
+    uint32_t m_currentMutexHolder { 0 };
 #endif
 };
 
@@ -123,11 +124,11 @@ private:
 
     void lock() WTF_ACQUIRES_LOCK(m_dataMutex.m_mutex)
     {
-        DATA_MUTEX_CHECK(m_dataMutex.m_currentMutexHolder != &Thread::currentSingleton()); // Thread attempted recursive lock on non-recursive lock.
+        DATA_MUTEX_CHECK(m_dataMutex.m_currentMutexHolder != currentThreadID());
         mutex().lock();
         m_isLocked = true;
 #if ENABLE_DATA_MUTEX_CHECKS
-        m_dataMutex.m_currentMutexHolder = &Thread::currentSingleton();
+        m_dataMutex.m_currentMutexHolder = currentThreadID();
 #endif
     }
 
@@ -136,7 +137,7 @@ private:
         DATA_MUTEX_CHECK(mutex().isHeld());
         assertIsHeld(m_dataMutex.m_mutex);
 #if ENABLE_DATA_MUTEX_CHECKS
-        m_dataMutex.m_currentMutexHolder = nullptr;
+        m_dataMutex.m_currentMutexHolder = 0;
 #endif
         m_isLocked = false;
         mutex().unlock();

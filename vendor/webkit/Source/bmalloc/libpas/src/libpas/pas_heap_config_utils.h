@@ -317,7 +317,7 @@ typedef struct {
         .aligned_allocator = name ## _aligned_allocator, \
         .aligned_allocator_talks_to_sharing_pool = true, \
         .deallocator = NULL, \
-        .mmap_capability = pas_may_mmap, \
+        .page_flags = pas_page_flags_none, \
         .root_data = &name ## _root_data, \
         .prepare_to_enumerate = name ## _prepare_to_enumerate, \
         PAS_HEAP_CONFIG_SPECIALIZATIONS(name ## _heap_config), \

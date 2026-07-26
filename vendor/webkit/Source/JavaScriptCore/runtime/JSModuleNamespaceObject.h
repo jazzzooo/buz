@@ -27,7 +27,7 @@
 
 #include "AbstractModuleRecord.h"
 #include "JSDestructibleObject.h"
-#include <wtf/FixedVector.h>
+#include <wtf/OrderedHashMap.h>
 
 namespace JSC {
 
@@ -45,11 +45,11 @@ public:
         return vm.moduleNamespaceObjectSpace<mode>();
     }
 
-    static JSModuleNamespaceObject* create(JSGlobalObject* globalObject, Structure* structure, AbstractModuleRecord* moduleRecord, Vector<std::pair<Identifier, AbstractModuleRecord::Resolution>>&& resolutions, bool shouldPreventExtensions = true)
+    static JSModuleNamespaceObject* create(JSGlobalObject* globalObject, Structure* structure, AbstractModuleRecord* moduleRecord, Vector<std::pair<Identifier, AbstractModuleRecord::Resolution>>&& resolutions, bool shouldPreventExtensions = true, bool isDeferred = false)
     {
         VM& vm = getVM(globalObject);
-        JSModuleNamespaceObject* object = new (NotNull, allocateCell<JSModuleNamespaceObject>(vm)) JSModuleNamespaceObject(vm, structure);
-        object->finishCreation(globalObject, moduleRecord, WTF::move(resolutions), shouldPreventExtensions);
+        JSModuleNamespaceObject* object = new (NotNull, allocateCell<JSModuleNamespaceObject>(vm)) JSModuleNamespaceObject(vm, structure, moduleRecord, WTF::move(resolutions), isDeferred);
+        object->finishCreation(globalObject, shouldPreventExtensions);
         return object;
     }
 
@@ -79,20 +79,22 @@ public:
 #endif
 
 private:
-    JS_EXPORT_PRIVATE JSModuleNamespaceObject(VM&, Structure*);
-    JS_EXPORT_PRIVATE void finishCreation(JSGlobalObject*, AbstractModuleRecord*, Vector<std::pair<Identifier, AbstractModuleRecord::Resolution>>&&, bool shouldPreventExtensions);
+    JS_EXPORT_PRIVATE JSModuleNamespaceObject(VM&, Structure*, AbstractModuleRecord*, Vector<std::pair<Identifier, AbstractModuleRecord::Resolution>>&&, bool isDeferred);
+    JS_EXPORT_PRIVATE void finishCreation(JSGlobalObject*, bool shouldPreventExtensions);
     bool getOwnPropertySlotCommon(JSGlobalObject*, PropertyName, PropertySlot&);
+    ALWAYS_INLINE bool isSymbolLikeNamespaceKey(VM&, PropertyName);
+    void ensureDeferredNamespaceEvaluation(JSGlobalObject*);
 
     struct ExportEntry {
         Identifier localName;
         WriteBarrier<AbstractModuleRecord> moduleRecord;
     };
 
-    typedef UncheckedKeyHashMap<RefPtr<UniquedStringImpl>, ExportEntry, IdentifierRepHash, HashTraits<RefPtr<UniquedStringImpl>>> ExportMap;
+    using ExportMap = OrderedHashMap<RefPtr<UniquedStringImpl>, ExportEntry, IdentifierRepHash, HashTraits<RefPtr<UniquedStringImpl>>>;
 
     ExportMap m_exports;
-    FixedVector<Identifier> m_names;
     WriteBarrier<AbstractModuleRecord> m_moduleRecord;
+    const bool m_isDeferred;
 #if USE(BUN_JSC_ADDITIONS)
     bool m_isOverridingValue = false;
 #endif

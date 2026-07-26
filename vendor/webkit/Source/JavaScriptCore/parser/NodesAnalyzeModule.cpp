@@ -26,6 +26,7 @@
 #include "config.h"
 #include "Nodes.h"
 
+#include "IdentifierInlines.h"
 #include "JSCJSValueInlines.h"
 #include "JSModuleRecord.h"
 #include "ModuleAnalyzer.h"
@@ -102,11 +103,13 @@ bool ImportDeclarationNode::analyzeModule(ModuleAnalyzer& analyzer)
         return false;
     }
 
-    analyzer.appendRequestedModule(m_moduleName->moduleName(), WTF::move(result.value()));
+    auto phase = m_type == ImportType::Deferred ? AbstractModuleRecord::ModulePhase::Defer : AbstractModuleRecord::ModulePhase::Evaluation;
+    analyzer.appendRequestedModule(m_moduleName->moduleName(), WTF::move(result.value()), phase);
     for (auto* specifier : m_specifierList->specifiers()) {
         analyzer.moduleRecord()->addImportEntry(JSModuleRecord::ImportEntry {
             specifier->importedName() == analyzer.vm().propertyNames->starNamespacePrivateName
                 ? JSModuleRecord::ImportEntryType::Namespace : JSModuleRecord::ImportEntryType::Single,
+            phase,
             m_moduleName->moduleName(),
             specifier->importedName(),
             specifier->localName(),

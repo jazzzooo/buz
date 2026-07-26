@@ -29,6 +29,7 @@
 #if ENABLE(DFG_JIT)
 
 #include "CodeOrigin.h"
+#include "DFGBasicBlockInlines.h"
 #include "DFGBlockInsertionSet.h"
 #include "DFGCFAPhase.h"
 #include "DFGCloneHelper.h"
@@ -38,7 +39,6 @@
 #include "DFGNodeType.h"
 #include "DFGPhase.h"
 #include "FunctionAllowlist.h"
-#include <wtf/IndexMap.h>
 
 namespace JSC {
 namespace DFG {
@@ -518,7 +518,7 @@ public:
                     return false;
                 }
 
-                if (node->op() == StringFromCharCode) {
+                if (node->op() == StringFromCharCode || node->op() == StringFromCodePoint) {
                     // Not supported due to performance regression rdar://150526635
                     dataLogLnIf(Options::verboseLoopUnrolling(), "Skipping loop with header ", *data.header(), " since ", node, "<", node->op(), "> is not supported");
                     return false;
@@ -875,6 +875,7 @@ bool LoopUnrollingPhase::LoopData::isMaterialNode(Graph& graph, Node* node)
     case PhantomNewAsyncGeneratorFunction:
     case PhantomNewAsyncFunction:
     case PhantomNewInternalFieldObject:
+    case PhantomNewPromise:
     case PhantomCreateActivation:
     case PhantomDirectArguments:
     case PhantomCreateRest:
@@ -919,6 +920,7 @@ bool LoopUnrollingPhase::LoopData::isNumericComputationNode(Node* node)
     case ArithF16Round:
     case ArithPow:
     case ArithRandom:
+    case DateNow:
     case ArithRound:
     case ArithFloor:
     case ArithCeil:

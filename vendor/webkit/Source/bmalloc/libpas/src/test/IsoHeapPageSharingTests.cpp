@@ -4428,9 +4428,10 @@ void addAllTests()
         ADD_TEST(testFullVdirToVdirNewLateAllocation());
         ADD_TEST(testFullVdirToVdirNewDirAllocation());
         ADD_TEST(testFullVdirToVdirNewLateDirAllocation());
-        if (hasScope("combined_use_epoch"))
+        if (hasScope("combined_use_epoch")) {
             ADD_TEST(testFullVdirToVdirNewLargeAllocation());
-        ADD_TEST(testFullVdirToVdirNewLateLargeAllocation());
+            ADD_TEST(testFullVdirToVdirNewLateLargeAllocation());
+        }
         ADD_TEST(testFullVdirToDir());
         ADD_TEST(testFullVdirToDirBackwardsTarget());
         ADD_TEST(testFullVdirToDirBackwardsSource());
@@ -4438,11 +4439,11 @@ void addAllTests()
         ADD_TEST(testFullVdirToDirNewLateAllocation());
         ADD_TEST(testFullVdirToDirNewDirAllocation());
         ADD_TEST(testFullVdirToDirNewLateDirAllocation());
-        if (hasScope("combined_use_epoch"))
+        if (hasScope("combined_use_epoch")) {
             ADD_TEST(testFullVdirToDirNewLargeAllocation());
-        else
+            ADD_TEST(testFullVdirToDirNewLateLargeAllocation());
+        } else
             ADD_TEST(testFullNotVdirButLargeToDirNewLargeAllocation());
-        ADD_TEST(testFullVdirToDirNewLateLargeAllocation());
         ADD_TEST(testFullVdirToDirNewAllocationAlsoPhysical());
         ADD_TEST(testFullVdirToDirNewLateAllocationAlsoPhysical());
         ADD_TEST(testFullVdirToLarge());

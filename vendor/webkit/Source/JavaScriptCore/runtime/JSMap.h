@@ -25,12 +25,12 @@
 
 #pragma once
 
-#include "OrderedHashTable.h"
+#include <JavaScriptCore/JSOrderedHashTable.h>
 
 namespace JSC {
 
-class JSMap final : public OrderedHashMap {
-    using Base = OrderedHashMap;
+class JSMap final : public JSOrderedHashMap {
+    using Base = JSOrderedHashMap;
 public:
 
     DECLARE_EXPORT_INFO;

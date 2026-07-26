@@ -326,6 +326,7 @@ JSC_DECLARE_COMMON_SLOW_PATH(slow_path_instanceof_custom_from_instanceof);
 JSC_DECLARE_COMMON_SLOW_PATH(slow_path_throw_static_error_from_instanceof);
 JSC_DECLARE_COMMON_SLOW_PATH(slow_path_new_promise);
 JSC_DECLARE_COMMON_SLOW_PATH(slow_path_new_generator);
+JSC_DECLARE_COMMON_SLOW_PATH(slow_path_new_async_function_generator);
 JSC_DECLARE_COMMON_SLOW_PATH(slow_path_new_array_with_spread);
 JSC_DECLARE_COMMON_SLOW_PATH(slow_path_new_array_with_species);
 JSC_DECLARE_COMMON_SLOW_PATH(slow_path_new_array_buffer);
@@ -336,5 +337,8 @@ JSC_DECLARE_COMMON_SLOW_PATH(iterator_open_try_fast_wide32);
 JSC_DECLARE_COMMON_SLOW_PATH(iterator_next_try_fast_narrow);
 JSC_DECLARE_COMMON_SLOW_PATH(iterator_next_try_fast_wide16);
 JSC_DECLARE_COMMON_SLOW_PATH(iterator_next_try_fast_wide32);
+JSC_DECLARE_COMMON_SLOW_PATH(async_iterator_open_try_fast_narrow);
+JSC_DECLARE_COMMON_SLOW_PATH(async_iterator_open_try_fast_wide16);
+JSC_DECLARE_COMMON_SLOW_PATH(async_iterator_open_try_fast_wide32);
 
 } // namespace JSC

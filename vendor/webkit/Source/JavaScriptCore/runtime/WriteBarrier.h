@@ -29,6 +29,7 @@
 #include "HandleTypes.h"
 #include "StructureID.h"
 #include <type_traits>
+#include <wtf/ForbidHeapAllocation.h>
 #include <wtf/RawPtrTraits.h>
 #include <wtf/RawValueTraits.h>
 #include <wtf/TZoneMalloc.h>
@@ -128,7 +129,8 @@ public:
     void clear() { Traits::exchange(m_cell, nullptr); }
 
     // Slot cannot be used when pointers aren't stored as-is.
-    template<typename BarrierT, typename BarrierTraits, std::enable_if_t<std::is_same<BarrierTraits, RawPtrTraits<BarrierT>>::value, void*> = nullptr>
+    template<typename BarrierT, typename BarrierTraits>
+        requires std::same_as<BarrierTraits, RawPtrTraits<BarrierT>>
     struct SlotHelper {
         static BarrierT** reinterpret(typename BarrierTraits::StorageType* cell) { return reinterpret_cast<T**>(cell); }
     };
@@ -243,7 +245,7 @@ enum UndefinedWriteBarrierTagType { UndefinedWriteBarrierTag };
 enum NullWriteBarrierTagType { NullWriteBarrierTag };
 template <>
 class WriteBarrier<Unknown, RawValueTraits<Unknown>> : public WriteBarrierBase<Unknown, RawValueTraits<Unknown>> {
-    WTF_MAKE_TZONE_ALLOCATED_TEMPLATE(WriteBarrier);
+    WTF_FORBID_HEAP_ALLOCATION_ALLOWING_PLACEMENT_NEW;
 public:
     WriteBarrier()
     {

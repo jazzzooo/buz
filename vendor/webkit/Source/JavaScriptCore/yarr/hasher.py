@@ -28,11 +28,11 @@
 
 mask64 = 2**64 - 1
 mask32 = 2**32 - 1
-secret = [11562461410679940143, 16646288086500911323, 10285213230658275043, 6384245875588680899]
+secret = [3257665815644502181, 10067880064238660809, 5418857496715711651]
 
 
 def stringHash(str):
-    return wyhash(str)
+    return rapidhash(str)
 
 
 def maskTop8BitsAndAvoidZero(value):
@@ -50,15 +50,16 @@ def maskTop8BitsAndAvoidZero(value):
     return value
 
 
-def wyhash(string):
-    # https://github.com/wangyi-fudan/wyhash
+def rapidhash(string):
+    # https://github.com/Nicoshev/rapidhash
+    # Hashes raw ASCII bytes (1 byte per character).
     def add64(a, b):
         return (a + b) & mask64
 
     def multi64(a, b):
         return a * b & mask64
 
-    def wymum(A, B):
+    def rapid_mul128(A, B):
         ha = A >> 32
         hb = B >> 32
         la = A & mask32
@@ -75,77 +76,72 @@ def wyhash(string):
         hi = add64(rh, add64((rm0 >> 32), add64((rm1 >> 32), c)))
         return lo, hi
 
-    def wymix(A, B):
-        A, B = wymum(A, B)
+    def rapid_mix(A, B):
+        A, B = rapid_mul128(A, B)
         return A ^ B
 
-    def convert32BitTo64Bit(v):
-        v = (v | (v << 16)) & 0x0000_ffff_0000_ffff
-        return (v | (v << 8)) & 0x00ff_00ff_00ff_00ff
-
-    def convert16BitTo32Bit(v):
-        return (v | (v << 8)) & 0x00ff_00ff
-
-    charCount = len(string)
-    byteCount = charCount << 1
-    charIndex = 0
-    seed = 0
-    move1 = ((byteCount >> 3) << 2) >> 1
-
-    seed ^= wymix(seed ^ secret[0], secret[1])
+    length = len(string)
+    seed = rapid_mix(0 ^ secret[0], secret[1]) ^ length
     a = 0
     b = 0
 
-    def c2i(i):
-        return ord(string[i])
+    def read64(i):
+        return (ord(string[i])
+                | (ord(string[i + 1]) << 8)
+                | (ord(string[i + 2]) << 16)
+                | (ord(string[i + 3]) << 24)
+                | (ord(string[i + 4]) << 32)
+                | (ord(string[i + 5]) << 40)
+                | (ord(string[i + 6]) << 48)
+                | (ord(string[i + 7]) << 56))
 
-    def wyr8(i):
-        v = c2i(i) | (c2i(i + 1) << 8) | (c2i(i + 2) << 16) | (c2i(i + 3) << 24)
-        return convert32BitTo64Bit(v)
+    def read32(i):
+        return (ord(string[i])
+                | (ord(string[i + 1]) << 8)
+                | (ord(string[i + 2]) << 16)
+                | (ord(string[i + 3]) << 24))
 
-    def wyr4(i):
-        v = c2i(i) | (c2i(i + 1) << 8)
-        return convert16BitTo32Bit(v)
+    def readSmall(i, k):
+        return ((ord(string[i]) << 56)
+                | (ord(string[i + (k >> 1)]) << 32)
+                | ord(string[i + k - 1]))
 
-    def wyr2(i):
-        return c2i(i) << 16
-
-    if byteCount <= 16:
-        if byteCount >= 4:
-            a = (wyr4(charIndex) << 32) | wyr4(charIndex + move1)
-            charIndex = charIndex + charCount - 2
-            b = (wyr4(charIndex) << 32) | wyr4(charIndex - move1)
-        elif byteCount > 0:
-            a = wyr2(charIndex)
+    if length <= 16:
+        if length >= 4:
+            delta = 4 if length >= 8 else 0
+            a = (read32(0) << 32) | read32(length - 4)
+            b = (read32(delta) << 32) | read32(length - 4 - delta)
+        elif length > 0:
+            a = readSmall(0, length)
             b = 0
         else:
             a = b = 0
     else:
-        i = byteCount
+        i = length
+        off = 0
         if i > 48:
             see1 = seed
             see2 = seed
             while True:
-                seed = wymix(wyr8(charIndex) ^ secret[1], wyr8(charIndex + 4) ^ seed)
-                see1 = wymix(wyr8(charIndex + 8) ^ secret[2], wyr8(charIndex + 12) ^ see1)
-                see2 = wymix(wyr8(charIndex + 16) ^ secret[3], wyr8(charIndex + 20) ^ see2)
-                charIndex += 24
+                seed = rapid_mix(read64(off) ^ secret[0], read64(off + 8) ^ seed)
+                see1 = rapid_mix(read64(off + 16) ^ secret[1], read64(off + 24) ^ see1)
+                see2 = rapid_mix(read64(off + 32) ^ secret[2], read64(off + 40) ^ see2)
+                off += 48
                 i -= 48
-                if i <= 48:
+                if i < 48:
                     break
             seed ^= see1 ^ see2
-        while i > 16:
-            seed = wymix(wyr8(charIndex) ^ secret[1], wyr8(charIndex + 4) ^ seed)
-            i -= 16
-            charIndex += 8
-        move2 = i >> 1
-        a = wyr8(charIndex + move2 - 8)
-        b = wyr8(charIndex + move2 - 4)
+        if i > 16:
+            seed = rapid_mix(read64(off) ^ secret[2], read64(off + 8) ^ seed ^ secret[1])
+            if i > 32:
+                seed = rapid_mix(read64(off + 16) ^ secret[2], read64(off + 24) ^ seed)
+        a = read64(off + i - 16)
+        b = read64(off + i - 8)
     a ^= secret[1]
     b ^= seed
 
-    (a, b) = wymum(a, b)
-    hashValue = wymix(a ^ secret[0] ^ byteCount, b ^ secret[1]) & mask32
+    (a, b) = rapid_mul128(a, b)
+    hashValue = rapid_mix(a ^ secret[0] ^ length, b ^ secret[1]) & mask32
 
     return maskTop8BitsAndAvoidZero(hashValue)
 
@@ -203,6 +199,6 @@ def createHashTable(keys, hashTableName):
         string += '};\n'
         return string
 
-    hashTableForWYHash = createHashTableHelper(keys, hashTableName)
-    print(hashTableForWYHash)
+    hashTableForRapidHash = createHashTableHelper(keys, hashTableName)
+    print(hashTableForRapidHash)
 

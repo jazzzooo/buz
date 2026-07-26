@@ -32,7 +32,6 @@
 #include "pas_config.h"
 #include "pas_heap_config.h"
 #include "pas_megapage_cache.h"
-#include "pas_segregated_page.h"
 
 void* pas_medium_megapage_cache_try_allocate(
     pas_megapage_cache* cache,

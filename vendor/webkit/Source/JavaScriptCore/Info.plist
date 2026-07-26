@@ -20,5 +20,18 @@
 	<string>${SHORT_VERSION_STRING}</string>
 	<key>CFBundleVersion</key>
 	<string>${BUNDLE_VERSION}</string>
+	<key>MinimumOSVersion</key>
+	<string>${IOS_DEPLOYMENT_TARGET}</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>${PLATFORM_NAME}</string>
+	</array>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+		<integer>2</integer>
+	</array>
+	<key>DTPlatformName</key>
+	<string>${PLATFORM_NAME}</string>
 </dict>
 </plist>

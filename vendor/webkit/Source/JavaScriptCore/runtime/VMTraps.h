@@ -29,8 +29,7 @@
 #include "StackManager.h"
 #include <wtf/AutomaticThread.h>
 #include <wtf/Box.h>
-#include <wtf/Expected.h>
-#include <wtf/HashSet.h>
+#include <wtf/Condition.h>
 #include <wtf/Lock.h>
 #include <wtf/Locker.h>
 #include <wtf/RefPtr.h>
@@ -220,11 +219,7 @@ public:
     inline void deferTermination(DeferAction);
     inline void undoDeferTermination(DeferAction);
 
-    void notifyGrabAllLocks()
-    {
-        if (needHandling(AsyncEvents))
-            invalidateCodeBlocksOnStack();
-    }
+    inline void notifyGrabAllLocks();
 
     bool hasTrapBit(Event event)
     {
@@ -235,6 +230,9 @@ public:
         BitField maskedBits = event & mask;
         return m_trapBits.loadRelaxed() & maskedBits;
     }
+
+    bool isInBlockingScope() const { return m_isInBlockingScope; }
+
     ALWAYS_INLINE CONCURRENT_SAFE bool clearTrap(Event event)
     {
         ASSERT(!(event & ~AllEvents));
@@ -272,7 +270,7 @@ public:
 #endif
 
     ALWAYS_INLINE void* softStackLimit() const { return m_stack.softStackLimit(); };
-    ALWAYS_INLINE void setStackSoftLimit(void* newLimit) { m_stack.setStackSoftLimit(newLimit); }
+    inline void setStackSoftLimit(void*);
 
     ALWAYS_INLINE void** addressOfSoftStackLimit() { return m_stack.addressOfSoftStackLimit(); }
 
@@ -283,13 +281,13 @@ public:
     }
 
     using Mirror = StackManager::Mirror;
-    ALWAYS_INLINE void registerMirror(Mirror& mirror) { m_stack.registerMirror(mirror); }
-    ALWAYS_INLINE void unregisterMirror(Mirror& mirror) { m_stack.unregisterMirror(mirror); }
+    inline void registerMirror(Mirror&);
+    inline void unregisterMirror(Mirror&);
 
     VM& vm() const;
 
-    void requestStop() { m_stack.requestStop(); }
-    void cancelStop() { m_stack.cancelStop(); }
+    inline void requestStop();
+    inline void cancelStop();
 
 private:
     ALWAYS_INLINE BitField clearTrapWithoutCancellingThreadStop(Event event)
@@ -331,6 +329,8 @@ private:
     // Protects against a race between VMManager::requestResumeAll() and VMManager::notifyVMActivation()
     // to increment their m_numberOfActiveVMs.
     bool m_hasBeenCountedAsActive { false };
+
+    bool m_isInBlockingScope { false };
 
     // Prevents dispatching multiple idle stop handlers for a single stop cycle.
     Atomic<bool> m_hasDispatchedIdleStopHandler { false };

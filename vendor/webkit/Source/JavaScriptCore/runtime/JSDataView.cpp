@@ -25,6 +25,7 @@
 
 #include "config.h"
 #include "JSDataView.h"
+#include "JSGenericTypedArrayViewConstructor.h"
 
 #include "JSCInlines.h"
 #include "TypeError.h"
@@ -56,7 +57,7 @@ JSDataView* JSDataView::create(
     ASSERT(byteLength || buffer->isResizableOrGrowableShared());
 
     if (!ArrayBufferView::verifySubRangeLength(buffer->byteLength(), byteOffset, byteLength.value_or(0), sizeof(uint8_t))) {
-        throwRangeError(globalObject, scope, "Length out of range of buffer"_s);
+        throwRangeError(globalObject, scope, arrayBufferViewErrorMessageOutOfRangeOfBuffer);
         return nullptr;
     }
 

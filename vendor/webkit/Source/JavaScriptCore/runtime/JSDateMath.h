@@ -43,15 +43,15 @@
 
 #pragma once
 
-#include "DateInstanceCache.h"
-#include "JSCTimeZone.h"
-#include "JSExportMacros.h"
+#include <JavaScriptCore/DateInstanceCache.h>
+#include <JavaScriptCore/JSCTimeZone.h>
+#include <JavaScriptCore/JSExportMacros.h>
 #include <wtf/Compiler.h>
 #include <wtf/DateMath.h>
 #include <wtf/GregorianDateTime.h>
 #include <wtf/Platform.h>
-#include <wtf/SaturatedArithmetic.h>
 #include <wtf/TZoneMalloc.h>
+#include <wtf/TimeZone.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
@@ -63,10 +63,6 @@ class OpaqueICUTimeZone;
 class VM;
 
 static constexpr double minECMAScriptTime = -8.64E15;
-
-#if PLATFORM(COCOA) || USE(BUN_JSC_ADDITIONS)
-extern JS_EXPORT_PRIVATE std::atomic<uint64_t> lastTimeZoneID;
-#endif
 
 // We do not expose icu::TimeZone in this header file. And we cannot use icu::TimeZone forward declaration
 // because icu namespace can be an alias to icu$verNum namespace.
@@ -94,24 +90,14 @@ public:
 
     bool hasTimeZoneChange()
     {
-#if PLATFORM(COCOA) || USE(BUN_JSC_ADDITIONS)
-        return m_cachedTimezoneID != lastTimeZoneID;
+#if USE(TIME_ZONE_CHANGE_NOTIFICATIONS)
+        return m_cachedTimeZoneID != WTF::lastTimeZoneID();
 #else
-        return true; // always force a time zone check.
+        return true;
 #endif
     }
 
-    void resetIfNecessary()
-    {
-#if PLATFORM(COCOA) || USE(BUN_JSC_ADDITIONS)
-        if (!hasTimeZoneChange()) [[likely]]
-            return;
-        m_cachedTimezoneID = lastTimeZoneID;
-#endif
-        resetIfNecessarySlow();
-    }
-
-    JS_EXPORT_PRIVATE void resetIfNecessarySlow();
+    JS_EXPORT_PRIVATE void clearForTimeZoneChange();
 
     TimeZone defaultTimeZone();
     String timeZoneDisplayName(bool isDST);
@@ -122,12 +108,6 @@ public:
     double localTimeToMS(double milliseconds, TimeType);
     JS_EXPORT_PRIVATE double parseDate(JSGlobalObject*, VM&, const WTF::String&);
     std::tuple<int32_t, int32_t, int32_t> yearMonthDayFromDaysWithCache(int32_t days);
-
-#if USE(BUN_JSC_ADDITIONS)
-    static void timeZoneChanged() { ++lastTimeZoneID; }
-#else
-    static void timeZoneChanged();
-#endif
 
 private:
     class DSTCache {
@@ -181,22 +161,11 @@ private:
     };
 
     void timeZoneCacheSlow();
-    LocalTimeOffset localTimeOffset(int64_t millisecondsFromEpoch, TimeType inputTimeType = TimeType::UTCTime)
-    {
-        using Underlying = std::underlying_type_t<TimeType>;
-        static_assert(!static_cast<Underlying>(TimeType::UTCTime));
-        static_assert(static_cast<Underlying>(TimeType::LocalTime) == 1);
-        return m_caches[static_cast<unsigned>(inputTimeType)].localTimeOffset(*this, millisecondsFromEpoch, inputTimeType);
-    }
+    LocalTimeOffset localTimeOffset(int64_t millisecondsFromEpoch, TimeType = TimeType::UTCTime);
 
     LocalTimeOffset calculateLocalTimeOffset(double millisecondsFromEpoch, TimeType inputTimeType);
 
-    OpaqueICUTimeZone* timeZoneCache()
-    {
-        if (!m_timeZoneCache)
-            timeZoneCacheSlow();
-        return m_timeZoneCache.get();
-    }
+    OpaqueICUTimeZone* timeZoneCache();
 
     std::unique_ptr<OpaqueICUTimeZone, OpaqueICUTimeZoneDeleter> m_timeZoneCache;
     std::array<DSTCache, 2> m_caches;
@@ -204,7 +173,7 @@ private:
     String m_cachedDateString;
     double m_cachedDateStringValue;
     DateInstanceCache m_dateInstanceCache;
-    uint64_t m_cachedTimezoneID { 0 };
+    uint64_t m_cachedTimeZoneID { 0 };
     String m_timeZoneStandardDisplayNameCache;
     String m_timeZoneDSTDisplayNameCache;
 };

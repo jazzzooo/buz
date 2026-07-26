@@ -62,14 +62,15 @@ public:
 
     DECLARE_VISIT_CHILDREN;
 
-    JS_EXPORT_PRIVATE static WebAssemblyFunction* create(VM&, JSGlobalObject*, Structure*, unsigned, const String&, JSWebAssemblyInstance*, Wasm::JSToWasmCallee&, Wasm::IPIntCallee&, WasmToWasmImportableFunction::LoadLocation, Ref<const Wasm::RTT>&&);
+    JS_EXPORT_PRIVATE static WebAssemblyFunction* create(VM&, JSGlobalObject*, Structure*, unsigned, const String&, JSWebAssemblyInstance*, Wasm::IPIntCallee&, WasmToWasmImportableFunction::LoadLocation, Ref<const Wasm::RTT>&&);
     static Structure* createStructure(VM&, JSGlobalObject*, JSValue);
 
-    Wasm::JSToWasmCallee* jsToWasmCallee() const { return m_boxedJSToWasmCallee.ptr(); }
+    Wasm::JSToWasmCallee* jsToWasmCallee() const { return m_boxedJSToWasmCallee.get(); }
+    JS_EXPORT_PRIVATE Wasm::JSToWasmCallee& ensureJSToWasmCallee();
     CodePtr<WasmEntryPtrTag> jsToWasm(ArityCheckMode arity)
     {
         ASSERT_UNUSED(arity, arity == ArityCheckMode::ArityCheckNotRequired || arity == ArityCheckMode::MustCheckArity);
-        return m_boxedJSToWasmCallee->entrypoint();
+        return ensureJSToWasmCallee().entrypoint();
     }
 
     CodePtr<JSEntryPtrTag> jsCallICEntrypoint()
@@ -94,13 +95,14 @@ public:
     static constexpr ptrdiff_t offsetOfFrameSize() { return OBJECT_OFFSETOF(WebAssemblyFunction, m_frameSize); }
 
 private:
-    WebAssemblyFunction(VM&, NativeExecutable*, JSGlobalObject*, Structure*, JSWebAssemblyInstance*, Wasm::JSToWasmCallee&, Wasm::IPIntCallee&, WasmToWasmImportableFunction::LoadLocation entrypointLoadLocation, Ref<const Wasm::RTT>&&);
+    WebAssemblyFunction(VM&, NativeExecutable*, JSGlobalObject*, Structure*, JSWebAssemblyInstance*, Wasm::IPIntCallee&, WasmToWasmImportableFunction::LoadLocation entrypointLoadLocation, Ref<const Wasm::RTT>&&);
 
     CodePtr<JSEntryPtrTag> jsCallEntrypointSlow();
 
-    // This let's the JS->Wasm interpreter find its metadata
-    Ref<Wasm::JSToWasmCallee, BoxedNativeCalleePtrTraits<Wasm::JSToWasmCallee>> m_boxedJSToWasmCallee;
-    uint32_t m_frameSize;
+    // The JS->Wasm interpreter trampoline reads this directly. Populated by
+    // ensureJSToWasmCallee, which create() invokes before the wrapper is exposed.
+    RefPtr<Wasm::JSToWasmCallee, BoxedNativeCalleePtrTraits<Wasm::JSToWasmCallee>> m_boxedJSToWasmCallee;
+    uint32_t m_frameSize { 0 };
     SourceTaintedOrigin m_taintedness;
 
 #if ENABLE(JIT)

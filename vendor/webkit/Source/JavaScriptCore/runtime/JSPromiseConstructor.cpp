@@ -41,7 +41,9 @@
 #include "JSPromiseCombinatorsGlobalContext.h"
 #include "JSPromisePrototype.h"
 #include "Microtask.h"
+#include "MicrotaskQueueInlines.h"
 #include "ObjectConstructor.h"
+#include "VMInlines.h"
 
 namespace JSC {
 
@@ -101,7 +103,6 @@ void JSPromiseConstructor::finishCreation(VM& vm, JSPromisePrototype* promisePro
 {
     Base::finishCreation(vm);
     putDirectWithoutTransition(vm, vm.propertyNames->prototype, promisePrototype, PropertyAttribute::DontEnum | PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly);
-    putDirectWithoutTransition(vm, vm.propertyNames->length, jsNumber(1), PropertyAttribute::DontEnum | PropertyAttribute::ReadOnly);
 
     JSGlobalObject* globalObject = this->realm();
 
@@ -169,6 +170,27 @@ static bool NODELETE isFastPromiseConstructor(JSGlobalObject* globalObject, JSVa
         return false;
 
     return true;
+}
+
+static ALWAYS_INLINE bool canSkipIntermediatePromise(JSGlobalObject* globalObject, JSValue value)
+{
+    if (!globalObject->promiseThenWatchpointSet().isStillValid()) [[unlikely]]
+        return false;
+    if (!value.isCell())
+        return true;
+    JSCell* cell = value.asCell();
+    if (cell->type() == JSPromiseType)
+        return false;
+    if (!cell->isObject())
+        return true;
+    return isDefinitelyNonThenable(uncheckedDowncast<JSObject>(cell), globalObject);
+}
+
+static ALWAYS_INLINE unsigned vectorLengthHintForCombinator(JSValue iterable)
+{
+    if (!isJSArray(iterable))
+        return 0;
+    return std::min<unsigned>(uncheckedDowncast<JSArray>(iterable)->length(), MAX_STORAGE_VECTOR_LENGTH);
 }
 
 static JSObject* promiseRaceSlow(JSGlobalObject* globalObject, CallFrame* callFrame, JSValue thisValue)
@@ -275,7 +297,7 @@ JSC_DEFINE_HOST_FUNCTION(promiseConstructorFuncRace, (JSGlobalObject* globalObje
         ASSERT(exception);
         TRY_CLEAR_EXCEPTION(scope, void());
         scope.release();
-        promise->reject(vm, globalObject, exception);
+        promise->reject(vm, exception);
     };
 
     JSValue iterable = callFrame->argument(0);
@@ -283,6 +305,12 @@ JSC_DEFINE_HOST_FUNCTION(promiseConstructorFuncRace, (JSGlobalObject* globalObje
     JSFunction* reject = nullptr;
     forEachInIterable(globalObject, iterable, [&](VM& vm, JSGlobalObject* globalObject, JSValue value) {
         auto scope = DECLARE_THROW_SCOPE(vm);
+
+        if (canSkipIntermediatePromise(globalObject, value)) {
+            scope.release();
+            globalObject->queueMicrotask(vm, InternalMicrotask::PromiseRaceResolveJob, static_cast<uint8_t>(JSPromise::Status::Fulfilled), promise, value, promise);
+            return;
+        }
 
         JSPromise* nextPromise = JSPromise::resolvedPromise(globalObject, value);
         RETURN_IF_EXCEPTION(scope, void());
@@ -292,7 +320,7 @@ JSC_DEFINE_HOST_FUNCTION(promiseConstructorFuncRace, (JSGlobalObject* globalObje
             RETURN_IF_EXCEPTION(scope, void());
             if (constructor == globalObject->promiseConstructor()) [[likely]] {
                 scope.release();
-                nextPromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::PromiseRaceResolveJob, promise, promise);
+                nextPromise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::PromiseRaceResolveJob, promise, promise);
                 return;
             }
         }
@@ -367,17 +395,17 @@ static JSObject* promiseAllSlow(JSGlobalObject* globalObject, CallFrame* callFra
         cachedCall = &cachedCallHolder.value();
     }
 
-    JSArray* values = JSArray::tryCreate(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(ArrayWithUndecided), 0);
+    JSValue iterable = callFrame->argument(0);
+    JSArray* values = JSArray::tryCreate(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(ArrayWithContiguous), 0, vectorLengthHintForCombinator(iterable));
     if (!values) [[unlikely]] {
         callReject(createOutOfMemoryError(globalObject));
         return promise;
     }
 
-    JSPromiseCombinatorsGlobalContext* globalContext = JSPromiseCombinatorsGlobalContext::create(vm, promise, values, jsNumber(1));
+    JSPromiseCombinatorsGlobalContext* globalContext = JSPromiseCombinatorsGlobalContext::create(vm, promise, values, 1);
 
     uint64_t index = 0;
 
-    JSValue iterable = callFrame->argument(0);
     forEachInIterable(globalObject, iterable, [&](VM& vm, JSGlobalObject* globalObject, JSValue value) {
         auto scope = DECLARE_THROW_SCOPE(vm);
 
@@ -397,15 +425,13 @@ static JSObject* promiseAllSlow(JSGlobalObject* globalObject, CallFrame* callFra
         }
         ASSERT(nextPromise);
 
-        uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-        RETURN_IF_EXCEPTION(scope, void());
-        globalContext->setRemainingElementsCount(vm, jsNumber(count + 1));
+        globalContext->setRemainingElementsCount(globalContext->remainingElementsCount() + 1);
 
         uint64_t currentIndex = index++;
 
         JSPromiseCombinatorsContext* context = JSPromiseCombinatorsContext::create(vm, globalContext, currentIndex);
 
-        auto* onFulfilled = JSFunctionWithFields::create(vm, globalObject, vm.promiseAllSlowFulfillFunctionExecutable(), 1, emptyString());
+        auto* onFulfilled = JSFunctionWithFields::create(vm, globalObject, vm.promiseAllSlowFulfillFunctionExecutable());
         onFulfilled->setField(vm, JSFunctionWithFields::Field::PromiseAllContext, context);
         onFulfilled->setField(vm, JSFunctionWithFields::Field::PromiseAllResolve, resolve);
 
@@ -430,14 +456,8 @@ static JSObject* promiseAllSlow(JSGlobalObject* globalObject, CallFrame* callFra
         return promise;
     }
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    if (scope.exception()) [[unlikely]] {
-        callRejectWithScopeException();
-        return promise;
-    }
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         MarkedArgumentBuffer resolveArguments;
         resolveArguments.append(values);
@@ -474,52 +494,54 @@ JSC_DEFINE_HOST_FUNCTION(promiseConstructorFuncAll, (JSGlobalObject* globalObjec
         ASSERT(exception);
         TRY_CLEAR_EXCEPTION(scope, void());
         scope.release();
-        promise->reject(vm, globalObject, exception);
+        promise->reject(vm, exception);
     };
 
-    JSArray* values = JSArray::tryCreate(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(ArrayWithUndecided), 0);
+    JSValue iterable = callFrame->argument(0);
+    JSArray* values = JSArray::tryCreate(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(ArrayWithContiguous), 0, vectorLengthHintForCombinator(iterable));
     if (!values) [[unlikely]] {
         throwOutOfMemoryError(globalObject, scope);
         callReject();
         return JSValue::encode(promise);
     }
 
-    JSPromiseCombinatorsGlobalContext* globalContext = JSPromiseCombinatorsGlobalContext::create(vm, promise, values, jsNumber(1));
+    JSPromiseCombinatorsGlobalContext* globalContext = JSPromiseCombinatorsGlobalContext::create(vm, promise, values, 1);
 
     uint64_t index = 0;
     JSFunction* onRejected = nullptr;
 
-    JSValue iterable = callFrame->argument(0);
     forEachInIterable(globalObject, iterable, [&](VM& vm, JSGlobalObject* globalObject, JSValue value) {
         auto scope = DECLARE_THROW_SCOPE(vm);
 
         values->putDirectIndex(globalObject, index, jsUndefined());
         RETURN_IF_EXCEPTION(scope, void());
 
+        if (canSkipIntermediatePromise(globalObject, value)) {
+            globalContext->setRemainingElementsCount(globalContext->remainingElementsCount() + 1);
+            scope.release();
+            globalObject->queueMicrotask(vm, InternalMicrotask::PromiseAllResolveJob, static_cast<uint8_t>(JSPromise::Status::Fulfilled), globalContext, value, jsNumber(index));
+            ++index;
+            return;
+        }
+
         JSPromise* nextPromise = JSPromise::resolvedPromise(globalObject, value);
         RETURN_IF_EXCEPTION(scope, void());
 
-        uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-        RETURN_IF_EXCEPTION(scope, void());
-        globalContext->setRemainingElementsCount(vm, jsNumber(count + 1));
-
-        JSPromiseCombinatorsContext* context = JSPromiseCombinatorsContext::create(vm, globalContext, index);
+        globalContext->setRemainingElementsCount(globalContext->remainingElementsCount() + 1);
 
         if (nextPromise->isThenFastAndNonObservable()) [[likely]] {
             auto* constructor = promiseSpeciesConstructor(globalObject, nextPromise);
             RETURN_IF_EXCEPTION(scope, void());
             if (constructor == globalObject->promiseConstructor()) [[likely]] {
                 scope.release();
-                nextPromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::PromiseAllResolveJob, promise, context);
+                nextPromise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::PromiseAllResolveJob, globalContext, jsNumber(index));
                 ++index;
                 return;
             }
         }
 
-        if (!onRejected) {
-            auto [resolve, reject] = promise->createFirstResolvingFunctions(vm, globalObject);
-            onRejected = reject;
-        }
+        if (!onRejected)
+            onRejected = promise->createFirstRejectFunction(vm, globalObject);
         JSValue then = nextPromise->get(globalObject, vm.propertyNames->then);
         RETURN_IF_EXCEPTION(scope, void());
         CallData thenCallData = getCallDataInline(then);
@@ -528,7 +550,8 @@ JSC_DEFINE_HOST_FUNCTION(promiseConstructorFuncAll, (JSGlobalObject* globalObjec
             return;
         }
 
-        auto* onFulfilled = JSFunctionWithFields::create(vm, globalObject, vm.promiseAllFulfillFunctionExecutable(), 1, emptyString());
+        JSPromiseCombinatorsContext* context = JSPromiseCombinatorsContext::create(vm, globalContext, index);
+        auto* onFulfilled = JSFunctionWithFields::create(vm, globalObject, vm.promiseAllFulfillFunctionExecutable());
         onFulfilled->setField(vm, JSFunctionWithFields::Field::PromiseAllContext, context);
 
         MarkedArgumentBuffer thenArguments;
@@ -545,14 +568,8 @@ JSC_DEFINE_HOST_FUNCTION(promiseConstructorFuncAll, (JSGlobalObject* globalObjec
         return JSValue::encode(promise);
     }
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    if (scope.exception()) [[unlikely]] {
-        callReject();
-        return JSValue::encode(promise);
-    }
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         scope.release();
         promise->resolve(globalObject, vm, values);
@@ -587,11 +604,8 @@ JSC_DEFINE_HOST_FUNCTION(promiseAllFulfillFunction, (JSGlobalObject* globalObjec
     values->putDirectIndex(globalObject, index, value);
     RETURN_IF_EXCEPTION(scope, { });
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    RETURN_IF_EXCEPTION(scope, { });
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         scope.release();
         promise->resolve(globalObject, vm, values);
@@ -624,11 +638,8 @@ JSC_DEFINE_HOST_FUNCTION(promiseAllSlowFulfillFunction, (JSGlobalObject* globalO
     values->putDirectIndex(globalObject, index, value);
     RETURN_IF_EXCEPTION(scope, { });
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    RETURN_IF_EXCEPTION(scope, { });
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         MarkedArgumentBuffer resolveArguments;
         resolveArguments.append(values);
@@ -688,17 +699,17 @@ static JSObject* promiseAllSettledSlow(JSGlobalObject* globalObject, CallFrame* 
         cachedCall = &cachedCallHolder.value();
     }
 
-    JSArray* values = JSArray::tryCreate(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(ArrayWithUndecided), 0);
+    JSValue iterable = callFrame->argument(0);
+    JSArray* values = JSArray::tryCreate(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(ArrayWithContiguous), 0, vectorLengthHintForCombinator(iterable));
     if (!values) [[unlikely]] {
         callReject(createOutOfMemoryError(globalObject));
         return promise;
     }
 
-    JSPromiseCombinatorsGlobalContext* globalContext = JSPromiseCombinatorsGlobalContext::create(vm, resolve, values, jsNumber(1));
+    JSPromiseCombinatorsGlobalContext* globalContext = JSPromiseCombinatorsGlobalContext::create(vm, resolve, values, 1);
 
     uint64_t index = 0;
 
-    JSValue iterable = callFrame->argument(0);
     forEachInIterable(globalObject, iterable, [&](VM& vm, JSGlobalObject* globalObject, JSValue value) {
         auto scope = DECLARE_THROW_SCOPE(vm);
 
@@ -718,18 +729,16 @@ static JSObject* promiseAllSettledSlow(JSGlobalObject* globalObject, CallFrame* 
         }
         ASSERT(nextPromise);
 
-        uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-        RETURN_IF_EXCEPTION(scope, void());
-        globalContext->setRemainingElementsCount(vm, jsNumber(count + 1));
+        globalContext->setRemainingElementsCount(globalContext->remainingElementsCount() + 1);
 
         uint64_t currentIndex = index++;
 
         JSPromiseCombinatorsContext* context = JSPromiseCombinatorsContext::create(vm, globalContext, currentIndex);
 
-        auto* onFulfilled = JSFunctionWithFields::create(vm, globalObject, vm.promiseAllSettledSlowFulfillFunctionExecutable(), 1, emptyString());
+        auto* onFulfilled = JSFunctionWithFields::create(vm, globalObject, vm.promiseAllSettledSlowFulfillFunctionExecutable());
         onFulfilled->setField(vm, JSFunctionWithFields::Field::PromiseAllSettledContext, context);
 
-        auto* onRejected = JSFunctionWithFields::create(vm, globalObject, vm.promiseAllSettledSlowRejectFunctionExecutable(), 1, emptyString());
+        auto* onRejected = JSFunctionWithFields::create(vm, globalObject, vm.promiseAllSettledSlowRejectFunctionExecutable());
         onRejected->setField(vm, JSFunctionWithFields::Field::PromiseAllSettledContext, context);
 
         onFulfilled->setField(vm, JSFunctionWithFields::Field::PromiseAllSettledOther, onRejected);
@@ -756,14 +765,8 @@ static JSObject* promiseAllSettledSlow(JSGlobalObject* globalObject, CallFrame* 
         return promise;
     }
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    if (scope.exception()) [[unlikely]] {
-        callRejectWithScopeException();
-        return promise;
-    }
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         MarkedArgumentBuffer resolveArguments;
         resolveArguments.append(values);
@@ -800,51 +803,56 @@ JSC_DEFINE_HOST_FUNCTION(promiseConstructorFuncAllSettled, (JSGlobalObject* glob
         ASSERT(exception);
         TRY_CLEAR_EXCEPTION(scope, void());
         scope.release();
-        promise->reject(vm, globalObject, exception);
+        promise->reject(vm, exception);
     };
 
-    JSArray* values = JSArray::tryCreate(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(ArrayWithUndecided), 0);
+    JSValue iterable = callFrame->argument(0);
+    JSArray* values = JSArray::tryCreate(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(ArrayWithContiguous), 0, vectorLengthHintForCombinator(iterable));
     if (!values) [[unlikely]] {
         throwOutOfMemoryError(globalObject, scope);
         callReject();
         return JSValue::encode(promise);
     }
 
-    JSPromiseCombinatorsGlobalContext* globalContext = JSPromiseCombinatorsGlobalContext::create(vm, promise, values, jsNumber(1));
+    JSPromiseCombinatorsGlobalContext* globalContext = JSPromiseCombinatorsGlobalContext::create(vm, promise, values, 1);
 
     uint64_t index = 0;
 
-    JSValue iterable = callFrame->argument(0);
     forEachInIterable(globalObject, iterable, [&](VM& vm, JSGlobalObject* globalObject, JSValue value) {
         auto scope = DECLARE_THROW_SCOPE(vm);
 
         values->putDirectIndex(globalObject, index, jsUndefined());
         RETURN_IF_EXCEPTION(scope, void());
 
+        if (canSkipIntermediatePromise(globalObject, value)) {
+            globalContext->setRemainingElementsCount(globalContext->remainingElementsCount() + 1);
+            scope.release();
+            globalObject->queueMicrotask(vm, InternalMicrotask::PromiseAllSettledResolveJob, static_cast<uint8_t>(JSPromise::Status::Fulfilled), globalContext, value, jsNumber(index));
+            ++index;
+            return;
+        }
+
         JSPromise* nextPromise = JSPromise::resolvedPromise(globalObject, value);
         RETURN_IF_EXCEPTION(scope, void());
 
-        uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-        RETURN_IF_EXCEPTION(scope, void());
-        globalContext->setRemainingElementsCount(vm, jsNumber(count + 1));
-
-        JSPromiseCombinatorsContext* context = JSPromiseCombinatorsContext::create(vm, globalContext, index);
+        globalContext->setRemainingElementsCount(globalContext->remainingElementsCount() + 1);
 
         if (nextPromise->isThenFastAndNonObservable()) [[likely]] {
             auto* constructor = promiseSpeciesConstructor(globalObject, nextPromise);
             RETURN_IF_EXCEPTION(scope, void());
             if (constructor == globalObject->promiseConstructor()) [[likely]] {
                 scope.release();
-                nextPromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::PromiseAllSettledResolveJob, promise, context);
+                nextPromise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::PromiseAllSettledResolveJob, globalContext, jsNumber(index));
                 ++index;
                 return;
             }
         }
 
-        auto* onFulfilled = JSFunctionWithFields::create(vm, globalObject, vm.promiseAllSettledFulfillFunctionExecutable(), 1, emptyString());
+        JSPromiseCombinatorsContext* context = JSPromiseCombinatorsContext::create(vm, globalContext, index);
+        auto* onFulfilled = JSFunctionWithFields::create(vm, globalObject, vm.promiseAllSettledFulfillFunctionExecutable());
         onFulfilled->setField(vm, JSFunctionWithFields::Field::PromiseAllSettledContext, context);
 
-        auto* onRejected = JSFunctionWithFields::create(vm, globalObject, vm.promiseAllSettledRejectFunctionExecutable(), 1, emptyString());
+        auto* onRejected = JSFunctionWithFields::create(vm, globalObject, vm.promiseAllSettledRejectFunctionExecutable());
         onRejected->setField(vm, JSFunctionWithFields::Field::PromiseAllSettledContext, context);
 
         onFulfilled->setField(vm, JSFunctionWithFields::Field::PromiseAllSettledOther, onRejected);
@@ -872,14 +880,8 @@ JSC_DEFINE_HOST_FUNCTION(promiseConstructorFuncAllSettled, (JSGlobalObject* glob
         return JSValue::encode(promise);
     }
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    if (scope.exception()) [[unlikely]] {
-        callReject();
-        return JSValue::encode(promise);
-    }
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         scope.release();
         promise->resolve(globalObject, vm, values);
@@ -923,11 +925,8 @@ JSC_DEFINE_HOST_FUNCTION(promiseAllSettledFulfillFunction, (JSGlobalObject* glob
     values->putDirectIndex(globalObject, index, resultObject);
     RETURN_IF_EXCEPTION(scope, { });
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    RETURN_IF_EXCEPTION(scope, { });
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         scope.release();
         promise->resolve(globalObject, vm, values);
@@ -967,11 +966,8 @@ JSC_DEFINE_HOST_FUNCTION(promiseAllSettledRejectFunction, (JSGlobalObject* globa
     values->putDirectIndex(globalObject, index, resultObject);
     RETURN_IF_EXCEPTION(scope, { });
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    RETURN_IF_EXCEPTION(scope, { });
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         scope.release();
         promise->resolve(globalObject, vm, values);
@@ -1011,11 +1007,8 @@ JSC_DEFINE_HOST_FUNCTION(promiseAllSettledSlowFulfillFunction, (JSGlobalObject* 
     values->putDirectIndex(globalObject, index, resultObject);
     RETURN_IF_EXCEPTION(scope, { });
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    RETURN_IF_EXCEPTION(scope, { });
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         MarkedArgumentBuffer resolveArguments;
         resolveArguments.append(values);
@@ -1060,11 +1053,8 @@ JSC_DEFINE_HOST_FUNCTION(promiseAllSettledSlowRejectFunction, (JSGlobalObject* g
     values->putDirectIndex(globalObject, index, resultObject);
     RETURN_IF_EXCEPTION(scope, { });
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    RETURN_IF_EXCEPTION(scope, { });
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         MarkedArgumentBuffer resolveArguments;
         resolveArguments.append(values);
@@ -1171,17 +1161,17 @@ static JSObject* promiseAnySlow(JSGlobalObject* globalObject, CallFrame* callFra
         cachedCall = &cachedCallHolder.value();
     }
 
-    JSArray* errors = JSArray::tryCreate(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(ArrayWithUndecided), 0);
+    JSValue iterable = callFrame->argument(0);
+    JSArray* errors = JSArray::tryCreate(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(ArrayWithContiguous), 0, vectorLengthHintForCombinator(iterable));
     if (!errors) [[unlikely]] {
         callReject(createOutOfMemoryError(globalObject));
         return promise;
     }
 
-    JSPromiseCombinatorsGlobalContext* globalContext = JSPromiseCombinatorsGlobalContext::create(vm, promise, errors, jsNumber(1));
+    JSPromiseCombinatorsGlobalContext* globalContext = JSPromiseCombinatorsGlobalContext::create(vm, promise, errors, 1);
 
     uint64_t index = 0;
 
-    JSValue iterable = callFrame->argument(0);
     forEachInIterable(globalObject, iterable, [&](VM& vm, JSGlobalObject* globalObject, JSValue value) {
         auto scope = DECLARE_THROW_SCOPE(vm);
 
@@ -1200,14 +1190,12 @@ static JSObject* promiseAnySlow(JSGlobalObject* globalObject, CallFrame* callFra
             RETURN_IF_EXCEPTION(scope, void());
         }
 
-        uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-        RETURN_IF_EXCEPTION(scope, void());
-        globalContext->setRemainingElementsCount(vm, jsNumber(count + 1));
+        globalContext->setRemainingElementsCount(globalContext->remainingElementsCount() + 1);
 
         JSPromiseCombinatorsContext* context = JSPromiseCombinatorsContext::create(vm, globalContext, index);
 
         // For Promise.any slow path, use resolve directly as onFulfilled
-        auto* onRejected = JSFunctionWithFields::create(vm, globalObject, vm.promiseAnySlowRejectFunctionExecutable(), 1, emptyString());
+        auto* onRejected = JSFunctionWithFields::create(vm, globalObject, vm.promiseAnySlowRejectFunctionExecutable());
         onRejected->setField(vm, JSFunctionWithFields::Field::PromiseAnyContext, context);
         onRejected->setField(vm, JSFunctionWithFields::Field::PromiseAnyReject, reject);
 
@@ -1233,14 +1221,8 @@ static JSObject* promiseAnySlow(JSGlobalObject* globalObject, CallFrame* callFra
         return promise;
     }
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    if (scope.exception()) [[unlikely]] {
-        callRejectWithScopeException();
-        return promise;
-    }
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         auto* aggregateError = createAggregateError(vm, globalObject->errorStructure(ErrorType::AggregateError), errors, String(), jsUndefined());
         callReject(aggregateError);
@@ -1273,55 +1255,58 @@ JSC_DEFINE_HOST_FUNCTION(promiseConstructorFuncAny, (JSGlobalObject* globalObjec
         ASSERT(exception);
         TRY_CLEAR_EXCEPTION(scope, void());
         scope.release();
-        promise->reject(vm, globalObject, exception);
+        promise->reject(vm, exception);
     };
 
-    JSArray* errors = JSArray::tryCreate(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(ArrayWithUndecided), 0);
+    JSValue resolve;
+    JSValue iterable = callFrame->argument(0);
+    JSArray* errors = JSArray::tryCreate(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(ArrayWithContiguous), 0, vectorLengthHintForCombinator(iterable));
     if (!errors) [[unlikely]] {
         throwOutOfMemoryError(globalObject, scope);
         callReject();
         return JSValue::encode(promise);
     }
 
-    JSPromiseCombinatorsGlobalContext* globalContext = JSPromiseCombinatorsGlobalContext::create(vm, promise, errors, jsNumber(1));
+    JSPromiseCombinatorsGlobalContext* globalContext = JSPromiseCombinatorsGlobalContext::create(vm, promise, errors, 1);
 
     uint64_t index = 0;
 
-    JSValue resolve;
-    JSValue iterable = callFrame->argument(0);
     forEachInIterable(globalObject, iterable, [&](VM& vm, JSGlobalObject* globalObject, JSValue value) {
         auto scope = DECLARE_THROW_SCOPE(vm);
 
         errors->putDirectIndex(globalObject, index, jsUndefined());
         RETURN_IF_EXCEPTION(scope, void());
 
+        if (canSkipIntermediatePromise(globalObject, value)) {
+            globalContext->setRemainingElementsCount(globalContext->remainingElementsCount() + 1);
+            scope.release();
+            globalObject->queueMicrotask(vm, InternalMicrotask::PromiseAnyResolveJob, static_cast<uint8_t>(JSPromise::Status::Fulfilled), globalContext, value, jsNumber(index));
+            ++index;
+            return;
+        }
+
         JSPromise* nextPromise = JSPromise::resolvedPromise(globalObject, value);
         RETURN_IF_EXCEPTION(scope, void());
 
-        uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-        RETURN_IF_EXCEPTION(scope, void());
-        globalContext->setRemainingElementsCount(vm, jsNumber(count + 1));
-
-        JSPromiseCombinatorsContext* context = JSPromiseCombinatorsContext::create(vm, globalContext, index);
+        globalContext->setRemainingElementsCount(globalContext->remainingElementsCount() + 1);
 
         if (nextPromise->isThenFastAndNonObservable()) [[likely]] {
             auto* constructor = promiseSpeciesConstructor(globalObject, nextPromise);
             RETURN_IF_EXCEPTION(scope, void());
             if (constructor == globalObject->promiseConstructor()) [[likely]] {
                 scope.release();
-                nextPromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::PromiseAnyResolveJob, promise, context);
+                nextPromise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::PromiseAnyResolveJob, globalContext, jsNumber(index));
                 ++index;
                 return;
             }
         }
 
         // For Promise.any, onFulfilled just resolves the main promise directly
-        if (!resolve) {
-            auto [onFulfilled, onRejected] = promise->createFirstResolvingFunctions(vm, globalObject);
-            resolve = onFulfilled;
-        }
+        if (!resolve)
+            resolve = promise->createFirstResolveFunction(vm, globalObject);
 
-        auto* onRejected = JSFunctionWithFields::create(vm, globalObject, vm.promiseAnyRejectFunctionExecutable(), 1, emptyString());
+        JSPromiseCombinatorsContext* context = JSPromiseCombinatorsContext::create(vm, globalContext, index);
+        auto* onRejected = JSFunctionWithFields::create(vm, globalObject, vm.promiseAnyRejectFunctionExecutable());
         onRejected->setField(vm, JSFunctionWithFields::Field::PromiseAnyContext, context);
 
         JSValue then = nextPromise->get(globalObject, vm.propertyNames->then);
@@ -1346,18 +1331,12 @@ JSC_DEFINE_HOST_FUNCTION(promiseConstructorFuncAny, (JSGlobalObject* globalObjec
         return JSValue::encode(promise);
     }
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    if (scope.exception()) [[unlikely]] {
-        callReject();
-        return JSValue::encode(promise);
-    }
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         auto* aggregateError = createAggregateError(vm, globalObject->errorStructure(ErrorType::AggregateError), errors, String(), jsUndefined());
         scope.release();
-        promise->reject(vm, globalObject, aggregateError);
+        promise->reject(vm, aggregateError);
         if (scope.exception()) [[unlikely]] {
             callReject();
             return JSValue::encode(promise);
@@ -1389,15 +1368,12 @@ JSC_DEFINE_HOST_FUNCTION(promiseAnyRejectFunction, (JSGlobalObject* globalObject
     errors->putDirectIndex(globalObject, index, reason);
     RETURN_IF_EXCEPTION(scope, { });
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    RETURN_IF_EXCEPTION(scope, { });
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         auto* aggregateError = createAggregateError(vm, globalObject->errorStructure(ErrorType::AggregateError), errors, String(), jsUndefined());
         scope.release();
-        promise->reject(vm, globalObject, aggregateError);
+        promise->reject(vm, aggregateError);
     }
 
     return JSValue::encode(jsUndefined());
@@ -1427,11 +1403,8 @@ JSC_DEFINE_HOST_FUNCTION(promiseAnySlowRejectFunction, (JSGlobalObject* globalOb
     errors->putDirectIndex(globalObject, index, reason);
     RETURN_IF_EXCEPTION(scope, { });
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    RETURN_IF_EXCEPTION(scope, { });
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
         auto* aggregateError = createAggregateError(vm, globalObject->errorStructure(ErrorType::AggregateError), errors, String(), jsUndefined());
         MarkedArgumentBuffer rejectArguments;

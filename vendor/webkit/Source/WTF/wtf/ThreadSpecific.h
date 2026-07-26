@@ -45,6 +45,7 @@
 #include <wtf/MainThread.h>
 #include <wtf/Noncopyable.h>
 #include <wtf/Threading.h>
+#include <wtf/ThreadingEnums.h>
 
 // X11 headers define a bunch of macros with common terms, interfering with WebCore and WTF enum values.
 // As a workaround, we explicitly undef them here.
@@ -56,11 +57,6 @@
 #endif
 
 namespace WTF {
-
-enum class CanBeGCThread {
-    False,
-    True
-};
 
 template<typename T, CanBeGCThread canBeGCThread = CanBeGCThread::False> class ThreadSpecific {
     WTF_MAKE_NONCOPYABLE(ThreadSpecific);

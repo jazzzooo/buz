@@ -51,6 +51,7 @@ UnlinkedCodeBlock::UnlinkedCodeBlock(VM& vm, Structure* structure, CodeType code
     , m_numParameters(0)
     , m_hasCapturedVariables(false)
     , m_isBuiltinFunction(info.isBuiltinFunction())
+    , m_isBuiltinDefaultClassConstructor(info.isBuiltinDefaultClassConstructor())
     , m_superBinding(static_cast<unsigned>(info.superBinding()))
     , m_scriptMode(static_cast<unsigned>(info.scriptMode()))
     , m_isArrowFunctionContext(info.isArrowFunctionContext())

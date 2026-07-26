@@ -30,7 +30,6 @@
 #include "Options.h"
 #include "SimpleMarkingConstraint.h"
 #include "SuperSampler.h"
-#include <wtf/Function.h>
 #include <wtf/TZoneMallocInlines.h>
 
 namespace JSC {

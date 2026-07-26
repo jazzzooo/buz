@@ -44,6 +44,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include "WasmOps.h"
 #include <wtf/BitVector.h>
 #include <wtf/HashMap.h>
+#include <wtf/RefCountedFixedVector.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/Vector.h>
 
@@ -81,11 +82,6 @@ public:
     }
 
     FunctionCodeIndex functionIndex() const { return m_functionIndex; }
-    bool hasTailCallSuccessors() const { return m_hasTailCallSuccessors; }
-    const BitVector& tailCallSuccessors() const LIFETIME_BOUND { return m_tailCallSuccessors; }
-    bool tailCallClobbersInstance() const { return m_tailCallClobbersInstance ; }
-    void setTailCall(uint32_t, bool);
-    void setTailCallClobbersInstance() { m_tailCallClobbersInstance = true; }
 
     const uint8_t* getBytecode() const LIFETIME_BOUND { return m_bytecode.data(); }
     const uint8_t* getMetadata() const LIFETIME_BOUND { return m_metadata.span().data(); }
@@ -126,17 +122,11 @@ private:
     void addMemoryFill(uint8_t memoryIndex, size_t length);
     void addMemoryCopy(uint8_t dstMemoryIndex, uint8_t srcMemoryIndex, size_t length);
     void addAtomicMemoryAccess(uint8_t memoryIndex, uint64_t offset, size_t length);
-    void addReturnData(const RTT&, const CallInformation&);
 
     FunctionCodeIndex m_functionIndex;
-    bool m_hasTailCallSuccessors { false };
-    bool m_tailCallClobbersInstance { false };
-    BitVector m_tailCallSuccessors;
 
     std::span<const uint8_t> m_bytecode;
     MetadataBuffer m_metadata { };
-    Vector<uint8_t, 8> m_uINTBytecode { };
-    unsigned m_topOfReturnStackFPOffset;
 
     uint32_t m_bytecodeOffset { 0 };
     unsigned m_maxFrameSizeInV128 { 0 };
@@ -147,7 +137,7 @@ private:
     unsigned m_numArgumentsOnStack { 0 };
     unsigned m_nonArgLocalOffset { 0 };
     Vector<FunctionSpaceIndex> m_callTargets { };
-    Vector<uint8_t, 16> m_argumINTBytecode { };
+    Vector<uint8_t, 8> m_localInitBytecode { };
 
     UncheckedKeyHashMap<IPIntPC, IPIntTierUpCounter::OSREntryData> m_tierUpCounter;
     Vector<UnlinkedHandlerInfo> m_exceptionHandlers;

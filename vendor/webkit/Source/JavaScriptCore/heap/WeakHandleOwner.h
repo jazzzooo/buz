@@ -25,30 +25,22 @@
 
 #pragma once
 
-#include "Handle.h"
+#include <JavaScriptCore/Handle.h>
 
 namespace JSC {
 
 class AbstractSlotVisitor;
-class SlotVisitor;
-template<typename T> class Handle;
-
 
 class JS_EXPORT_PRIVATE WeakHandleOwner {
-    public:
+public:
+    WeakHandleOwner() = default;
+    virtual ~WeakHandleOwner();
+    // reason will only be non-null when generating a debug GC heap snapshot.
+    virtual bool isReachableFromOpaqueRoots(Handle<Unknown>, void* context, AbstractSlotVisitor&, ASCIILiteral* reason = nullptr);
+    virtual void finalize(Handle<Unknown>, void* context);
 
-virtual ~WeakHandleOwner()
-{
-}
-
-virtual bool isReachableFromOpaqueRoots(Handle<Unknown>, void*, AbstractSlotVisitor&, ASCIILiteral*)
-{
-    return false;
-}
-
-virtual void finalize(Handle<Unknown>, void*)
-{
-}
+private:
+    explicit WeakHandleOwner(ClangVTableWorkaroundTag);
 };
 
 } // namespace JSC

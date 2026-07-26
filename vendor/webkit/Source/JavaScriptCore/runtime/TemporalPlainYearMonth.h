@@ -25,11 +25,13 @@
 
 #pragma once
 
-#include "Error.h"
-#include "ISO8601.h"
-#include "JSGlobalObject.h"
-#include "LazyProperty.h"
-#include "TemporalCalendar.h"
+#include <JavaScriptCore/CalendarFields.h>
+#include <JavaScriptCore/CalendarICUBridge.h>
+#include <JavaScriptCore/Error.h>
+#include <JavaScriptCore/ISO8601.h>
+#include <JavaScriptCore/JSGlobalObject.h>
+#include <JavaScriptCore/LazyProperty.h>
+#include <JavaScriptCore/TemporalCalendar.h>
 
 namespace JSC {
 
@@ -49,41 +51,31 @@ public:
 
     DECLARE_INFO;
 
-    template<AddOrSubtract>
-    static ISO8601::PlainYearMonth addDurationToYearMonth(JSGlobalObject*, ISO8601::PlainYearMonth, ISO8601::Duration, TemporalOverflow);
-
     static TemporalPlainYearMonth* from(JSGlobalObject*, JSValue, JSValue);
-    static TemporalPlainYearMonth* from(JSGlobalObject*, StringView);
 
-    TemporalCalendar* calendar() LIFETIME_BOUND { return m_calendar.get(this); }
     ISO8601::PlainYearMonth plainYearMonth() const { return m_plainYearMonth; }
+    CalendarID calendarID() const { return m_calendarID; }
+    void setCalendarId(WTF::StringView id) { m_calendarID = TemporalCore::calendarIDFromString(id); }
+    void setCalendarID(CalendarID id) { m_calendarID = id; }
+    void setPlainYearMonth(ISO8601::PlainYearMonth&& ym) { m_plainYearMonth = WTF::move(ym); }
+    String calendarIDAsString() const { return TemporalCore::calendarIDToString(m_calendarID).toString(); }
 
 #define JSC_DEFINE_TEMPORAL_PLAIN_YEAR_MONTH_FIELD(name, capitalizedName) \
     decltype(auto) name() const { return m_plainYearMonth.name(); }
     JSC_TEMPORAL_PLAIN_YEAR_MONTH_UNITS(JSC_DEFINE_TEMPORAL_PLAIN_YEAR_MONTH_FIELD);
 #undef JSC_DEFINE_TEMPORAL_PLAIN_YEAR_MONTH_FIELD
 
-    ISO8601::PlainDate with(JSGlobalObject*, JSObject*, JSValue);
-
-    String monthCode() const;
+    String monthCode() const { return ISO8601::monthCode(m_plainYearMonth.month()); }
 
     String toString(JSGlobalObject*, JSValue options) const;
     String toString() const;
 
-    ISO8601::Duration until(JSGlobalObject*, TemporalPlainYearMonth*, JSValue options);
-    ISO8601::Duration since(JSGlobalObject*, TemporalPlainYearMonth*, JSValue options);
-
-    DECLARE_VISIT_CHILDREN;
-
 private:
     TemporalPlainYearMonth(VM&, Structure*, ISO8601::PlainYearMonth&&);
-    void finishCreation(VM&);
-
-    template<DifferenceOperation>
-    ISO8601::Duration sinceOrUntil(JSGlobalObject*, TemporalPlainYearMonth*, JSValue);
+    DECLARE_DEFAULT_FINISH_CREATION;
 
     ISO8601::PlainYearMonth m_plainYearMonth;
-    LazyProperty<TemporalPlainYearMonth, TemporalCalendar> m_calendar;
+    CalendarID m_calendarID { 0 };
 };
 
 } // namespace JSC

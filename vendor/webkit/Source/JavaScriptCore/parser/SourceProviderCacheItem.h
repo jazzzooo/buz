@@ -28,6 +28,7 @@
 #include "ImplementationVisibility.h"
 #include "ParserModes.h"
 #include "ParserTokens.h"
+#include <JavaScriptCore/ConstructorKind.h>
 #include <wtf/Vector.h>
 #include <wtf/text/UniquedStringImpl.h>
 #include <wtf/text/WTFString.h>

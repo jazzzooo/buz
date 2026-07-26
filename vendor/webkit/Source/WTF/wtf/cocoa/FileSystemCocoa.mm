@@ -132,14 +132,22 @@ String extractTemporaryZipArchive(const String& path)
     return temporaryDirectory;
 }
 
-std::pair<String, FileHandle> openTemporaryFile(StringView prefix, StringView suffix)
+std::pair<String, FileHandle> openTemporaryFile(StringView prefix, StringView suffix, const String& temporaryDirectory)
 {
     Vector<char> temporaryFilePath(PATH_MAX);
-    if (!confstr(_CS_DARWIN_USER_TEMP_DIR, temporaryFilePath.mutableSpan().data(), temporaryFilePath.size()))
-        return { String(), FileHandle() };
-
-    // Shrink the vector.
-    temporaryFilePath.shrink(strlenSpan(temporaryFilePath.span()));
+    if (temporaryDirectory.isEmpty()) {
+        if (!confstr(_CS_DARWIN_USER_TEMP_DIR, temporaryFilePath.mutableSpan().data(), temporaryFilePath.size()))
+            return { String(), FileHandle() };
+        // Shrink the vector.
+        temporaryFilePath.shrink(strlenSpan(temporaryFilePath.span()));
+    } else {
+        const auto temporaryDirectoryUtf8 = temporaryDirectory.utf8();
+        memcpySpan(temporaryFilePath.mutableSpan(), temporaryDirectoryUtf8.span());
+        // Shrink the vector.
+        temporaryFilePath.shrink(temporaryDirectoryUtf8.length());
+        if (temporaryDirectoryUtf8.span().back() != '/')
+            temporaryFilePath.append('/');
+    }
 
     ASSERT(temporaryFilePath.last() == '/');
 

@@ -257,8 +257,6 @@ public:
 
     void addLazily(DesiredGlobalProperty&&);
     
-    bool consider(Structure*);
-
     void countWatchpoints(CodeBlock*, DesiredIdentifiers&, CommonData*);
     
     bool reallyAdd(CodeBlock*, DesiredIdentifiers&, CommonData*);
@@ -289,6 +287,20 @@ public:
     {
         return m_adaptiveStructureSets.isWatched(key);
     }
+
+    void addRegisteredNotWatched(Structure* structure)
+    {
+        m_registeredNotWatchedStructures.add(structure);
+    }
+    bool isRegisteredNotWatched(Structure* structure) const
+    {
+        return m_registeredNotWatchedStructures.contains(structure);
+    }
+    bool takeRegisteredNotWatched(Structure* structure)
+    {
+        return m_registeredNotWatchedStructures.remove(structure);
+    }
+
     void dumpInContext(PrintStream&, DumpContext*) const;
     
 private:
@@ -299,6 +311,7 @@ private:
     GenericDesiredWatchpoints<JSArrayBufferView*, ArrayBufferViewWatchpointAdaptor> m_bufferViews;
     GenericDesiredWatchpoints<ObjectPropertyCondition, AdaptiveStructureWatchpointAdaptor> m_adaptiveStructureSets;
     DesiredGlobalProperties m_globalProperties;
+    UncheckedKeyHashSet<Structure*> m_registeredNotWatchedStructures;
 };
 
 } } // namespace JSC::DFG

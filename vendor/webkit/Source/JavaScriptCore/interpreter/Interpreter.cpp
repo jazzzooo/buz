@@ -52,15 +52,16 @@
 #include "InterpreterInlines.h"
 #include "JITCode.h"
 #include "JSArrayInlines.h"
+#include "JSAsyncFunctionGenerator.h"
 #include "JSBoundFunctionInlines.h"
 #include "JSCInlines.h"
 #include "JSCellButterfly.h"
+#include "JSGenericTypedArrayViewInlines.h"
 #include "JSLexicalEnvironment.h"
 #include "JSModuleEnvironment.h"
 #include "JSModuleRecord.h"
 #include "JSObject.h"
 #include "JSPromise.h"
-#include "JSPromiseCombinatorsContext.h"
 #include "JSPromiseCombinatorsGlobalContext.h"
 #include "JSPromiseReaction.h"
 #include "JSRemoteFunction.h"
@@ -166,6 +167,12 @@ JSValue eval(CallFrame* callFrame, JSValue thisValue, JSScope* callerScopeChain,
     auto cacheKey = DirectEvalCodeCache::CacheLookupKey(programStr.data.impl(), bytecodeIndex);
     DirectEvalExecutable* eval = callerBaselineCodeBlock->directEvalCodeCache().get(cacheKey);
     if (!eval) {
+        // GC needs to be deferred as it's possible cacheKey holds one of programString's fibers'
+        // contents as a raw StringImpl*. Even though programString is on the stack, rope
+        // flattening could cause that fiber JSString to be unreachable by the GC, causing its
+        // content StringImpl to be deref'd if when the JSString is swept.
+        DeferGC deferGC(vm);
+
         auto programSource = programStr.data;
         if (SourceProfiler::g_profilerHook) [[unlikely]] {
             SourceTaintedOrigin sourceTaintedOrigin = computeNewSourceTaintedOriginFromStack(vm, callFrame);
@@ -305,6 +312,32 @@ unsigned sizeFrameForVarargs(JSGlobalObject* globalObject, CallFrame* callFrame,
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
+static bool NEVER_INLINE loadTypedArrayVarargs(JSCell* cell, JSValue* firstElementDest, uint32_t offset, uint32_t length)
+{
+    switch (cell->type()) {
+#define JSC_LOAD_VARARGS_TYPED_ARRAY_CASE(name) \
+    case name##ArrayType: { \
+        if constexpr (!JS##name##Array::Adaptor::canConvertToJSQuickly) \
+            return false; \
+        else { \
+            auto* typedArray = uncheckedDowncast<JS##name##Array>(cell); \
+            uint64_t arrayLength = typedArray->length(); \
+            uint64_t inBounds = arrayLength > offset ? std::min<uint64_t>(length, arrayLength - offset) : 0; \
+            uint64_t i = 0; \
+            for (; i < inBounds; ++i) \
+                firstElementDest[i] = typedArray->getIndexQuickly(i + offset); \
+            for (; i < length; ++i) \
+                firstElementDest[i] = jsUndefined(); \
+            return true; \
+        } \
+    }
+        FOR_EACH_TYPED_ARRAY_TYPE_EXCLUDING_DATA_VIEW(JSC_LOAD_VARARGS_TYPED_ARRAY_CASE)
+#undef JSC_LOAD_VARARGS_TYPED_ARRAY_CASE
+    default:
+        return false;
+    }
+}
+
 void loadVarargs(JSGlobalObject* globalObject, JSValue* firstElementDest, JSValue arguments, uint32_t offset, uint32_t length)
 {
     if (!arguments.isCell()) [[unlikely]]
@@ -341,6 +374,8 @@ void loadVarargs(JSGlobalObject* globalObject, JSValue* firstElementDest, JSValu
             uncheckedDowncast<JSArray>(object)->copyToArguments(globalObject, firstElementDest, offset, length);
             return;
         }
+        if (loadTypedArrayVarargs(cell, firstElementDest, offset, length))
+            return;
         unsigned i;
         for (i = 0; i < length && object->canGetIndexQuickly(i + offset); ++i)
             firstElementDest[i] = object->getIndexQuickly(i + offset);
@@ -444,7 +479,7 @@ bool Interpreter::isOpcode(Opcode opcode)
 #endif // ASSERT_ENABLED
 
 
-void Interpreter::getAsyncStackTrace(JSCell* owner, Vector<StackFrame>& results, JSGenerator* generator, size_t maxStackSize)
+void Interpreter::getAsyncStackTrace(JSCell* owner, Vector<StackFrame>& results, JSAsyncFunctionGenerator* generator, size_t maxStackSize)
 {
     RELEASE_ASSERT(Options::useAsyncStackTrace());
     ASSERT(generator);
@@ -454,18 +489,13 @@ void Interpreter::getAsyncStackTrace(JSCell* owner, Vector<StackFrame>& results,
     VM& vm = this->vm();
 
     auto getContextValueFromPromise = [&](JSPromise* promise) -> JSValue {
-        if (promise && promise->status() == JSPromise::Status::Pending) {
-            JSValue reactionsValue = promise->internalField(JSPromise::Field::ReactionsOrResult).get();
-            if (reactionsValue) {
-                if (JSValue context = JSPromiseReaction::tryGetContext(reactionsValue))
-                    return context;
-            }
-        }
-        return JSValue();
+        if (!promise)
+            return { };
+        return promise->asyncStackTraceContext();
     };
 
-    auto getParentGenerator = [&](JSGenerator* gen) -> JSGenerator* {
-        JSValue generatorContext = gen->internalField(static_cast<unsigned>(JSGenerator::Field::Context)).get();
+    auto getParentGenerator = [&](JSAsyncFunctionGenerator* gen) -> JSAsyncFunctionGenerator* {
+        JSValue generatorContext = gen->internalField(static_cast<unsigned>(JSAsyncFunctionGenerator::Field::Context)).get();
         ASSERT(generatorContext);
         JSPromise* awaitedPromise = dynamicDowncast<JSPromise>(generatorContext);
         JSValue promiseContext = getContextValueFromPromise(awaitedPromise);
@@ -474,19 +504,17 @@ void Interpreter::getAsyncStackTrace(JSCell* owner, Vector<StackFrame>& results,
             return nullptr;
 
         // handle simple `await`
-        if (auto* generator = dynamicDowncast<JSGenerator>(promiseContext))
+        if (auto* generator = dynamicDowncast<JSAsyncFunctionGenerator>(promiseContext))
             return generator;
 
         // handle `Promise.all`, `Promise.allSettled`, and `Promise.any`
-        if (auto* promiseCombinatorsContext = dynamicDowncast<JSPromiseCombinatorsContext>(promiseContext)) {
-            if (auto* globalContext = promiseCombinatorsContext->globalContext()) {
-                JSValue promiseValue = globalContext->promise();
-                ASSERT(promiseValue);
-                if (auto* promise = dynamicDowncast<JSPromise>(promiseValue)) {
-                    if (JSValue promiseContext = getContextValueFromPromise(promise)) {
-                        if (auto* generator = dynamicDowncast<JSGenerator>(promiseContext))
-                            return generator;
-                    }
+        if (auto* globalContext = dynamicDowncast<JSPromiseCombinatorsGlobalContext>(promiseContext)) {
+            JSValue promiseValue = globalContext->promise();
+            ASSERT(promiseValue);
+            if (auto* promise = dynamicDowncast<JSPromise>(promiseValue)) {
+                if (JSValue promiseContext = getContextValueFromPromise(promise)) {
+                    if (auto* generator = dynamicDowncast<JSAsyncFunctionGenerator>(promiseContext))
+                        return generator;
                 }
             }
         }
@@ -494,7 +522,7 @@ void Interpreter::getAsyncStackTrace(JSCell* owner, Vector<StackFrame>& results,
         // handle and `Promise.race`
         if (auto* contextPromise = dynamicDowncast<JSPromise>(promiseContext)) {
             if (JSValue parentContext = getContextValueFromPromise(contextPromise)) {
-                if (auto* generator = dynamicDowncast<JSGenerator>(parentContext))
+                if (auto* generator = dynamicDowncast<JSAsyncFunctionGenerator>(parentContext))
                     return generator;
             }
         }
@@ -502,9 +530,9 @@ void Interpreter::getAsyncStackTrace(JSCell* owner, Vector<StackFrame>& results,
         return nullptr;
     };
 
-    auto computeBytecodeIndex = [&](CodeBlock* codeBlock, JSGenerator* generator) -> BytecodeIndex {
+    auto computeBytecodeIndex = [&](CodeBlock* codeBlock, JSAsyncFunctionGenerator* generator) -> BytecodeIndex {
         BytecodeIndex bytecodeIndex(0);
-        JSValue stateValue = generator->internalField(static_cast<unsigned>(JSGenerator::Field::State)).get();
+        JSValue stateValue = generator->internalField(static_cast<unsigned>(JSAsyncFunctionGenerator::Field::State)).get();
         if (stateValue.isInt32()) {
             int32_t state = stateValue.asInt32();
             size_t numberOfJumpTables = codeBlock->numberOfUnlinkedSwitchJumpTables();
@@ -519,9 +547,9 @@ void Interpreter::getAsyncStackTrace(JSCell* owner, Vector<StackFrame>& results,
         return bytecodeIndex;
     };
 
-    JSGenerator* currentGenerator = getParentGenerator(generator);
+    JSAsyncFunctionGenerator* currentGenerator = getParentGenerator(generator);
     while (currentGenerator && results.size() < maxStackSize) {
-        JSValue nextValue = currentGenerator->internalField(static_cast<unsigned>(JSGenerator::Field::Next)).get();
+        JSValue nextValue = currentGenerator->internalField(static_cast<unsigned>(JSAsyncFunctionGenerator::Field::Next)).get();
         JSFunction* asyncFunction = dynamicDowncast<JSFunction>(nextValue);
         if (asyncFunction && !asyncFunction->isHostOrPrivateBuiltinFunction()) {
             if (FunctionExecutable* executable = asyncFunction->jsExecutable()) {
@@ -586,7 +614,7 @@ void Interpreter::getStackTrace(JSCell* owner, Vector<StackFrame>& results, size
     }
 
     bool foundCaller = !caller;
-    JSGenerator* asyncStackTraceOriginGenerator = nullptr;
+    JSAsyncFunctionGenerator* asyncStackTraceOriginGenerator = nullptr;
     size_t asyncStackTraceInsertPos = 0;
     EntryFrame* previousEntryFrame = nullptr;
     size_t previousEntryFrameStackTraceInsertPos = 0;
@@ -594,7 +622,7 @@ void Interpreter::getStackTrace(JSCell* owner, Vector<StackFrame>& results, size
         ASSERT(Options::useAsyncStackTrace());
         auto* record = vmEntryRecord(previousEntryFrame);
         if (record->m_context) {
-            if (auto* generator = dynamicDowncast<JSGenerator>(record->m_context)) {
+            if (auto* generator = dynamicDowncast<JSAsyncFunctionGenerator>(record->m_context)) {
                 asyncStackTraceOriginGenerator = generator;
                 asyncStackTraceInsertPos = previousEntryFrameStackTraceInsertPos;
             }

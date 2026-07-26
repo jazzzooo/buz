@@ -33,14 +33,8 @@ class SlotVisitor;
 
 #define UNUSED_MODIFIER_ARGUMENT /* unused */
 
-#define DECLARE_UNUSED_STRUCT_TO_TERMINATE_VISIT_MACRO_EXPANDER_IMPL(counter) \
-    struct UnusedSlotVisitorMacroStructSoWeCanHaveASemicolon##counter { }
-
-#define DECLARE_UNUSED_STRUCT_TO_TERMINATE_VISIT_MACRO_EXPANDER(counter) \
-    DECLARE_UNUSED_STRUCT_TO_TERMINATE_VISIT_MACRO_EXPANDER_IMPL(counter)
-
 #define DECLARE_UNUSED_STRUCT_TO_TERMINATE_VISIT_MACRO \
-    DECLARE_UNUSED_STRUCT_TO_TERMINATE_VISIT_MACRO_EXPANDER(__COUNTER__)
+    static_assert(true, "allow semicolon after macro")
 
 // Macros for visitAggregate().
 

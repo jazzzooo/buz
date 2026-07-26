@@ -26,12 +26,12 @@
 #include "config.h"
 #include "WaiterListManager.h"
 
-#include "DeferredWorkTimerInlines.h"
 #include "HeapCellInlines.h"
 #include "JSGlobalObject.h"
 #include "JSLock.h"
 #include "JSObjectInlines.h"
 #include "ObjectConstructor.h"
+#include "VMManager.h"
 #include <wtf/DataLog.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/RawPointer.h>
@@ -56,6 +56,7 @@ Waiter::Waiter(VM* vm)
 
 Waiter::Waiter(JSPromise* promise)
     : m_vm(&promise->vm())
+    , m_globalObject(promise->realm())
     , m_ticket(m_vm->deferredWorkTimer->addPendingWork(DeferredWorkTimer::WorkType::AtSomePoint, *m_vm, promise, { }))
     , m_isAsync(true)
 {
@@ -82,6 +83,8 @@ WaiterListManager::WaitSyncResult WaiterListManager::waitSyncImpl(VM& vm, ValueT
     MonotonicTime time = MonotonicTime::timePointFromNow(timeout);
 
     {
+        VMBlockingScope waitScope(vm, StopTheWorldEvent::AtomicsWaitBlocked);
+
         Locker listLocker { list->lock };
         if (WTF::atomicLoad(ptr) != expectedValue)
             return WaitSyncResult::NotEqual;
@@ -204,8 +207,8 @@ void WaiterListManager::notifyWaiterImpl(const AbstractLocker& listLocker, Ref<W
     ASSERT(!waiter->isOnList());
 
     if (waiter->isAsync()) {
-        waiter->scheduleWorkAndClear(listLocker, [resolveResult](DeferredWorkTimer::Ticket ticket) {
-            JSPromise* promise = uncheckedDowncast<JSPromise>(ticket->target());
+        waiter->scheduleWorkAndClear(listLocker, [resolveResult](DeferredWorkTimer::Ticket& ticket) {
+            JSPromise* promise = uncheckedDowncast<JSPromise>(ticket.target());
             JSGlobalObject* globalObject = promise->realm();
             VM& vm = promise->vm();
             JSValue result = resolveResult == ResolveResult::Ok ? vm.smallStrings.okString() : vm.smallStrings.timedOutString();
@@ -243,10 +246,8 @@ size_t WaiterListManager::totalWaiterCount()
 void Waiter::scheduleWorkAndClear(const AbstractLocker& listLocker, DeferredWorkTimer::Task&& task)
 {
     ASSERT(m_isAsync && m_vm && !isOnList());
-    if (auto ticket = this->ticket(listLocker)) {
-        m_vm->deferredWorkTimer->scheduleWorkSoon(ticket.get(), WTF::move(task));
+    if (m_vm->deferredWorkTimer->scheduleWorkSoonIfActive(m_ticket, WTF::move(task)))
         clearTicket(listLocker);
-    }
     clearTimer(listLocker);
 }
 
@@ -254,8 +255,7 @@ void Waiter::cancelAndClear(const AbstractLocker& listLocker)
 {
     ASSERT(m_isAsync);
     if (auto ticket = this->ticket(listLocker)) {
-        m_vm->deferredWorkTimer->cancelPendingWork(ticket.get());
-        m_vm->deferredWorkTimer->scheduleWorkSoon(ticket.get(), [](DeferredWorkTimer::Ticket) { });
+        m_vm->deferredWorkTimer->cancelPendingWork(*ticket);
         clearTicket(listLocker);
     }
     clearTimer(listLocker);
@@ -292,16 +292,14 @@ void WaiterListManager::unregister(JSGlobalObject* globalObject)
         Ref<WaiterList> list = entry.value;
         Locker listLocker { list->lock };
         list->removeIf(listLocker, [&](Waiter* waiter) {
-            if (waiter->isAsync()) {
-                if (auto ticket = waiter->ticket(listLocker); ticket && !ticket->isCancelled() && ticket->target()->realm() == globalObject) {
-                    dataLogLnIf(WaiterListsManagerInternal::verbose,
-                        "<WaiterListManager> <Thread:", Thread::currentSingleton(),
-                        "> unregister JSGlobalObject is cancelling waiter=", *waiter,
-                        " in WaiterList for ptr ", RawPointer(entry.key));
+            if (waiter->isAsync() && waiter->globalObject() == globalObject) {
+                dataLogLnIf(WaiterListsManagerInternal::verbose,
+                    "<WaiterListManager> <Thread:", Thread::currentSingleton(),
+                    "> unregister JSGlobalObject is cancelling waiter=", *waiter,
+                    " in WaiterList for ptr ", RawPointer(entry.key));
 
-                    waiter->cancelAndClear(listLocker);
-                    return true;
-                }
+                waiter->cancelAndClear(listLocker);
+                return true;
             }
             return false;
         });
@@ -351,7 +349,7 @@ Ref<WaiterList> WaiterListManager::findOrCreateList(void* ptr)
 {
     Locker waiterListsLocker { m_waiterListsLock };
     return m_waiterLists.ensure(ptr, [] {
-        return adoptRef(*new WaiterList()); 
+        return adoptRef(*new WaiterList());
     }).iterator->value.get();
 }
 
@@ -374,8 +372,8 @@ void Waiter::dump(PrintStream& out) const
 
     auto ticket = this->ticket(NoLockingNecessary);
     out.print(", ticket=", RawPointer(ticket.get()));
+    out.print(", globalObject=", RawPointer(m_globalObject));
     if (ticket && !ticket->isCancelled()) {
-        out.print(", m_ticket->globalObject=", RawPointer(ticket->target()->realm()));
         out.print(", m_ticket->target=", RawPointer(uncheckedDowncast<JSObject>(ticket->dependencies().last())));
         out.print(", m_ticket->scriptExecutionOwner=", RawPointer(ticket->scriptExecutionOwner()));
     }

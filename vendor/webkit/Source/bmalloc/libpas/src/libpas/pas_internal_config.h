@@ -142,6 +142,11 @@
 
 #define PAS_MAX_LARGE_ALIGNMENT_WASTEAGE 1.3
 
+/* If old_size > new_size * PAS_MAX_IN_PLACE_REALLOC_SHRINKAGE, skip the in-place
+   realloc fast path and fall back to allocate+copy+free so the caller doesn't
+   keep an oversized slot pinned for a much smaller request. */
+#define PAS_MAX_IN_PLACE_REALLOC_SHRINKAGE 4
+
 #define PAS_BITS_TTL                     16
 
 #define PAS_NUM_BASELINE_ALLOCATORS      32u

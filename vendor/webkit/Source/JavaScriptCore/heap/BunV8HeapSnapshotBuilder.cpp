@@ -435,9 +435,11 @@ String BunV8HeapSnapshotBuilder::getDetailedNodeType(JSCell* cell)
     }
     case JSType::SymbolType: {
         auto* symbol = uncheckedDowncast<Symbol>(cell);
-        auto description = symbol->description();
-        if (!description.isEmpty()) {
-            return makeString("Symbol("_s, description, ')');
+        // Avoid Symbol::description(VM&), which lazily allocates a JSString — heap
+        // snapshot traversal must not allocate. Read the SymbolImpl directly.
+        auto& uid = symbol->uid();
+        if (!uid.isNullSymbol() && !uid.isEmpty()) {
+            return makeString("Symbol("_s, StringView(uid), ')');
         }
         break;
     }

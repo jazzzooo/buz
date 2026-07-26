@@ -42,7 +42,6 @@
 #include "SlowPathCall.h"
 #include "ThunkGenerators.h"
 #include <wtf/ScopedLambda.h>
-#include <wtf/StringPrintStream.h>
 
 namespace JSC {
 
@@ -427,6 +426,7 @@ void JIT::emit_op_del_by_id(const JSInstruction* currentInstruction)
     using BaselineJITRegisters::DelById::baseJSR;
     using BaselineJITRegisters::DelById::resultJSR;
     using BaselineJITRegisters::DelById::propertyCacheGPR;
+    using BaselineJITRegisters::DelById::scratchJSR;
 
     emitGetVirtualRegister(base, baseJSR);
 
@@ -445,6 +445,7 @@ void JIT::emit_op_del_by_id(const JSInstruction* currentInstruction)
     m_delByIds.append(gen);
 
     setFastPathResumePoint();
+    emitGetVirtualRegister(base, scratchJSR); // IC may clobber baseJSR so reload from virtual register
     boxBoolean(resultJSR.payloadGPR(), resultJSR);
     emitPutVirtualRegister(dst, resultJSR);
 
@@ -452,7 +453,7 @@ void JIT::emit_op_del_by_id(const JSInstruction* currentInstruction)
     // We should emit write-barrier at the end of sequence since write-barrier clobbers registers.
     // FIXME: Use UnconditionalWriteBarrier in Baseline effectively to reduce code size.
     // https://bugs.webkit.org/show_bug.cgi?id=209395
-    emitWriteBarrier(base, ShouldFilterBase);
+    emitWriteBarrier(scratchJSR, ShouldFilterBase);
 }
 
 void JIT::emitSlow_op_del_by_id(const JSInstruction*, Vector<SlowCaseEntry>::iterator& iter)
@@ -475,6 +476,7 @@ void JIT::emit_op_del_by_val(const JSInstruction* currentInstruction)
     using BaselineJITRegisters::DelByVal::propertyJSR;
     using BaselineJITRegisters::DelByVal::resultJSR;
     using BaselineJITRegisters::DelByVal::propertyCacheGPR;
+    using BaselineJITRegisters::DelByVal::scratchJSR;
 
     emitGetVirtualRegister(base, baseJSR);
     emitGetVirtualRegister(property, propertyJSR);
@@ -495,6 +497,7 @@ void JIT::emit_op_del_by_val(const JSInstruction* currentInstruction)
     m_delByVals.append(gen);
 
     setFastPathResumePoint();
+    emitGetVirtualRegister(base, scratchJSR); // IC may clobber baseJSR so reload from virtual register
     boxBoolean(resultJSR.payloadGPR(), resultJSR);
     emitPutVirtualRegister(dst, resultJSR);
 
@@ -502,53 +505,13 @@ void JIT::emit_op_del_by_val(const JSInstruction* currentInstruction)
     // IC can write new Structure without write-barrier if a base is cell.
     // FIXME: Use UnconditionalWriteBarrier in Baseline effectively to reduce code size.
     // https://bugs.webkit.org/show_bug.cgi?id=209395
-    emitWriteBarrier(base, ShouldFilterBase);
+    emitWriteBarrier(scratchJSR, ShouldFilterBase);
 }
 
 void JIT::emitSlow_op_del_by_val(const JSInstruction*, Vector<SlowCaseEntry>::iterator& iter)
 {
     ASSERT(BytecodeIndex(m_bytecodeIndex.offset()) == m_bytecodeIndex);
     JITDelByValGenerator& gen = m_delByVals[m_delByValIndex++];
-    linkAllSlowCases(iter);
-    gen.reportBaselineDataICSlowPathBegin(label());
-    nearCallThunk(CodeLocationLabel { InlineCacheCompiler::generateSlowPathCode(vm(), gen.accessType()).retaggedCode<NoPtrTag>() });
-}
-
-void JIT::emit_op_try_get_by_id(const JSInstruction* currentInstruction)
-{
-    auto bytecode = currentInstruction->as<OpTryGetById>();
-    VirtualRegister resultVReg = bytecode.m_dst;
-    VirtualRegister baseVReg = bytecode.m_base;
-    const Identifier* ident = &(m_unlinkedCodeBlock->identifier(bytecode.m_property));
-
-    using BaselineJITRegisters::GetById::baseJSR;
-    using BaselineJITRegisters::GetById::resultJSR;
-    using BaselineJITRegisters::GetById::propertyCacheGPR;
-
-    emitGetVirtualRegister(baseVReg, baseJSR);
-
-    auto [ propertyCache, propertyCacheIndex ] = addUnlinkedPropertyInlineCache();
-    loadPropertyInlineCache(propertyCacheIndex, propertyCacheGPR);
-
-    emitJumpSlowCaseIfNotJSCell(baseJSR, baseVReg);
-
-    JITGetByIdGenerator gen(
-        nullptr, propertyCache, JITType::BaselineJIT, CodeOrigin(m_bytecodeIndex), CallSiteIndex(m_bytecodeIndex), RegisterSet::stubUnavailableRegisters(),
-        CacheableIdentifier::createFromIdentifierOwnedByCodeBlock(m_unlinkedCodeBlock, *ident), baseJSR, resultJSR, propertyCacheGPR, AccessType::TryGetById, CacheType::GetByIdPrototype);
-
-    gen.generateDataICFastPath(*this);
-    addSlowCase();
-    m_getByIds.append(gen);
-
-    setFastPathResumePoint();
-    emitValueProfilingSite(bytecode, resultJSR);
-    emitPutVirtualRegister(resultVReg, resultJSR);
-}
-
-void JIT::emitSlow_op_try_get_by_id(const JSInstruction*, Vector<SlowCaseEntry>::iterator& iter)
-{
-    ASSERT(BytecodeIndex(m_bytecodeIndex.offset()) == m_bytecodeIndex);
-    JITGetByIdGenerator& gen = m_getByIds[m_getByIdIndex++];
     linkAllSlowCases(iter);
     gen.reportBaselineDataICSlowPathBegin(label());
     nearCallThunk(CodeLocationLabel { InlineCacheCompiler::generateSlowPathCode(vm(), gen.accessType()).retaggedCode<NoPtrTag>() });
@@ -2311,6 +2274,26 @@ void JIT::emitWriteBarrier(VirtualRegister owner, VirtualRegister value, WriteBa
         ownerNotCell.link(this);
     if (mode == ShouldFilterValue || mode == ShouldFilterBaseAndValue)
         valueNotCell.link(this);
+}
+
+void JIT::emitWriteBarrier(JSValueRegs ownerJSR, WriteBarrierMode mode)
+{
+    ASSERT(mode == UnconditionalWriteBarrier || mode == ShouldFilterBase);
+
+    constexpr GPRReg tempGPR = regT0;
+
+    ASSERT(noOverlap(tempGPR, ownerJSR));
+
+    Jump ownerNotCell;
+    if (mode == ShouldFilterBase)
+        ownerNotCell = branchIfNotCell(ownerJSR);
+
+    Jump ownerIsRememberedOrInEden = barrierBranch(vm(), ownerJSR.payloadGPR(), tempGPR);
+    callOperationNoExceptionCheck(operationWriteBarrierSlowPath, TrustedImmPtr(&vm()), ownerJSR.payloadGPR());
+    ownerIsRememberedOrInEden.link(this);
+
+    if (mode == ShouldFilterBase)
+        ownerNotCell.link(this);
 }
 
 void JIT::emitWriteBarrier(VirtualRegister owner, WriteBarrierMode mode)

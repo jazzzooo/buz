@@ -42,6 +42,7 @@
 #include "B3ValueInlines.h"
 #include "B3Variable.h"
 #include "JITOpaqueByproducts.h"
+#include <wtf/GraphOrdering.h>
 #include <wtf/ListDump.h>
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/MakeString.h>
@@ -286,12 +287,18 @@ void Procedure::dump(PrintStream& out) const
 
 Vector<BasicBlock*> Procedure::blocksInPreOrder()
 {
-    return B3::blocksInPreOrder(at(0));
+    Vector<BasicBlock*> result;
+    result.reserveInitialCapacity(size());
+    appendNodesInOrder(cfg(), GraphOrder::PreOrder, result);
+    return result;
 }
 
 Vector<BasicBlock*> Procedure::blocksInPostOrder()
 {
-    return B3::blocksInPostOrder(at(0));
+    Vector<BasicBlock*> result;
+    result.reserveInitialCapacity(size());
+    appendNodesInOrder(cfg(), GraphOrder::PostOrder, result);
+    return result;
 }
 
 void Procedure::deleteVariable(Variable* variable)

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2007-2025 Apple Inc. All rights reserved.
+ * Copyright (C) 2007-2026 Apple Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -130,6 +130,7 @@ constexpr char16_t paragraphSeparator = 0x2029;
 constexpr char16_t partAlternationMark = 0x303D;
 constexpr char16_t perMilleSign = 0x2030;
 constexpr char16_t perTenThousandSign = 0x2031;
+constexpr char32_t phoenicianWordSeparator = 0x1091F;
 constexpr char16_t pilcrowSign = 0x00B6;
 constexpr char16_t popDirectionalFormatting = 0x202C;
 constexpr char16_t popDirectionalIsolate = 0x2069;
@@ -282,6 +283,7 @@ using WTF::Unicode::paragraphSeparator;
 using WTF::Unicode::partAlternationMark;
 using WTF::Unicode::perMilleSign;
 using WTF::Unicode::perTenThousandSign;
+using WTF::Unicode::phoenicianWordSeparator;
 using WTF::Unicode::pilcrowSign;
 using WTF::Unicode::popDirectionalFormatting;
 using WTF::Unicode::popDirectionalIsolate;

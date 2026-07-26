@@ -643,7 +643,7 @@ bool JSObject::getOwnPropertySlotByIndex(JSObject* thisObject, JSGlobalObject* g
         } else if (SparseArrayValueMap* map = storage->m_sparseMap.get()) {
             SparseArrayValueMap::iterator it = map->find(i);
             if (it != map->notFound()) {
-                it->value.get(thisObject, slot);
+                it->get(thisObject, slot);
                 return true;
             }
         }
@@ -1175,7 +1175,7 @@ ArrayStorage* JSObject::enterDictionaryIndexingModeWhenArrayStorageAlreadyExists
         // This will always be a new entry in the map, so no need to check we can write,
         // and attributes are default so no need to set them.
         if (value)
-            map->add(this, i).iterator->value.forceSet(vm, map, value, 0);
+            map->add(this, i).iterator->forceSet(vm, map, value, 0);
     }
 
     DeferGC deferGC(vm);
@@ -1192,7 +1192,17 @@ ArrayStorage* JSObject::enterDictionaryIndexingModeWhenArrayStorageAlreadyExists
 void JSObject::enterDictionaryIndexingMode(VM& vm)
 {
     switch (indexingType()) {
-    case ALL_BLANK_INDEXING_TYPES:
+    case NonArray:
+        // No indexed properties to convert. Once the caller makes the structure
+        // non-extensible, indexingShouldBeSparse() lazily handles later indexed
+        // writes; staying blank also keeps for-in enumerator caching usable.
+        // JSArray code paths (e.g. setLengthWritable) assume this method
+        // allocated ArrayStorage, so do not skip for JSArray subclasses that
+        // use NonArray indexing (e.g. $vm RuntimeArray with DerivedArrayType).
+        if (!inherits<JSArray>()) [[likely]]
+            return;
+        [[fallthrough]];
+    case ArrayClass:
     case ALL_UNDECIDED_INDEXING_TYPES:
     case ALL_INT32_INDEXING_TYPES:
     case ALL_DOUBLE_INDEXING_TYPES:
@@ -1237,11 +1247,6 @@ void JSObject::notifyPresenceOfIndexedAccessors(VM& vm)
         return;
 
     globalObject->haveABadTime(vm);
-}
-
-static inline size_t NODELETE nextLength(size_t length)
-{
-    return length + length / 2;
 }
 
 Butterfly* JSObject::createInitialIndexedStorage(VM& vm, unsigned length)
@@ -2468,7 +2473,7 @@ bool JSObject::deletePropertyByIndex(JSCell* cell, JSGlobalObject* globalObject,
         } else if (SparseArrayValueMap* map = storage->m_sparseMap.get()) {
             SparseArrayValueMap::iterator it = map->find(i);
             if (it != map->notFound()) {
-                if (it->value.attributes() & PropertyAttribute::DontDelete)
+                if (it->attributes() & PropertyAttribute::DontDelete)
                     return false;
                 map->remove(it);
             }
@@ -2797,8 +2802,8 @@ void JSObject::getOwnIndexedPropertyNames(JSGlobalObject*, PropertyNameArrayBuil
             
             if (SparseArrayValueMap* map = storage->m_sparseMap.get()) {
                 auto keys = WTF::compactMap<0, UnsafeVectorOverflow>(*map, [mode](auto& entry) ->std::optional<unsigned> {
-                    if (mode == DontEnumPropertiesMode::Include || !(entry.value.attributes() & PropertyAttribute::DontEnum))
-                        return static_cast<unsigned>(entry.key);
+                    if (mode == DontEnumPropertiesMode::Include || !(entry.attributes() & PropertyAttribute::DontEnum))
+                        return entry.index();
                     return std::nullopt;
                 });
                 
@@ -2862,6 +2867,7 @@ void JSObject::seal(VM& vm)
 {
     if (isSealed(vm))
         return;
+    materializeLazyOwnProperties(vm);
     enterDictionaryIndexingMode(vm);
     {
         Structure* oldStructure = structure();
@@ -2874,12 +2880,28 @@ void JSObject::freeze(VM& vm)
 {
     if (isFrozen(vm))
         return;
+    materializeLazyOwnProperties(vm);
     enterDictionaryIndexingMode(vm);
     {
         Structure* oldStructure = structure();
         DeferredStructureTransitionWatchpointFire deferred(vm, oldStructure);
         setStructure(vm, Structure::freezeTransition(vm, oldStructure, &deferred));
     }
+}
+
+void JSObject::materializeLazyOwnProperties(VM& vm)
+{
+    if (!structure()->typeInfo().overridesGetOwnSpecialPropertyNames())
+        return;
+
+    // Force reifying lazy properties. Special properties (e.g. function "length" / "name",
+    // or "arguments" / "caller") are materialized onto the object as a side effect of
+    // enumerating them via getOwnPropertyNames, so the call below is what does the reification.
+    JSGlobalObject* globalObject = this->realm();
+    PropertyNameArrayBuilder propertyNames(vm, PropertyNameMode::StringsAndSymbols, PrivateSymbolMode::Exclude);
+    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+    methodTable()->getOwnPropertyNames(this, globalObject, propertyNames, DontEnumPropertiesMode::Include);
+    scope.releaseAssertNoExceptionExceptTermination();
 }
 
 bool JSObject::preventExtensions(JSObject* object, JSGlobalObject* globalObject)
@@ -2926,6 +2948,10 @@ void JSObject::reifyAllStaticProperties(JSGlobalObject* globalObject)
     if (!structure()->isDictionary())
         convertToDictionary(vm);
 
+    // A PropertyCallback builder can enter JS; defer termination (like
+    // LazyProperty::callFunc) so it can't return with one pending. No
+    // ThrowScope here: JSObject::deleteProperty reaches this without one.
+    DeferTerminationForAWhile deferScope(vm);
     for (const ClassInfo* info = classInfo(); info; info = info->parentClass) {
         const HashTable* hashTable = info->staticPropHashTable;
         if (!hashTable)
@@ -2935,8 +2961,12 @@ void JSObject::reifyAllStaticProperties(JSGlobalObject* globalObject)
             unsigned attributes;
             auto key = Identifier::fromString(vm, value.m_key);
             PropertyOffset offset = getDirectOffset(vm, key, attributes);
-            if (!isValidOffset(offset))
+            if (!isValidOffset(offset)) {
                 reifyStaticProperty(vm, hashTable->classForThis, key, value, *this);
+                // Leave the rest lazy on throw; the caller propagates.
+                if (vm.exceptionForInspection()) [[unlikely]]
+                    return;
+            }
         }
     }
 
@@ -3047,14 +3077,14 @@ bool JSObject::defineOwnIndexedProperty(JSGlobalObject* globalObject, unsigned i
     
     // 1. Let current be the result of calling the [[GetOwnProperty]] internal method of O with property name P.
     SparseArrayValueMap::AddResult result = map->add(this, index);
-    SparseArrayEntry* entryInMap = &result.iterator->value;
+    SparseArrayEntry* entryInMap = &*result.iterator;
 
     // 2. Let extensible be the value of the [[Extensible]] internal property of O.
     // 3. If current is undefined and extensible is false, then Reject.
     // 4. If current is undefined and extensible is true, then
     if (result.isNewEntry) {
         if (!isStructureExtensible()) {
-            map->remove(result.iterator);
+            map->remove(static_cast<SparseArrayValueMap::const_iterator>(result.iterator));
             return typeError(globalObject, scope, throwException, NonExtensibleObjectPropertyDefineError);
         }
 
@@ -3173,9 +3203,9 @@ bool JSObject::attemptToInterceptPutByIndexOnHoleForPrototype(JSGlobalObject* gl
         ArrayStorage* storage = current->arrayStorageOrNull();
         if (storage && storage->m_sparseMap) {
             SparseArrayValueMap::iterator iter = storage->m_sparseMap->find(i);
-            if (iter != storage->m_sparseMap->notFound() && (iter->value.attributes() & (PropertyAttribute::Accessor | PropertyAttribute::ReadOnly))) {
+            if (iter != storage->m_sparseMap->notFound() && (iter->attributes() & (PropertyAttribute::Accessor | PropertyAttribute::ReadOnly))) {
                 scope.release();
-                putResult = iter->value.put(globalObject, thisValue, storage->m_sparseMap.get(), value, shouldThrow);
+                putResult = SparseArrayValueMap::entryFor(iter).put(globalObject, thisValue, storage->m_sparseMap.get(), value, shouldThrow);
                 return true;
             }
         }
@@ -3343,7 +3373,7 @@ bool JSObject::putByIndexBeyondVectorLengthWithArrayStorage(JSGlobalObject* glob
     WriteBarrier<Unknown>* vector = storage->m_vector;
     SparseArrayValueMap::const_iterator end = map->end();
     for (SparseArrayValueMap::const_iterator it = map->begin(); it != end; ++it)
-        vector[it->key].set(vm, this, it->value.getNonSparseMode());
+        vector[it->index()].set(vm, this, it->getNonSparseMode());
     deallocateSparseIndexMap();
 
     // Store the new property into the vector.
@@ -3495,7 +3525,7 @@ bool JSObject::putDirectIndexBeyondVectorLengthWithArrayStorage(JSGlobalObject* 
     WriteBarrier<Unknown>* vector = storage->m_vector;
     SparseArrayValueMap::const_iterator end = map->end();
     for (SparseArrayValueMap::const_iterator it = map->begin(); it != end; ++it)
-        vector[it->key].set(vm, this, it->value.getNonSparseMode());
+        vector[it->index()].set(vm, this, it->getNonSparseMode());
     deallocateSparseIndexMap();
 
     // Store the new property into the vector.

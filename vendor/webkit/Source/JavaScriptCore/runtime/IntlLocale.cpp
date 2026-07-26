@@ -32,7 +32,6 @@
 #include "JSCInlines.h"
 #include <unicode/ucal.h>
 #include <unicode/ucol.h>
-#include <unicode/udat.h>
 #include <unicode/udatpg.h>
 #include <unicode/uloc.h>
 #include <unicode/unumsys.h>

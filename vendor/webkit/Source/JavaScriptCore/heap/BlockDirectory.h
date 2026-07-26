@@ -25,7 +25,6 @@
 
 #pragma once
 
-#include <JavaScriptCore/AllocationFailureMode.h>
 #include <JavaScriptCore/BlockDirectoryBits.h>
 #include <JavaScriptCore/CellAttributes.h>
 #include <JavaScriptCore/FreeList.h>
@@ -34,9 +33,7 @@
 #include <JavaScriptCore/MarkedBlock.h>
 #include <wtf/DataLog.h>
 #include <wtf/DebugHeap.h>
-#include <wtf/FastBitVector.h>
 #include <wtf/Lock.h>
-#include <wtf/MonotonicTime.h>
 #include <wtf/SharedTask.h>
 #include <wtf/Vector.h>
 
@@ -146,7 +143,7 @@ public:
     
     MarkedBlock::Handle* findEmptyBlockToSteal();
     
-    MarkedBlock::Handle* findBlockToSweep() { return findBlockToSweep(m_unsweptCursor); }
+    inline MarkedBlock::Handle* findBlockToSweep();
     MarkedBlock::Handle* findBlockToSweep(unsigned& unsweptCursor);
 
     // FIXME: rdar://139998916

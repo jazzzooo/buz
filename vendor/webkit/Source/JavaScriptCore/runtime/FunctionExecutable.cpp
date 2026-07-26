@@ -33,6 +33,7 @@
 #include "FunctionOverrides.h"
 #include "SourceCodeKey.h"
 #include "IsoCellSetInlines.h"
+#include "JSArray.h"
 #include "JSCJSValueInlines.h"
 
 namespace JSC {

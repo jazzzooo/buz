@@ -90,7 +90,7 @@ JSC_DEFINE_HOST_FUNCTION(intlDurationFormatPrototypeFuncFormat, (JSGlobalObject*
     if (!argument.isObject() && !argument.isString()) [[unlikely]]
         return throwVMTypeError(globalObject, scope, "Intl.DurationFormat.prototype.format argument needs to be an object or a string"_s);
 
-    auto duration = TemporalDuration::toISO8601Duration(globalObject, argument);
+    auto duration = TemporalDuration::toTemporalDurationRecord(globalObject, argument);
     RETURN_IF_EXCEPTION(scope, { });
 
     RELEASE_AND_RETURN(scope, JSValue::encode(durationFormat->format(globalObject, WTF::move(duration))));
@@ -110,7 +110,7 @@ JSC_DEFINE_HOST_FUNCTION(intlDurationFormatPrototypeFuncFormatToParts, (JSGlobal
     if (!argument.isObject() && !argument.isString()) [[unlikely]]
         return throwVMTypeError(globalObject, scope, "Intl.DurationFormat.prototype.formatToParts argument needs to be an object or a string"_s);
 
-    auto duration = TemporalDuration::toISO8601Duration(globalObject, argument);
+    auto duration = TemporalDuration::toTemporalDurationRecord(globalObject, argument);
     RETURN_IF_EXCEPTION(scope, { });
 
     RELEASE_AND_RETURN(scope, JSValue::encode(durationFormat->formatToParts(globalObject, WTF::move(duration))));

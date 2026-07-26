@@ -29,9 +29,7 @@
 
 #include <wtf/BitSet.h>
 #include <wtf/DataLog.h>
-#include <wtf/StdLibExtras.h>
 #include <wtf/text/MakeString.h>
-#include <wtf/text/StringConcatenate.h>
 #include <wtf/text/TextBreakIterator.h>
 
 namespace JSC {
@@ -187,10 +185,10 @@ private:
         for (unsigned y = 0; y < numChars; ++y) {
             const char16_t ch = y + minChar;
             dataLogF("/* %02X %c */ {B(", ch, ch < 0x7F ? ch : ' ');
-            const char* prefix = "";
+            ASCIILiteral prefix = ""_s;
             for (unsigned x = 0; x < numCharsRoundUp8; ++x) {
-                dataLogF("%s%u", prefix, static_cast<unsigned>(m_pair[y].get(x)));
-                prefix = (x % 8 == 7) ? "),B(" : ",";
+                dataLog(prefix, static_cast<unsigned>(m_pair[y].get(x)));
+                prefix = (x % 8 == 7) ? "),B("_s : ","_s;
             }
             dataLogLn(")},");
         }

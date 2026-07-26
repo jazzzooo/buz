@@ -56,15 +56,12 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
-#include <wtf/ASCIICType.h>
 #include <wtf/Assertions.h>
 #include <wtf/DataLog.h>
 #include <wtf/HexNumber.h>
+#include <wtf/Lock.h>
 #include <wtf/NeverDestroyed.h>
-#include <wtf/Scope.h>
 #include <wtf/Threading.h>
-#include <wtf/text/MakeString.h>
-#include <wtf/text/StringBuilder.h>
 
 namespace JSC {
 namespace Wasm {
@@ -83,6 +80,14 @@ DebugServer::DebugServer()
 
 bool DebugServer::start()
 {
+    // Guard against concurrent start() calls from $.agent.start() workers in the jsc shell
+    // and against the createAndBindServerSocket() race below.
+    static Lock initLock;
+    Locker locker { initLock };
+
+    if (isInService())
+        return true;
+
     if (!createAndBindServerSocket())
         return false;
 

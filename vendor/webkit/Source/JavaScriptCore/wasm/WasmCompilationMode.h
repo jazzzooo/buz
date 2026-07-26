@@ -39,7 +39,8 @@ enum class CompilationMode : uint8_t {
     JSToWasmMode,
     JSToWasmICMode,
     WasmToJSMode,
-    WasmBuiltinMode
+    WasmBuiltinMode,
+    RestoreFrameMode
 };
 
 constexpr inline bool isAnyInterpreter(CompilationMode compilationMode)
@@ -54,6 +55,7 @@ constexpr inline bool isAnyInterpreter(CompilationMode compilationMode)
     case CompilationMode::JSToWasmICMode:
     case CompilationMode::WasmToJSMode:
     case CompilationMode::WasmBuiltinMode:
+    case CompilationMode::RestoreFrameMode:
         return false;
     }
     RELEASE_ASSERT_NOT_REACHED_UNDER_CONSTEXPR_CONTEXT();
@@ -71,6 +73,7 @@ constexpr inline bool isAnyBBQ(CompilationMode compilationMode)
     case CompilationMode::JSToWasmICMode:
     case CompilationMode::WasmToJSMode:
     case CompilationMode::WasmBuiltinMode:
+    case CompilationMode::RestoreFrameMode:
         return false;
     }
     RELEASE_ASSERT_NOT_REACHED_UNDER_CONSTEXPR_CONTEXT();
@@ -88,6 +91,7 @@ constexpr inline bool isAnyOMG(CompilationMode compilationMode)
     case CompilationMode::JSToWasmICMode:
     case CompilationMode::WasmToJSMode:
     case CompilationMode::WasmBuiltinMode:
+    case CompilationMode::RestoreFrameMode:
         return false;
     }
     RELEASE_ASSERT_NOT_REACHED_UNDER_CONSTEXPR_CONTEXT();
@@ -105,6 +109,7 @@ constexpr inline bool isAnyWasmToJS(CompilationMode compilationMode)
     case CompilationMode::JSToWasmMode:
     case CompilationMode::JSToWasmICMode:
     case CompilationMode::WasmBuiltinMode:
+    case CompilationMode::RestoreFrameMode:
         return false;
     }
     RELEASE_ASSERT_NOT_REACHED_UNDER_CONSTEXPR_CONTEXT();

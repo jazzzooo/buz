@@ -57,6 +57,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include "StrongInlines.h"
 #include "StructureInlines.h"
 #include "ThrowScope.h"
+#include "VariableWriteFireDetailInlines.h"
 #include "WeakGCMapInlines.h"
 #include "WeakGCSetInlines.h"
 

@@ -46,6 +46,7 @@
 #include "StructureID.h"
 #include "Synchronousness.h"
 #include "WeakHandleOwner.h"
+#include <JavaScriptCore/SubspaceAccess.h>
 #include <wtf/AutomaticThread.h>
 #include <wtf/Box.h>
 #include <wtf/ConcurrentPtrHashSet.h>
@@ -56,6 +57,7 @@
 #include <wtf/Markable.h>
 #include <wtf/NotFound.h>
 #include <wtf/ParallelHelperPool.h>
+#include <wtf/SegmentedVector.h>
 #include <wtf/Threading.h>
 
 #if USE(BUN_JSC_ADDITIONS)
@@ -198,6 +200,7 @@ class Heap;
     v(webAssemblyModuleRecordSpace, webAssemblyModuleRecordHeapCellType, WebAssemblyModuleRecord) \
     v(webAssemblyTableSpace, webAssemblyTableHeapCellType, JSWebAssemblyTable) \
     v(webAssemblyTagSpace, webAssemblyTagHeapCellType, JSWebAssemblyTag) \
+    v(webAssemblyStreamingContextSpace, destructibleCellHeapCellType, JSWebAssemblyStreamingContext) \
     v(webAssemblyWrapperFunctionSpace, cellHeapCellType, WebAssemblyWrapperFunction)
 
 // FIXME: This is a bit confusingly named since the objects in here are exclusive to the subspace but they can vary in size thus can't be in an IsoSubspace.
@@ -218,6 +221,7 @@ class Heap;
     v(arrayBufferSpace, cellHeapCellType, JSArrayBuffer) \
     v(arrayIteratorSpace, cellHeapCellType, JSArrayIterator) \
     v(asyncGeneratorSpace, cellHeapCellType, JSAsyncGenerator) \
+    v(asyncFunctionGeneratorSpace, cellHeapCellType, JSAsyncFunctionGenerator) \
     v(bigInt64ArraySpace, cellHeapCellType, JSBigInt64Array) \
     v(bigIntObjectSpace, cellHeapCellType, BigIntObject) \
     v(bigUint64ArraySpace, cellHeapCellType, JSBigUint64Array) \
@@ -261,6 +265,7 @@ class Heap;
     v(jsModuleRecordSpace, jsModuleRecordHeapCellType, JSModuleRecord) \
     v(moduleRegistryEntrySpace, destructibleCellHeapCellType, ModuleRegistryEntry) \
     v(moduleLoadingContextSpace, destructibleCellHeapCellType, ModuleLoadingContext) \
+    v(sentinelSpace, cellHeapCellType, JSSentinel) \
     v(syntheticModuleRecordSpace, syntheticModuleRecordHeapCellType, SyntheticModuleRecord) \
     v(jsMicrotaskDispatcherSpace, destructibleCellHeapCellType, JSMicrotaskDispatcher) \
     v(mapIteratorSpace, cellHeapCellType, JSMapIterator) \
@@ -281,13 +286,12 @@ class Heap;
     v(symbolSpace, destructibleCellHeapCellType, Symbol) \
     v(symbolObjectSpace, cellHeapCellType, SymbolObject) \
     v(templateObjectDescriptorSpace, destructibleCellHeapCellType, JSTemplateObjectDescriptor) \
-    v(temporalCalendarSpace, cellHeapCellType, TemporalCalendar) \
     v(temporalDurationSpace, cellHeapCellType, TemporalDuration) \
     v(temporalInstantSpace, cellHeapCellType, TemporalInstant) \
     v(temporalPlainDateSpace, cellHeapCellType, TemporalPlainDate) \
     v(temporalPlainDateTimeSpace, cellHeapCellType, TemporalPlainDateTime) \
     v(temporalPlainTimeSpace, cellHeapCellType, TemporalPlainTime) \
-    v(temporalTimeZoneSpace, cellHeapCellType, TemporalTimeZone) \
+    v(temporalZonedDateTimeSpace, cellHeapCellType, TemporalZonedDateTime) \
     v(uint8ArraySpace, cellHeapCellType, JSUint8Array) \
     v(uint8ClampedArraySpace, cellHeapCellType, JSUint8ClampedArray) \
     v(uint16ArraySpace, cellHeapCellType, JSUint16Array) \
@@ -629,10 +633,12 @@ public:
     void setKeepVerifierSlotVisitor();
     void clearVerifierSlotVisitor();
 
-    void appendPossiblyAccessedStringFromConcurrentThreads(String&& string)
+    void appendPossiblyAccessedStringFromConcurrentThreadsOrGCOwnedDataScope(const JSString* owner, String&& string)
     {
-        m_possiblyAccessedStringsFromConcurrentThreads.append(WTF::move(string));
+        m_possiblyAccessedStringsFromConcurrentThreadsOrGCOwnedDataScope.constructAndAppend(owner, WTF::move(string));
     }
+
+    void clearConcurrentRetainedDataIfPossible();
 
     bool isInPhase(CollectorPhase phase) const { return m_currentPhase == phase; }
 
@@ -640,6 +646,9 @@ public:
     // FIXME: We should have a way to clear Wasm::Callees pending destruction when the Module dies.
     void reportWasmCalleePendingDestruction(Ref<Wasm::Callee>&&);
     bool isWasmCalleePendingDestruction(Wasm::Callee&);
+
+    const TinyBloomFilter<uintptr_t>& boxedWasmCalleeFilter() const { return m_boxedWasmCalleeFilter; }
+    bool didDiscoverPendingWasmCallee(Wasm::Callee*);
 #endif
 
     // This is a debug function for checking who marked the target cell.
@@ -761,6 +770,10 @@ private:
     void gatherStackRoots(ConservativeRoots&);
     void gatherVMRoots(ConservativeRoots&);
     void beginMarking();
+#if ENABLE(WEBASSEMBLY)
+    void prepareWasmCalleeCleanup();
+    void finalizeWasmCalleeCleanup();
+#endif
     void visitCompilerWorklistWeakReferences();
     void removeDeadCompilerWorklistEntries();
     void updateObjectCounts();
@@ -918,7 +931,16 @@ private:
     Vector<WeakBlock*> m_logicallyEmptyWeakBlocks;
     size_t m_indexOfNextLogicallyEmptyWeakBlockToSweep { WTF::notFound };
 
-    Vector<String> m_possiblyAccessedStringsFromConcurrentThreads;
+#if ASSERT_ENABLED
+    friend void setTopGCOwnedDataScopeIfNeeded(const JSCell*, const void*);
+    friend void clearTopGCOwnedDataScopeIfNeeded(const JSCell*, const void*);
+    const void* m_topGCOwnedDataScope { nullptr };
+#endif
+    // Use a SegmentedVector rather than a Vector because we don't want to have to copy in order to grow the buffer.
+    // Since this list is walked once to deref all the strings
+    // We don't need fast access.
+    SegmentedVector<std::pair<const JSString*, String>, 256, 10, SegmentedVectorGrowthPolicy::Doubling> m_possiblyAccessedStringsFromConcurrentThreadsOrGCOwnedDataScope;
+   UncheckedKeyHashSet<const JSString*> m_discoveredAccessedStringsFromGCOwnedDataScope;
     
     RefPtr<GCActivityCallback> m_fullActivityCallback;
     RefPtr<GCActivityCallback> m_edenActivityCallback;
@@ -945,6 +967,13 @@ private:
     
 #if ENABLE(WEBASSEMBLY)
     UncheckedKeyHashSet<Ref<Wasm::Callee>> m_wasmCalleesPendingDestruction WTF_GUARDED_BY_LOCK(m_wasmCalleesPendingDestructionLock);
+    // We snapshot m_wasmCalleesPendingDestruction at the start of GC rather than consulting it
+    // directly during scanning because new callees can be registered while we scan. Without the
+    // snapshot, a callee could be added after we already passed its frame, never get recorded
+    // as discovered, and be incorrectly destroyed.
+    UncheckedKeyHashSet<const Wasm::Callee*> m_wasmCalleesPendingDestructionSnapshot;
+    UncheckedKeyHashSet<const Wasm::Callee*> m_wasmCalleesDiscoveredDuringGC;
+    TinyBloomFilter<uintptr_t> m_boxedWasmCalleeFilter;
 #endif
 
     std::unique_ptr<MarkStackArray> m_sharedCollectorMarkStack;
@@ -1073,14 +1102,12 @@ public:
     IsoHeapCellType intlSegmenterHeapCellType;
     IsoHeapCellType intlSegmentsHeapCellType;
 #if ENABLE(WEBASSEMBLY)
-    IsoHeapCellType webAssemblyArrayHeapCellType;
     IsoHeapCellType webAssemblyExceptionHeapCellType;
     IsoHeapCellType webAssemblyFunctionHeapCellType;
     IsoHeapCellType webAssemblyGlobalHeapCellType;
     // We can use IsoHeapCellType for instances because it's allocated out of a PreciseSubspace reserved for just instances.
     IsoHeapCellType webAssemblyInstanceHeapCellType;
     IsoHeapCellType webAssemblyMemoryHeapCellType;
-    IsoHeapCellType webAssemblyStructHeapCellType;
     IsoHeapCellType webAssemblyModuleHeapCellType;
     IsoHeapCellType webAssemblyModuleRecordHeapCellType;
     IsoHeapCellType webAssemblyTableHeapCellType;

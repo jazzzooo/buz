@@ -4365,20 +4365,20 @@ private:
         using IType = RISCV64Assembler::IImmediate;
         template<int32_t value>
         static IType I() { return IType::v<IType, value>(); }
-        template<typename T, typename = EnableIfInteger<T>>
+        template<std::integral T>
         static IType I(T value) { return IType::v<IType>(value); }
         static IType I(uint32_t value) { return IType(value); }
 
         using SType = RISCV64Assembler::SImmediate;
         template<int32_t value>
         static SType S() { return SType::v<SType, value>(); }
-        template<typename T, typename = EnableIfInteger<T>>
+        template<std::integral T>
         static SType S(T value) { return SType::v<SType>(value); }
 
         using BType = RISCV64Assembler::BImmediate;
         template<int32_t value>
         static BType B() { return BType::v<BType, value>(); }
-        template<typename T, typename = EnableIfInteger<T>>
+        template<std::integral T>
         static BType B(T value) { return BType::v<BType>(value); }
         static BType B(uint32_t value) { return BType(value); }
 

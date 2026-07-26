@@ -170,64 +170,40 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
     return true;
 }
 
-ALWAYS_INLINE bool charactersAreAllLatin1(std::span<const Latin1Character>)
+ALWAYS_INLINE constexpr bool charactersAreAllLatin1(std::span<const Latin1Character>)
 {
     return true;
 }
 
-inline bool charactersAreAllLatin1(std::span<const char16_t> span)
+inline constexpr bool charactersAreAllLatin1(std::span<const char16_t> span)
 {
-#if CPU(ARM64)
-WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
-    const auto* characters = span.data();
-    size_t length = span.size();
+    if (std::is_constant_evaluated()) {
+        for (auto character : span) {
+            if (static_cast<uint16_t>(character) > 0xFF)
+                return false;
+        }
+    } else {
+        WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
+        constexpr size_t simdStride = SIMD::stride<uint16_t>;
 
-    const auto* end = characters + length;
-    const auto* simdEnd = characters + (length & ~7); // Process 8 chars at a time.
+        const auto* characters = span.data();
+        const auto* end = characters + span.size();
+        const auto* simdEnd = characters + (span.size() & ~(simdStride - 1));
 
-    uint16x8_t mask = vdupq_n_u16(0xFF00);
+        auto nonLatin1Mask = SIMD::splat16(0xFF00);
+        while (characters < simdEnd) {
+            auto chunk = SIMD::load(reinterpret_cast<const uint16_t*>(characters));
+            if (SIMD::isNonZero(SIMD::bitAnd2(chunk, nonLatin1Mask)))
+                return false;
+            characters += simdStride;
+        }
 
-    // SIMD loop with early exit.
-    while (characters < simdEnd) {
-        uint16x8_t chunk = vld1q_u16(reinterpret_cast<const uint16_t*>(characters));
-        uint16x8_t nonLatin1Bits = vandq_u16(chunk, mask);
-
-        // Early exit: check if any non-Latin1 character found.
-        if (vmaxvq_u16(nonLatin1Bits))
-            return false;
-
-        characters += 8;
+        while (characters < end) {
+            if (!isLatin1(*characters++))
+                return false;
+        }
+        WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
     }
-
-    // Scalar tail with early exit.
-    while (characters < end) {
-        if (!isLatin1(*characters++))
-            return false;
-    }
-WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
-#else
-    constexpr size_t loopIncrement = sizeof(MachineWord) / sizeof(char16_t);
-    MachineWord nonLatin1BitMask = NonLatin1Mask<sizeof(MachineWord), char16_t>::value();
-
-    // Align to machine word.
-    while (!span.empty() && !isAlignedToMachineWord(span.data())) {
-        if (!isLatin1(WTF::consume(span)))
-            return false;
-    }
-
-    // Process machine words with early exit.
-    while (span.size() >= loopIncrement) {
-        auto word = reinterpretCastSpanStartTo<const MachineWord>(consumeSpan(span, loopIncrement));
-        if (word & nonLatin1BitMask)
-            return false;
-    }
-
-    // Process remaining characters.
-    while (!span.empty()) {
-        if (!isLatin1(WTF::consume(span)))
-            return false;
-    }
-#endif
     return true;
 }
 

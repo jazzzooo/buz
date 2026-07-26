@@ -30,6 +30,7 @@
 #include "config.h"
 #include <wtf/WorkQueue.h>
 
+#include <wtf/CurrentThread.h>
 #include <wtf/threads/BinarySemaphore.h>
 
 namespace WTF {
@@ -45,7 +46,7 @@ void WorkQueueBase::platformInitialize(ASCIILiteral name, Type, QOS qos)
     m_runLoop = RunLoop::create(name, ThreadType::Unknown, qos);
     BinarySemaphore semaphore;
     m_runLoop->dispatch([&] {
-        m_threadID = Thread::currentSingleton().uid();
+        m_threadID = currentThreadID();
         semaphore.signal();
     });
     semaphore.wait();

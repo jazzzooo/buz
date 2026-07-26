@@ -152,6 +152,13 @@ static CodePtr<JSEntryPtrTag> callerReturnPC(CodeBlock* baselineCodeBlockForCall
     if (callBytecodeIndex.checkpoint())
         return LLInt::checkpointOSRExitFromInlinedCallTrampolineThunk().code();
 
+    // Array.prototype.sort's comparator is inlined by the DFG ArraySortIntrinsic.
+    // Same stack layout as Call, but on OSR exit inside the comparator its return
+    // PC is arraySortComparatorReturnTrampoline, which discards the return value
+    // and re-dispatches the caller's op_call instead of advancing past it.
+    if (trueCallerCallKind == InlineCallFrame::ArraySortComparatorCall)
+        return LLInt::arraySortComparatorReturnTrampolineThunk().code();
+
     CodePtr<JSEntryPtrTag> jumpTarget;
 
     const auto& callInstruction = *baselineCodeBlockForCaller->instructions().at(callBytecodeIndex).ptr();
@@ -169,6 +176,10 @@ static CodePtr<JSEntryPtrTag> callerReturnPC(CodeBlock* baselineCodeBlockForCall
                 jumpTarget = LLINT_RETURN_LOCATION(op_iterator_open);
             else if (callInstruction.opcodeID() == op_iterator_next)
                 jumpTarget = LLINT_RETURN_LOCATION(op_iterator_next);
+            else if (callInstruction.opcodeID() == op_async_iterator_open)
+                jumpTarget = LLINT_RETURN_LOCATION(op_async_iterator_open);
+            else if (callInstruction.opcodeID() == op_async_iterator_next)
+                jumpTarget = LLINT_RETURN_LOCATION(op_async_iterator_next);
             break;
         }
         case InlineCallFrame::Construct:
@@ -389,7 +400,7 @@ void reifyInlinedCallFrames(CCallHelpers& jit, const OSRExitBase& exit)
             jit.store32(AssemblyHelpers::TrustedImm32(inlineCallFrame->argumentCountIncludingThis), AssemblyHelpers::payloadFor(VirtualRegister(inlineCallFrame->stackOffset + CallFrameSlot::argumentCountIncludingThis)));
         jit.storePtr(callerFrameGPR, AssemblyHelpers::addressForByteOffset(inlineCallFrame->callerFrameOffset()));
 
-        BytecodeIndex exitIndex = baselineCodeBlock->bytecodeIndexForExit(codeOrigin->bytecodeIndex());
+        BytecodeIndex exitIndex(codeOrigin->bytecodeIndex().offset());
         uint32_t locationBits = CallSiteIndex(exitIndex).bits();
         jit.store32(AssemblyHelpers::TrustedImm32(locationBits), AssemblyHelpers::tagFor(VirtualRegister(inlineCallFrame->stackOffset + CallFrameSlot::argumentCountIncludingThis)));
         if (!inlineCallFrame->isClosureCall)

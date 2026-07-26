@@ -28,7 +28,6 @@
 #include "SourceID.h"
 #include <wtf/GenericHashKey.h>
 #include <wtf/HashMap.h>
-#include <wtf/HashTraits.h>
 #include <wtf/Vector.h>
 
 namespace JSC {

@@ -36,7 +36,6 @@
 #include "DFGFrozenValue.h"
 #include "DFGNode.h"
 #include "DFGPlan.h"
-#include "DFGPropertyTypeKey.h"
 #include "FullBytecodeLiveness.h"
 #include "FunctionAllowlist.h"
 #include "JITScannable.h"
@@ -186,7 +185,7 @@ private:
 //
 // The order may be significant for nodes with side-effects (property accesses, value conversions).
 // Nodes that are 'dead' remain in the vector with refCount 0.
-class Graph final : public virtual Scannable {
+class Graph final : public Scannable {
 public:
     Graph(VM&, Plan&);
     ~Graph() final;
@@ -291,13 +290,11 @@ public:
     // https://bugs.webkit.org/show_bug.cgi?id=210627
     FrozenValue* bottomValueMatchingSpeculation(SpeculatedType);
     
-    RegisteredStructure registerStructure(Structure* structure)
-    {
-        StructureRegistrationResult ignored;
-        return registerStructure(structure, ignored);
-    }
-    RegisteredStructure registerStructure(Structure*, StructureRegistrationResult&);
-    void registerAndWatchStructureTransition(Structure*);
+    RegisteredStructure registerStructure(Structure*);
+    bool tryWatch(Structure*);
+    void watch(Structure*);
+    bool isWatched(Structure*);
+
     void assertIsRegistered(Structure* structure);
     
     // CodeBlock is optional, but may allow additional information to be dumped (e.g. Identifier names).
@@ -632,7 +629,7 @@ public:
 
     void appendBlock(std::unique_ptr<BasicBlock>&& basicBlock)
     {
-        basicBlock->index = m_blocks.size();
+        basicBlock->setIndex(m_blocks.size());
         m_blocks.append(WTF::move(basicBlock));
     }
     
@@ -643,7 +640,7 @@ public:
     
     void killBlock(BasicBlock* basicBlock)
     {
-        killBlock(basicBlock->index);
+        killBlock(basicBlock->index());
     }
     
     void killBlockAndItsContents(BasicBlock*);
@@ -999,11 +996,32 @@ public:
         return isWatchingGlobalObjectWatchpoint(globalObject, set, LinkerIR::Type::StringValueOfWatchpointSet);
     }
 
+    bool isWatchingStringSymbolMatchWatchpoint(const CodeOrigin& semanticOrigin)
+    {
+        JSGlobalObject* globalObject = globalObjectFor(semanticOrigin);
+        InlineWatchpointSet& set = globalObject->stringSymbolMatchWatchpointSet();
+        return isWatchingGlobalObjectWatchpoint(globalObject, set, LinkerIR::Type::StringSymbolMatchWatchpointSet);
+    }
+
+    bool isWatchingStringSymbolSearchWatchpoint(const CodeOrigin& semanticOrigin)
+    {
+        JSGlobalObject* globalObject = globalObjectFor(semanticOrigin);
+        InlineWatchpointSet& set = globalObject->stringSymbolSearchWatchpointSet();
+        return isWatchingGlobalObjectWatchpoint(globalObject, set, LinkerIR::Type::StringSymbolSearchWatchpointSet);
+    }
+
     bool isWatchingStringSymbolReplaceWatchpoint(const CodeOrigin& semanticOrigin)
     {
         JSGlobalObject* globalObject = globalObjectFor(semanticOrigin);
         InlineWatchpointSet& set = globalObject->stringSymbolReplaceWatchpointSet();
         return isWatchingGlobalObjectWatchpoint(globalObject, set, LinkerIR::Type::StringSymbolReplaceWatchpointSet);
+    }
+
+    bool isWatchingStringSymbolSplitWatchpoint(const CodeOrigin& semanticOrigin)
+    {
+        JSGlobalObject* globalObject = globalObjectFor(semanticOrigin);
+        InlineWatchpointSet& set = globalObject->stringSymbolSplitWatchpointSet();
+        return isWatchingGlobalObjectWatchpoint(globalObject, set, LinkerIR::Type::StringSymbolSplitWatchpointSet);
     }
 
     bool isWatchingStringSymbolToPrimitiveWatchpoint(const CodeOrigin& semanticOrigin)
@@ -1020,9 +1038,16 @@ public:
         return isWatchingGlobalObjectWatchpoint(globalObject, set, LinkerIR::Type::RegExpPrimordialPropertiesWatchpointSet);
     }
 
-    bool isWatchingPromiseThenWatchpoint(Node* node)
+    bool isWatchingRegExpSpeciesWatchpoint(Node* node)
     {
         JSGlobalObject* globalObject = globalObjectFor(node->origin.semantic);
+        InlineWatchpointSet& set = globalObject->regExpSpeciesWatchpointSet();
+        return isWatchingGlobalObjectWatchpoint(globalObject, set, LinkerIR::Type::RegExpSpeciesWatchpointSet);
+    }
+
+    bool isWatchingPromiseThenWatchpoint(const CodeOrigin& semanticOrigin)
+    {
+        JSGlobalObject* globalObject = globalObjectFor(semanticOrigin);
         InlineWatchpointSet& set = globalObject->promiseThenWatchpointSet();
         return isWatchingGlobalObjectWatchpoint(globalObject, set, LinkerIR::Type::PromiseThenWatchpointSet);
     }
@@ -1236,6 +1261,12 @@ public:
     ObjectPropertyConditionSet tryEnsureAbsence(JSGlobalObject*, const StructureSet&, CacheableIdentifier);
 
     bool canDoFastSpread(Node*, const AbstractValue&);
+    bool canDoFastSpreadWithStructureCheck(Node*);
+    static constexpr IndexingType originalArrayShapesForSpread[] = {
+        CopyOnWriteArrayWithContiguous, ArrayWithContiguous,
+        ArrayWithInt32, CopyOnWriteArrayWithInt32,
+        ArrayWithDouble, CopyOnWriteArrayWithDouble,
+    };
     
     void registerFrozenValues();
 

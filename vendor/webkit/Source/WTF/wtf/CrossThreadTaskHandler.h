@@ -28,7 +28,6 @@
 #include <wtf/CrossThreadQueue.h>
 #include <wtf/CrossThreadTask.h>
 #include <wtf/Lock.h>
-#include <wtf/Threading.h>
 
 namespace WTF {
 

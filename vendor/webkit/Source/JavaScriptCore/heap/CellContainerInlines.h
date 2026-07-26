@@ -25,11 +25,11 @@
 
 #pragma once
 
-#include "CellContainer.h"
-#include "JSCast.h"
-#include "MarkedBlock.h"
-#include "PreciseAllocation.h"
-#include "VM.h"
+#include <JavaScriptCore/CellContainer.h>
+#include <JavaScriptCore/MarkedBlock.h>
+#include <JavaScriptCore/MarkedBlockInlines.h>
+#include <JavaScriptCore/PreciseAllocation.h>
+#include <JavaScriptCore/VM.h>
 
 namespace JSC {
 

@@ -38,6 +38,7 @@
 #include "HeapIterationScope.h"
 #include "InjectedScript.h"
 #include "InjectedScriptManager.h"
+#include "InternalFunction.h"
 #include "JITCode.h"
 #include "JITThunks.h"
 #include "JSJavaScriptCallFrame.h"
@@ -48,6 +49,7 @@
 #include "RegularExpression.h"
 #include "ScriptCallStack.h"
 #include "ScriptCallStackFactory.h"
+#include "VMInlines.h"
 #include "Weak.h"
 #include <wtf/Box.h>
 #include <wtf/Function.h>
@@ -658,6 +660,11 @@ Protocol::ErrorStringOr<void> InspectorDebuggerAgent::removeBreakpoint(const Pro
     return { };
 }
 
+static String functionName(JSC::InternalFunction& internalFunction)
+{
+    return internalFunction.name();
+}
+
 static String NODELETE functionName(JSC::NativeExecutable& nativeExecutable)
 {
     return nativeExecutable.name();
@@ -708,20 +715,25 @@ struct ReplacedThunk {
                 return;
 
             JSC::JITCode::CodeRef<JSC::JSEntryPtrTag> oldJITCodeRef;
+            CodePtr<JSC::JSEntryPtrTag> oldWithArityCheckThunk;
             CodePtr<JSC::JSEntryPtrTag> oldArityJITCodeRef;
             switch (kind) {
             case JSC::CodeSpecializationKind::CodeForCall:
                 oldJITCodeRef = WTF::move(callThunk);
+                oldWithArityCheckThunk = WTF::move(callWithArityCheckThunk);
                 oldArityJITCodeRef = WTF::move(callArityThunk);
                 break;
 
             case JSC::CodeSpecializationKind::CodeForConstruct:
                 oldJITCodeRef = WTF::move(constructThunk);
+                oldWithArityCheckThunk = WTF::move(constructWithArityCheckThunk);
                 oldArityJITCodeRef = WTF::move(constructArityThunk);
                 break;
             }
 
             jitCode->swapCodeRefForDebugger(WTF::move(oldJITCodeRef));
+            if (jitCode->canSwapCodePtrWithArityCheckForDebugger())
+                jitCode->swapCodePtrWithArityCheckForDebugger(WTF::move(oldWithArityCheckThunk));
             nativeExecutable->swapGeneratedJITCodeWithArityCheckForDebugger(kind, oldArityJITCodeRef);
         };
 
@@ -732,9 +744,11 @@ struct ReplacedThunk {
     JSC::Weak<JSC::NativeExecutable> nativeExecutable;
 
     JSC::JITCode::CodeRef<JSC::JSEntryPtrTag> callThunk;
+    CodePtr<JSC::JSEntryPtrTag> callWithArityCheckThunk;
     CodePtr<JSC::JSEntryPtrTag> callArityThunk;
 
     JSC::JITCode::CodeRef<JSC::JSEntryPtrTag> constructThunk;
+    CodePtr<JSC::JSEntryPtrTag> constructWithArityCheckThunk;
     CodePtr<JSC::JSEntryPtrTag> constructArityThunk;
 
     size_t matchCount { 0 };
@@ -756,6 +770,82 @@ static Vector<Box<ReplacedThunk>>& NODELETE replacedThunks() WTF_REQUIRES_LOCK(s
     ASSERT(s_replacedThunksLock.isHeld());
     static NeverDestroyed<Vector<Box<ReplacedThunk>>> replacedThunks;
     return replacedThunks;
+}
+
+struct ReplacedInternalFunction {
+    ~ReplacedInternalFunction()
+    {
+        auto* function = internalFunction.get();
+        if (!function)
+            return;
+
+        function->setNativeFunctionForDebugger(JSC::CodeSpecializationKind::CodeForCall, callFunction);
+        function->setNativeFunctionForDebugger(JSC::CodeSpecializationKind::CodeForConstruct, constructFunction);
+    }
+
+    JSC::Weak<JSC::InternalFunction> internalFunction;
+
+    JSC::TaggedNativeFunction callFunction;
+    JSC::TaggedNativeFunction constructFunction;
+
+    size_t matchCount { 0 };
+
+    friend inline bool operator==(const Box<ReplacedInternalFunction>& a, const Box<ReplacedInternalFunction>& b)
+    {
+        return a && b && a->internalFunction.get() == b->internalFunction.get();
+    }
+
+    friend inline bool operator==(const Box<ReplacedInternalFunction>& a, const JSC::InternalFunction* b)
+    {
+        return a && a->internalFunction.get() == b;
+    }
+};
+
+static Lock s_replacedInternalFunctionsLock;
+static Vector<Box<ReplacedInternalFunction>>& NODELETE replacedInternalFunctions() WTF_REQUIRES_LOCK(s_replacedInternalFunctionsLock)
+{
+    ASSERT(s_replacedInternalFunctionsLock.isHeld());
+    static NeverDestroyed<Vector<Box<ReplacedInternalFunction>>> replacedInternalFunctions;
+    return replacedInternalFunctions;
+}
+
+static JSC::EncodedJSValue internalFunctionWithDebuggerHook(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame, JSC::CodeSpecializationKind kind)
+{
+    auto* internalFunction = dynamicDowncast<JSC::InternalFunction>(callFrame->jsCallee());
+
+    JSC::TaggedNativeFunction original;
+    {
+        Locker locker { s_replacedInternalFunctionsLock };
+        auto index = replacedInternalFunctions().find(internalFunction);
+        auto& replacedInternalFunction = replacedInternalFunctions()[index];
+        switch (kind) {
+        case JSC::CodeSpecializationKind::CodeForCall:
+            original = replacedInternalFunction->callFunction;
+            break;
+
+        case JSC::CodeSpecializationKind::CodeForConstruct:
+            original = replacedInternalFunction->constructFunction;
+            break;
+        }
+    }
+
+    globalObject->vm().forEachDebugger([&] (JSC::Debugger& debugger) {
+        debugger.willCallInternalFunction(*internalFunction);
+    });
+
+    return original(globalObject, callFrame);
+}
+
+JSC_DECLARE_HOST_FUNCTION(internalFunctionCallWithDebuggerHook);
+JSC_DEFINE_HOST_FUNCTION(internalFunctionCallWithDebuggerHook, (JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame))
+{
+    return internalFunctionWithDebuggerHook(globalObject, callFrame, JSC::CodeSpecializationKind::CodeForCall);
+}
+
+JSC_DECLARE_HOST_FUNCTION(internalFunctionConstructWithDebuggerHook);
+JSC_DEFINE_HOST_FUNCTION(internalFunctionConstructWithDebuggerHook, (JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame))
+{
+    return internalFunctionWithDebuggerHook(globalObject, callFrame, JSC::CodeSpecializationKind::CodeForConstruct);
 }
 
 #endif // ENABLE(JIT)
@@ -797,27 +887,51 @@ Protocol::ErrorStringOr<void> InspectorDebuggerAgent::addSymbolicBreakpoint(cons
         JSC::DeferGCForAWhile deferGC(m_debugger.vm());
         m_debugger.vm().notifyDebuggerHookInjected();
 
-        Vector<JSC::NativeExecutable*> newNativeExecutables;
+        JSC::MarkedVector<JSC::NativeExecutable*> foundNativeExecutables;
+        JSC::MarkedVector<JSC::InternalFunction*> foundInternalFunctions;
         {
-            Locker locker { s_replacedThunksLock };
-            auto& existingReplacedThunks = replacedThunks();
-
             JSC::HeapIterationScope iterationScope(m_debugger.vm().heap);
             m_debugger.vm().heap.objectSpace().forEachLiveCell(iterationScope, [&] (JSC::HeapCell* cell, JSC::HeapCell::Kind kind) {
                 if (isJSCellKind(kind)) {
-                    if (auto* nativeExecutable = dynamicDowncast<JSC::NativeExecutable>(static_cast<JSC::JSCell*>(cell))) {
-                        if (auto existingIndex = existingReplacedThunks.find(nativeExecutable); existingIndex != notFound)
-                            ++existingReplacedThunks[existingIndex]->matchCount;
-                        else
-                            newNativeExecutables.append(nativeExecutable);
-                    }
+                    if (auto* nativeExecutable = dynamicDowncast<JSC::NativeExecutable>(static_cast<JSC::JSCell*>(cell)))
+                        foundNativeExecutables.append(nativeExecutable);
+                    else if (auto* internalFunction = dynamicDowncast<JSC::InternalFunction>(static_cast<JSC::JSCell*>(cell)))
+                        foundInternalFunctions.append(internalFunction);
                 }
 
                 return IterationStatus::Continue;
             });
         }
+
+        JSC::MarkedVector<JSC::NativeExecutable*> newNativeExecutables;
+        {
+            Locker locker { s_replacedThunksLock };
+            auto& existingReplacedThunks = replacedThunks();
+
+            for (auto* nativeExecutable : WTF::move(foundNativeExecutables)) {
+                if (auto existingIndex = existingReplacedThunks.find(nativeExecutable); existingIndex != notFound)
+                    ++existingReplacedThunks[existingIndex]->matchCount;
+                else
+                    newNativeExecutables.append(nativeExecutable);
+            }
+        }
         for (auto* nativeExecutable : WTF::move(newNativeExecutables))
             didCreateNativeExecutable(*nativeExecutable);
+
+        JSC::MarkedVector<JSC::InternalFunction*> newInternalFunctions;
+        {
+            Locker locker { s_replacedInternalFunctionsLock };
+            auto& existingReplacedInternalFunctions = replacedInternalFunctions();
+
+            for (auto* internalFunction : WTF::move(foundInternalFunctions)) {
+                if (auto existingIndex = existingReplacedInternalFunctions.find(internalFunction); existingIndex != notFound)
+                    ++existingReplacedInternalFunctions[existingIndex]->matchCount;
+                else
+                    newInternalFunctions.append(internalFunction);
+            }
+        }
+        for (auto* internalFunction : WTF::move(newInternalFunctions))
+            didCreateInternalFunction(*internalFunction);
     }
 #endif
 
@@ -862,6 +976,26 @@ Protocol::ErrorStringOr<void> InspectorDebuggerAgent::removeSymbolicBreakpoint(c
             if (symbolicBreakpoint.matches(functionName(*replacedThunk->nativeExecutable))) {
                 ASSERT(replacedThunk->matchCount);
                 if (!--replacedThunk->matchCount)
+                    return true;
+            }
+
+            return false;
+        });
+    }
+
+    {
+        Locker locker { s_replacedInternalFunctionsLock };
+
+        replacedInternalFunctions().removeAllMatching([&] (auto& replacedInternalFunction) {
+            if (!replacedInternalFunction->internalFunction)
+                return true;
+
+            if (&replacedInternalFunction->internalFunction->vm() != &m_debugger.vm())
+                return false;
+
+            if (symbolicBreakpoint.matches(functionName(*replacedInternalFunction->internalFunction))) {
+                ASSERT(replacedInternalFunction->matchCount);
+                if (!--replacedInternalFunction->matchCount)
                     return true;
             }
 
@@ -1515,6 +1649,11 @@ void InspectorDebuggerAgent::didCreateNativeExecutable(JSC::NativeExecutable& na
         RELEASE_ASSERT(nativeExecutable.generatedJITCodeWithArityCheckFor(kind) == jitCode->addressForCall(JSC::ArityCheckMode::MustCheckArity));
 
         auto oldJITCodeRef = jitCode->swapCodeRefForDebugger(createJITCodeRef(thunk));
+
+        CodePtr<JSC::JSEntryPtrTag> oldWithArityCheckThunk;
+        if (jitCode->canSwapCodePtrWithArityCheckForDebugger())
+            oldWithArityCheckThunk = jitCode->swapCodePtrWithArityCheckForDebugger(thunk.retagged<JSC::JSEntryPtrTag>());
+
         auto oldArityJITCodeRef = nativeExecutable.swapGeneratedJITCodeWithArityCheckForDebugger(kind, jitCode->addressForCall(JSC::ArityCheckMode::MustCheckArity));
 
         switch (kind) {
@@ -1522,20 +1661,26 @@ void InspectorDebuggerAgent::didCreateNativeExecutable(JSC::NativeExecutable& na
             ASSERT(!replacedThunk->callThunk);
             replacedThunk->callThunk = WTF::move(oldJITCodeRef);
 
+            ASSERT(!replacedThunk->callWithArityCheckThunk);
+            replacedThunk->callWithArityCheckThunk = WTF::move(oldWithArityCheckThunk);
+
             ASSERT(!replacedThunk->callArityThunk);
             replacedThunk->callArityThunk = WTF::move(oldArityJITCodeRef);
 
-            RELEASE_ASSERT(replacedThunk->callThunk.code() == createJITCodeRef(vm.jitStubs->ctiNativeCall(vm)).code());
+            RELEASE_ASSERT(jitCode->canSwapCodePtrWithArityCheckForDebugger() || replacedThunk->callThunk.code() == createJITCodeRef(vm.jitStubs->ctiNativeCall(vm)).code());
             break;
 
         case JSC::CodeSpecializationKind::CodeForConstruct:
             ASSERT(!replacedThunk->constructThunk);
             replacedThunk->constructThunk = WTF::move(oldJITCodeRef);
 
+            ASSERT(!replacedThunk->constructWithArityCheckThunk);
+            replacedThunk->constructWithArityCheckThunk = WTF::move(oldWithArityCheckThunk);
+
             ASSERT(!replacedThunk->constructArityThunk);
             replacedThunk->constructArityThunk = WTF::move(oldArityJITCodeRef);
 
-            RELEASE_ASSERT(replacedThunk->constructThunk.code() == createJITCodeRef(vm.jitStubs->ctiNativeConstruct(vm)).code());
+            RELEASE_ASSERT(jitCode->canSwapCodePtrWithArityCheckForDebugger() || replacedThunk->constructThunk.code() == createJITCodeRef(vm.jitStubs->ctiNativeConstruct(vm)).code());
             break;
         }
 
@@ -1562,6 +1707,80 @@ void InspectorDebuggerAgent::willCallNativeExecutable(JSC::CallFrame* callFrame)
         return;
 
     auto symbol = functionName(callFrame);
+    if (symbol.isEmpty())
+        return;
+
+    auto index = m_symbolicBreakpoints.findIf([&] (const auto& symbolicBreakpoint) {
+        return symbolicBreakpoint.knownMatchingSymbols.contains(symbol);
+    });
+    if (index == notFound)
+        return;
+
+    ASSERT(m_symbolicBreakpoints[index].specialBreakpoint);
+
+    auto pauseData = JSON::Object::create();
+    pauseData->setString("name"_s, symbol);
+
+    breakProgram(DebuggerFrontendDispatcher::Reason::FunctionCall, WTF::move(pauseData), m_symbolicBreakpoints[index].specialBreakpoint.copyRef());
+}
+
+void InspectorDebuggerAgent::didCreateInternalFunction(JSC::InternalFunction& internalFunction)
+{
+#if ENABLE(JIT)
+    auto& vm = m_debugger.vm();
+    ASSERT(&internalFunction.vm() == &vm);
+
+    if (!JSC::Options::useJIT())
+        return;
+
+    if (m_symbolicBreakpoints.isEmpty())
+        return;
+
+    JSC::JSLockHolder apiLocker(vm);
+    auto symbol = functionName(internalFunction);
+    if (symbol.isEmpty())
+        return;
+
+    size_t matchCount = 0;
+    for (auto& symbolicBreakpoint : m_symbolicBreakpoints) {
+        if (symbolicBreakpoint.matches(symbol))
+            ++matchCount;
+    }
+    if (!matchCount)
+        return;
+
+    Locker locker { s_replacedInternalFunctionsLock };
+
+    auto existingIndex = replacedInternalFunctions().find(&internalFunction);
+    if (existingIndex != notFound) {
+        replacedInternalFunctions()[existingIndex]->matchCount += matchCount;
+        return;
+    }
+
+    auto replacedInternalFunction = Box<ReplacedInternalFunction>::create();
+    replacedInternalFunction->internalFunction = &internalFunction;
+    replacedInternalFunction->matchCount = matchCount;
+    replacedInternalFunction->callFunction = internalFunction.nativeFunctionFor(JSC::CodeSpecializationKind::CodeForCall);
+    replacedInternalFunction->constructFunction = internalFunction.nativeFunctionFor(JSC::CodeSpecializationKind::CodeForConstruct);
+
+    internalFunction.setNativeFunctionForDebugger(JSC::CodeSpecializationKind::CodeForCall, JSC::toTagged(internalFunctionCallWithDebuggerHook));
+    internalFunction.setNativeFunctionForDebugger(JSC::CodeSpecializationKind::CodeForConstruct, JSC::toTagged(internalFunctionConstructWithDebuggerHook));
+
+    replacedInternalFunctions().append(WTF::move(replacedInternalFunction));
+#else
+    UNUSED_PARAM(internalFunction);
+#endif
+}
+
+void InspectorDebuggerAgent::willCallInternalFunction(JSC::InternalFunction& internalFunction)
+{
+    if (!breakpointsActive())
+        return;
+
+    if (m_symbolicBreakpoints.isEmpty())
+        return;
+
+    auto symbol = functionName(internalFunction);
     if (symbol.isEmpty())
         return;
 
@@ -1883,6 +2102,29 @@ void InspectorDebuggerAgent::clearInspectorBreakpointState()
                 if (symbolicBreakpoint.matches(functionName(*replacedThunk->nativeExecutable))) {
                     ASSERT(replacedThunk->matchCount);
                     if (!--replacedThunk->matchCount)
+                        return true;
+                }
+            }
+
+            return false;
+        });
+    }
+
+    {
+        Locker locker { s_replacedInternalFunctionsLock };
+
+        replacedInternalFunctions().removeAllMatching([&] (auto& replacedInternalFunction) {
+            if (!replacedInternalFunction->internalFunction)
+                return true;
+
+
+            if (&replacedInternalFunction->internalFunction->vm() == &m_debugger.vm())
+                return false;
+
+            for (auto& symbolicBreakpoint : m_symbolicBreakpoints) {
+                if (symbolicBreakpoint.matches(functionName(*replacedInternalFunction->internalFunction))) {
+                    ASSERT(replacedInternalFunction->matchCount);
+                    if (!--replacedInternalFunction->matchCount)
                         return true;
                 }
             }

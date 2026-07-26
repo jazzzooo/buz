@@ -31,6 +31,8 @@
 
 namespace JSC {
 
+struct InlineCallFrame;
+
 // This is an Arguments-class object that we create when you do function.arguments, or you say
 // "arguments" inside a function in strict mode. It behaves almpst entirely like an ordinary
 // JavaScript object. All of the arguments values are simply copied from the stack (possibly via

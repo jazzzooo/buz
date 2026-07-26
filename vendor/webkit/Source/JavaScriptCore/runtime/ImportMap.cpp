@@ -141,8 +141,10 @@ URL ImportMap::resolve(const String& specifier, const URL& baseURL)
             auto result = resolveImportMatch(normalizedSpecifier, asURL, m_scopesMap.get(scope));
             if (!result)
                 return { };
-            if (!result.value().isNull())
+            if (!result.value().isNull()) {
                 resolvedURL = WTF::move(result.value());
+                break;
+            }
         }
     }
 

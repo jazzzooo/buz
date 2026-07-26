@@ -2460,6 +2460,7 @@ slowPathOp(typeof_is_object)
 slowPathOp(unreachable)
 slowPathOp(new_promise)
 slowPathOp(new_generator)
+slowPathOp(new_async_function_generator)
 
 macro llintSlowPathOp(opcodeName)
     llintOp(op_%opcodeName%, unused, macro (unused, unused, dispatch)
@@ -3085,6 +3086,32 @@ op(normal_osr_exit_trampoline, macro ()
     dispatch(0)
 end)
 
+op(array_sort_comparator_return_trampoline, macro ()
+    if (JSVALUE64 and not C_LOOP) or ARMv7
+        restoreStackPointerAfterCall()
+
+        if ARMv7
+            move cfr, a0
+            cCall4(_llint_slow_path_array_sort_comparator_return)
+        else
+            move cfr, a0
+            cCall2(_llint_slow_path_array_sort_comparator_return)
+        end
+
+        setupReturnToBaselineAfterCheckpointExitIfNeeded()
+        restoreStateAfterCCall()
+        branchIfException(_llint_throw_from_slow_path_trampoline)
+        if ARM64E
+            move r1, a0
+            leap _g_config, a2
+            jmp JSCConfigGateMapOffset + (constexpr Gate::loopOSREntry) * PtrSize[a2], NativeToJITGatePtrTag # JSEntryPtrTag
+        else
+            jmp r1, JSEntryPtrTag
+        end
+    else
+        notSupported()
+    end
+end)
 
 # Lastly, make sure that we can link even though we don't support all opcodes.
 # These opcodes should never arise when using LLInt or either JIT. We assert

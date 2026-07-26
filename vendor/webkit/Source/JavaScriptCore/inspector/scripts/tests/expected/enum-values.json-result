@@ -632,7 +632,7 @@ namespace Protocol {
 
 namespace TestHelpers {
 
-static const auto enum_constant_values = std::to_array<ASCIILiteral>({
+static const auto enum_constant_values = WTF::toArray<ASCIILiteral>({
     "shared"_s,
     "1"_s,
     "2"_s,
@@ -654,7 +654,7 @@ String getEnumConstantValue(int code) {
 
 template<> std::optional<Protocol::TypeDomain::Enum> parseEnumValueFromString<Protocol::TypeDomain::Enum>(const String& protocolString)
 {
-    static const auto constantValues = std::to_array<size_t>({
+    static const auto constantValues = WTF::toArray<size_t>({
         (size_t)Protocol::TypeDomain::Enum::Shared,
         (size_t)Protocol::TypeDomain::Enum::1,
         (size_t)Protocol::TypeDomain::Enum::2,
@@ -1169,7 +1169,7 @@ inline String toProtocolString(TestProtocolTypeDomainEnum value)
 template<>
 inline std::optional<TestProtocolTypeDomainEnum> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolTypeDomainEnum>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolTypeDomainEnum>>({
         { "1"_s, TestProtocolTypeDomainEnum1 },
         { "2"_s, TestProtocolTypeDomainEnum2 },
         { "shared"_s, TestProtocolTypeDomainEnumShared },

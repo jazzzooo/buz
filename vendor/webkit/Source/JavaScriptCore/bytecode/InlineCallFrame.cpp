@@ -27,6 +27,7 @@
 #include "InlineCallFrame.h"
 
 #include "CodeBlock.h"
+#include "FunctionExecutable.h"
 #include "JSCJSValueInlines.h"
 
 namespace JSC {
@@ -131,6 +132,9 @@ void printInternal(PrintStream& out, JSC::InlineCallFrame::Kind kind)
         return;
     case JSC::InlineCallFrame::BoundFunctionTailCall:
         out.print("BoundFunctionTailCall");
+        return;
+    case JSC::InlineCallFrame::ArraySortComparatorCall:
+        out.print("ArraySortComparatorCall");
         return;
     }
     RELEASE_ASSERT_NOT_REACHED();

@@ -35,7 +35,6 @@
 #include <JavaScriptCore/JSCJSValueCell.h>
 #include <JavaScriptCore/JSObject.h>
 #include <JavaScriptCore/JSString.h>
-#include <JavaScriptCore/Symbol.h>
 
 namespace JSC {
 

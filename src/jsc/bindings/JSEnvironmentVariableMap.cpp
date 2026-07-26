@@ -13,6 +13,7 @@
 #include "BunClientData.h"
 #include "wtf/Compiler.h"
 #include "wtf/Forward.h"
+#include "wtf/TimeZone.h"
 #include "WebCoreJSBuiltins.h"
 
 using namespace JSC;
@@ -156,7 +157,8 @@ JSC_DEFINE_CUSTOM_SETTER(jsTimeZoneEnvironmentVariableSetter, (JSGlobalObject * 
         auto timeZoneName = decodedValue.toWTFString(globalObject);
         if (timeZoneName.length() < 32) {
             if (WTF::setTimeZoneOverride(timeZoneName)) {
-                vm.dateCache.resetIfNecessarySlow();
+                WTF::timeZoneDidChange();
+                vm.dateCache.clearForTimeZoneChange();
             }
         }
     }

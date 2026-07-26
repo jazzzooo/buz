@@ -22,6 +22,7 @@
 #include "ErrorInstance.h"
 
 #include "CodeBlock.h"
+#include "ErrorInstanceInlines.h"
 #include "InlineCallFrame.h"
 #include "IntegrityInlines.h"
 #include "Interpreter.h"
@@ -43,6 +44,7 @@ ErrorInstance::ErrorInstance(VM& vm, Structure* structure, ErrorType errorType)
     , m_errorInfoMaterialized(false)
     , m_stackPropertyAlreadyMaterialized(false)
     , m_nativeGetterTypeError(false)
+    , m_parseError(false)
 #if ENABLE(WEBASSEMBLY)
     , m_catchableFromWasm(true)
 #endif // ENABLE(WEBASSEMBLY)

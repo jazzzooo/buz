@@ -225,7 +225,7 @@ bool InPlaceAbstractState::endBasicBlock()
             
             if (!m_activeVariables[index]) {
                 destination = block->valuesAtHead[index];
-                destination.fastForwardFromTo(epochAtHead, currentEpoch);
+                destination.fastForwardFromTo(m_graph, epochAtHead, currentEpoch);
                 continue;
             }
             
@@ -297,7 +297,7 @@ bool InPlaceAbstractState::endBasicBlock()
 
             if (!m_activeVariables[i]) {
                 destination = block->valuesAtHead[i];
-                destination.fastForwardFromTo(epochAtHead, currentEpoch);
+                destination.fastForwardFromTo(m_graph, epochAtHead, currentEpoch);
                 continue;
             }
             

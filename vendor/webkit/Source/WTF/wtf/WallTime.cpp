@@ -31,6 +31,16 @@
 
 namespace WTF {
 
+WallTime WallTime::fromSecondsSinceEpoch(Seconds seconds)
+{
+    return WallTime { seconds.value() };
+}
+
+Seconds WallTime::secondsSinceEpoch() const
+{
+    return Seconds { m_value };
+}
+
 void WallTime::dump(PrintStream& out) const
 {
     out.print("Wall(", m_value, " sec)");

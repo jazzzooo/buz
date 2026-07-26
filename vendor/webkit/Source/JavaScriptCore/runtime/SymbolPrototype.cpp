@@ -48,7 +48,7 @@ const ClassInfo SymbolPrototype::s_info = { "Symbol"_s, &Base::s_info, &symbolPr
 /* Source for SymbolPrototype.lut.h
 @begin symbolPrototypeTable
   description       symbolProtoGetterDescription    DontEnum|ReadOnly|CustomAccessor
-  toString          symbolProtoFuncToString         DontEnum|Function 0
+  toString          symbolProtoFuncToString         DontEnum|Function 0 SymbolPrototypeToStringIntrinsic
   valueOf           symbolProtoFuncValueOf          DontEnum|Function 0
 @end
 */
@@ -98,8 +98,9 @@ JSC_DEFINE_CUSTOM_GETTER(symbolProtoGetterDescription, (JSGlobalObject* globalOb
         return throwVMTypeError(globalObject, scope, SymbolDescriptionTypeError);
     scope.release();
     Integrity::auditStructureID(symbol->structureID());
-    auto description = symbol->description();
-    return JSValue::encode(description.isNull() ? jsUndefined() : jsString(vm, WTF::move(description)));
+    if (auto* string = symbol->description(vm))
+        return JSValue::encode(string);
+    return JSValue::encode(jsUndefined());
 }
 
 JSC_DEFINE_HOST_FUNCTION(symbolProtoFuncToString, (JSGlobalObject* globalObject, CallFrame* callFrame))
@@ -111,13 +112,7 @@ JSC_DEFINE_HOST_FUNCTION(symbolProtoFuncToString, (JSGlobalObject* globalObject,
     if (!symbol)
         return throwVMTypeError(globalObject, scope, SymbolToStringTypeError);
     Integrity::auditStructureID(symbol->structureID());
-    auto description = symbol->tryGetDescriptiveString();
-    if (!description) [[unlikely]] {
-        ASSERT(description.error() == ErrorTypeWithExtension::OutOfMemoryError);
-        throwOutOfMemoryError(globalObject, scope);
-        return { };
-    }
-    RELEASE_AND_RETURN(scope, JSValue::encode(jsNontrivialString(vm, description.value())));
+    RELEASE_AND_RETURN(scope, JSValue::encode(symbol->toString(globalObject)));
 }
 
 JSC_DEFINE_HOST_FUNCTION(symbolProtoFuncValueOf, (JSGlobalObject* globalObject, CallFrame* callFrame))

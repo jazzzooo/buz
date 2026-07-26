@@ -578,10 +578,10 @@ static bool dump_large_sharing_pool_node_callback(pas_large_sharing_node* node,
             stream, ", %s",
             pas_physical_memory_synchronization_style_get_string(node->synchronization_style));
     }
-    if (node->mmap_capability != pas_may_mmap) {
+    if (node->page_flags != pas_page_flags_none) {
         pas_stream_printf(
-            stream, ", %s",
-            pas_mmap_capability_get_string(node->mmap_capability));
+            stream, ", page_flags=0x%x",
+            (unsigned)node->page_flags);
     }
 
     pas_stream_printf(stream, "\n");

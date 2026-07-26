@@ -845,6 +845,9 @@ pas_mte_retag_freed_region_if_tagged(
 // Used to clear the tag before we look up the address in the megapage table when reallocating.
 #define PAS_MTE_HANDLE_REALLOCATE(a) PAS_MTE_CLEAR(a)
 
+// Used to restore the correct tag on the pointer when realloc reuses the existing allocation.
+#define PAS_MTE_HANDLE_REALLOCATE_IN_PLACE(a) PAS_MTE_PURIFY(a)
+
 // Used to restore the correct tag when reallocating something to a new address before copying it.
 #define PAS_MTE_HANDLE_TRY_REALLOCATE_AND_COPY(ptr, old_ptr, size) do { \
         if (PAS_USE_MTE) { \

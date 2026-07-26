@@ -26,7 +26,6 @@
 #pragma once
 
 #include <cstdint>
-#include <wtf/Compiler.h>
 #include <wtf/Platform.h>
 
 namespace WTF {

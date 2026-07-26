@@ -28,7 +28,7 @@
 
 #include "pas_aligned_allocation_result.h"
 #include "pas_alignment.h"
-#include "pas_mmap_capability.h"
+#include "pas_page_flags.h"
 #include "pas_utils.h"
 
 PAS_BEGIN_EXTERN_C;
@@ -68,8 +68,8 @@ PAS_API void pas_page_malloc_zero_fill(void* base, size_t size);
 
 /* This even works if size < pas_page_malloc_alignment so long as the range [base, base+size) is
    entirely within a page according to pas_page_malloc_alignment. */
-PAS_API void pas_page_malloc_commit(void* base, size_t size, pas_mmap_capability mmap_capability);
-PAS_API void pas_page_malloc_decommit(void* base, size_t size, pas_mmap_capability mmap_capability);
+PAS_API void pas_page_malloc_commit(void* base, size_t size, pas_page_flags page_flags);
+PAS_API void pas_page_malloc_decommit(void* base, size_t size, pas_page_flags page_flags);
 
 /* In testing mode, we have commit/decommit mprotect the memory as a way of helping us see if we are
    accidentally reading or writing that memory. But sometimes we use commit/decommit in a way that prevents
@@ -80,9 +80,9 @@ PAS_API void pas_page_malloc_decommit(void* base, size_t size, pas_mmap_capabili
    paired; reads after decommit fault) or asymmetric (reads after decommit zero-fill via the page-fault
    handler). Only usable when PAS_USE_SYMMETRIC_PAGE_ALLOCATION is true */
 PAS_API void pas_page_malloc_commit_without_mprotect(
-    void* base, size_t size, bool is_symmetric, pas_mmap_capability mmap_capability);
+    void* base, size_t size, bool is_symmetric, pas_page_flags page_flags);
 PAS_API void pas_page_malloc_decommit_without_mprotect(
-    void* base, size_t size, bool is_symmetric, pas_mmap_capability mmap_capability);
+    void* base, size_t size, bool is_symmetric, pas_page_flags page_flags);
 
 PAS_END_EXTERN_C;
 

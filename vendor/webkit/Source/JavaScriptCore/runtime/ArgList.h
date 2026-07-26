@@ -23,7 +23,6 @@
 
 #include <JavaScriptCore/CallFrame.h>
 #include <JavaScriptCore/MarkedVector.h>
-#include <wtf/HashSet.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 

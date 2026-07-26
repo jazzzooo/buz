@@ -26,6 +26,7 @@
 #pragma once
 
 #include "TargetAssemblerDefinitions.h"
+#include <JavaScriptCore/Width.h>
 #include <wtf/Compiler.h>
 #include <wtf/Platform.h>
 
@@ -572,6 +573,112 @@ public:
     {
         loadVector(src, scratch);
         storeVector(scratch, dest);
+    }
+
+    void loadWidth(Width width, Address address, RegisterID dest)
+    {
+        switch (width) {
+        case Width8:
+            load8(address, dest);
+            break;
+        case Width16:
+            load16(address, dest);
+            break;
+        case Width32:
+            load32(address, dest);
+            break;
+#if USE(JSVALUE64)
+        case Width64:
+            load64(address, dest);
+            break;
+#endif
+        default:
+            RELEASE_ASSERT_NOT_REACHED();
+            break;
+        }
+    }
+
+    void loadWidth(Width width, Address address, FPRegisterID dest)
+    {
+        switch (width) {
+        case Width16:
+            loadFloat16(address, dest);
+            break;
+        case Width32:
+            loadFloat(address, dest);
+            break;
+        case Width64:
+            loadDouble(address, dest);
+            break;
+        case Width128:
+            loadVector(address, dest);
+            break;
+        default:
+            RELEASE_ASSERT_NOT_REACHED();
+            break;
+        }
+    }
+
+    void storeWidth(Width width, RegisterID src, Address address)
+    {
+        switch (width) {
+        case Width8:
+            store8(src, address);
+            break;
+        case Width16:
+            store16(src, address);
+            break;
+        case Width32:
+            store32(src, address);
+            break;
+#if USE(JSVALUE64)
+        case Width64:
+            store64(src, address);
+            break;
+#endif
+        default:
+            RELEASE_ASSERT_NOT_REACHED();
+            break;
+        }
+    }
+
+    void storeWidth(Width width, FPRegisterID src, Address address)
+    {
+        switch (width) {
+        case Width16:
+            storeFloat16(src, address);
+            break;
+        case Width32:
+            storeFloat(src, address);
+            break;
+        case Width64:
+            storeDouble(src, address);
+            break;
+        case Width128:
+            storeVector(src, address);
+            break;
+        default:
+            RELEASE_ASSERT_NOT_REACHED();
+            break;
+        }
+    }
+
+    void transferWidth(Width width, Address src, Address dest)
+    {
+        switch (width) {
+        case Width32:
+            transfer32(src, dest);
+            break;
+        case Width64:
+            transfer64(src, dest);
+            break;
+        case Width128:
+            transferVector(src, dest);
+            break;
+        default:
+            RELEASE_ASSERT_NOT_REACHED();
+            break;
+        }
     }
 
     // Ptr methods
@@ -2375,6 +2482,7 @@ public:
         MacroAssemblerBase::mul32(imm, src, dest);
     }
 
+    // Returned branch should be taken on ASSERT pass.
     void jitAssert(const WTF::ScopedLambda<Jump(void)>&);
 
     // This function emits code to preserve the CPUState (e.g. registers),

@@ -38,10 +38,9 @@
 #include <wtf/CagedPtr.h>
 #include <wtf/Expected.h>
 #include <wtf/Function.h>
-#include <wtf/RefCountedAndCanMakeWeakPtr.h>
+#include <wtf/RefCounted.h>
 #include <wtf/RefPtr.h>
 #include <wtf/TZoneMalloc.h>
-#include <wtf/ThreadSafeWeakPtr.h>
 #include <wtf/Vector.h>
 
 namespace WTF {
@@ -53,7 +52,7 @@ namespace JSC {
 class LLIntOffsetsExtractor;
 
 namespace Wasm {
-class Memory final : public RefCountedAndCanMakeWeakPtr<Memory> {
+class Memory final : public RefCounted<Memory> {
     WTF_MAKE_NONCOPYABLE(Memory);
     WTF_MAKE_TZONE_ALLOCATED_EXPORT(Memory, JS_EXPORT_PRIVATE);
     friend LLIntOffsetsExtractor;
@@ -89,13 +88,11 @@ public:
     MemoryMode mode() const { return m_handle->mode(); }
 
     Expected<PageCount, GrowFailReason> grow(VM&, PageCount);
-    bool fill(uint32_t, uint8_t, uint32_t);
-    bool copy(uint32_t, uint32_t, uint32_t);
+    bool fill(uint64_t, uint8_t, uint64_t);
+    bool copy(uint64_t, uint64_t, uint64_t);
     bool init(uint64_t, const uint8_t*, uint32_t);
 
     void registerInstance(JSWebAssemblyInstance&);
-
-    void checkLifetime() { ASSERT(!refCountDebugger().deletionHasBegun()); }
 
     static constexpr ptrdiff_t offsetOfHandle() { return OBJECT_OFFSETOF(Memory, m_handle); }
 

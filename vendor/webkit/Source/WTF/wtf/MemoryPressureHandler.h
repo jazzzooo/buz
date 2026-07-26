@@ -154,12 +154,7 @@ public:
         {
         }
 
-        ~ReliefLogger()
-        {
-            if (loggingEnabled())
-                logMemoryUsageChange();
-        }
-
+        ~ReliefLogger();
 
         const char* logString() const { return m_logString; }
         static void setLoggingEnabled(bool enabled) { s_loggingEnabled = enabled; }
@@ -264,9 +259,13 @@ private:
     Configuration m_configuration;
 
 #if OS(WINDOWS)
+    friend VOID CALLBACK lowMemoryNotificationCallback(PVOID, BOOLEAN);
     void windowsMeasurementTimerFired();
+    void windowsLowMemoryNotificationFired();
+    void beginWaitingForLowMemoryNotification();
     RunLoop::Timer m_windowsMeasurementTimer;
     Win32Handle m_lowMemoryHandle;
+    HANDLE m_lowMemoryWaitHandle { nullptr };
 #endif
 
 #if (OS(LINUX) || OS(FREEBSD) || OS(HAIKU) || OS(QNX)) && !OS(ANDROID)

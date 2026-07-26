@@ -376,7 +376,7 @@ struct KnownZone {
     ASCIILiteral tzName;
     int tzOffset;
 };
-static constexpr auto knownZones = std::to_array<KnownZone>({
+static constexpr auto knownZones = WTF::toArray<KnownZone>({
     { "ut"_s, 0 },
     { "gmt"_s, 0 },
     { "est"_s, -300 },

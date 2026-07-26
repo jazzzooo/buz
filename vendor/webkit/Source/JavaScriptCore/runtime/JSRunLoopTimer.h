@@ -31,7 +31,6 @@
 #include <wtf/HashSet.h>
 #include <wtf/Lock.h>
 #include <wtf/RefPtr.h>
-#include <wtf/RetainPtr.h>
 #include <wtf/RunLoop.h>
 #include <wtf/SharedTask.h>
 #include <wtf/TZoneMalloc.h>
@@ -57,6 +56,8 @@ public:
         void timerDidFire();
 
     public:
+        JS_EXPORT_PRIVATE ~Manager();
+
         static Manager& singleton();
 
         void registerVM(VM&);

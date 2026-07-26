@@ -1,4 +1,4 @@
-set(jsc_SOURCES ../jsc.cpp)
+set(jsc_SOURCES ../jsc.cpp ../tools/JSDollarVMShell.cpp)
 set(jsc_LIBRARIES ${CMAKE_DL_LIBS})
 set(jsc_FRAMEWORKS
     JavaScriptCore
@@ -18,6 +18,13 @@ if (WIN32)
     list(APPEND jsc_LIBRARIES Winmm)
 endif ()
 
+if (USE_EXTERNAL_MIMALLOC)
+    # The shipped static archives intentionally leave mi_* unresolved so the
+    # consumer links its own mimalloc. The jsc shell still needs a working
+    # allocator, so link the vendored mimalloc object library here only.
+    list(APPEND jsc_LIBRARIES $<TARGET_OBJECTS:mimalloc-obj>)
+endif ()
+
 if (ENABLE_FUZZILLI)
   list(APPEND jsc_SOURCES ../fuzzilli/Fuzzilli.cpp)
 endif ()
@@ -35,6 +42,7 @@ if (DEVELOPER_MODE)
         ../API/tests/JSObjectGetProxyTargetTest.cpp
         ../API/tests/MultithreadedMultiVMExecutionTest.cpp
         ../API/tests/PingPongStackOverflowTest.cpp
+        ../API/tests/TemporalCoreTest.cpp
         ../API/tests/TypedArrayCTest.cpp
         ../API/tests/VMManagerStopTheWorldTest.cpp
         ../API/tests/testapi.cpp
@@ -116,6 +124,7 @@ if (DEVELOPER_MODE)
     if (COMPILER_IS_GCC_OR_CLANG)
         WEBKIT_ADD_TARGET_CXX_FLAGS(testb3 -Wno-array-bounds)
         WEBKIT_ADD_TARGET_CXX_FLAGS(testair -Wno-array-bounds)
+        WEBKIT_ADD_TARGET_CXX_FLAGS(testb3 -Wno-error=stack-exhausted)
     endif ()
 endif ()
 
@@ -136,6 +145,10 @@ if (DEVELOPER_MODE)
     WEBKIT_EXECUTABLE(testair)
     WEBKIT_EXECUTABLE(testdfg)
     WEBKIT_EXECUTABLE(testwasmdebugger)
+
+    WEBKIT_ADD_PREFIX_HEADER(testapi ../JavaScriptCorePrefix.h PREFIX_NO_CODEGEN PREFIX_LANGUAGES CXX)
+    WEBKIT_REUSE_PREFIX_HEADER(testb3 testapi ../JavaScriptCorePrefix.h PREFIX_LANGUAGES CXX)
+    WEBKIT_REUSE_PREFIX_HEADER(testwasmdebugger testapi ../JavaScriptCorePrefix.h PREFIX_LANGUAGES CXX)
 
     file(COPY
         "${JAVASCRIPTCORE_DIR}/API/tests/testapiScripts"

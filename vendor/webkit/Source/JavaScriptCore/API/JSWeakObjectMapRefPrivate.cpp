@@ -27,6 +27,7 @@
 #include "JSWeakObjectMapRefPrivate.h"
 
 #include "APICast.h"
+#include "JSCJSValueInlines.h"
 #include "JSCallbackObject.h"
 #include "JSGlobalObjectInlines.h"
 #include "JSWeakObjectMapRefInternal.h"

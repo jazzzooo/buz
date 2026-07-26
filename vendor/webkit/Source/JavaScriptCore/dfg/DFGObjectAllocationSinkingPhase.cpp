@@ -28,7 +28,6 @@
 
 #if ENABLE(DFG_JIT)
 
-#include "DFGBlockMapInlines.h"
 #include "DFGClobbersExitState.h"
 #include "DFGCombinedLiveness.h"
 #include "DFGGraph.h"
@@ -42,6 +41,7 @@
 #include "DFGValidate.h"
 #include "JSArrayIterator.h"
 #include "JSAsyncFromSyncIterator.h"
+#include "JSAsyncFunctionGenerator.h"
 #include "JSAsyncGenerator.h"
 #include "JSGenerator.h"
 #include "JSIteratorHelper.h"
@@ -52,7 +52,7 @@
 #include "JSSetIterator.h"
 #include "JSStringIterator.h"
 #include "JSWrapForValidIterator.h"
-#include <wtf/StdList.h>
+#include <wtf/IndexMap.h>
 
 namespace JSC { namespace DFG {
 
@@ -147,7 +147,7 @@ public:
     // once it is escaped if it still has pointers to it in order to
     // replace any use of those pointers by the corresponding
     // materialization
-    enum class Kind { Escaped, Array, ArrayButterfly, Object, Activation, Function, GeneratorFunction, AsyncFunction, AsyncGeneratorFunction, InternalFieldObject, RegExpObject };
+    enum class Kind { Escaped, Array, ArrayButterfly, Object, Activation, Function, GeneratorFunction, AsyncFunction, AsyncGeneratorFunction, InternalFieldObject, RegExpObject, Promise };
 
     using Fields = UncheckedKeyHashMap<PromotedLocationDescriptor, Node*>;
 
@@ -305,6 +305,11 @@ public:
     bool NODELETE isRegExpObjectAllocation() const
     {
         return m_kind == Kind::RegExpObject;
+    }
+
+    bool NODELETE isPromiseAllocation() const
+    {
+        return m_kind == Kind::Promise;
     }
 
     friend bool NODELETE operator==(const Allocation&, const Allocation&) = default;
@@ -852,8 +857,8 @@ private:
 
     void performAnalysis()
     {
-        m_heapAtHead = BlockMap<LocalHeap>(m_graph);
-        m_heapAtTail = BlockMap<LocalHeap>(m_graph);
+        m_heapAtHead = IndexMap<BasicBlock*, LocalHeap>(m_graph.numBlocks());
+        m_heapAtTail = IndexMap<BasicBlock*, LocalHeap>(m_graph.numBlocks());
 
         bool changed;
         do {
@@ -1150,12 +1155,11 @@ private:
             case JSGeneratorType:
                 target = handleInternalFieldClass<JSGenerator>(node, writes);
                 break;
+            case JSAsyncFunctionGeneratorType:
+                target = handleInternalFieldClass<JSAsyncFunctionGenerator>(node, writes);
+                break;
             case JSAsyncGeneratorType:
                 target = handleInternalFieldClass<JSAsyncGenerator>(node, writes);
-                break;
-            case JSPromiseType:
-                ASSERT(node->structure()->classInfoForCells() == JSPromise::info());
-                target = handleInternalFieldClass<JSPromise>(node, writes);
                 break;
             default:
                 DFG_CRASH(m_graph, node, "Bad structure");
@@ -1168,6 +1172,13 @@ private:
 
             writes.add(RegExpObjectRegExpPLoc, LazyNode(node->cellOperand()));
             writes.add(RegExpObjectLastIndexPLoc, LazyNode(node->child1().node()));
+            break;
+        }
+
+        case NewPromise: {
+            ASSERT(node->structure()->classInfoForCells() == JSPromise::info());
+            target = &m_heap.newAllocation(node, Allocation::Kind::Promise);
+            writes.add(StructurePLoc, LazyNode(m_graph.freeze(node->structure().get())));
             break;
         }
 
@@ -1923,6 +1934,13 @@ escapeChildren:
                 OpInfo(allocation.identifier()->structure()), OpInfo(data), 0, 0);
         }
 
+        case Allocation::Kind::Promise: {
+            return m_graph.addNode(
+                allocation.identifier()->prediction(), NewPromise,
+                where->origin.withSemantic(allocation.identifier()->origin.semantic),
+                OpInfo(allocation.identifier()->structure()));
+        }
+
         case Allocation::Kind::Activation: {
             ObjectMaterializationData* data = m_graph.m_objectMaterializationData.add();
             FrozenValue* symbolTable = allocation.identifier()->cellOperand();
@@ -2297,14 +2315,6 @@ escapeChildren:
 
                         doLower = true;
 
-                        if (node->op() == PutByVal) {
-                            // We must insert the check before the PutHint inserted below. This is because that both PutHint and PutByVal
-                            // clobber the exit state. Since they have consistent exit state clobberization assumption, an ExitOK wouldn't be
-                            // inserted below which breaks the validation.
-                            Edge value = m_graph.varArgChild(node, 2);
-                            m_insertionSet.insertNode(nodeIndex + 1, SpecNone, Check, node->origin, Edge(value.node(), value.useKind()));
-                        }
-
                         dataLogLnIf(Options::verboseObjectAllocationSinking(), "Creating hint with value ", nodeValue, " before ", node);
                         m_insertionSet.insert(
                             nodeIndex + 1,
@@ -2316,9 +2326,6 @@ escapeChildren:
                     });
 
 
-                // After inserting a PutHint, the next node cannot exit. If the current node does clobber the exit state, then we are fine since
-                // the exit state clobberization are consistent after the insertion. Otherwise, the assumption was broken and an ExitOK is required
-                // to ensure a valid exit state.
                 if (!nextCanExit && desiredNextExitOK) {
                     // We indicate that the exit state is fine now. We need to do this because we
                     // emitted hints that appear to invalidate the exit state.
@@ -2357,6 +2364,10 @@ escapeChildren:
 
                     case NewInternalFieldObject:
                         node->convertToPhantomNewInternalFieldObject();
+                        break;
+
+                    case NewPromise:
+                        node->convertToPhantomNewPromise();
                         break;
 
                     case CreateActivation:
@@ -2697,14 +2708,20 @@ escapeChildren:
         case NewAsyncFunction: {
             Vector<PromotedHeapLocation> locations = m_locationsForAllocation.get(escapee);
             ASSERT(locations.size() == 2);
-                
+
             PromotedHeapLocation executable(FunctionExecutablePLoc, allocation.identifier());
             ASSERT_UNUSED(executable, locations.contains(executable));
-                
+
             PromotedHeapLocation activation(FunctionActivationPLoc, allocation.identifier());
             ASSERT(locations.contains(activation));
 
             node->child1() = Edge(resolve(block, activation), KnownCellUse);
+            break;
+        }
+
+        case NewPromise: {
+            ASSERT(m_locationsForAllocation.get(escapee).size() == 1);
+            ASSERT(m_locationsForAllocation.get(escapee)[0] == PromotedHeapLocation(StructurePLoc, allocation.identifier()));
             break;
         }
 
@@ -3051,8 +3068,8 @@ escapeChildren:
 
     UncheckedKeyHashMap<unsigned, Node*, WTF::IntHash<unsigned>, WTF::UnsignedWithZeroKeyHashTraits<unsigned>> m_constants;
 
-    BlockMap<LocalHeap> m_heapAtHead;
-    BlockMap<LocalHeap> m_heapAtTail;
+    IndexMap<BasicBlock*, LocalHeap> m_heapAtHead;
+    IndexMap<BasicBlock*, LocalHeap> m_heapAtTail;
     LocalHeap m_heap;
 
     Node* m_bottom { nullptr };

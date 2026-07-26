@@ -44,8 +44,6 @@
 #include "OperandsInlines.h"
 #include "ProbeContext.h"
 
-#include <wtf/Scope.h>
-
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
 namespace JSC { namespace FTL {
@@ -191,11 +189,11 @@ static void compileStub(VM& vm, unsigned exitID, JITCode* jitCode, OSRExit& exit
             materialization->properties().size());
     }
     
-    ScratchBuffer* scratchBuffer = vm.scratchBufferForSize(
-        sizeof(EncodedJSValue) * (
-            exit.m_descriptor->m_values.size() + numMaterializations + maxMaterializationNumArguments) +
+    const size_t scratchBufferSize =
+        sizeof(EncodedJSValue) * (exit.m_descriptor->m_values.size() + numMaterializations + maxMaterializationNumArguments) +
         requiredScratchMemorySizeInBytes() +
-        codeBlock->jitCode()->calleeSaveRegisters()->sizeOfAreaInBytes());
+        codeBlock->jitCode()->calleeSaveRegisters()->sizeOfAreaInBytes();
+    ScratchBuffer* scratchBuffer = vm.scratchBufferForSize(scratchBufferSize);
     EncodedJSValue* scratch = scratchBuffer ? static_cast<EncodedJSValue*>(scratchBuffer->dataBuffer()) : nullptr;
     EncodedJSValue* materializationPointers = scratch + exit.m_descriptor->m_values.size();
     EncodedJSValue* materializationArguments = materializationPointers + numMaterializations;
@@ -446,7 +444,14 @@ static void compileStub(VM& vm, unsigned exitID, JITCode* jitCode, OSRExit& exit
         }
         spooler.finalizeGPR();
     }
-    
+
+    // The scratch buffer can become the sole retainer of saved on-stack values, so set the
+    // active length for the GC.
+    if (scratchBuffer) {
+        jit.move(CCallHelpers::TrustedImmPtr(scratchBuffer->addressOfActiveLength()), GPRInfo::regT0);
+        jit.storePtr(CCallHelpers::TrustedImm32(scratchBufferSize), CCallHelpers::Address(GPRInfo::regT0));
+    }
+
     // Henceforth we make it look like the exiting function was called through a register
     // preservation wrapper. This implies that FP must be nudged down by a certain amount. Then
     // we restore the various things according to either exit.m_descriptor->m_values or by copying from the
@@ -631,7 +636,12 @@ static void compileStub(VM& vm, unsigned exitID, JITCode* jitCode, OSRExit& exit
         }
         spooler.finalizeGPR();
     }
-    
+
+    if (scratchBuffer) {
+        jit.move(CCallHelpers::TrustedImmPtr(scratchBuffer->addressOfActiveLength()), GPRInfo::regT0);
+        jit.storePtr(CCallHelpers::TrustedImm32(0), CCallHelpers::Address(GPRInfo::regT0));
+    }
+
     handleExitCounts(vm, jit, exit);
     reifyInlinedCallFrames(jit, exit);
     adjustAndJumpToTarget(vm, jit, exit);

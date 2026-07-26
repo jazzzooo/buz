@@ -31,6 +31,102 @@
 
 namespace WTF {
 
+GranuleHeader* SequesteredLargeHeap::acquireHeader()
+{
+    if (!m_emptyHeaders.isEmpty())
+        return m_emptyHeaders.removeHead();
+    return reinterpret_cast<GranuleHeader*>(
+        SequesteredImmortalHeap::instance().immortalMalloc(sizeof(GranuleHeader)));
+}
+
+void SequesteredLargeHeap::insertSorted(GranuleHeader* gran)
+{
+    auto base = reinterpret_cast<uintptr_t>(gran->m_largeBase);
+    GranuleHeader* prev = nullptr;
+    for (auto* node = m_decommittedList.head(); node; node = node->next()) {
+        if (reinterpret_cast<uintptr_t>(node->m_largeBase) > base)
+            break;
+        prev = node;
+    }
+    if (prev)
+        m_decommittedList.insertAfter(prev, gran);
+    else
+        m_decommittedList.push(gran);
+}
+
+GranuleHeader* SequesteredLargeHeap::allocate(size_t bytes)
+{
+    Locker lock(m_lock);
+
+    for (auto* node = m_decommittedList.head(); node; node = node->next()) {
+        if (node->m_largeSize >= bytes) {
+            if (node->m_largeSize != bytes) {
+                auto* remainder = acquireHeader();
+                remainder->m_type = GranuleHeader::Type::Large;
+                remainder->m_largeBase = reinterpret_cast<void*>(
+                    reinterpret_cast<uintptr_t>(node->m_largeBase) + bytes);
+                remainder->m_largeSize = node->m_largeSize - bytes;
+
+                m_decommittedList.insertAfter(node, remainder);
+
+                node->m_largeSize = bytes;
+            }
+            m_decommittedList.remove(node);
+
+            while (madvise(node->m_largeBase, bytes, MADV_FREE_REUSE) == -1 && errno == EAGAIN) { }
+            m_liveMap.add(reinterpret_cast<uintptr_t>(node->m_largeBase), node);
+            return node;
+        }
+    }
+
+    mach_vm_address_t addr = 0;
+    auto kr = mach_vm_map(mach_task_self(), &addr, bytes,
+        (size_t(1) << largeAlignShift) - 1, VM_FLAGS_ANYWHERE,
+        MEMORY_OBJECT_NULL, 0, false,
+        VM_PROT_READ | VM_PROT_WRITE,
+        VM_PROT_READ | VM_PROT_WRITE,
+        VM_INHERIT_DEFAULT);
+    if (kr != KERN_SUCCESS)
+        return nullptr;
+
+    auto* gran = acquireHeader();
+    gran->m_type = GranuleHeader::Type::Large;
+    gran->m_largeBase = reinterpret_cast<void*>(addr);
+    gran->m_largeSize = bytes;
+    m_liveMap.add(static_cast<uintptr_t>(addr), gran);
+    return gran;
+}
+
+void SequesteredLargeHeap::decommit(GranuleHeader* gran)
+{
+    Locker lock(m_lock);
+
+    auto it = m_liveMap.find(reinterpret_cast<uintptr_t>(gran->m_largeBase));
+    RELEASE_ASSERT(it != m_liveMap.end());
+    m_liveMap.remove(it);
+
+    while (madvise(gran->m_largeBase, gran->m_largeSize, MADV_FREE_REUSABLE) == -1 && errno == EAGAIN) { }
+
+    insertSorted(gran);
+
+    auto* prev = gran->prev();
+    if (prev && reinterpret_cast<uintptr_t>(prev->m_largeBase) + prev->m_largeSize
+        == reinterpret_cast<uintptr_t>(gran->m_largeBase)) {
+        prev->m_largeSize += gran->m_largeSize;
+        m_decommittedList.remove(gran);
+        releaseHeader(gran);
+        gran = prev;
+    }
+
+    auto* next = gran->next();
+    if (next && reinterpret_cast<uintptr_t>(gran->m_largeBase) + gran->m_largeSize
+        == reinterpret_cast<uintptr_t>(next->m_largeBase)) {
+        gran->m_largeSize += next->m_largeSize;
+        m_decommittedList.remove(next);
+        releaseHeader(next);
+    }
+}
+
 SequesteredImmortalHeap& SequesteredImmortalHeap::instance()
 {
     // FIXME: this storage is not contained within the sequestered region
@@ -46,11 +142,10 @@ void ConcurrentDecommitQueue::decommit()
 {
     auto lst = acquireExclusiveCopyOfGranuleList();
 
-    auto* curr = lst.head();
+    auto* curr = lst.removeHead();
     if (!curr)
         return;
 
-    // FIXME: this should go to a page-provider rather than the SIH
     auto& sih = SequesteredImmortalHeap::instance();
 
     size_t decommitPageCount { 0 };
@@ -59,8 +154,7 @@ void ConcurrentDecommitQueue::decommit()
     UNUSED_VARIABLE(decommitGranuleCount);
 
     do {
-        auto* next = curr->next();
-        auto pages = sih.decommitGranule(curr);
+        auto pages = sih.granuleProvider().decommitGranule(curr);
 
         dataLogLnIf(verbose,
             "ConcurrentDecommitQueue: decommitted granule at (",
@@ -69,7 +163,7 @@ void ConcurrentDecommitQueue::decommit()
         decommitPageCount += pages;
         decommitGranuleCount++;
 
-        curr = next;
+        curr = lst.removeHead();
     } while (curr);
 
     dataLogLnIf(verbose, "ConcurrentDecommitQueue: decommitted ",
@@ -152,28 +246,32 @@ void SequesteredStackAllocator::deallocate(StackHandle* handle)
     m_freeList.push(handle);
 }
 
-GranuleHeader* SequesteredImmortalAllocator::addGranule(size_t minSize)
+GranuleHeader* SequesteredImmortalAllocator::addGranule(size_t minSizeBytes)
 {
-    size_t granuleSize = std::max(minSize, minGranuleSize);
+    RELEASE_ASSERT(minSizeBytes <= inlineGranuleSize - sizeof(GranuleHeader));
+    using AllocationFailureMode = SequesteredGranuleProvider::AllocationFailureMode;
+    GranuleHeader* granule = SequesteredImmortalHeap::instance().granuleProvider().mapGranule<AllocationFailureMode::Assert>(minSizeBytes);
 
-    using AllocationFailureMode = SequesteredImmortalHeap::AllocationFailureMode;
-    GranuleHeader* granule = SequesteredImmortalHeap::instance().mapGranule<AllocationFailureMode::Assert>(granuleSize);
-
-    static_assert(sizeof(GranuleHeader) >= minHeadAlignment);
-    m_allocHead = reinterpret_cast<uintptr_t>(granule) + sizeof(GranuleHeader);
-    m_allocBound = reinterpret_cast<uintptr_t>(granule) + granuleSize;
-    m_granules.push(granule);
-
-    static_assert(sizeof(GranuleHeader) >= minHeadAlignment);
-    dataLogLnIf(verbose,
-        "SequesteredImmortalAllocator at ", RawPointer(this),
-        ": expanded: granule was (", RawPointer(m_granules.head()->next()),
-        "), now (", RawPointer(m_granules.head()),
-        "); allocHead (",
-        RawPointer(reinterpret_cast<void*>(m_allocHead)),
-        "), allocBound (",
-        RawPointer(reinterpret_cast<void*>(m_allocBound)),
-        ")");
+    if (granule->m_type == GranuleHeader::Type::Large) {
+        m_granules.append(granule);
+        dataLogLnIf(verbose,
+            "SequesteredImmortalAllocator at ", RawPointer(this),
+            ": large allocation: ", granule->m_largeSize, "B at ", RawPointer(granule->payload()));
+    } else {
+        m_granules.push(granule);
+        auto* base = granule->payload();
+        m_allocHead = reinterpret_cast<uintptr_t>(base);
+        m_allocBound = reinterpret_cast<uintptr_t>(base) + granule->size();
+        dataLogLnIf(verbose,
+            "SequesteredImmortalAllocator at ", RawPointer(this),
+            ": expanded: granule was (", RawPointer(m_granules.head()->next()),
+            "), now (", RawPointer(m_granules.head()),
+            "); allocHead (",
+            RawPointer(reinterpret_cast<void*>(m_allocHead)),
+            "), allocBound (",
+            RawPointer(reinterpret_cast<void*>(m_allocBound)),
+            ")");
+    }
 
     return granule;
 }

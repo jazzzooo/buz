@@ -38,7 +38,6 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include <JavaScriptCore/SourceOrigin.h>
 #include <JavaScriptCore/SourceTaintedOrigin.h>
 #include <wtf/Lock.h>
-#include <wtf/RefCounted.h>
 #include <wtf/text/TextPosition.h>
 #include <wtf/text/WTFString.h>
 #include <JavaScriptCore/ArgList.h>

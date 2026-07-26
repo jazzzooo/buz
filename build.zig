@@ -222,7 +222,7 @@ pub fn build(b: *Build) !void {
     const pkgs = b.graph.arena.create(bun_exe.DepPkgs) catch @panic("OOM");
     pkgs.* = resolved;
     const cg = bun_exe.addCodegen(b, pkgs, mode);
-    const webkit_derived = bun_webkit.addStep(b, pkgs, optimize);
+    const webkit_derived = bun_webkit.addStep(b, pkgs, mode, optimize);
     const webkit_ctx = b.graph.arena.create(bun_webkit.Ctx) catch @panic("OOM");
     webkit_ctx.* = bun_webkit.addLibs(b, pkgs, mode, optimize, webkit_derived);
     const icu_ctx = b.graph.arena.create(bun_icu.Ctx) catch @panic("OOM");

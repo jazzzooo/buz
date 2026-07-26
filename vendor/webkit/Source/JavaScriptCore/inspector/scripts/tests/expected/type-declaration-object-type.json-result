@@ -1207,7 +1207,7 @@ namespace Protocol {
 
 namespace TestHelpers {
 
-static const auto enum_constant_values = std::to_array<ASCIILiteral>({
+static const auto enum_constant_values = WTF::toArray<ASCIILiteral>({
     "None"_s,
     "Left"_s,
     "Middle"_s,
@@ -1224,7 +1224,7 @@ String getEnumConstantValue(int code) {
 
 template<> std::optional<Protocol::Database::MouseButton> parseEnumValueFromString<Protocol::Database::MouseButton>(const String& protocolString)
 {
-    static const auto constantValues = std::to_array<size_t>({
+    static const auto constantValues = WTF::toArray<size_t>({
         (size_t)Protocol::Database::MouseButton::None,
         (size_t)Protocol::Database::MouseButton::Left,
         (size_t)Protocol::Database::MouseButton::Middle,
@@ -1239,7 +1239,7 @@ template<> std::optional<Protocol::Database::MouseButton> parseEnumValueFromStri
 
 template<> std::optional<Protocol::Database::OptionalParameterBundle::Directionality> parseEnumValueFromString<Protocol::Database::OptionalParameterBundle::Directionality>(const String& protocolString)
 {
-    static const auto constantValues = std::to_array<size_t>({
+    static const auto constantValues = WTF::toArray<size_t>({
         (size_t)Protocol::Database::OptionalParameterBundle::Directionality::LTR,
         (size_t)Protocol::Database::OptionalParameterBundle::Directionality::RTL,
     });
@@ -1252,7 +1252,7 @@ template<> std::optional<Protocol::Database::OptionalParameterBundle::Directiona
 
 template<> std::optional<Protocol::Database::ParameterBundle::Directionality> parseEnumValueFromString<Protocol::Database::ParameterBundle::Directionality>(const String& protocolString)
 {
-    static const auto constantValues = std::to_array<size_t>({
+    static const auto constantValues = WTF::toArray<size_t>({
         (size_t)Protocol::Database::ParameterBundle::Directionality::LTR,
         (size_t)Protocol::Database::ParameterBundle::Directionality::RTL,
     });
@@ -1267,7 +1267,7 @@ template<> std::optional<Protocol::Database::ParameterBundle::Directionality> pa
 
 template<> std::optional<Protocol::Test::ParameterBundle::Directionality> parseEnumValueFromString<Protocol::Test::ParameterBundle::Directionality>(const String& protocolString)
 {
-    static const auto constantValues = std::to_array<size_t>({
+    static const auto constantValues = WTF::toArray<size_t>({
         (size_t)Protocol::Test::ParameterBundle::Directionality::LTR,
         (size_t)Protocol::Test::ParameterBundle::Directionality::RTL,
     });
@@ -1761,7 +1761,7 @@ inline String toProtocolString(TestProtocolDatabaseMouseButton value)
 template<>
 inline std::optional<TestProtocolDatabaseMouseButton> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDatabaseMouseButton>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDatabaseMouseButton>>({
         { "Left"_s, TestProtocolDatabaseMouseButtonLeft },
         { "Middle"_s, TestProtocolDatabaseMouseButtonMiddle },
         { "None"_s, TestProtocolDatabaseMouseButtonNone },
@@ -1785,7 +1785,7 @@ inline String toProtocolString(TestProtocolDatabaseOptionalParameterBundleDirect
 template<>
 inline std::optional<TestProtocolDatabaseOptionalParameterBundleDirectionality> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDatabaseOptionalParameterBundleDirectionality>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDatabaseOptionalParameterBundleDirectionality>>({
         { "LTR"_s, TestProtocolDatabaseOptionalParameterBundleDirectionalityLTR },
         { "RTL"_s, TestProtocolDatabaseOptionalParameterBundleDirectionalityRTL },
    }) };
@@ -1807,7 +1807,7 @@ inline String toProtocolString(TestProtocolDatabaseParameterBundleDirectionality
 template<>
 inline std::optional<TestProtocolDatabaseParameterBundleDirectionality> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDatabaseParameterBundleDirectionality>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDatabaseParameterBundleDirectionality>>({
         { "LTR"_s, TestProtocolDatabaseParameterBundleDirectionalityLTR },
         { "RTL"_s, TestProtocolDatabaseParameterBundleDirectionalityRTL },
    }) };
@@ -1829,7 +1829,7 @@ inline String toProtocolString(TestProtocolTestParameterBundleDirectionality val
 template<>
 inline std::optional<TestProtocolTestParameterBundleDirectionality> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolTestParameterBundleDirectionality>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolTestParameterBundleDirectionality>>({
         { "LTR"_s, TestProtocolTestParameterBundleDirectionalityLTR },
         { "RTL"_s, TestProtocolTestParameterBundleDirectionalityRTL },
    }) };

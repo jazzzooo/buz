@@ -36,7 +36,6 @@
 #include "UnlinkedMetadataTableInlines.h"
 #include "WasmModuleInformation.h"
 #include "WasmTypeDefinitionInlines.h"
-#include <wtf/text/MakeString.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 

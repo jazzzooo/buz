@@ -32,7 +32,6 @@
 #include "JSWebAssemblyInstance.h"
 #include "WasmFormat.h"
 #include "WasmModuleInformation.h"
-#include <wtf/ScopedPrintStream.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 

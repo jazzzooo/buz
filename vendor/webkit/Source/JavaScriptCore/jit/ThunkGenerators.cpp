@@ -642,6 +642,150 @@ MacroAssemblerCodeRef<JITThunkPtrTag> stringGetByValGenerator(VM& vm)
     return FINALIZE_THUNK(patchBuffer, JITThunkPtrTag, "string_get_by_val"_s, "String get_by_val stub");
 }
 
+#if USE(JSVALUE64)
+MacroAssemblerCodeRef<JITThunkPtrTag> stringEqualThunkGenerator(VM& vm)
+{
+    // Inputs (operationCompareStringEq calling convention so the slow path can tail-call it
+    // with no register shuffling):
+    //   argumentGPR0 = JSGlobalObject*
+    //   argumentGPR1 = left  JSString*
+    //   argumentGPR2 = right JSString*
+    // Output:
+    //   returnValueGPR = JSValue::encode(jsBoolean(result))
+
+    JSInterfaceJIT jit(&vm);
+    jit.tagReturnAddress();
+
+    using JIT = JSInterfaceJIT;
+    constexpr GPRReg globalObjectGPR  = GPRInfo::argumentGPR0;
+    constexpr GPRReg jsLeftGPR        = GPRInfo::argumentGPR1; // regT1
+    constexpr GPRReg jsRightGPR       = GPRInfo::argumentGPR2; // regT2
+    constexpr GPRReg leftDataGPR      = GPRInfo::regT3;
+    constexpr GPRReg leftFlagsGPR     = GPRInfo::regT4;
+    constexpr GPRReg leftLengthGPR    = GPRInfo::regT5;
+    constexpr GPRReg rightDataGPR     = GPRInfo::regT6;
+    constexpr GPRReg rightFlagsGPR    = GPRInfo::regT7;
+    constexpr GPRReg rightLengthGPR   = GPRInfo::regT0;
+
+    jit.pushPair(globalObjectGPR, globalObjectGPR);
+
+    JIT::JumpList trueCase;
+    JIT::JumpList falseCase;
+    JIT::JumpList slowCase;
+
+    trueCase.append(jit.branchPtr(JIT::Equal, jsLeftGPR, jsRightGPR));
+
+    // Decode a JSString into (dataGPR = data pointer, flagsGPR = is8Bit flag bit,
+    // lengthGPR = char count). dataGPR's slot starts as the fiber temp and ends holding the
+    // data pointer; for substring ropes lengthGPR's slot is used as a transient offset scratch
+    // before the actual length is loaded last (avoids needing a 9th register across the two
+    // sides of the comparison). Non-rope and substring-rope inputs are handled inline; concat
+    // ropes branch to slowCase.
+    auto decodeString = [&](GPRReg jsStringGPR, GPRReg dataGPR, GPRReg flagsGPR, GPRReg lengthGPR) {
+        jit.loadPtr(JIT::Address(jsStringGPR, JSString::offsetOfValue()), dataGPR);
+        auto isRope = jit.branchIfRopeStringImpl(dataGPR);
+
+        // Non-rope: dataGPR holds the StringImpl pointer.
+        jit.load32(JIT::Address(dataGPR, StringImpl::lengthMemoryOffset()), lengthGPR);
+        jit.load32(JIT::Address(dataGPR, StringImpl::flagsOffset()), flagsGPR);
+        jit.and32(JIT::TrustedImm32(StringImpl::flagIs8Bit()), flagsGPR);
+        jit.loadPtr(JIT::Address(dataGPR, StringImpl::dataOffset()), dataGPR);
+        auto done = jit.jump();
+
+        // Rope: must be substring rope (concat ropes go to slowCase).
+        isRope.link(&jit);
+        slowCase.append(jit.branchTest64(JIT::Zero, dataGPR, JIT::TrustedImm64(JSRopeString::isSubstringInPointer)));
+
+        // Load substring base raw (low 48 bits of fiber1) and mask. and64(TrustedImm64) is one
+        // instruction on ARM64 (addressMask is a valid logical immediate) and uses the
+        // macro-assembler's reserved scratch (r11) on x86_64, so we don't burn a regT slot on
+        // the mask.
+        jit.load64(JIT::Address(jsStringGPR, JSRopeString::offsetOfFiber1Lower()), dataGPR);
+        jit.and64(JIT::TrustedImm64(JSRopeString::CompactFibers::addressMask), dataGPR);
+
+        // Substring base is non-rope by construction, so its m_value is the StringImpl pointer.
+        jit.loadPtr(JIT::Address(dataGPR, JSString::offsetOfValue()), dataGPR);
+        jit.load32(JIT::Address(dataGPR, StringImpl::flagsOffset()), flagsGPR);
+        jit.and32(JIT::TrustedImm32(StringImpl::flagIs8Bit()), flagsGPR);
+        jit.loadPtr(JIT::Address(dataGPR, StringImpl::dataOffset()), dataGPR);
+
+        jit.load32(JIT::Address(jsStringGPR, JSRopeString::offsetOfFiber2Lower()), lengthGPR);
+        auto is8Bit = jit.branchTest32(JIT::NonZero, flagsGPR);
+        jit.lshiftPtr(JIT::TrustedImm32(1), lengthGPR);
+        is8Bit.link(&jit);
+        jit.addPtr(lengthGPR, dataGPR);
+        jit.load32(JIT::Address(jsStringGPR, JSRopeString::offsetOfLength()), lengthGPR);
+
+        done.link(&jit);
+    };
+
+    decodeString(jsLeftGPR, leftDataGPR, leftFlagsGPR, leftLengthGPR);
+    decodeString(jsRightGPR, rightDataGPR, rightFlagsGPR, rightLengthGPR);
+
+    // Compare lengths, widths, then walk the bytes.
+    falseCase.append(jit.branch32(JIT::NotEqual, leftLengthGPR, rightLengthGPR));
+    trueCase.append(jit.branchTest32(JIT::Zero, leftLengthGPR));
+    slowCase.append(jit.branch32(JIT::NotEqual, leftFlagsGPR, rightFlagsGPR));
+
+    // Convert char-count to byte-count when 16-bit (flags == 0).
+    auto is8Bit = jit.branchTest32(JIT::NonZero, leftFlagsGPR);
+    jit.lshiftPtr(JIT::TrustedImm32(1), leftLengthGPR);
+    is8Bit.link(&jit);
+
+    // Compare data backwards.
+    constexpr unsigned wordSize = sizeof(void*);
+    auto longString = jit.branchPtr(JIT::AboveOrEqual, leftLengthGPR, JIT::TrustedImmPtr(std::bit_cast<void*>(static_cast<uintptr_t>(wordSize))));
+
+    // byteLength in [1, wordSize): byte-at-a-time loop.
+    auto byteLoopTop = jit.label();
+    jit.subPtr(JIT::TrustedImm32(1), leftLengthGPR);
+    jit.load8(JIT::BaseIndex(leftDataGPR, leftLengthGPR, JIT::TimesOne), rightFlagsGPR);
+    jit.load8(JIT::BaseIndex(rightDataGPR, leftLengthGPR, JIT::TimesOne), rightLengthGPR);
+    falseCase.append(jit.branch32(JIT::NotEqual, rightFlagsGPR, rightLengthGPR));
+    jit.branchTestPtr(JIT::NonZero, leftLengthGPR).linkTo(byteLoopTop, &jit);
+    trueCase.append(jit.jump());
+
+    // byteLength >= wordSize: word-at-a-time loop, walking backwards.
+    longString.link(&jit);
+    auto wordLoopTop = jit.label();
+    jit.subPtr(JIT::TrustedImm32(wordSize), leftLengthGPR);
+    jit.load64(JIT::BaseIndex(leftDataGPR, leftLengthGPR, JIT::TimesOne), rightFlagsGPR);
+    jit.load64(JIT::BaseIndex(rightDataGPR, leftLengthGPR, JIT::TimesOne), rightLengthGPR);
+    falseCase.append(jit.branch64(JIT::NotEqual, rightFlagsGPR, rightLengthGPR));
+    jit.branchPtr(JIT::AboveOrEqual, leftLengthGPR, JIT::TrustedImmPtr(std::bit_cast<void*>(static_cast<uintptr_t>(wordSize)))).linkTo(wordLoopTop, &jit);
+
+    // 0 <= leftLengthGPR < wordSize bytes remain at the head. Since the original byteLength
+    // was >= wordSize, an overlapping word load at offset 0 safely covers the remainder.
+    trueCase.append(jit.branchTestPtr(JIT::Zero, leftLengthGPR));
+    jit.load64(JIT::Address(leftDataGPR), rightFlagsGPR);
+    jit.load64(JIT::Address(rightDataGPR), rightLengthGPR);
+    falseCase.append(jit.branch64(JIT::NotEqual, rightFlagsGPR, rightLengthGPR));
+    // Fall through to trueCase.
+
+    trueCase.link(&jit);
+    jit.addPtr(JIT::TrustedImm32(16), JIT::stackPointerRegister);
+    jit.move(JIT::TrustedImm64(JSValue::encode(jsBoolean(true))), GPRInfo::returnValueGPR);
+    jit.move(JIT::TrustedImmPtr(nullptr), GPRInfo::returnValueGPR2);
+    jit.ret();
+
+    falseCase.link(&jit);
+    jit.addPtr(JIT::TrustedImm32(16), JIT::stackPointerRegister);
+    jit.move(JIT::TrustedImm64(JSValue::encode(jsBoolean(false))), GPRInfo::returnValueGPR);
+    jit.move(JIT::TrustedImmPtr(nullptr), GPRInfo::returnValueGPR2);
+    jit.ret();
+
+    slowCase.link(&jit);
+    jit.popPair(GPRInfo::argumentGPR0, /* padding */ GPRInfo::nonArgGPR0);
+    jit.untagReturnAddress();
+    jit.move(JIT::TrustedImmPtr(tagCFunction<OperationPtrTag>(operationCompareStringEq)), GPRInfo::nonArgGPR0);
+    emitPointerValidation(jit, GPRInfo::nonArgGPR0, OperationPtrTag);
+    jit.farJump(GPRInfo::nonArgGPR0, OperationPtrTag);
+
+    LinkBuffer patchBuffer(jit, GLOBAL_THUNK_ID, LinkBuffer::Profile::Thunk);
+    return FINALIZE_THUNK(patchBuffer, JITThunkPtrTag, "StringEqual"_s, "String equal stub");
+}
+#endif
+
 enum class RelativeNegativeIndex : bool { No, Yes };
 template <RelativeNegativeIndex relativeNegativeIndex>
 static void stringCharLoad(SpecializedThunkJIT& jit)
@@ -714,6 +858,18 @@ MacroAssemblerCodeRef<JITThunkPtrTag> fromCharCodeThunkGenerator(VM& vm)
     charToString(jit, vm, SpecializedThunkJIT::regT0, SpecializedThunkJIT::regT0, SpecializedThunkJIT::regT1);
     jit.returnJSCell(SpecializedThunkJIT::regT0);
     return jit.finalize(vm.jitStubs->ctiNativeTailCall(vm), "fromCharCode");
+}
+
+MacroAssemblerCodeRef<JITThunkPtrTag> fromCodePointThunkGenerator(VM& vm)
+{
+    SpecializedThunkJIT jit(vm, 1);
+    // For an Int32 code point in the small-string range, fromCodePoint produces the same result
+    // as fromCharCode. charToString already bails for code points > maxSingleCharacterString, so
+    // surrogate pairs and out-of-range RangeError cases all fall back to the slow path.
+    jit.loadInt32Argument(0, SpecializedThunkJIT::regT0);
+    charToString(jit, vm, SpecializedThunkJIT::regT0, SpecializedThunkJIT::regT0, SpecializedThunkJIT::regT1);
+    jit.returnJSCell(SpecializedThunkJIT::regT0);
+    return jit.finalize(vm.jitStubs->ctiNativeTailCall(vm), "fromCodePoint");
 }
 
 MacroAssemblerCodeRef<JITThunkPtrTag> stringAtThunkGenerator(VM& vm)

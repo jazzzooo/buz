@@ -88,8 +88,9 @@ SupportedSequenceProperties = [
     "Basic_Emoji", "Emoji_Keycap_Sequence", "RGI_Emoji", "RGI_Emoji_Flag_Sequence", "RGI_Emoji_Modifier_Sequence",
     "RGI_Emoji_Tag_Sequence", "RGI_Emoji_ZWJ_Sequence"]
 
+lastLatin1CodePoint = 0xff
 lastASCIICodePoint = 0x7f
-firstUnicodeCodePoint = 0x80
+firstNonLatin1CodePoint = 0x100
 MaxUnicode = 0x10ffff
 MaxBMP = 0xffff
 commonAndSimpleLinesRE = re.compile(r"(?P<code>[0-9A-F]+)\s*;\s*[CS]\s*;\s*(?P<mapping>[0-9A-F]+)", re.IGNORECASE)
@@ -261,7 +262,7 @@ class PropertyData:
             self.hasBMPCharacters = True
         else:
             self.hasNonBMPCharacters = True
-        if codePoint <= lastASCIICodePoint:
+        if codePoint <= lastLatin1CodePoint:
             if (len(self.matches) and self.matches[-1] > codePoint) or (len(self.ranges) and self.ranges[-1][1] > codePoint):
                 self.addMatchUnordered(codePoint)
                 return
@@ -299,7 +300,7 @@ class PropertyData:
             self.hasBMPCharacters = True
         if highCodePoint > MaxBMP:
             self.hasNonBMPCharacters = True
-        if highCodePoint <= lastASCIICodePoint:
+        if highCodePoint <= lastLatin1CodePoint:
             if (len(self.matches) and self.matches[-1] > lowCodePoint) or (len(self.ranges) and self.ranges[-1][1] > lowCodePoint):
                 self.addRangeUnordered(lowCodePoint, highCodePoint)
                 return
@@ -311,15 +312,15 @@ class PropertyData:
                 priorRange = self.ranges.pop()
                 lowCodePoint = priorRange[0]
             self.ranges.append((lowCodePoint, highCodePoint))
-        elif lowCodePoint <= lastASCIICodePoint:
-            if lowCodePoint == lastASCIICodePoint:
+        elif lowCodePoint <= lastLatin1CodePoint:
+            if lowCodePoint == lastLatin1CodePoint:
                 self.addMatch(lowCodePoint)
             else:
-                self.addRange(lowCodePoint, lastASCIICodePoint)
-            if highCodePoint == firstUnicodeCodePoint:
+                self.addRange(lowCodePoint, lastLatin1CodePoint)
+            if highCodePoint == firstNonLatin1CodePoint:
                 self.addMatch(highCodePoint)
             else:
-                self.addRange(firstUnicodeCodePoint, highCodePoint)
+                self.addRange(firstNonLatin1CodePoint, highCodePoint)
         else:
             if (len(self.unicodeMatches) and self.unicodeMatches[-1] > lowCodePoint) or (len(self.unicodeRanges) and self.unicodeRanges[-1][1] > lowCodePoint):
                 self.addRangeUnordered(lowCodePoint, highCodePoint)
@@ -457,25 +458,25 @@ class PropertyData:
         self.codePointCount = self.codePointCount + (highCodePoint - lowCodePoint) + 1
 
     def addMatchUnordered(self, codePoint):
-        if codePoint <= lastASCIICodePoint:
+        if codePoint <= lastLatin1CodePoint:
             self.addMatchUnorderedForMatchesAndRanges(codePoint, self.matches, self.ranges)
         else:
             self.addMatchUnorderedForMatchesAndRanges(codePoint, self.unicodeMatches, self.unicodeRanges)
 
     def addRangeUnordered(self, lowCodePoint, highCodePoint):
-        if highCodePoint <= lastASCIICodePoint:
+        if highCodePoint <= lastLatin1CodePoint:
             self.addRangeUnorderedForMatchesAndRanges(lowCodePoint, highCodePoint, self.matches, self.ranges)
-        elif lowCodePoint >= firstUnicodeCodePoint:
+        elif lowCodePoint >= firstNonLatin1CodePoint:
             self.addRangeUnorderedForMatchesAndRanges(lowCodePoint, highCodePoint, self.unicodeMatches, self.unicodeRanges)
         else:
-            if lowCodePoint == lastASCIICodePoint:
+            if lowCodePoint == lastLatin1CodePoint:
                 self.addMatchUnorderedForMatchesAndRanges(lowCodePoint, self.matches, self.ranges)
             else:
-                self.addRangeUnorderedForMatchesAndRanges(lowCodePoint, lastASCIICodePoint, self.unicodeMatches, self.ranges)
-            if highCodePoint == firstUnicodeCodePoint:
+                self.addRangeUnorderedForMatchesAndRanges(lowCodePoint, lastLatin1CodePoint, self.unicodeMatches, self.ranges)
+            if highCodePoint == firstNonLatin1CodePoint:
                 self.addMatchUnorderedForMatchesAndRanges(highCodePoint, self.unicodeMatches, self.unicodeRanges)
             else:
-                self.addRangeUnorderedForMatchesAndRanges(firstUnicodeCodePoint, highCodePoint, self.unicodeMatches, self.unicodeRanges)
+                self.addRangeUnorderedForMatchesAndRanges(firstNonLatin1CodePoint, highCodePoint, self.unicodeMatches, self.unicodeRanges)
 
     def removeMatchFromRanges(self, codePoint, ranges):
         for idx in range(len(ranges)):
@@ -507,7 +508,7 @@ class PropertyData:
                 return
 
     def removeMatch(self, codePoint):
-        if codePoint <= lastASCIICodePoint:
+        if codePoint <= lastLatin1CodePoint:
             if codePoint in self.matches:
                 self.matches.remove(codePoint)
                 self.codePointCount = self.codePointCount - 1
@@ -558,16 +559,45 @@ class PropertyData:
             formatter(file, elem)
         file.write("}")
 
-    def convertStringToCppFormat(self, file, utf32String):
-        output = ""
-        for codePoint in utf32String:
-            if codePoint <= '\xff':
-                output += codePoint
-            else:
-                output += "\\x{:x}".format(ord(codePoint))
-        file.write("{{ std::span {{ U\"{}\", {} }}}}".format(output, len(utf32String)))
+    def dumpStringTables(self, file):
+        # Emit a flat constexpr char32_t data array plus a constexpr per-string
+        # length array. createCharacterClassN() reconstructs Vector<Vector<char32_t>>
+        # from these with a small loop instead of thousands of inline Vector ctors,
+        # keeping the data in __TEXT,__const instead of generating hundreds of KB of
+        # construction code in __TEXT,__text.
+        file.write("static constexpr char32_t kStrings{}Data[] = {{\n    ".format(self.index))
+        valuesThisLine = 0
+        firstValue = True
+        for utf32String in self.matchStrings:
+            for codePoint in utf32String:
+                if not firstValue:
+                    file.write(", ")
+                firstValue = False
+                if valuesThisLine >= 16:
+                    file.write("\n    ")
+                    valuesThisLine = 0
+                file.write("0x{:x}".format(ord(codePoint)))
+                valuesThisLine += 1
+        file.write("\n};\n")
+
+        file.write("static constexpr uint8_t kStrings{}Lengths[] = {{\n    ".format(self.index))
+        valuesThisLine = 0
+        firstValue = True
+        for utf32String in self.matchStrings:
+            assert len(utf32String) <= 255, "string length must fit in uint8_t"
+            if not firstValue:
+                file.write(", ")
+            firstValue = False
+            if valuesThisLine >= 24:
+                file.write("\n    ")
+                valuesThisLine = 0
+            file.write("{}".format(len(utf32String)))
+            valuesThisLine += 1
+        file.write("\n};\n")
 
     def dump(self, file, commaAfter):
+        if self.hasStrings:
+            self.dumpStringTables(file)
         file.write("static std::unique_ptr<CharacterClass> {}()\n{{\n".format(self.getCreateFuncName()))
         file.write("    // Name = {},".format(self.name))
         if self.hasStrings:
@@ -576,10 +606,6 @@ class PropertyData:
             file.write(" number of codePoints: {}".format(self.codePointCount))
         file.write("\n")
         file.write("    auto characterClass = makeUnique<CharacterClass>(\n")
-        if self.hasStrings:
-            file.write("        std::initializer_list<Vector<char32_t>>(")
-            self.dumpMatchData(file, 1, self.matchStrings, self.convertStringToCppFormat)
-            file.write("),\n")
         file.write("        std::initializer_list<char32_t>(")
         self.dumpMatchData(file, 8, self.matches, lambda file, match: (file.write("{0:0=#4x}".format(match))))
         file.write("),\n")
@@ -593,10 +619,15 @@ class PropertyData:
         self.dumpMatchData(file, 4, self.unicodeRanges, lambda file, range: (file.write("{{{0:0=#6x}, {1:0=#6x}}}".format(range[0], range[1]))))
         file.write("),\n")
 
-        file.write("        CharacterClassWidths::{}".format(("Unknown", "HasBMPChars", "HasNonBMPChars", "HasBothBMPAndNonBMP")[int(self.hasNonBMPCharacters) * 2 + int(self.hasBMPCharacters)]))
+        file.write("        CharacterClassWidths::{});\n".format(("Unknown", "HasBMPChars", "HasNonBMPChars", "HasBothBMPAndNonBMP")[int(self.hasNonBMPCharacters) * 2 + int(self.hasBMPCharacters)]))
         if self.hasStrings:
-            file.write(",\n        true")  # inCanonicalForm
-        file.write(");\n")
+            file.write("    characterClass->m_strings.reserveInitialCapacity({});\n".format(len(self.matchStrings)))
+            file.write("    const char32_t* data = kStrings{}Data;\n".format(self.index))
+            file.write("    for (uint8_t length : kStrings{}Lengths) {{\n".format(self.index))
+            file.write("        characterClass->m_strings.append(Vector<char32_t>(std::span(data, length)));\n")
+            file.write("        data += length;\n")
+            file.write("    }\n")
+            file.write("    characterClass->m_inCanonicalForm = true;\n")
         file.write("    return characterClass;\n}\n\n")
 
     @classmethod

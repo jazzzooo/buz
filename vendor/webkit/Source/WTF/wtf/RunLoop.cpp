@@ -29,6 +29,7 @@
 #include <wtf/NeverDestroyed.h>
 #include <wtf/Ref.h>
 #include <wtf/StdLibExtras.h>
+#include <wtf/ThreadSpecific.h>
 #include <wtf/text/StringBuilder.h>
 #include <wtf/threads/BinarySemaphore.h>
 
@@ -101,7 +102,7 @@ RunLoop* RunLoop::webIfExists()
 }
 #endif
 
-Ref<RunLoop> RunLoop::create(ASCIILiteral threadName, ThreadType threadType, Thread::QOS qos)
+Ref<RunLoop> RunLoop::create(ASCIILiteral threadName, ThreadType threadType, ThreadQOS qos)
 {
     RefPtr<RunLoop> runLoop;
     BinarySemaphore semaphore;

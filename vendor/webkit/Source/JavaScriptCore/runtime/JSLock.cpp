@@ -25,6 +25,7 @@
 #include "JSGlobalObject.h"
 #include "MachineStackMarker.h"
 #include "SamplingProfiler.h"
+#include "VMTrapsInlines.h"
 #include <wtf/StackPointer.h>
 #include <wtf/Threading.h>
 #include <wtf/threads/Signals.h>
@@ -105,8 +106,7 @@ void JSLock::lock(intptr_t lockCount) WTF_IGNORES_THREAD_SAFETY_ANALYSIS
     }
 
     m_ownerThread = &Thread::currentSingleton();
-    WTF::storeStoreFence();
-    m_hasOwnerThread = true;
+    m_hasOwnerThread.store(true, std::memory_order_release);
     ASSERT(!m_lockCount);
     m_lockCount = lockCount;
 
@@ -163,6 +163,7 @@ void JSLock::unlock()
 }
 
 #if PLATFORM(COCOA) && CPU(ADDRESS64) && CPU(ARM64)
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 // FIXME: rdar://168614004
 NO_RETURN_DUE_TO_CRASH NEVER_INLINE void JSLock::dumpInfoAndCrashForLockNotOwned() // __attribute__((optnone))
 {
@@ -266,6 +267,7 @@ NO_RETURN_DUE_TO_CRASH NEVER_INLINE void JSLock::dumpInfoAndCrashForLockNotOwned
 
 #undef updateDumpState
 }
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 #endif
 
 // Use WTF_IGNORES_THREAD_SAFETY_ANALYSIS because this function conditionally unlocks m_lock, which
@@ -289,7 +291,7 @@ void JSLock::unlock(intptr_t unlockCount) WTF_IGNORES_THREAD_SAFETY_ANALYSIS
     m_lockCount -= unlockCount;
 
     if (!m_lockCount) {
-        m_hasOwnerThread = false;
+        m_hasOwnerThread.store(false, std::memory_order_release);
         m_lock.unlock();
     }
 }

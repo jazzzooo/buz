@@ -35,6 +35,7 @@
 #include "AirTmpInlines.h"
 #include <wtf/ForbidHeapAllocation.h>
 #include <wtf/IndexMap.h>
+#include <wtf/ListDump.h>
 #include <wtf/SequesteredMalloc.h>
 #include <wtf/TZoneMalloc.h>
 

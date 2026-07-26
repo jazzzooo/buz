@@ -37,6 +37,7 @@
 #include "Width.h"
 #include "WriteBarrier.h"
 #include <wtf/CheckedArithmetic.h>
+#include <wtf/EmbeddedFixedVector.h>
 #include <wtf/FixedVector.h>
 #include <wtf/HashMap.h>
 #include <wtf/HashSet.h>
@@ -45,6 +46,7 @@
 #include <wtf/ReferenceWrapperVector.h>
 #include <wtf/StdLibExtras.h>
 #include <wtf/TZoneMalloc.h>
+#include <wtf/ThreadSafeLazyUniquePtr.h>
 #include <wtf/ThreadSafeRefCounted.h>
 #include <wtf/Vector.h>
 
@@ -56,6 +58,8 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
 namespace JSC {
 
+class LLIntOffsetsExtractor;
+
 namespace Wasm {
 
 class JSToWasmICCallee;
@@ -63,6 +67,11 @@ class RTT;
 class RTTGroup;
 class SectionParser;
 class TypeSectionState;
+struct CallInformation;
+
+// Shared aINT/uINT bytecode, canonicalized per signature. Aliased so
+// offlineasm can reference it without template syntax.
+using IPIntSharedBytecode = EmbeddedFixedVector<uint8_t>;
 
 #define CREATE_ENUM_VALUE(name, id, ...) name = id,
 enum class ExtSIMDOpType : uint32_t {
@@ -588,6 +597,15 @@ public:
             cb(slot);
     }
 
+    template<typename Callback>
+    void forEachPayloadRTTRef(Callback&& cb) const
+    {
+        for (const TypeSlot& slot : m_signature) {
+            if (slot.rttAnchor)
+                cb(slot.rttAnchor.get());
+        }
+    }
+
 private:
     std::span<const TypeSlot> signatureSpan() const LIFETIME_BOUND { return m_signature.span(); }
 
@@ -644,6 +662,15 @@ public:
         }
     }
 
+    template<typename Callback>
+    void forEachPayloadRTTRef(Callback&& cb) const
+    {
+        for (const StructFieldEntry& entry : m_fields) {
+            if (entry.rttAnchor)
+                cb(entry.rttAnchor.get());
+        }
+    }
+
 private:
     std::span<const StructFieldEntry> fieldsSpan() const LIFETIME_BOUND { return m_fields.span(); }
 
@@ -686,6 +713,13 @@ public:
         m_elementTypeAnchor = WTF::move(slot.rttAnchor);
     }
 
+    template<typename Callback>
+    void forEachPayloadRTTRef(Callback&& cb) const
+    {
+        if (m_elementTypeAnchor)
+            cb(m_elementTypeAnchor.get());
+    }
+
 private:
     const RefPtr<const RTT>& elementTypeAnchor() const LIFETIME_BOUND { return m_elementTypeAnchor; }
 
@@ -699,6 +733,7 @@ class alignas(16) RTT final : public ThreadSafeRefCounted<RTT>, private Trailing
     WTF_MAKE_NONMOVABLE(RTT);
     using TrailingArrayType = TrailingArray<RTT, RefPtr<const RTT>>;
     friend TrailingArrayType;
+    friend class JSC::LLIntOffsetsExtractor;
 public:
     static_assert(sizeof(const RTT*) == sizeof(RefPtr<const RTT>));
     static constexpr unsigned inlinedDisplaySize = 6;
@@ -833,6 +868,19 @@ public:
     CodePtr<JSEntryPtrTag> jsToWasmICEntrypoint() const;
 #endif
 
+    // Function-kind only. Lazy-installed via a CAS in ThreadSafeLazyUniquePtr;
+    // buffer is immutable once published.
+    void ensureArgumINTBytecode(const CallInformation&) const;
+    void ensureUINTBytecode(const CallInformation&) const;
+
+    // Unified mINT call bytecode: [arg bytecode][Call][CallReturnMetadata][result bytecode][End].
+    // MC walks through this buffer during the entire call -- arg dispatch leaves MC at
+    // CallReturnMetadata start (callee-preserves MC), ret dispatch continues from there.
+    void ensureCallBytecode() const;
+
+    // Unified mINT tail-call bytecode: [arg bytecode][TailCall]. Tail calls don't return.
+    void ensureTailCallBytecode() const;
+
     // Walk every ref-bearing TypeSlot in this RTT's payload, dispatching to
     // the per-payload visitor based on m_kind. Used by both
     // rewriteInternalRefs (sets each slot's anchor inline as it rewrites)
@@ -854,22 +902,45 @@ public:
         RELEASE_ASSERT_NOT_REACHED();
     }
 
+    template<typename Callback>
+    void forEachPayloadRTTRef(Callback&& cb) const
+    {
+        switch (m_kind) {
+        case RTTKind::Function:
+            std::get<RTTFunctionPayload>(m_payload).forEachPayloadRTTRef(std::forward<Callback>(cb));
+            return;
+        case RTTKind::Struct:
+            std::get<RTTStructPayload>(m_payload).forEachPayloadRTTRef(std::forward<Callback>(cb));
+            return;
+        case RTTKind::Array:
+            std::get<RTTArrayPayload>(m_payload).forEachPayloadRTTRef(std::forward<Callback>(cb));
+            return;
+        }
+        RELEASE_ASSERT_NOT_REACHED();
+    }
+
     // Rewrite internal recgroup refs in this RTT's payload to canonical RTT
     // pointers. Called during canonicalizeRecursionGroup before the candidate
     // RTTs are exposed: any Type ref whose index is a Projection of
     // recursionGroup is replaced with groupMembers[projectionIndex] (i.e.,
     // a self-reference in the post-canonicalization group). After this all
     // refs in payload are uniformly RTT* form.
-    void rewriteInternalRefs(TypeSectionState*, const Vector<Ref<const RTT>>& groupMembers, const RecursionGroup*);
+    void rewriteInternalRefs(TypeSectionState*, std::span<const Ref<const RTT>> groupMembers, const RecursionGroup*);
 
-    // Drop all RTT anchors added by rewriteInternalRefs (and by
-    // typeDefinitionFor* for external refs). Used when a freshly built
-    // candidate RTT turns out to duplicate an existing canonical entry
-    // during canonicalization: nulling each TypeSlot's rttAnchor breaks the
-    // intra-recgroup refcount cycle so the discarded candidate can actually
-    // be freed. Never call on a committed canonical RTT -- doing so would
-    // re-introduce the UAF rewriteInternalRefs guards against.
+    // Drop all RTT anchors. Called on the dupe-on-insert candidate and on
+    // sweep-eligible canonical RTTs. Never call on a still-reachable
+    // canonical RTT -- re-introduces the UAF rewriteInternalRefs guards.
     void clearReferencedRTTs();
+
+    // Null every display slot. Sweep-time helper; breaks self- and
+    // sibling-display cycles before the destructor cascade runs.
+    void clearAllDisplayRefs();
+
+    // Write `this` into span()[m_displaySizeExcludingThis]. Called exactly
+    // once per RTT after successful canonicalization; deferring this write
+    // until canonicalization means parse failures and dupe losers never
+    // establish a self-reference cycle and can destruct cleanly.
+    void setSelfDisplaySlot() const;
 
     // Set during canonicalization (under TypeInformation::m_lock) to identify
     // membership in a canonical recursion group without scanning the group's
@@ -882,18 +953,45 @@ public:
         m_group = group;
         m_canonicalIndexInGroup = indexInGroup;
     }
-    const RTTGroup* canonicalGroup() const { return m_group; }
+    const RTTGroup* canonicalGroup() const { return m_group.get(); }
     uint32_t canonicalIndexInGroup() const { return m_canonicalIndexInGroup; }
+
+    uint32_t virtualRefCount() const { return m_virtualRefCount; }
+    void setVirtualRefCount(uint32_t value) const { m_virtualRefCount = value; }
 
     static constexpr ptrdiff_t offsetOfKind() { return OBJECT_OFFSETOF(RTT, m_kind); }
     static constexpr ptrdiff_t offsetOfDisplaySizeExcludingThis() { return OBJECT_OFFSETOF(RTT, m_displaySizeExcludingThis); }
+    static constexpr ptrdiff_t offsetOfArgumINTBytecode() { return OBJECT_OFFSETOF(RTT, m_argumINTBytecode); }
+    static constexpr ptrdiff_t offsetOfUINTBytecode() { return OBJECT_OFFSETOF(RTT, m_uINTBytecode); }
+    static constexpr ptrdiff_t offsetOfCallBytecode() { return OBJECT_OFFSETOF(RTT, m_callBytecode); }
+    static constexpr ptrdiff_t offsetOfTailCallBytecode() { return OBJECT_OFFSETOF(RTT, m_tailCallBytecode); }
     using TrailingArrayType::offsetOfData;
+
+    unsigned hashMayBeEmpty() const
+    {
+        return m_hash;
+    }
+
+    void setHash(unsigned hash) const
+    {
+        if (!hash)
+            m_hash = 1;
+        else
+            m_hash = hash;
+    }
 
 private:
     // Templated payload-aware constructors. Initialize m_payload in the
     // initializer list so the Variant is never observed in an unset state
     // (no std::monostate alternative). Defined inline so each tryCreate*
     // call site instantiates the matching specialization.
+    // Display layout: span()[0..m_displaySizeExcludingThis-1] is the
+    // ancestor chain; span()[m_displaySizeExcludingThis] is the self-slot,
+    // left nullptr by the constructor and written only by
+    // setSelfDisplaySlot() after canonicalization. Subtype constructor
+    // copies supertype's ancestor slots and explicitly writes &supertype
+    // as its own supertype-identity slot, because the supertype may still
+    // be a non-canonical sibling at construction time.
     template<typename Payload>
     RTT(RTTKind kind, bool isFinalType, StructFieldCount fieldCount, Payload&& payload)
         : TrailingArrayType(std::max(1u, inlinedDisplaySize))
@@ -903,7 +1001,6 @@ private:
         , m_fieldCount(fieldCount)
         , m_payload(std::forward<Payload>(payload))
     {
-        at(0) = this;
     }
     template<typename Payload>
     RTT(RTTKind kind, const RTT& supertype, bool isFinalType, StructFieldCount fieldCount, Payload&& payload)
@@ -914,19 +1011,19 @@ private:
         , m_fieldCount(fieldCount)
         , m_payload(std::forward<Payload>(payload))
     {
-        unsigned actualDisplaySize = supertype.displaySizeExcludingThis() + 2;
-        ASSERT(actualDisplaySize == (m_displaySizeExcludingThis + 1));
-        for (size_t i = 0; i < actualDisplaySize - 1; ++i)
+        for (size_t i = 0; i < supertype.displaySizeExcludingThis(); ++i)
             span()[i] = supertype.span()[i];
-        at(m_displaySizeExcludingThis) = this;
+        at(supertype.displaySizeExcludingThis()) = &supertype;
     }
 
     const RTTKind m_kind;
     const bool m_isFinalType { false };
     const unsigned m_displaySizeExcludingThis { };
     const StructFieldCount m_fieldCount { 0 };
-    SUPPRESS_UNCOUNTED_MEMBER mutable const RTTGroup* m_group { nullptr };
+    mutable unsigned m_hash { 0 };
+    mutable RefPtr<const RTTGroup> m_group { nullptr };
     mutable uint32_t m_canonicalIndexInGroup { 0 };
+    mutable uint32_t m_virtualRefCount { 0 };
 #if ENABLE(JIT)
     // Cache for the JS->Wasm IC entrypoint. Function-kind only; null for
     // struct/array. Lazy-initialized under m_jitCodeLock; once set, the IC
@@ -934,6 +1031,10 @@ private:
     mutable RefPtr<JSToWasmICCallee> m_jsToWasmICCallee;
     mutable Lock m_jitCodeLock;
 #endif
+    mutable ThreadSafeLazyUniquePtr<const IPIntSharedBytecode> m_argumINTBytecode;
+    mutable ThreadSafeLazyUniquePtr<const IPIntSharedBytecode> m_uINTBytecode;
+    mutable ThreadSafeLazyUniquePtr<const IPIntSharedBytecode> m_callBytecode;
+    mutable ThreadSafeLazyUniquePtr<const IPIntSharedBytecode> m_tailCallBytecode;
     Variant<RTTFunctionPayload, RTTStructPayload, RTTArrayPayload> m_payload;
 };
 
@@ -960,12 +1061,30 @@ public:
     size_t size() const { return m_rtts.size(); }
     const RTT& at(size_t i) const LIFETIME_BOUND { return m_rtts[i]; }
 
+    uint32_t virtualRefCount() const { return m_virtualRefCount; }
+    void setVirtualRefCount(uint32_t value) const { m_virtualRefCount = value; }
+
+    unsigned hashMayBeEmpty() const
+    {
+        return m_hash;
+    }
+
+    void setHash(unsigned hash) const
+    {
+        if (!hash)
+            m_hash = 1;
+        else
+            m_hash = hash;
+    }
+
 private:
     explicit RTTGroup(Vector<Ref<const RTT>>&& rtts)
         : m_rtts(WTF::move(rtts))
     { }
 
     Vector<Ref<const RTT>> m_rtts;
+    mutable uint32_t m_virtualRefCount { 0 };
+    mutable unsigned m_hash { 0 };
 };
 
 // Isorecursive canonical recursion-group entry. Wraps an owning Ref to the
@@ -1000,9 +1119,11 @@ struct CanonicalRecursionGroupEntryHash {
 // structural content, with self-refs detected by pointer equality against
 // the entry's own RTT. Mirrors V8's canonical_singleton_groups_.
 struct CanonicalSingletonEntry {
-    RefPtr<const RTT> rtt;
+    Ref<const RTT> rtt;
 
-    CanonicalSingletonEntry() = default;
+    CanonicalSingletonEntry()
+        : rtt(WTF::HashTableEmptyValue)
+    { }
     explicit CanonicalSingletonEntry(Ref<const RTT>&& r)
         : rtt(WTF::move(r))
     { }
@@ -1039,6 +1160,8 @@ template<> struct HashTraits<JSC::Wasm::CanonicalRecursionGroupEntry> : SimpleCl
 };
 template<> struct HashTraits<JSC::Wasm::CanonicalSingletonEntry> : SimpleClassHashTraits<JSC::Wasm::CanonicalSingletonEntry> {
     static constexpr bool emptyValueIsZero = true;
+    static constexpr bool hasIsEmptyValueFunction = true;
+    static bool isEmptyValue(const JSC::Wasm::CanonicalSingletonEntry& value) { return value.rtt.isHashTableEmptyValue(); }
 };
 
 } // namespace WTF
@@ -1081,6 +1204,9 @@ public:
     static RefPtr<const RTT> tryGetRTT(TypeIndex);
 
     static void tryCleanup();
+
+    // Total canonical entries currently retained. Used by tests.
+    static size_t canonicalTypeCount();
 
 private:
     static Ref<const RTT> typeDefinitionForFunction(const Vector<Type, 16>& returnTypes, const Vector<Type, 16>& argumentTypes);
@@ -1133,6 +1259,11 @@ private:
     Ref<const RTT> canonicalizeSingletonImpl(TypeSectionState*, const RecursionGroup*, Ref<const RTT>&&);
     Ref<const RTT> canonicalizeStandaloneRTTImpl(Ref<const RTT>&&);
     static RefPtr<const RTT> extractExternalRTT(Type);
+
+    // Null every cycle-forming ref on `rtt` (display, payload, m_group) so
+    // its refcount can cascade to 0. Used by tryCleanup's sweep and the
+    // dupe-on-insert fallbacks.
+    static void breakCyclesForReclamation(const RTT&);
 
     // Returns true iff `type` is a ref whose index encodes a parser-time
     // placeholder Projection (i.e. an unresolved intra-recgroup reference).

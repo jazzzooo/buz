@@ -472,7 +472,7 @@ namespace Protocol {
 
 namespace TestHelpers {
 
-static const auto enum_constant_values = std::to_array<ASCIILiteral>({
+static const auto enum_constant_values = WTF::toArray<ASCIILiteral>({
     "Pigs"_s,
     "Cows"_s,
     "Cats"_s,
@@ -490,7 +490,7 @@ String getEnumConstantValue(int code) {
 
 template<> std::optional<Protocol::Runtime::FarmAnimals> parseEnumValueFromString<Protocol::Runtime::FarmAnimals>(const String& protocolString)
 {
-    static const auto constantValues = std::to_array<size_t>({
+    static const auto constantValues = WTF::toArray<size_t>({
         (size_t)Protocol::Runtime::FarmAnimals::Pigs,
         (size_t)Protocol::Runtime::FarmAnimals::Cows,
         (size_t)Protocol::Runtime::FarmAnimals::Cats,
@@ -505,7 +505,7 @@ template<> std::optional<Protocol::Runtime::FarmAnimals> parseEnumValueFromStrin
 
 template<> std::optional<Protocol::Runtime::TwoLeggedAnimals> parseEnumValueFromString<Protocol::Runtime::TwoLeggedAnimals>(const String& protocolString)
 {
-    static const auto constantValues = std::to_array<size_t>({
+    static const auto constantValues = WTF::toArray<size_t>({
         (size_t)Protocol::Runtime::TwoLeggedAnimals::Ducks,
         (size_t)Protocol::Runtime::TwoLeggedAnimals::Hens,
         (size_t)Protocol::Runtime::TwoLeggedAnimals::Crows,
@@ -909,7 +909,7 @@ inline String toProtocolString(TestProtocolRuntimeFarmAnimals value)
 template<>
 inline std::optional<TestProtocolRuntimeFarmAnimals> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolRuntimeFarmAnimals>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolRuntimeFarmAnimals>>({
         { "Cats"_s, TestProtocolRuntimeFarmAnimalsCats },
         { "Cows"_s, TestProtocolRuntimeFarmAnimalsCows },
         { "Hens"_s, TestProtocolRuntimeFarmAnimalsHens },
@@ -937,7 +937,7 @@ inline String toProtocolString(TestProtocolRuntimeTwoLeggedAnimals value)
 template<>
 inline std::optional<TestProtocolRuntimeTwoLeggedAnimals> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolRuntimeTwoLeggedAnimals>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolRuntimeTwoLeggedAnimals>>({
         { "Crows"_s, TestProtocolRuntimeTwoLeggedAnimalsCrows },
         { "Ducks"_s, TestProtocolRuntimeTwoLeggedAnimalsDucks },
         { "Flamingos"_s, TestProtocolRuntimeTwoLeggedAnimalsFlamingos },

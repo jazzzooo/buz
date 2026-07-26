@@ -23,7 +23,7 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "../jsc.cpp"
+#include "../../jsc.cpp"
 
 #include <wtf/Language.h>
 

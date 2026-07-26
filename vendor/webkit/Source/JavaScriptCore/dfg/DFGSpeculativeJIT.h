@@ -164,7 +164,7 @@ public:
 
     BasicBlock* nextBlock()
     {
-        for (BlockIndex resultIndex = m_block->index + 1; ; resultIndex++) {
+        for (BlockIndex resultIndex = m_block->index() + 1; ; resultIndex++) {
             if (resultIndex >= m_graph.numBlocks())
                 return nullptr;
             if (BasicBlock* result = m_graph.block(resultIndex))
@@ -956,6 +956,35 @@ public:
         }
     }
 
+#if USE(JSVALUE64)
+    void jsValueTupleResultWithoutUsingChildren(GPRReg reg, Node* node, unsigned index, DataFormat format = DataFormatJS)
+    {
+        ASSERT(index < node->tupleSize());
+        unsigned refCount = m_graph.m_tupleData.at(node->tupleOffset() + index).refCount;
+        if (!refCount)
+            return;
+        ASSERT(refCount == 1);
+        ASSERT(format & DataFormatJS);
+        VirtualRegister virtualRegister = m_graph.m_tupleData.at(node->tupleOffset() + index).virtualRegister;
+        GenerationInfo& info = generationInfoFromVirtualRegister(virtualRegister);
+        m_gprs.retain(reg, virtualRegister, SpillOrderJS);
+        info.initJSValue(node, refCount, reg, format);
+    }
+#endif
+
+    void cellTupleResultWithoutUsingChildren(GPRReg reg, Node* node, unsigned index)
+    {
+        ASSERT(index < node->tupleSize());
+        unsigned refCount = m_graph.m_tupleData.at(node->tupleOffset() + index).refCount;
+        if (!refCount)
+            return;
+        ASSERT(refCount == 1);
+        VirtualRegister virtualRegister = m_graph.m_tupleData.at(node->tupleOffset() + index).virtualRegister;
+        GenerationInfo& info = generationInfoFromVirtualRegister(virtualRegister);
+        m_gprs.retain(reg, virtualRegister, SpillOrderCell);
+        info.initCell(node, refCount, reg);
+    }
+
     template<typename OperationType>
     void operationExceptionCheck()
     {
@@ -1389,7 +1418,8 @@ public:
         Node*, GPRReg leftGPR, GPRReg rightGPR, GPRReg lengthGPR,
         GPRReg leftTempGPR, GPRReg rightTempGPR, GPRReg leftTemp2GPR,
         GPRReg rightTemp2GPR, const JITCompiler::JumpList& fastTrue,
-        const JITCompiler::JumpList& fastSlow);
+        const JITCompiler::JumpList& fastFalse,
+        Edge leftEdge, Edge rightEdge);
     void compileStringEquality(Node*);
     void compileStringIdentEquality(Node*);
     void compileStringToUntypedEquality(Node*, Edge stringEdge, Edge untypedEdge);
@@ -1451,10 +1481,13 @@ public:
     void compileNumberToStringWithRadix(Node*);
     void compileNumberToStringWithValidRadixConstant(Node*);
     void compileNumberToStringWithValidRadixConstant(Node*, int32_t radix);
+    void compileInt32ToStringRadix10(Node*);
     void compileNewStringObject(Node*);
     void compileNewSymbol(Node*);
     void compileNewMap(Node*);
     void compileNewSet(Node*);
+    void compileNewWeakMap(Node*);
+    void compileNewWeakSet(Node*);
     void compileNewRegExpUntyped(Node*);
 
     void emitNewTypedArrayWithSizeInRegister(Node*, TypedArrayType, RegisteredStructure, GPRReg sizeGPR);
@@ -1532,9 +1565,12 @@ public:
     // We use a scopedLambda to placate register allocation validation.
     void compileGetByVal(Node*, const ScopedLambda<std::tuple<JSValueRegs, DataFormat>(DataFormat preferredFormat, bool needsFlush)>& prefix);
 
+    void compileMultiGetByVal(Node*);
+    void compileMultiPutByVal(Node*);
+
     void compileGetCharCodeAt(Node*);
     void compileGetByValOnString(Node*, const ScopedLambda<std::tuple<JSValueRegs, DataFormat>(DataFormat preferredFormat, bool needsFlush)>& prefix);
-    void compileFromCharCode(Node*); 
+    void compileStringFromCharCodeOrCodePoint(Node*);
     void compileGetByValMegamorphic(Node*);
 
     void compileGetByValOnDirectArguments(Node*, const ScopedLambda<std::tuple<JSValueRegs, DataFormat>(DataFormat preferredFormat, bool needsFlush)>& prefix);
@@ -1666,6 +1702,7 @@ public:
     template <typename ClassType> void compileNewFunctionCommon(GPRReg, RegisteredStructure, GPRReg, GPRReg, GPRReg, JumpList&, size_t, FunctionExecutable*);
     void compileNewFunction(Node*);
     void compileSetFunctionName(Node*);
+    void compileEnqueueAsyncGeneratorDriver(Node*);
     void compileNewBoundFunction(Node*);
     void compileNewRegExp(Node*);
     void compileForwardVarargs(Node*);
@@ -1683,17 +1720,24 @@ public:
     void compileNewArray(Node*);
     void compileNewArrayWithSpread(Node*);
     void compileArraySlice(Node*);
+    void compileArrayConcatArray(Node*);
+    void compileArrayConcatAppendOne(Node*);
     void compileArraySplice(Node*);
     void compileArrayIndexOfOrArrayIncludes(Node*);
+    void compileArrayJoin(Node*);
     void compileArrayPush(Node*);
+    void compileArrayUnshift(Node*);
     void compileNotifyWrite(Node*);
     void compileRegExpExec(Node*);
     void compileRegExpExecNonGlobalOrSticky(Node*);
+    void compileRegExpExecSticky(Node*);
     void compileRegExpMatchFast(Node*);
     void compileRegExpMatchFastGlobal(Node*);
+    void compileRegExpSplitFast(Node*);
     void compileRegExpTest(Node*);
     void compileRegExpTestInline(Node*);
     void compileRegExpSearch(Node*);
+    void compileRegExpStringIteratorNext(Node*);
     void compileStringReplace(Node*);
     void compileStringReplaceAll(Node*);
     void compileStringReplaceString(Node*);
@@ -1729,14 +1773,18 @@ public:
     void compileDefineDataProperty(Node*);
     void compileDefineAccessorProperty(Node*);
     void compileObjectDefineProperty(Node*);
+    void compileObjectDefinePropertyFromFields(Node*);
     void compileStringSlice(Node*);
     void compileStringSubstring(Node*);
+    void compileStringSubstr(Node*);
     void compileToUpperCase(Node*);
     void compileToLowerCase(Node*);
+    void compileStringTrim(Node*);
     void compileThrow(Node*);
     void compileThrowStaticError(Node*);
 
     void NODELETE compileExtractFromTuple(Node*);
+    void compileStringIteratorNext(Node*);
     void compileEnumeratorNextUpdateIndexAndMode(Node*);
     void compileEnumeratorNextUpdatePropertyName(Node*);
     void compileEnumeratorGetByVal(Node*);
@@ -1761,6 +1809,10 @@ public:
     void compileStrCat(Node*);
     void compileNewArrayBuffer(Node*);
     void compileNewButterflyWithSize(Node*);
+    void compileGetCellButterflySlot(Node*);
+    void compilePutCellButterflySlot(Node*);
+    void compileArraySortCompact(Node*);
+    void compileArraySortCommit(Node*);
     void compileNewArrayWithSize(Node*);
     void compileNewArrayWithButterfly(Node*);
     void compileNewArrayWithSpecies(Node*);
@@ -1772,12 +1824,14 @@ public:
     void compileObjectAssign(Node*);
     void compileObjectCreate(Node*);
     void compileObjectToString(Node*);
+    void compileSymbolToString(Node*);
     void compileCreateThis(Node*);
     void compileCreatePromise(Node*);
     void compileCreateGenerator(Node*);
     void compileCreateAsyncGenerator(Node*);
     void compileNewObject(Node*);
     void compileNewInternalFieldObject(Node*);
+    void compileNewPromise(Node*);
     void compileToPrimitive(Node*);
     void compileToPropertyKey(Node*);
     void compileToPropertyKeyOrNumber(Node*);
@@ -1794,6 +1848,13 @@ public:
     void compileStringIndexOf(Node*);
     void compileStringLastIndexOf(Node*);
     void compileStringStartsOrEndsWith(Node*);
+#if USE(JSVALUE64)
+    void compileStringStartsOrEndsWithConstant(Node*, bool isStartsWith, std::span<const Latin1Character> search);
+#endif
+    void compileStringSplit(Node*);
+    void compileStringMatch(Node*);
+    void compileStringSearch(Node*);
+    void compileDateNow(Node*);
     void compileDateGet(Node*);
     void compileDateSet(Node*);
     void compileGlobalIsNaN(Node*);
@@ -1812,11 +1873,14 @@ public:
     void compilePromiseReject(Node*);
     void compilePromiseThen(Node*);
     void compilePerformPromiseThen(Node*);
+    void compilePerformPromiseThenOneHandler(Node*);
 
     template<typename JSClass, typename Operation>
     void compileCreateInternalFieldObject(Node*, Operation);
     template<typename JSClass, typename Operation>
     void compileNewInternalFieldObjectImpl(Node*, Operation);
+
+    void compileClampIntegerToByte(GPRReg srcGPR, GPRReg resultGPR);
 
     void moveTrueTo(GPRReg);
     void moveFalseTo(GPRReg);

@@ -33,6 +33,7 @@
 #include "Options.h"
 #include "Register.h"
 #include "VMEntryRecord.h"
+#include <JavaScriptCore/WasmCompilationMode.h>
 
 #include <wtf/TrailingArray.h>
 #include <wtf/Vector.h>
@@ -136,6 +137,8 @@ public:
     CallFrame* teleportFrame() const { return m_teleportFrame; }
 
 protected:
+    void setErrorMessageWithCompilationMode(ASCIILiteral messagePrefix, Wasm::CompilationMode);
+
     // Create a slice for the stack area identified by the future bottom and top pointers.
     // Include extra 'headroomSlotCount' registers above the actual frame top pointer.
     // The amount of the headroom is dictated by the frame callee.
@@ -173,6 +176,7 @@ public:
 private:
     enum class State {
         Initial,
+        ExpectingWasmToJS,
         Scanning,
         ScannedJSToWasm,
         // The following are the three final states
@@ -197,7 +201,7 @@ public:
 private:
     enum class State {
         Initial,
-        ScannedSuspending,
+        ExpectingWasmToJS,
         ScannedWasmToJS,
         ScanningWasm,
         ScannedJSToWasm,

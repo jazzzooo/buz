@@ -32,6 +32,7 @@
 #include "DFGRegisteredStructure.h"
 #include "ArrayProfile.h"
 #include "StructureSet.h"
+#include "SpeculatedType.h"
 #include <wtf/TinyPtrSet.h>
 
 namespace JSC {

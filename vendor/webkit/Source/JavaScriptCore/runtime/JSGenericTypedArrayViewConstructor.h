@@ -26,6 +26,7 @@
 #pragma once
 
 #include "InternalFunction.h"
+#include <wtf/text/ASCIILiteral.h>
 
 namespace JSC {
 
@@ -152,5 +153,7 @@ JSC_DECLARE_HOST_FUNCTION(uint8ArrayConstructorFromHex);
 
 [[nodiscard]] size_t decodeHex(std::span<const Latin1Character>, std::span<uint8_t> result);
 [[nodiscard]] size_t decodeHex(std::span<const char16_t>, std::span<uint8_t> result);
+
+constinit const ASCIILiteral arrayBufferViewErrorMessageOutOfRangeOfBuffer = "Length out of range of buffer"_s;
 
 } // namespace JSC

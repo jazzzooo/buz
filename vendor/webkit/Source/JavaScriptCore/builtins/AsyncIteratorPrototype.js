@@ -34,7 +34,7 @@ function asyncDispose()
         if (@isUndefinedOrNull(returnMethod))
             return @newResolvedPromise(@undefined);
 
-        var result = returnMethod.@call(this, @undefined);
+        var result = returnMethod.@call(this);
         var resultWrapper;
         if (@isPromise(result) && result.constructor === @Promise)
             resultWrapper = result;

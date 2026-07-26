@@ -99,7 +99,6 @@ public:
 
     bool hasBreakpoints() const;
 
-    JS_EXPORT_PRIVATE static uint64_t threadId(const VM&);
     uint64_t debugServerThreadId() const
     {
         RELEASE_ASSERT(m_debugServerThreadId.has_value());
@@ -138,7 +137,7 @@ private:
 
     void resumeImpl(Locker<Lock>&) WTF_REQUIRES_LOCK(m_lock);
 
-    bool stepAtBreakpoint(Locker<Lock>&, DebugState*) WTF_REQUIRES_LOCK(m_lock);
+    bool stepAtBytecode(Locker<Lock>&, DebugState*) WTF_REQUIRES_LOCK(m_lock);
 
     void sendStopReply(AbstractLocker&);
     void sendStopReplyForThread(AbstractLocker&, uint64_t threadId);

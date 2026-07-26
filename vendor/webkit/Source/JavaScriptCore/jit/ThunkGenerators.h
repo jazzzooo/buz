@@ -71,6 +71,9 @@ MacroAssemblerCodeRef<JITThunkPtrTag> internalFunctionConstructGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> arityFixupGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> unreachableGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> stringGetByValGenerator(VM&);
+#if USE(JSVALUE64)
+MacroAssemblerCodeRef<JITThunkPtrTag> stringEqualThunkGenerator(VM&);
+#endif
 
 MacroAssemblerCodeRef<JITThunkPtrTag> charCodeAtThunkGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> charAtThunkGenerator(VM&);
@@ -78,6 +81,7 @@ MacroAssemblerCodeRef<JITThunkPtrTag> stringAtThunkGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> stringPrototypeCodePointAtThunkGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> clz32ThunkGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> fromCharCodeThunkGenerator(VM&);
+MacroAssemblerCodeRef<JITThunkPtrTag> fromCodePointThunkGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> globalIsNaNThunkGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> numberIsNaNThunkGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> globalIsFiniteThunkGenerator(VM&);

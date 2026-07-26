@@ -118,11 +118,7 @@
 #define WTF_ATTRIBUTE_NSSTRING WTF_ATTRIBUTE_PRINTF
 #endif
 
-#if COMPILER(GCC_COMPATIBLE)
 #define WTF_ATTRIBUTE_PRINTF(formatStringArgument, extraArguments) __attribute__((__format__(printf, formatStringArgument, extraArguments)))
-#else
-#define WTF_ATTRIBUTE_PRINTF(formatStringArgument, extraArguments)
-#endif
 
 #if COMPILER_HAS_ATTRIBUTE(format_matches)
 #define WTF_ATTRIBUTE_PRINTF_MATCHES(formatStringArgument, formatStringTemplate) __attribute__((format_matches(printf, formatStringArgument, formatStringTemplate)))
@@ -199,6 +195,8 @@ typedef struct {
 #define LOG_CHANNEL_WEBKIT_SUBSYSTEM "WPEWebKit"
 #elif PLATFORM(PLAYSTATION)
 #define LOG_CHANNEL_WEBKIT_SUBSYSTEM "SceNKWebKit"
+#elif PLATFORM(WIN)
+#define LOG_CHANNEL_WEBKIT_SUBSYSTEM "WebKitWin"
 #else
 #define LOG_CHANNEL_WEBKIT_SUBSYSTEM "com.apple.WebKit"
 #endif
@@ -278,7 +276,7 @@ WTF_EXPORT_PRIVATE bool WTFIsDebuggerAttached(void);
 #if ASAN_ENABLED
 #define WTF_FATAL_CRASH_CODE 0x0
 #else
-#define WTF_FATAL_CRASH_CODE 0xc471
+#define WTF_FATAL_CRASH_CODE 0xbb08
 #endif
 #endif
 
@@ -286,7 +284,7 @@ WTF_EXPORT_PRIVATE bool WTFIsDebuggerAttached(void);
 #if ASAN_ENABLED
 #define WTF_FATAL_CRASH_INST "brk #0x0"
 #else
-#define WTF_FATAL_CRASH_INST "brk #0xc471"
+#define WTF_FATAL_CRASH_INST "brk #0xbb08"
 #endif
 #endif
 
@@ -718,7 +716,7 @@ static constexpr bool unreachableForValue = false;
 #define RELEASE_LOG(channel, ...) ((void)0)
 #define RELEASE_LOG_ERROR(channel, ...) LOG_ERROR(__VA_ARGS__)
 #define RELEASE_LOG_FAULT(channel, ...) LOG_ERROR(__VA_ARGS__)
-#define RELEASE_LOG_FAULT_WITH_PAYLOAD(channel, message) LOG_ERROR("%s", message)
+#define RELEASE_LOG_FAULT_WITH_PAYLOAD(channel, format, ...) RELEASE_LOG_FAULT(channel, format __VA_OPT__(, SAFE_PRINTF_TYPE(__VA_ARGS__)))
 #define RELEASE_LOG_INFO(channel, ...) ((void)0)
 #define RELEASE_LOG_DEBUG(channel, ...) ((void)0)
 
@@ -735,7 +733,12 @@ static constexpr bool unreachableForValue = false;
 #define RELEASE_LOG(channel, ...) WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN SUPPRESS_UNCOUNTED_LOCAL os_log(LOG_CHANNEL(channel).osLogChannel, __VA_ARGS__) WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 #define RELEASE_LOG_ERROR(channel, ...) WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN SUPPRESS_UNCOUNTED_LOCAL os_log_error(LOG_CHANNEL(channel).osLogChannel, __VA_ARGS__) WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 #define RELEASE_LOG_FAULT(channel, ...) WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN SUPPRESS_UNCOUNTED_LOCAL os_log_fault(LOG_CHANNEL(channel).osLogChannel, __VA_ARGS__) WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
-#define RELEASE_LOG_FAULT_WITH_PAYLOAD(channel, message) os_fault_with_payload(OS_REASON_WEBKIT, 0, nullptr, 0, message, 0)
+#define RELEASE_LOG_FAULT_WITH_PAYLOAD(channel, format, ...) do { \
+    RELEASE_LOG_ERROR(channel, format __VA_OPT__(, SAFE_PRINTF_TYPE(__VA_ARGS__))); \
+    std::array<char, 1024> buffer { }; \
+    SAFE_SPRINTF(std::span { buffer }, format, __VA_ARGS__); \
+    os_fault_with_payload(OS_REASON_WEBKIT, 0, nullptr, 0, buffer.data(), 0); \
+} while (0)
 #define RELEASE_LOG_INFO(channel, ...) WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN SUPPRESS_UNCOUNTED_LOCAL os_log_info(LOG_CHANNEL(channel).osLogChannel, __VA_ARGS__) WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 #define RELEASE_LOG_DEBUG(channel, ...) WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN SUPPRESS_UNCOUNTED_LOCAL os_log_debug(LOG_CHANNEL(channel).osLogChannel, __VA_ARGS__) WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 #define RELEASE_LOG_WITH_LEVEL(channel, logLevel, ...) do { \
@@ -763,7 +766,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END \
 #define RELEASE_LOG(channel, ...) LOG_ANDROID_SEND(channel, VERBOSE, __VA_ARGS__)
 #define RELEASE_LOG_ERROR(channel, ...) LOG_ANDROID_SEND(channel, ERROR, __VA_ARGS__)
 #define RELEASE_LOG_FAULT(channel, ...) LOG_ANDROID_SEND(channel, FATAL, __VA_ARGS__)
-#define RELEASE_LOG_FAULT_WITH_PAYLOAD(channel, message) LOG_ANDROID_SEND(channel, FATAL, "%s", message)
+#define RELEASE_LOG_FAULT_WITH_PAYLOAD(channel, format, ...) RELEASE_LOG_FAULT(channel, format __VA_OPT__(, SAFE_PRINTF_TYPE(__VA_ARGS__)))
 #define RELEASE_LOG_INFO(channel, ...) LOG_ANDROID_SEND(channel, INFO, __VA_ARGS__)
 #define RELEASE_LOG_DEBUG(channel, ...) LOG_ANDROID_SEND(channel, DEBUG, __VA_ARGS__)
 
@@ -796,7 +799,7 @@ inline void wtfCompileTimeCheckPrintfSpecifier(const char* format, ...)
 #define RELEASE_LOG(channel, ...) SD_JOURNAL_SEND(channel, LOG_NOTICE, __FILE__, _STRINGIFY(__LINE__), __func__, __VA_ARGS__)
 #define RELEASE_LOG_ERROR(channel, ...) SD_JOURNAL_SEND(channel, LOG_ERR, __FILE__, _STRINGIFY(__LINE__), __func__, __VA_ARGS__)
 #define RELEASE_LOG_FAULT(channel, ...) SD_JOURNAL_SEND(channel, LOG_CRIT, __FILE__, _STRINGIFY(__LINE__), __func__, __VA_ARGS__)
-#define RELEASE_LOG_FAULT_WITH_PAYLOAD(channel, message) SD_JOURNAL_SEND(channel, LOG_CRIT, __FILE__, _STRINGIFY(__LINE__), __func__, "%s", message)
+#define RELEASE_LOG_FAULT_WITH_PAYLOAD(channel, format, ...) RELEASE_LOG_FAULT(channel, format __VA_OPT__(, SAFE_PRINTF_TYPE(__VA_ARGS__)))
 #define RELEASE_LOG_INFO(channel, ...) SD_JOURNAL_SEND(channel, LOG_INFO, __FILE__, _STRINGIFY(__LINE__), __func__, __VA_ARGS__)
 #define RELEASE_LOG_DEBUG(channel, ...) SD_JOURNAL_SEND(channel, LOG_DEBUG, __FILE__, _STRINGIFY(__LINE__), __func__, __VA_ARGS__)
 
@@ -814,14 +817,17 @@ inline void wtfCompileTimeCheckPrintfSpecifier(const char* format, ...)
 
 #define LOGF(channel, priority, fmt, ...) do { \
     auto& logChannel = LOG_CHANNEL(channel); \
-    if (logChannel.state != WTFLogChannelState::Off) \
+    if (logChannel.state != WTFLogChannelState::Off) { \
+        IGNORE_WARNINGS_BEGIN("unsafe-buffer-usage-in-libc-call") \
         fprintf(stderr, "[" LOG_CHANNEL_WEBKIT_SUBSYSTEM ":%s:%u] " fmt "\n", logChannel.name, static_cast<unsigned>(priority), ##__VA_ARGS__); \
+        IGNORE_WARNINGS_END \
+    } \
 } while (0)
 
 #define RELEASE_LOG(channel, ...) LOGF(channel, 4, __VA_ARGS__)
 #define RELEASE_LOG_ERROR(channel, ...) LOGF(channel, 1, __VA_ARGS__)
 #define RELEASE_LOG_FAULT(channel, ...) LOGF(channel, 2, __VA_ARGS__)
-#define RELEASE_LOG_FAULT_WITH_PAYLOAD(channel, message) LOGF(channel, 2, "%s", message)
+#define RELEASE_LOG_FAULT_WITH_PAYLOAD(channel, format, ...) RELEASE_LOG_FAULT(channel, format __VA_OPT__(, SAFE_PRINTF_TYPE(__VA_ARGS__)))
 #define RELEASE_LOG_INFO(channel, ...) LOGF(channel, 3, __VA_ARGS__)
 #define RELEASE_LOG_DEBUG(channel, ...) LOGF(channel, 4, __VA_ARGS__)
 

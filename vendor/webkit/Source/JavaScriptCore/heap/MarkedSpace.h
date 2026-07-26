@@ -26,11 +26,9 @@
 #include "MarkedBlockSet.h"
 #include "PreciseAllocation.h"
 #include <array>
-#include <wtf/Bag.h>
 #include <wtf/HashSet.h>
 #include <wtf/IterationStatus.h>
 #include <wtf/Noncopyable.h>
-#include <wtf/RetainPtr.h>
 #include <wtf/SentinelLinkedList.h>
 #include <wtf/SinglyLinkedListWithTail.h>
 #include <wtf/Vector.h>
@@ -221,6 +219,7 @@ private:
     HeapVersion m_edenVersion { initialVersion };
     bool m_isIterating { false };
     bool m_isMarking { false };
+    bool m_conservativeScanIsPrepared { false };
     Lock m_directoryLock;
     MarkedBlockSet m_blocks;
     

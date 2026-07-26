@@ -723,7 +723,7 @@ namespace Protocol {
 
 namespace TestHelpers {
 
-static const auto enum_constant_values = std::to_array<ASCIILiteral>({
+static const auto enum_constant_values = WTF::toArray<ASCIILiteral>({
     "red"_s,
     "green"_s,
     "blue"_s,
@@ -741,7 +741,7 @@ String getEnumConstantValue(int code) {
 
 template<> std::optional<Protocol::Database::PrimaryColors> parseEnumValueFromString<Protocol::Database::PrimaryColors>(const String& protocolString)
 {
-    static const auto constantValues = std::to_array<size_t>({
+    static const auto constantValues = WTF::toArray<size_t>({
         (size_t)Protocol::Database::PrimaryColors::Red,
         (size_t)Protocol::Database::PrimaryColors::Green,
         (size_t)Protocol::Database::PrimaryColors::Blue,
@@ -1338,7 +1338,7 @@ inline String toProtocolString(TestProtocolDatabasePrimaryColors value)
 template<>
 inline std::optional<TestProtocolDatabasePrimaryColors> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDatabasePrimaryColors>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDatabasePrimaryColors>>({
         { "blue"_s, TestProtocolDatabasePrimaryColorsBlue },
         { "green"_s, TestProtocolDatabasePrimaryColorsGreen },
         { "red"_s, TestProtocolDatabasePrimaryColorsRed },
@@ -1365,7 +1365,7 @@ inline String toProtocolString(TestProtocolDatabaseExecuteAllOptionalParametersP
 template<>
 inline std::optional<TestProtocolDatabaseExecuteAllOptionalParametersPrintColor> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteAllOptionalParametersPrintColor>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteAllOptionalParametersPrintColor>>({
         { "black"_s, TestProtocolDatabaseExecuteAllOptionalParametersPrintColorBlack },
         { "cyan"_s, TestProtocolDatabaseExecuteAllOptionalParametersPrintColorCyan },
         { "magenta"_s, TestProtocolDatabaseExecuteAllOptionalParametersPrintColorMagenta },
@@ -1395,7 +1395,7 @@ inline String toProtocolString(TestProtocolDatabaseExecuteAllOptionalParametersP
 template<>
 inline std::optional<TestProtocolDatabaseExecuteAllOptionalParametersPrintColor> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteAllOptionalParametersPrintColor>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteAllOptionalParametersPrintColor>>({
         { "black"_s, TestProtocolDatabaseExecuteAllOptionalParametersPrintColorBlack },
         { "cyan"_s, TestProtocolDatabaseExecuteAllOptionalParametersPrintColorCyan },
         { "magenta"_s, TestProtocolDatabaseExecuteAllOptionalParametersPrintColorMagenta },
@@ -1423,7 +1423,7 @@ inline String toProtocolString(TestProtocolDatabaseExecuteNoOptionalParametersPr
 template<>
 inline std::optional<TestProtocolDatabaseExecuteNoOptionalParametersPrintColor> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteNoOptionalParametersPrintColor>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteNoOptionalParametersPrintColor>>({
         { "black"_s, TestProtocolDatabaseExecuteNoOptionalParametersPrintColorBlack },
         { "cyan"_s, TestProtocolDatabaseExecuteNoOptionalParametersPrintColorCyan },
         { "magenta"_s, TestProtocolDatabaseExecuteNoOptionalParametersPrintColorMagenta },
@@ -1453,7 +1453,7 @@ inline String toProtocolString(TestProtocolDatabaseExecuteNoOptionalParametersPr
 template<>
 inline std::optional<TestProtocolDatabaseExecuteNoOptionalParametersPrintColor> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteNoOptionalParametersPrintColor>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolDatabaseExecuteNoOptionalParametersPrintColor>>({
         { "black"_s, TestProtocolDatabaseExecuteNoOptionalParametersPrintColorBlack },
         { "cyan"_s, TestProtocolDatabaseExecuteNoOptionalParametersPrintColorCyan },
         { "magenta"_s, TestProtocolDatabaseExecuteNoOptionalParametersPrintColorMagenta },

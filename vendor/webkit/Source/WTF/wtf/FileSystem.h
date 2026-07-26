@@ -107,6 +107,7 @@ WTF_EXPORT_PRIVATE bool isHiddenFile(const String&);
 WTF_EXPORT_PRIVATE String pathByAppendingComponent(StringView path, StringView component);
 WTF_EXPORT_PRIVATE String pathByAppendingComponents(StringView path, std::span<const StringView> components);
 WTF_EXPORT_PRIVATE String lastComponentOfPathIgnoringTrailingSlash(const String& path);
+WTF_EXPORT_PRIVATE void removeTrailingSlash(String& path);
 WTF_EXPORT_PRIVATE bool makeAllDirectories(const String& path);
 WTF_EXPORT_PRIVATE String pathFileName(const String&);
 WTF_EXPORT_PRIVATE String parentPath(const String&);
@@ -143,7 +144,7 @@ WTF_EXPORT_PRIVATE std::optional<Vector<uint8_t>> readEntireFile(const String& p
 WTF_EXPORT_PRIVATE std::optional<uint64_t> overwriteEntireFile(const String& path, std::span<const uint8_t>);
 
 // Prefix is what the filename should be prefixed with, not the full path.
-WTF_EXPORT_PRIVATE std::pair<String, FileHandle> openTemporaryFile(StringView prefix, StringView suffix = { });
+WTF_EXPORT_PRIVATE std::pair<String, FileHandle> openTemporaryFile(StringView prefix, StringView suffix = { }, const String& temporaryDirectory = { });
 WTF_EXPORT_PRIVATE String createTemporaryFile(StringView prefix, StringView suffix = { });
 #if PLATFORM(COCOA)
 WTF_EXPORT_PRIVATE std::pair<FileHandle, CString> createTemporaryFileInDirectory(const String& directory, const String& suffix);

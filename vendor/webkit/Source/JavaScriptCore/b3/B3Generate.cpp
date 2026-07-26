@@ -34,6 +34,7 @@
 #include "B3DuplicateTails.h"
 #include "B3EliminateCommonSubexpressions.h"
 #include "B3EliminateDeadCode.h"
+#include "B3EliminateWasmGCAllocations.h"
 #include "B3FixSSA.h"
 #include "B3FoldPathConstants.h"
 #include "B3HoistLoopInvariantValues.h"
@@ -86,14 +87,23 @@ void generateToAir(Procedure& procedure)
         reduceStrength(procedure, ReduceStrengthPass::Initial);
         if (Options::useB3HoistLoopInvariantValues())
             hoistLoopInvariantValues(procedure);
-        if (eliminateCommonSubexpressions(procedure))
-            eliminateCommonSubexpressions(procedure);
+        eliminateCommonSubexpressions(procedure);
         eliminateDeadCode(procedure);
-        inferSwitches(procedure);
+
+        // Wasm has br_table instruction, so intent of the switch is already represented
+        // and OMG generates Switch nodes directly.
+        // In JS, switch can involve variables (non-constant values) and bytecode can fail
+        // to be in op_switch. Thus after FTL with type speculation & constant folding,
+        // we can infer a switch from if-else chain.
+        if (!procedure.isWasm())
+            inferSwitches(procedure);
+
         if (Options::useB3TailDup())
             duplicateTails(procedure);
         fixSSA(procedure);
         foldPathConstants(procedure);
+        if (procedure.usesWasmGCStructAllocations() && Options::useB3EliminateWasmGCAllocations())
+            eliminateWasmGCAllocations(procedure);
         // FIXME: Add more optimizations here.
         // https://bugs.webkit.org/show_bug.cgi?id=150507
     } else if (procedure.optLevel() >= 1) {

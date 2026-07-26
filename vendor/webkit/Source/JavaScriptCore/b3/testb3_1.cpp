@@ -1437,6 +1437,13 @@ void run(const TestConfig* config)
         RUN(testVectorSwizzleBinaryCanonical());
         RUN(testVectorSwizzleComposition());
         RUN(testVectorSwizzleCompositionMultiUse());
+        RUN(testVectorSwizzleBinaryOnlyOneSideSide0());
+        RUN(testVectorSwizzleBinaryOnlyOneSideSide1());
+        RUN(testVectorSwizzleBinaryOnlyOneSideSide0WithOOB());
+        RUN(testVectorSwizzleBinaryOnlyOneSideSide1WithOOB());
+        RUN(testVectorSwizzleBinaryOnlyOneSideAllOOB());
+        RUN(testVectorSwizzleBinaryOnlyOneSideMixed());
+        RUN(testVectorSwizzleBinaryOnlyOneSideSide1Scattered());
     }
 
     RUN(testReportUsedRegistersLateUseFollowedByEarlyDefDoesNotMarkUseAsDead());
@@ -1451,6 +1458,14 @@ void run(const TestConfig* config)
         RUN(testVectorExtractLane0Double());
         RUN(testVectorMulHigh());
         RUN(testVectorMulLow());
+        RUN(testVectorMulAddLowSimple());
+        RUN(testVectorMulAddLowDoubled());
+        RUN(testVectorMulAddLowTwoMuls());
+        RUN(testVectorMulAddLowBlaMka());
+        RUN(testVectorMulAddHighSimple());
+        RUN(testVectorMulAddHighDoubled());
+        RUN(testVectorMulAddHighTwoMuls());
+        RUN(testVectorMulAddMixedLowHigh());
         RUN(testVectorRelaxedMinMax());
         RUN(testVectorRelaxedQ15Mulr());
         RUN(testVectorRelaxedDotI8x16I7x16());
@@ -1484,6 +1499,7 @@ void run(const TestConfig* config)
         RUN(testVectorCanonicalSameInputFolding());
         RUN(testVectorSwizzleToDupElement());
         RUN(testVectorSwizzleUnaryComposition());
+        RUN(testVectorSwizzleCompositionRightImmOuter());
         RUN(testMulHigh32());
         RUN(testMulHigh64());
         RUN(testUMulHigh32());

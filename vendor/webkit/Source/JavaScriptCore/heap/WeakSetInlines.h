@@ -27,6 +27,7 @@
 
 #include "CellContainerInlines.h"
 #include "MarkedBlock.h"
+#include <JavaScriptCore/JSCell.h>
 
 namespace JSC {
 

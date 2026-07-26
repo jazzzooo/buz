@@ -34,6 +34,7 @@
 #include <thread>
 #include <wtf/DataLog.h>
 #include <wtf/Expected.h>
+#include <wtf/MainThread.h>
 #include <wtf/Noncopyable.h>
 #include <wtf/NumberOfCores.h>
 #include <wtf/Vector.h>
@@ -46,6 +47,7 @@
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
+extern "C" void initializeWTFForTesting();
 extern "C" void configureJSCForTesting();
 extern "C" int testLaunchJSCFromNonMainThread(const char* filter);
 extern "C" int testCAPIViaCpp(const char* filter);
@@ -1169,6 +1171,10 @@ void TestAPI::testBigInt()
 
 
 
+void initializeWTFForTesting(void)
+{
+    WTF::initializeMainThread();
+}
 
 void configureJSCForTesting()
 {

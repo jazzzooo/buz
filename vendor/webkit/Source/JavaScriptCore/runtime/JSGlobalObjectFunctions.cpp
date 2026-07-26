@@ -127,8 +127,9 @@ static JSValue encode(JSGlobalObject* globalObject, const WTF::BitSet<256>& doNo
             // 4-d-vi-1. Let jOctet be the value at index j within Octets.
             // 4-d-vi-2. Let S be a String containing three code units "%XY" where XY are two uppercase hexadecimal digits encoding the value of jOctet.
             // 4-d-vi-3. Let R be a new String value computed by concatenating the previous value of R and S.
-            builder.append('%');
-            builder.append(hex(utf8OctetsBuffer[index], 2));
+            auto octet = utf8OctetsBuffer[index];
+            std::array<Latin1Character, 3> escaped { '%', static_cast<Latin1Character>(upperNibbleToASCIIHexDigit(octet)), static_cast<Latin1Character>(lowerNibbleToASCIIHexDigit(octet)) };
+            builder.append(std::span<const Latin1Character> { escaped });
         }
     }
 
@@ -804,7 +805,7 @@ JSC_DEFINE_HOST_FUNCTION(globalFuncImportModule, (JSGlobalObject* globalObject, 
 
     auto rejectWithCaughtException = [&]() -> EncodedJSValue {
         auto* promise = JSPromise::create(vm, globalObject->promiseStructure());
-        return JSValue::encode(promise->rejectWithCaughtException(globalObject, scope));
+        return JSValue::encode(promise->rejectWithCaughtException(vm, scope));
     };
 
     auto sourceOrigin = callFrame->callerSourceOrigin(vm);
@@ -817,7 +818,8 @@ JSC_DEFINE_HOST_FUNCTION(globalFuncImportModule, (JSGlobalObject* globalObject, 
     // We always specify parameters as undefined. Once dynamic import() starts accepting fetching parameters,
     // we should retrieve this from the arguments.
     JSValue parameters = callFrame->argument(1);
-    auto* importPromise = globalObject->moduleLoader()->importModule(globalObject, specifier, parameters, sourceOrigin);
+    bool deferred = callFrame->argument(2).isTrue();
+    auto* importPromise = globalObject->moduleLoader()->importModule(globalObject, specifier, parameters, sourceOrigin, deferred);
     if (scope.exception()) [[unlikely]]
         return rejectWithCaughtException();
 
@@ -827,7 +829,7 @@ JSC_DEFINE_HOST_FUNCTION(globalFuncImportModule, (JSGlobalObject* globalObject, 
 
     if (importPromise->status() == JSPromise::Status::Fulfilled) {
         auto result = importPromise->result();
-        promise->fulfill(vm, globalObject, result);
+        promise->fulfill(vm, result);
     } else {
         promise->resolve(globalObject, vm, importPromise);
     }

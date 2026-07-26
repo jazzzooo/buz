@@ -131,6 +131,9 @@ WASM_IPINT_EXTERN_CPP_HIDDEN_DECL(prepare_function_body, CallFrame*);
 WASM_IPINT_EXTERN_CPP_HIDDEN_DECL(prepare_call, CallFrame*, CallMetadata*, Register* callee);
 WASM_IPINT_EXTERN_CPP_HIDDEN_DECL(prepare_call_indirect, CallFrame* callFrame, Wasm::FunctionSpaceIndex* functionIndex, CallIndirectMetadata* call);
 WASM_IPINT_EXTERN_CPP_HIDDEN_DECL(prepare_call_ref, CallFrame*, CallRefMetadata*, IPIntStackEntry*);
+WASM_IPINT_EXTERN_CPP_HIDDEN_DECL(prepare_tail_call, CallFrame*, TailCallMetadata*, Register* callee);
+WASM_IPINT_EXTERN_CPP_HIDDEN_DECL(prepare_tail_call_indirect, CallFrame* callFrame, Wasm::FunctionSpaceIndex* functionIndex, TailCallIndirectMetadata* call);
+WASM_IPINT_EXTERN_CPP_HIDDEN_DECL(prepare_tail_call_ref, CallFrame*, TailCallRefMetadata*, IPIntStackEntry*);
 
 WASM_IPINT_EXTERN_CPP_HIDDEN_DECL(set_global_ref, uint32_t globalIndex, JSValue value);
 WASM_IPINT_EXTERN_CPP_HIDDEN_DECL(get_global_64, unsigned);

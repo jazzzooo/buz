@@ -15,6 +15,34 @@ AUX_SOURCE_DIRECTORY( "src/test"         testSources     )
 AUX_SOURCE_DIRECTORY( "src/toys"         toysSources     )
 AUX_SOURCE_DIRECTORY( "src/verifier"     verifierSources )
 
+# These .c files use compound-literal field access in file-scope
+# initializers, which is a clang-only C extension.
+# See Source/bmalloc/CMakeLists.txt which does this too.
+set_source_files_properties(
+    src/libpas/bmalloc_heap.c
+    src/libpas/bmalloc_heap_config.c
+    src/libpas/bmalloc_heap_flex.c
+    src/libpas/bmalloc_heap_iso.c
+    src/libpas/bmalloc_heap_utils.c
+    src/libpas/hotbit_heap.c
+    src/libpas/hotbit_heap_config.c
+    src/libpas/iso_heap.c
+    src/libpas/iso_heap_config.c
+    src/libpas/iso_test_heap.c
+    src/libpas/iso_test_heap_config.c
+    src/libpas/jit_heap.c
+    src/libpas/minalign32_heap.c
+    src/libpas/minalign32_heap_config.c
+    src/libpas/pagesize64k_heap.c
+    src/libpas/pagesize64k_heap_config.c
+    src/libpas/pas_bitfit_page_config_kind.c
+    src/libpas/pas_heap_config_kind.c
+    src/libpas/pas_segregated_page_config_kind.c
+    src/libpas/thingy_heap.c
+    src/libpas/thingy_heap_config.c
+    PROPERTIES LANGUAGE CXX
+)
+
 # Directories
 include_directories(    ${CMAKE_SOURCE_DIR}/src/libpas 
                         ${CMAKE_SOURCE_DIR}/src/verifier
@@ -29,6 +57,13 @@ link_directories(       ${CMAKE_SOURCE_DIR}/src/libpas
                         ${CMAKE_SOURCE_DIR}/src/toys
                         ${CMAKE_SOURCE_DIR}/src/test
                         ${CMAKE_SOURCE_DIR}/src/mbmalloc )
+
+# GCC on x86_64 emits library calls (e.g. __atomic_store_16) for 128-bit
+# atomics rather than inlining them; clang inlines them directly. Link
+# libatomic so these symbols resolve when building with gcc.
+if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    link_libraries(atomic)
+endif ()
 
 # Create libraries
 add_library(pas_lib                                 SHARED ${libpasSources})

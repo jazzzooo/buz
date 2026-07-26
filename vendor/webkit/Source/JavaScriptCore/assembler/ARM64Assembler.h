@@ -1811,6 +1811,17 @@ public:
     ALWAYS_INLINE void umullv(FPRegisterID vd, FPRegisterID vn, FPRegisterID vm, SIMDLane inputLane) { smullv(vd, vn, vm, inputLane, 0, 1); }
     ALWAYS_INLINE void umull2v(FPRegisterID vd, FPRegisterID vn, FPRegisterID vm, SIMDLane inputLane) { smullv(vd, vn, vm, inputLane, 1, 1); }
 
+    ALWAYS_INLINE void smlalv(FPRegisterID vd, FPRegisterID vn, FPRegisterID vm, SIMDLane inputLane, bool Q = 0, bool U = 0)
+    {
+        // https://www.scs.stanford.edu/~zyedidia/arm64/smlal_advsimd_vec.html
+        RELEASE_ASSERT(inputLane != SIMDLane::i64x2 && scalarTypeIsIntegral(inputLane));
+        insn(0b00'0'01110'00'1'00000'10'0'000'00000'00000 | (Q << 30) | (U << 29) | (sizeForIntegralSIMDOp(inputLane) << 22) | (vm << 16) | (vn << 5) | vd);
+    }
+
+    ALWAYS_INLINE void smlal2v(FPRegisterID vd, FPRegisterID vn, FPRegisterID vm, SIMDLane inputLane) { smlalv(vd, vn, vm, inputLane, 1, 0); }
+    ALWAYS_INLINE void umlalv(FPRegisterID vd, FPRegisterID vn, FPRegisterID vm, SIMDLane inputLane) { smlalv(vd, vn, vm, inputLane, 0, 1); }
+    ALWAYS_INLINE void umlal2v(FPRegisterID vd, FPRegisterID vn, FPRegisterID vm, SIMDLane inputLane) { smlalv(vd, vn, vm, inputLane, 1, 1); }
+
     // SDOT Vd.4S, Vn.16B, Vm.16B — signed dot product, accumulating into Vd
     // Requires FEAT_DotProd (ARMv8.2-A optional, ARMv8.4-A mandatory)
     ALWAYS_INLINE void sdotv(FPRegisterID vd, FPRegisterID vn, FPRegisterID vm)

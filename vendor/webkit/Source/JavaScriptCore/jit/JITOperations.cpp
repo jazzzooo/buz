@@ -53,6 +53,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include "JITWorklist.h"
 #include "JSArrayIterator.h"
 #include "JSAsyncFunction.h"
+#include "JSAsyncFunctionGenerator.h"
 #include "JSAsyncGenerator.h"
 #include "JSAsyncGeneratorFunction.h"
 #include "JSBoundFunction.h"
@@ -60,11 +61,14 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include "JSCPtrTag.h"
 #include "JSGeneratorFunction.h"
 #include "JSGlobalObjectFunctions.h"
-#include "JSLexicalEnvironment.h"
+#include "JSLexicalEnvironmentInlines.h"
 #include "JSMapIterator.h"
+#include "JSMicrotask.h"
 #include "JSPromise.h"
 #include "JSRemoteFunction.h"
+#include "JSSentinel.h"
 #include "JSSetIterator.h"
+#include "JSStringIteratorInlines.h"
 #include "JSWithScope.h"
 #include "JumpTable.h"
 #include "LLIntEntrypoint.h"
@@ -72,6 +76,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include "ObjectConstructor.h"
 #include "PropertyInlineCache.h"
 #include "PropertyName.h"
+#include "PropertyNameInlines.h"
 #include "RegExpObject.h"
 #include "RepatchInlines.h"
 #include "ShadowChicken.h"
@@ -281,65 +286,6 @@ JSC_DEFINE_JIT_OPERATION(operationThrowIteratorResultIsNotObject, void, (JSGloba
     OPERATION_RETURN(scope);
 }
 
-JSC_DEFINE_JIT_OPERATION(operationTryGetByIdGaveUp, EncodedJSValue, (EncodedJSValue base, PropertyInlineCache* propertyCache))
-{
-    JSGlobalObject* globalObject = propertyCache->globalObject();
-    VM& vm = globalObject->vm();
-    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
-    ICSlowPathCallFrameTracer tracer(vm, callFrame, propertyCache);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-
-    propertyCache->tookSlowPath = true;
-
-    CacheableIdentifier identifier = propertyCache->identifier();
-
-    JSValue baseValue = JSValue::decode(base);
-    PropertySlot slot(baseValue, PropertySlot::InternalMethodType::VMInquiry, &vm);
-    baseValue.getPropertySlot(globalObject, identifier, slot);
-
-    OPERATION_RETURN(scope, JSValue::encode(slot.getPureResult()));
-}
-
-JSC_DEFINE_JIT_OPERATION(operationTryGetByIdGeneric, EncodedJSValue, (JSGlobalObject* globalObject, EncodedJSValue base, uintptr_t rawCacheableIdentifier))
-{
-    VM& vm = globalObject->vm();
-    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
-    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    CacheableIdentifier identifier = CacheableIdentifier::createFromRawBits(rawCacheableIdentifier);
-
-    JSValue baseValue = JSValue::decode(base);
-    PropertySlot slot(baseValue, PropertySlot::InternalMethodType::VMInquiry, &vm);
-    baseValue.getPropertySlot(globalObject, identifier, slot);
-
-    OPERATION_RETURN(scope, JSValue::encode(slot.getPureResult()));
-}
-
-JSC_DEFINE_JIT_OPERATION(operationTryGetByIdOptimize, EncodedJSValue, (EncodedJSValue base, PropertyInlineCache* propertyCache))
-{
-    JSGlobalObject* globalObject = propertyCache->globalObject();
-    VM& vm = globalObject->vm();
-    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
-    ICSlowPathCallFrameTracer tracer(vm, callFrame, propertyCache);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    CacheableIdentifier identifier = propertyCache->identifier();
-
-    JSValue baseValue = JSValue::decode(base);
-    PropertySlot slot(baseValue, PropertySlot::InternalMethodType::VMInquiry, &vm);
-
-    baseValue.getPropertySlot(globalObject, identifier, slot);
-    OPERATION_RETURN_IF_EXCEPTION(scope, encodedJSValue());
-
-    CodeBlock* codeBlock = callFrame->codeBlock();
-    if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, baseValue.structureOrNull(), identifier) && !slot.isTaintedByOpaqueObject() && (slot.isCacheableValue() || slot.isCacheableGetter() || slot.isUnset()))
-        repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::TryById, /* isNonStringPrimitiveKey */ false);
-
-    OPERATION_RETURN(scope, JSValue::encode(slot.getPureResult()));
-}
-
 JSC_DEFINE_JIT_OPERATION(operationGetByIdDirectGaveUp, EncodedJSValue, (EncodedJSValue base, PropertyInlineCache* propertyCache))
 {
     JSGlobalObject* globalObject = propertyCache->globalObject();
@@ -402,8 +348,11 @@ JSC_DEFINE_JIT_OPERATION(operationGetByIdDirectOptimize, EncodedJSValue, (Encode
     OPERATION_RETURN(scope, JSValue::encode(found ? slot.getValue(globalObject, identifier) : jsUndefined()));
 }
 
-static ALWAYS_INLINE JSValue getByIdMegamorphic(JSGlobalObject* globalObject, VM& vm, CallFrame* callFrame, PropertyInlineCache* propertyCache, JSValue baseValue, JSValue thisValue, CacheableIdentifier identifier, GetByKind kind)
+template<GetByKind kind>
+static ALWAYS_INLINE JSValue getByIdMegamorphic(JSGlobalObject* globalObject, VM& vm, CallFrame* callFrame, PropertyInlineCache* propertyCache, JSValue baseValue, JSValue thisValue, CacheableIdentifier identifier)
 {
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
     auto* uid = identifier.uid();
     PropertySlot slot(thisValue, PropertySlot::InternalMethodType::Get);
 
@@ -412,7 +361,7 @@ static ALWAYS_INLINE JSValue getByIdMegamorphic(JSGlobalObject* globalObject, VM
         if (!baseValue.isString()) [[unlikely]] {
             if (propertyCache && propertyCache->considerRepatchingCacheMegamorphic(vm))
                 repatchGetBySlowPathCall(callFrame->codeBlock(), *propertyCache, kind);
-            return baseValue.get(globalObject, uid, slot);
+            RELEASE_AND_RETURN(scope, baseValue.get(globalObject, uid, slot));
         }
 
         baseObject = globalObject->stringPrototype();
@@ -426,8 +375,10 @@ static ALWAYS_INLINE JSValue getByIdMegamorphic(JSGlobalObject* globalObject, VM
         if (TypeInfo::overridesGetOwnPropertySlot(object->inlineTypeFlags()) && object->type() != ArrayType && object->type() != JSFunctionType && object->type() != DerivedStringObjectType && object != globalObject->arrayPrototype()) [[unlikely]] {
             if (propertyCache && propertyCache->considerRepatchingCacheMegamorphic(vm))
                 repatchGetBySlowPathCall(callFrame->codeBlock(), *propertyCache, kind);
-            if (object->getNonIndexPropertySlot(globalObject, uid, slot))
-                return slot.getValue(globalObject, uid);
+            bool hasProperty = object->getNonIndexPropertySlot(globalObject, uid, slot);
+            RETURN_IF_EXCEPTION(scope, { });
+            if (hasProperty)
+                RELEASE_AND_RETURN(scope, slot.getValue(globalObject, uid));
             return jsUndefined();
         }
 
@@ -448,11 +399,25 @@ static ALWAYS_INLINE JSValue getByIdMegamorphic(JSGlobalObject* globalObject, VM
                             repatchGetBySlowPathCall(callFrame->codeBlock(), *propertyCache, kind);
                     }
                 }
+            } else if constexpr (kind == GetByKind::ById) {
+                if (cacheable && slot.isCacheableGetter() && slot.cachedOffset() <= MegamorphicCache::maxOffset) [[likely]] {
+                    if (slot.slotBase() == baseObject || !baseObject->structure()->isDictionary())
+                        vm.megamorphicCache()->initAsGetterHit(baseObject->structureID(), uid, slot.slotBase(), slot.cachedOffset(), slot.slotBase() == baseValue);
+                    else {
+                        if (baseObject->structure()->hasBeenFlattenedBefore()) [[unlikely]] {
+                            if (propertyCache && propertyCache->considerRepatchingCacheMegamorphic(vm))
+                                repatchGetBySlowPathCall(callFrame->codeBlock(), *propertyCache, kind);
+                        }
+                    }
+                } else {
+                    if (shouldGiveUp && propertyCache && propertyCache->considerRepatchingCacheMegamorphic(vm))
+                        repatchGetBySlowPathCall(callFrame->codeBlock(), *propertyCache, kind);
+                }
             } else {
                 if (shouldGiveUp && propertyCache && propertyCache->considerRepatchingCacheMegamorphic(vm))
                     repatchGetBySlowPathCall(callFrame->codeBlock(), *propertyCache, kind);
             }
-            return slot.getValue(globalObject, uid);
+            RELEASE_AND_RETURN(scope, slot.getValue(globalObject, uid));
         }
 
         if (!structure->propertyAccessesAreCacheableForAbsence()) {
@@ -490,7 +455,7 @@ JSC_DEFINE_JIT_OPERATION(operationGetByIdMegamorphic, EncodedJSValue, (EncodedJS
     JSValue baseValue = JSValue::decode(base);
     CacheableIdentifier identifier = propertyCache->identifier();
 
-    OPERATION_RETURN(scope, JSValue::encode(getByIdMegamorphic(globalObject, vm, callFrame, propertyCache, baseValue, baseValue, identifier, GetByKind::ById)));
+    OPERATION_RETURN(scope, JSValue::encode(getByIdMegamorphic<GetByKind::ById>(globalObject, vm, callFrame, propertyCache, baseValue, baseValue, identifier)));
 }
 
 JSC_DEFINE_JIT_OPERATION(operationGetByIdMegamorphicGeneric, EncodedJSValue, (JSGlobalObject* globalObject, EncodedJSValue base, uintptr_t rawCacheableIdentifier))
@@ -503,7 +468,7 @@ JSC_DEFINE_JIT_OPERATION(operationGetByIdMegamorphicGeneric, EncodedJSValue, (JS
     JSValue baseValue = JSValue::decode(base);
     CacheableIdentifier identifier = CacheableIdentifier::createFromRawBits(rawCacheableIdentifier);
 
-    OPERATION_RETURN(scope, JSValue::encode(getByIdMegamorphic(globalObject, vm, callFrame, nullptr, baseValue, baseValue, identifier, GetByKind::ById)));
+    OPERATION_RETURN(scope, JSValue::encode(getByIdMegamorphic<GetByKind::ById>(globalObject, vm, callFrame, nullptr, baseValue, baseValue, identifier)));
 }
 
 JSC_DEFINE_JIT_OPERATION(operationGetByIdGaveUp, EncodedJSValue, (EncodedJSValue base, PropertyInlineCache* propertyCache))
@@ -515,9 +480,9 @@ JSC_DEFINE_JIT_OPERATION(operationGetByIdGaveUp, EncodedJSValue, (EncodedJSValue
     CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
     ICSlowPathCallFrameTracer tracer(vm, callFrame, propertyCache);
     auto scope = DECLARE_THROW_SCOPE(vm);
-    
+
     propertyCache->tookSlowPath = true;
-    
+
     JSValue baseValue = JSValue::decode(base);
     PropertySlot slot(baseValue, PropertySlot::InternalMethodType::Get);
     CacheableIdentifier identifier = propertyCache->identifier();
@@ -655,7 +620,7 @@ JSC_DEFINE_JIT_OPERATION(operationGetByIdWithThisMegamorphic, EncodedJSValue, (E
 
     CacheableIdentifier identifier = propertyCache->identifier();
 
-    OPERATION_RETURN(scope, JSValue::encode(getByIdMegamorphic(globalObject, vm, callFrame, propertyCache, JSValue::decode(base), JSValue::decode(encodedThis), identifier, GetByKind::ByIdWithThis)));
+    OPERATION_RETURN(scope, JSValue::encode(getByIdMegamorphic<GetByKind::ByIdWithThis>(globalObject, vm, callFrame, propertyCache, JSValue::decode(base), JSValue::decode(encodedThis), identifier)));
 }
 
 JSC_DEFINE_JIT_OPERATION(operationGetByIdWithThisMegamorphicGeneric, EncodedJSValue, (JSGlobalObject* globalObject, EncodedJSValue base, EncodedJSValue encodedThis, uintptr_t rawCacheableIdentifier))
@@ -667,7 +632,7 @@ JSC_DEFINE_JIT_OPERATION(operationGetByIdWithThisMegamorphicGeneric, EncodedJSVa
 
     CacheableIdentifier identifier = CacheableIdentifier::createFromRawBits(rawCacheableIdentifier);
 
-    OPERATION_RETURN(scope, JSValue::encode(getByIdMegamorphic(globalObject, vm, callFrame, nullptr, JSValue::decode(base), JSValue::decode(encodedThis), identifier, GetByKind::ByIdWithThis)));
+    OPERATION_RETURN(scope, JSValue::encode(getByIdMegamorphic<GetByKind::ByIdWithThis>(globalObject, vm, callFrame, nullptr, JSValue::decode(base), JSValue::decode(encodedThis), identifier)));
 }
 
 JSC_DEFINE_JIT_OPERATION(operationInByIdGaveUp, EncodedJSValue, (EncodedJSValue base, PropertyInlineCache* propertyCache))
@@ -912,7 +877,7 @@ static ALWAYS_INLINE JSValue inByValMegamorphic(JSGlobalObject* globalObject, VM
     constexpr bool verbose = false;
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    if (!baseValue.isObject() || !(subscript.isString() && CacheableIdentifier::isCacheableIdentifierCell(subscript))) [[unlikely]] {
+    if (!baseValue.isObject() || !CacheableIdentifier::isCacheableIdentifierCell(subscript)) [[unlikely]] {
         dataLogLnIf(verbose, " ", __LINE__);
         if (propertyCache && propertyCache->considerRepatchingCacheMegamorphic(vm)) {
             repatchInBySlowPathCall(callFrame->codeBlock(), *propertyCache, InByKind::ByVal);
@@ -1717,10 +1682,26 @@ static void directPutByVal(JSGlobalObject* globalObject, JSObject* baseObject, J
         case ALL_INT32_INDEXING_TYPES:
         case ALL_DOUBLE_INDEXING_TYPES:
         case ALL_CONTIGUOUS_INDEXING_TYPES:
+            if (arrayProfile) {
+                if (index < baseObject->butterfly()->vectorLength()) {
+                    if (index >= baseObject->butterfly()->publicLength())
+                        arrayProfile->setMayStoreHole();
+                    break;
+                }
+                arrayProfile->setOutOfBounds();
+            }
+            break;
         case ALL_ARRAY_STORAGE_INDEXING_TYPES:
-            if (index < baseObject->butterfly()->vectorLength())
-                break;
-            [[fallthrough]];
+            if (arrayProfile) {
+                ArrayStorage* storage = baseObject->butterfly()->arrayStorage();
+                if (index < storage->vectorLength()) {
+                    if (!storage->m_vector[index])
+                        arrayProfile->setMayStoreHole();
+                    break;
+                }
+                arrayProfile->setOutOfBounds();
+            }
+            break;
         default:
             if (arrayProfile)
                 arrayProfile->setOutOfBounds();
@@ -2038,7 +2019,7 @@ ALWAYS_INLINE static void putByValMegamorphic(JSGlobalObject* globalObject, VM& 
     auto scope = DECLARE_THROW_SCOPE(vm);
     bool isStrict = kind == PutByKind::ByValStrict;
 
-    if (!baseValue.isObject() || !(subscript.isString() && CacheableIdentifier::isCacheableIdentifierCell(subscript))) [[unlikely]] {
+    if (!baseValue.isObject() || !CacheableIdentifier::isCacheableIdentifierCell(subscript)) [[unlikely]] {
         if (propertyCache && propertyCache->considerRepatchingCacheMegamorphic(vm))
             repatchPutBySlowPathCall(callFrame->codeBlock(), *propertyCache, kind);
         scope.release();
@@ -2924,6 +2905,27 @@ JSC_DEFINE_JIT_OPERATION(operationSetFunctionName, void, (JSGlobalObject* global
     OPERATION_RETURN(scope);
 }
 
+JSC_DEFINE_JIT_OPERATION(operationEnqueueAsyncGeneratorDriver, void, (JSGlobalObject* globalObject, JSAsyncGenerator* iterator, JSObject* driver, MicrotaskCallCache* microtaskCallCache))
+{
+    VM& vm = globalObject->vm();
+    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
+    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    enqueueAsyncGeneratorDriver(globalObject, iterator, driver, microtaskCallCache);
+    OPERATION_RETURN(scope);
+}
+
+JSC_DEFINE_JIT_OPERATION(operationAsyncIteratorNextWithDriver, EncodedJSValue, (JSGlobalObject* globalObject, JSObject* iterator, JSObject* driver, MicrotaskCallCache* microtaskCallCache))
+{
+    VM& vm = globalObject->vm();
+    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
+    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    OPERATION_RETURN(scope, JSValue::encode(asyncIteratorNextWithDriver(globalObject, iterator, driver, microtaskCallCache)));
+}
+
 JSC_DEFINE_JIT_OPERATION(operationNewObject, JSCell*, (VM* vmPointer, Structure* structure))
 {
     VM& vm = *vmPointer;
@@ -2952,6 +2954,16 @@ JSC_DEFINE_JIT_OPERATION(operationNewGenerator, JSCell*, (VM* vmPointer, Structu
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     OPERATION_RETURN(scope, JSGenerator::create(vm, structure));
+}
+
+JSC_DEFINE_JIT_OPERATION(operationNewAsyncFunctionGenerator, JSCell*, (VM* vmPointer, Structure* structure))
+{
+    VM& vm = *vmPointer;
+    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
+    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    OPERATION_RETURN(scope, JSAsyncFunctionGenerator::create(vm, structure));
 }
 
 JSC_DEFINE_JIT_OPERATION(operationNewAsyncGenerator, JSCell*, (VM* vmPointer, Structure* structure))
@@ -3407,7 +3419,7 @@ JSC_DEFINE_JIT_OPERATION(operationInstanceOfCustom, size_t, (JSGlobalObject* glo
 
 #if CPU(ARM64) || CPU(X86_64)
 
-JSC_DEFINE_JIT_OPERATION(operationIteratorNextTryFast, UGPRPair, (JSGlobalObject* globalObject, JSObject* iterator, JSCell* iterable, void* metadataPointer))
+JSC_DEFINE_JIT_OPERATION(operationIteratorNextTryFast, UGPRPair, (JSGlobalObject* globalObject, JSObject* iterator, JSCell*, void* metadataPointer))
 {
     VM& vm = globalObject->vm();
     CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
@@ -3417,13 +3429,28 @@ JSC_DEFINE_JIT_OPERATION(operationIteratorNextTryFast, UGPRPair, (JSGlobalObject
     auto& metadata = *std::bit_cast<OpIteratorNext::Metadata*>(metadataPointer);
 
     if (auto* arrayIterator = dynamicDowncast<JSArrayIterator>(iterator)) {
-        auto* array = uncheckedDowncast<JSArray>(iterable);
+        auto* array = downcast<JSArray>(arrayIterator->iteratedObject());
+        ASSERT(isJSArray(array));
+        IterationKind kind = arrayIterator->kind();
+        IterationMode mode = IterationMode::FastArrayValues;
+        switch (kind) {
+        case IterationKind::Values:
+            mode = IterationMode::FastArrayValues;
+            break;
+        case IterationKind::Keys:
+            mode = IterationMode::FastArrayKeys;
+            break;
+        case IterationKind::Entries:
+            mode = IterationMode::FastArrayEntries;
+            break;
+        }
+
         metadata.m_iterableProfile.observeStructureID(array->structureID());
-        metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | IterationMode::FastArray;
+        metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | mode;
 
         auto& indexSlot = arrayIterator->internalField(JSArrayIterator::Field::Index);
         int64_t index = indexSlot.get().asAnyInt();
-        ASSERT(0 <= index && index <= maxSafeInteger());
+        ASSERT(index == JSArrayIterator::doneIndex || (0 <= index && index <= maxSafeInteger()));
 
         JSValue value;
         bool done = index == JSArrayIterator::doneIndex || index >= array->length();
@@ -3431,8 +3458,22 @@ JSC_DEFINE_JIT_OPERATION(operationIteratorNextTryFast, UGPRPair, (JSGlobalObject
             // No need for a barrier here because we know this is a primitive.
             indexSlot.setWithoutWriteBarrier(jsNumber(index + 1));
             ASSERT(index == static_cast<unsigned>(index));
-            value = array->getIndex(globalObject, static_cast<unsigned>(index));
-            OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
+            switch (kind) {
+            case IterationKind::Values:
+                value = array->getIndex(globalObject, static_cast<unsigned>(index));
+                OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
+                break;
+            case IterationKind::Keys:
+                value = jsNumber(static_cast<unsigned>(index));
+                break;
+            case IterationKind::Entries: {
+                JSValue element = array->getIndex(globalObject, static_cast<unsigned>(index));
+                OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
+                value = constructArrayPair(globalObject, jsNumber(static_cast<unsigned>(index)), element);
+                OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
+                break;
+            }
+            }
         } else {
             // No need for a barrier here because we know this is a primitive.
             indexSlot.setWithoutWriteBarrier(jsNumber(-1));
@@ -3442,22 +3483,79 @@ JSC_DEFINE_JIT_OPERATION(operationIteratorNextTryFast, UGPRPair, (JSGlobalObject
     }
 
     if (auto* mapIterator = dynamicDowncast<JSMapIterator>(iterator)) {
-        metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | IterationMode::FastMap;
+        IterationKind kind = mapIterator->kind();
+        IterationMode mode = IterationMode::FastMapEntries;
+        switch (kind) {
+        case IterationKind::Keys:
+            mode = IterationMode::FastMapKeys;
+            break;
+        case IterationKind::Values:
+            mode = IterationMode::FastMapValues;
+            break;
+        case IterationKind::Entries:
+            mode = IterationMode::FastMapEntries;
+            break;
+        }
+        metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | mode;
+
         auto result = mapIterator->nextWithAdvance(vm);
         bool done = result.key.isEmpty();
         JSValue value;
         if (!done) {
-            value = constructArrayPair(globalObject, result.key, result.value);
-            OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
+            switch (kind) {
+            case IterationKind::Keys:
+                value = result.key;
+                break;
+            case IterationKind::Values:
+                value = result.value;
+                break;
+            case IterationKind::Entries:
+                value = constructArrayPair(globalObject, result.key, result.value);
+                OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
+                break;
+            }
         }
         OPERATION_RETURN(scope, makeUGPRPair(JSValue::encode(jsBoolean(done)), JSValue::encode(value)));
     }
 
     if (auto* setIterator = dynamicDowncast<JSSetIterator>(iterator)) {
-        metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | IterationMode::FastSet;
+        IterationKind kind = setIterator->kind();
+        IterationMode mode = IterationMode::FastSetValues;
+        switch (kind) {
+        case IterationKind::Keys:
+        case IterationKind::Values:
+            mode = IterationMode::FastSetValues;
+            break;
+        case IterationKind::Entries:
+            mode = IterationMode::FastSetEntries;
+            break;
+        }
+        metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | mode;
+
         JSValue nextKey = setIterator->nextWithAdvance(vm);
         bool done = nextKey.isEmpty();
-        JSValue value = done ? JSValue() : nextKey;
+        JSValue value;
+        if (!done) {
+            switch (kind) {
+            case IterationKind::Keys:
+            case IterationKind::Values:
+                value = nextKey;
+                break;
+            case IterationKind::Entries:
+                value = constructArrayPair(globalObject, nextKey, nextKey);
+                OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
+                break;
+            }
+        }
+        OPERATION_RETURN(scope, makeUGPRPair(JSValue::encode(jsBoolean(done)), JSValue::encode(value)));
+    }
+
+    if (auto* stringIterator = dynamicDowncast<JSStringIterator>(iterator)) {
+        metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | IterationMode::FastString;
+        JSString* nextValue = stringIterator->nextWithAdvance(globalObject, vm);
+        OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
+        bool done = !nextValue;
+        JSValue value = done ? JSValue() : JSValue(nextValue);
         OPERATION_RETURN(scope, makeUGPRPair(JSValue::encode(jsBoolean(done)), JSValue::encode(value)));
     }
 
@@ -3684,7 +3782,7 @@ static ALWAYS_INLINE JSValue getByValMegamorphic(JSGlobalObject* globalObject, V
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    if (!baseValue.isObject() || !(subscript.isString() && CacheableIdentifier::isCacheableIdentifierCell(subscript))) [[unlikely]] {
+    if (!baseValue.isObject() || !CacheableIdentifier::isCacheableIdentifierCell(subscript)) [[unlikely]] {
         if (propertyCache && propertyCache->considerRepatchingCacheMegamorphic(vm))
             repatchGetBySlowPathCall(callFrame->codeBlock(), *propertyCache, kind);
         if (kind == GetByKind::ByVal)

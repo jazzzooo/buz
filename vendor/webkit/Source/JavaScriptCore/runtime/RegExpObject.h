@@ -108,10 +108,15 @@ public:
     bool testInline(JSGlobalObject* globalObject, JSString* string) { return !!matchInline(globalObject, string); }
     JS_EXPORT_PRIVATE JSValue exec(JSGlobalObject*, JSString*);
     JSValue execInline(JSGlobalObject*, JSString*);
+    JSValue execInline(JSGlobalObject*, JSString*, MatchResult&);
     MatchResult match(JSGlobalObject*, JSString*);
     JSValue matchGlobal(JSGlobalObject*, JSString*);
 
+    bool isSymbolMatchFastAndNonObservable();
+    bool isSymbolSearchFastAndNonObservable();
+    bool isSymbolMatchAllFastAndNonObservable();
     bool isSymbolReplaceFastAndNonObservable();
+    bool isSymbolSplitFastAndNonObservable();
 
     static bool getOwnPropertySlot(JSObject*, JSGlobalObject*, PropertyName, PropertySlot&);
     static bool put(JSCell*, JSGlobalObject*, PropertyName, JSValue, PutPropertySlot&);

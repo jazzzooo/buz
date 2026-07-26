@@ -44,6 +44,7 @@ void initializeMainThread()
         initialize();
         initializeMainThreadPlatform();
         RunLoop::initializeMain();
+        RELEASE_ASSERT(!isMainThread() || Thread::currentSingleton().uid() == 1);
     });
 }
 
@@ -51,6 +52,11 @@ void initializeMainThread()
 bool canCurrentThreadAccessThreadLocalData(Thread& thread)
 {
     return &thread == &Thread::currentSingleton();
+}
+
+bool canCurrentThreadIDAccessThreadLocalData(uint32_t threadID)
+{
+    return threadID == currentThreadID();
 }
 #endif
 

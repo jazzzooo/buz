@@ -27,6 +27,7 @@
 #include <wtf/CrossThreadTaskHandler.h>
 
 #include <wtf/AutodrainedPool.h>
+#include <wtf/Threading.h>
 
 namespace WTF {
 

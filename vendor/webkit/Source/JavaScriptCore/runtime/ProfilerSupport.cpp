@@ -28,8 +28,6 @@
 
 #include "Options.h"
 #include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <wtf/FileHandle.h>
 #include <wtf/FileSystem.h>
 #include <wtf/MonotonicTime.h>

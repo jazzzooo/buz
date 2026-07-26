@@ -54,13 +54,6 @@ Ref<GenericTypedArrayView<Adaptor>> GenericTypedArrayView<Adaptor>::create(
 }
 
 template<typename Adaptor>
-Ref<GenericTypedArrayView<Adaptor>> GenericTypedArrayView<Adaptor>::create(Ref<ArrayBuffer>&& buffer)
-{
-    auto length = buffer->byteLength();
-    return adoptRef(*new GenericTypedArrayView(WTF::move(buffer), 0, length));
-}
-
-template<typename Adaptor>
 Ref<GenericTypedArrayView<Adaptor>> GenericTypedArrayView<Adaptor>::create(
     RefPtr<ArrayBuffer>&& buffer, size_t byteOffset, std::optional<size_t> length)
 {

@@ -37,10 +37,12 @@
 #include "MachineContext.h"
 #include "MacroAssemblerCodeRef.h"
 #include "VMEntryScopeInlines.h"
+#include "VMInlines.h"
 #include "VMManager.h"
 #include "VMTrapsInlines.h"
 #include "WaiterListManager.h"
 #include "Watchdog.h"
+#include <wtf/Condition.h>
 #include <wtf/ProcessID.h>
 #include <wtf/Scope.h>
 #include <wtf/ThreadMessage.h>

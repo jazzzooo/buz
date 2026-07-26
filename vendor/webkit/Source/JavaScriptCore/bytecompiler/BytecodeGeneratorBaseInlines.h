@@ -27,6 +27,7 @@
 
 #include "BytecodeGeneratorBase.h"
 
+#include "Fits.h"
 #include "RegisterID.h"
 #include "StackAlignment.h"
 
@@ -123,40 +124,27 @@ void BytecodeGeneratorBase<Traits>::alignWideOpcode32()
 }
 
 template<typename Traits>
-void BytecodeGeneratorBase<Traits>::write(uint8_t b)
+template<OpcodeSize size, typename... Ops>
+void BytecodeGeneratorBase<Traits>::writeOpcode(typename Traits::OpcodeTraits::OpcodeID opcodeID, Ops... ops)
 {
-    m_writer.write(b);
-}
-
-
-template<typename Traits>
-void BytecodeGeneratorBase<Traits>::write(uint16_t h)
-{
-    m_writer.write(h);
-}
-
-template<typename Traits>
-void BytecodeGeneratorBase<Traits>::write(uint32_t i)
-{
-    m_writer.write(i);
-}
-
-template<typename Traits>
-void BytecodeGeneratorBase<Traits>::write(int8_t b)
-{
-    m_writer.write(static_cast<uint8_t>(b));
-}
-
-template<typename Traits>
-void BytecodeGeneratorBase<Traits>::write(int16_t h)
-{
-    m_writer.write(static_cast<uint16_t>(h));
-}
-
-template<typename Traits>
-void BytecodeGeneratorBase<Traits>::write(int32_t i)
-{
-    m_writer.write(static_cast<uint32_t>(i));
+    using OpcodeTraits = typename Traits::OpcodeTraits;
+    using OpcodeIDType = typename OpcodeTraits::OpcodeID;
+    constexpr auto opcodeIDSize = OpcodeIDWidthBySize<OpcodeTraits, size>::opcodeIDSize;
+    if constexpr (size == OpcodeSize::Wide16) {
+        m_writer.write(
+            Fits<OpcodeIDType, OpcodeSize::Narrow>::convert(OpcodeTraits::wide16),
+            Fits<OpcodeIDType, opcodeIDSize>::convert(opcodeID),
+            Fits<Ops, size>::convert(ops)...);
+    } else if constexpr (size == OpcodeSize::Wide32) {
+        m_writer.write(
+            Fits<OpcodeIDType, OpcodeSize::Narrow>::convert(OpcodeTraits::wide32),
+            Fits<OpcodeIDType, opcodeIDSize>::convert(opcodeID),
+            Fits<Ops, size>::convert(ops)...);
+    } else {
+        m_writer.write(
+            Fits<OpcodeIDType, opcodeIDSize>::convert(opcodeID),
+            Fits<Ops, size>::convert(ops)...);
+    }
 }
 
 template<typename Traits>

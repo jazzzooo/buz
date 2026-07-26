@@ -336,7 +336,7 @@ public: \
         return location; \
     } \
     \
-    void* operator new(size_t size) \
+    BINLINE void* operator new(size_t size) \
     { \
         if (!s_heapRef || size != sizeof(_type)) [[unlikely]] \
             BMUST_TAIL_CALL return operatorNewSlow(size); \

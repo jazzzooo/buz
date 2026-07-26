@@ -27,8 +27,8 @@ set(bmalloc_SOURCES
     bmalloc/TZoneHeap.cpp
     bmalloc/TZoneHeapManager.cpp
     bmalloc/TZoneLog.cpp
-    bmalloc/bmalloc.cpp
     bmalloc/VMAllocate.cpp
+    bmalloc/bmalloc.cpp
 
     libpas/src/libpas/bmalloc_heap.c
     libpas/src/libpas/bmalloc_heap_config.c
@@ -39,6 +39,9 @@ set(bmalloc_SOURCES
     libpas/src/libpas/pas_bitfit_page_config_kind.c
     libpas/src/libpas/pas_heap_config_kind.c
     libpas/src/libpas/pas_segregated_page_config_kind.c
+    libpas/src/libpas/tagged_bmalloc_heap.c
+    libpas/src/libpas/tagged_bmalloc_heap_config.c
+    libpas/src/libpas/tagged_bmalloc_heap_utils.c
 )
 
 set_source_files_properties(
@@ -51,6 +54,9 @@ set_source_files_properties(
     libpas/src/libpas/pas_bitfit_page_config_kind.c
     libpas/src/libpas/pas_heap_config_kind.c
     libpas/src/libpas/pas_segregated_page_config_kind.c
+    libpas/src/libpas/tagged_bmalloc_heap.c
+    libpas/src/libpas/tagged_bmalloc_heap_config.c
+    libpas/src/libpas/tagged_bmalloc_heap_utils.c
     PROPERTIES LANGUAGE CXX
 )
 
@@ -444,7 +450,6 @@ set(bmalloc_PUBLIC_HEADERS
     libpas/src/libpas/pas_medium_megapage_cache.h
     libpas/src/libpas/pas_megapage_cache.h
     libpas/src/libpas/pas_min_heap.h
-    libpas/src/libpas/pas_mmap_capability.h
     libpas/src/libpas/pas_monotonic_time.h
     libpas/src/libpas/pas_mte.h
     libpas/src/libpas/pas_mte_config.h
@@ -457,6 +462,7 @@ set(bmalloc_PUBLIC_HEADERS
     libpas/src/libpas/pas_page_base_inlines.h
     libpas/src/libpas/pas_page_config_kind.h
     libpas/src/libpas/pas_page_config_size_category.h
+    libpas/src/libpas/pas_page_flags.h
     libpas/src/libpas/pas_page_granule_use_count.h
     libpas/src/libpas/pas_page_header_placement_mode.h
     libpas/src/libpas/pas_page_header_table.h
@@ -564,6 +570,11 @@ set(bmalloc_PUBLIC_HEADERS
     libpas/src/libpas/pas_virtual_range_min_heap.h
     libpas/src/libpas/pas_zero_memory.h
     libpas/src/libpas/pas_zero_mode.h
+    libpas/src/libpas/tagged_bmalloc_heap_config.h
+    libpas/src/libpas/tagged_bmalloc_heap.h
+    libpas/src/libpas/tagged_bmalloc_heap_inlines.h
+    libpas/src/libpas/tagged_bmalloc_heap_innards.h
+    libpas/src/libpas/tagged_bmalloc_heap_utils.h
     libpas/src/libpas/thingy_heap_config.h
 )
 
@@ -623,7 +634,7 @@ if (USE_MIMALLOC)
     )
 endif ()
 
-if (CMAKE_SYSTEM_NAME MATCHES "Darwin")
+if (APPLE)
     list(APPEND bmalloc_SOURCES
         bmalloc/TZoneLog.cpp
     )
@@ -632,6 +643,10 @@ endif ()
 set(bmalloc_LIBRARIES
     ${CMAKE_DL_LIBS}
 )
+
+if (USE_APPLE_INTERNAL_SDK)
+    set(bmalloc_FRAMEWORKS WebKitAdditions)
+endif ()
 
 if (ENABLE_MALLOC_HEAP_BREAKDOWN)
     list(APPEND bmalloc_DEFINITIONS BENABLE_MALLOC_HEAP_BREAKDOWN=1)
@@ -642,7 +657,7 @@ if (ATOMICS_REQUIRE_LIBATOMIC)
     list(APPEND bmalloc_LIBRARIES atomic)
 endif ()
 
-if (USE_MIMALLOC)
+if (USE_MIMALLOC AND NOT USE_EXTERNAL_MIMALLOC)
     list(APPEND bmalloc_LIBRARIES $<TARGET_OBJECTS:mimalloc-obj>)
 endif ()
 
@@ -695,20 +710,27 @@ WEBKIT_FRAMEWORK_DECLARE(bmalloc)
 WEBKIT_INCLUDE_CONFIG_FILES_IF_EXISTS()
 
 WEBKIT_COPY_FILES(bmalloc_CopyHeaders
-    DESTINATION ${bmalloc_FRAMEWORK_HEADERS_DIR}/bmalloc
+    PRUNE_STALE
+    DESTINATION ${bmalloc_HEADERS_DIR}
     FILES ${bmalloc_PUBLIC_HEADERS}
     FLATTENED
 )
 
 if (bmalloc_PRIVATE_FRAMEWORK_HEADERS_DIR)
     WEBKIT_COPY_FILES(bmalloc_CopyPrivateHeaders
-        DESTINATION ${bmalloc_PRIVATE_FRAMEWORK_HEADERS_DIR}/bmalloc
+        PRUNE_STALE
+        DESTINATION ${bmalloc_PRIVATE_HEADERS_DIR}
         FILES ${bmalloc_PRIVATE_HEADERS}
         FLATTENED
     )
 endif ()
 
 WEBKIT_FRAMEWORK(bmalloc)
+
+# bmalloc is statically linked into JavaScriptCore, so it uses JSC's PGO profile.
+if (USE_APPLE_INTERNAL_SDK)
+    WEBKIT_TARGET_USE_PGO(bmalloc PROFILE JavaScriptCore)
+endif ()
 
 # Only build mbmalloc on platforms that MallocBench supports
 if (DEVELOPER_MODE AND (APPLE OR HAVE_MALLOC_TRIM))

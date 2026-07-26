@@ -26,10 +26,6 @@
 #include "config.h"
 #include "ExitKind.h"
 
-#include <wtf/Assertions.h>
-#include <wtf/PrintStream.h>
-#include <wtf/text/ASCIILiteral.h>
-
 namespace JSC {
 
 bool exitKindMayJettison(ExitKind kind)

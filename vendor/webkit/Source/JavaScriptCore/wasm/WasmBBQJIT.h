@@ -36,6 +36,7 @@
 #include "WasmLimits.h"
 #include "js/JSWebAssemblyInstance.h"
 #include <span>
+#include <wtf/CheckedArithmetic.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
@@ -125,6 +126,8 @@ public:
         static Location NODELETE fromGlobal(int32_t globalOffset);
 
         static Location NODELETE fromArgumentLocation(ArgumentLocation argLocation, TypeKind type);
+
+        static bool rangesOverlap(Location a, uint32_t aSize, Location b, uint32_t bSize);
 
         bool NODELETE isNone() const;
 
@@ -922,7 +925,7 @@ public:
         unsigned m_tryStart { 0 };
         unsigned m_tryEnd { 0 };
         unsigned m_tryCatchDepth { 0 };
-        Vector<TryTableTarget, 8> m_tryTableTargets;
+        TargetList m_tryTableTargets;
     };
 
     friend struct ControlData;
@@ -1147,8 +1150,13 @@ public:
 
     // Memory
 
-    inline Location emitCheckAndPreparePointer(Value pointer, uint32_t uoffset, uint32_t sizeOfOperation, uint8_t memoryIndex)
+    inline Location emitCheckAndPreparePointer(Value pointer, uint64_t uoffset, uint32_t sizeOfOperation, uint8_t memoryIndex)
     {
+        if (WTF::sumOverflows<uint64_t>(static_cast<uint64_t>(sizeOfOperation), uoffset)) {
+            recordJumpToThrowException(ExceptionType::OutOfBoundsMemoryAccess, m_jit.jump());
+            return Location::fromGPR(wasmBaseMemoryPointer);
+        }
+
         ScratchScope<1, 0> scratches(*this);
         Location pointerLocation;
 
@@ -1167,7 +1175,18 @@ public:
                 boundsCheckingSizeRegister);
         }
 
+        uint64_t boundary = static_cast<uint64_t>(sizeOfOperation) + uoffset - 1;
+
         if (pointer.isConst()) {
+            uint64_t constantPointer = m_info.memory(memoryIndex).isMemory64()
+                ? pointer.asI64()
+                : static_cast<uint32_t>(pointer.asI32());
+
+            if (sumOverflows<uint64_t>(constantPointer, boundary)) {
+                recordJumpToThrowException(ExceptionType::OutOfBoundsMemoryAccess, m_jit.jump());
+                return Location::fromGPR(wasmBaseMemoryPointer);
+            }
+
             pointerLocation = Location::fromGPR(scratches.gpr(0));
             emitMoveConst(pointer, pointerLocation);
         } else
@@ -1181,20 +1200,31 @@ public:
         loadWebAssemblyGlobalState(wasmBaseMemoryPointer, wasmBoundsCheckingSizeRegister);
 #endif
 
-        uint64_t boundary = static_cast<uint64_t>(sizeOfOperation) + uoffset - 1;
         // conservatively force bounds checking if memoryIndex != 0
         switch (memoryIndex ? MemoryMode::BoundsChecking : m_mode) {
         case MemoryMode::BoundsChecking: {
             // We're not using signal handling only when the memory is not shared.
             // Regardless of signaling, we must check that no memory access exceeds the current memory size.
-            m_jit.zeroExtend32ToWord(pointerLocation.asGPR(), wasmScratchGPR);
-            if (boundary)
-                m_jit.addPtr(TrustedImmPtr(boundary), wasmScratchGPR);
+
+            if (m_info.memory(memoryIndex).isMemory64()) {
+                if (boundary) {
+                    m_jit.move(TrustedImmPtr(boundary), wasmScratchGPR);
+                    Jump overflow = m_jit.branchAddPtr(ResultCondition::Carry, pointerLocation.asGPR(), wasmScratchGPR);
+                    recordJumpToThrowException(ExceptionType::OutOfBoundsMemoryAccess, overflow);
+                } else
+                    m_jit.move(pointerLocation.asGPR(), wasmScratchGPR);
+            } else {
+                m_jit.zeroExtend32ToWord(pointerLocation.asGPR(), wasmScratchGPR);
+                if (boundary)
+                    m_jit.addPtr(TrustedImmPtr(boundary), wasmScratchGPR);
+            }
+
             recordJumpToThrowException(ExceptionType::OutOfBoundsMemoryAccess, m_jit.branchPtr(RelationalCondition::AboveOrEqual, wasmScratchGPR, boundsCheckingSizeRegister));
             break;
         }
 
         case MemoryMode::Signaling: {
+            RELEASE_ASSERT(!m_info.memory(memoryIndex).isMemory64());
             // We've virtually mapped 4GiB+redzone for this memory. Only the user-allocated pages are addressable, contiguously in range [0, current],
             // and everything above is mapped PROT_NONE. We don't need to perform any explicit bounds check in the 4GiB range because WebAssembly register
             // memory accesses are 32-bit. However WebAssembly register + offset accesses perform the addition in 64-bit which can push an access above
@@ -1217,10 +1247,17 @@ public:
         }
 
 #if CPU(ARM64)
-        m_jit.addZeroExtend64(baseRegister, pointerLocation.asGPR(), wasmScratchGPR);
+        if (m_info.memory(memoryIndex).isMemory64())
+            m_jit.addPtr(baseRegister, pointerLocation.asGPR(), wasmScratchGPR);
+        else
+            m_jit.addZeroExtend64(baseRegister, pointerLocation.asGPR(), wasmScratchGPR);
 #else
-        m_jit.zeroExtend32ToWord(pointerLocation.asGPR(), wasmScratchGPR);
-        m_jit.addPtr(baseRegister, wasmScratchGPR);
+        if (m_info.memory(memoryIndex).isMemory64())
+            m_jit.addPtr(baseRegister, pointerLocation.asGPR(), wasmScratchGPR);
+        else {
+            m_jit.zeroExtend32ToWord(pointerLocation.asGPR(), wasmScratchGPR);
+            m_jit.addPtr(baseRegister, wasmScratchGPR);
+        }
 #endif
 
         consume(pointer);
@@ -1355,25 +1392,25 @@ public:
     template<typename Functor>
     void emitAtomicOpGeneric(ExtAtomicOpType op, Address address, Location old, Location cur, const Functor& functor);
 
-    [[nodiscard]] Value emitAtomicLoadOp(ExtAtomicOpType loadOp, Type valueType, Location pointer, uint32_t uoffset);
+    [[nodiscard]] Value emitAtomicLoadOp(ExtAtomicOpType loadOp, Type valueType, Location pointer, uint64_t uoffset);
 
-    [[nodiscard]] PartialResult atomicLoad(ExtAtomicOpType loadOp, Type valueType, ExpressionType pointer, ExpressionType& result, uint32_t uoffset, uint8_t memoryIndex);
+    [[nodiscard]] PartialResult atomicLoad(ExtAtomicOpType loadOp, Type valueType, ExpressionType pointer, ExpressionType& result, uint64_t uoffset, uint8_t memoryIndex);
 
-    void emitAtomicStoreOp(ExtAtomicOpType storeOp, Type, Location pointer, Value value, uint32_t uoffset);
+    void emitAtomicStoreOp(ExtAtomicOpType storeOp, Type, Location pointer, Value, uint64_t uoffset);
 
-    [[nodiscard]] PartialResult atomicStore(ExtAtomicOpType storeOp, Type valueType, ExpressionType pointer, ExpressionType value, uint32_t uoffset, uint8_t memoryIndex);
+    [[nodiscard]] PartialResult atomicStore(ExtAtomicOpType storeOp, Type valueType, ExpressionType pointer, ExpressionType value, uint64_t uoffset, uint8_t memoryIndex);
 
-    Value emitAtomicBinaryRMWOp(ExtAtomicOpType op, Type valueType, Location pointer, Value value, uint32_t uoffset);
+    Value emitAtomicBinaryRMWOp(ExtAtomicOpType op, Type valueType, Location pointer, Value value, uint64_t uoffset);
 
-    [[nodiscard]] PartialResult atomicBinaryRMW(ExtAtomicOpType op, Type valueType, ExpressionType pointer, ExpressionType value, ExpressionType& result, uint32_t uoffset, uint8_t memoryIndex);
+    [[nodiscard]] PartialResult atomicBinaryRMW(ExtAtomicOpType op, Type valueType, ExpressionType pointer, ExpressionType value, ExpressionType& result, uint64_t uoffset, uint8_t memoryIndex);
 
-    [[nodiscard]] Value emitAtomicCompareExchange(ExtAtomicOpType op, Type, Location pointer, Value expected, Value value, uint32_t uoffset);
+    [[nodiscard]] Value emitAtomicCompareExchange(ExtAtomicOpType op, Type, Location pointer, Value expected, Value value, uint64_t uoffset);
 
-    [[nodiscard]] PartialResult atomicCompareExchange(ExtAtomicOpType op, Type valueType, ExpressionType pointer, ExpressionType expected, ExpressionType value, ExpressionType& result, uint32_t uoffset, uint8_t memoryIndex);
+    [[nodiscard]] PartialResult atomicCompareExchange(ExtAtomicOpType op, Type valueType, ExpressionType pointer, ExpressionType expected, ExpressionType value, ExpressionType& result, uint64_t uoffset, uint8_t memoryIndex);
 
-    [[nodiscard]] PartialResult atomicWait(ExtAtomicOpType op, ExpressionType pointer, ExpressionType value, ExpressionType timeout, ExpressionType& result, uint32_t uoffset, uint8_t memoryIndex);
+    [[nodiscard]] PartialResult atomicWait(ExtAtomicOpType op, ExpressionType pointer, ExpressionType value, ExpressionType timeout, ExpressionType& result, uint64_t uoffset, uint8_t memoryIndex);
 
-    [[nodiscard]] PartialResult atomicNotify(ExtAtomicOpType op, ExpressionType pointer, ExpressionType count, ExpressionType& result, uint32_t uoffset, uint8_t memoryIndex);
+    [[nodiscard]] PartialResult atomicNotify(ExtAtomicOpType op, ExpressionType pointer, ExpressionType count, ExpressionType& result, uint64_t uoffset, uint8_t memoryIndex);
 
     [[nodiscard]] PartialResult atomicFence(ExtAtomicOpType, uint8_t);
 
@@ -1948,7 +1985,7 @@ public:
 
     MacroAssembler::Label addLoopOSREntrypoint();
 
-    [[nodiscard]] PartialResult addBlock(BlockSignature&&, Stack& enclosingStack, ControlType& result, Stack& newStack);
+    [[nodiscard]] PartialResult addBlock(BlockSignature&&, std::span<TypedExpression> args, ControlType& result);
 
     B3::Type NODELETE toB3Type(Type);
 
@@ -1956,20 +1993,20 @@ public:
 
     B3::ValueRep toB3Rep(Location);
 
-    StackMap makeStackMap(const ControlData& data, Stack& enclosingStack);
+    StackMap makeStackMap(const ControlData&, std::span<const TypedExpression> enclosingStack);
 
-    void emitLoopTierUpCheckAndOSREntryData(const ControlData&, Stack& enclosingStack, unsigned loopIndex);
+    void emitLoopTierUpCheckAndOSREntryData(const ControlData&, std::span<const TypedExpression> enclosingStack, unsigned loopIndex);
 
-    [[nodiscard]] PartialResult addLoop(BlockSignature&&, Stack& enclosingStack, ControlType& result, Stack& newStack, uint32_t loopIndex);
+    [[nodiscard]] PartialResult addLoop(BlockSignature&&, std::span<TypedExpression> args, ControlType& result, uint32_t loopIndex);
 
-    [[nodiscard]] PartialResult addIf(Value condition, BlockSignature&&, Stack& enclosingStack, ControlData& result, Stack& newStack);
+    [[nodiscard]] PartialResult addIf(Value condition, BlockSignature&&, std::span<TypedExpression> args, ControlData& result);
 
-    [[nodiscard]] PartialResult addElse(ControlData& data, Stack& expressionStack);
+    [[nodiscard]] PartialResult addElse(ControlData& data, std::span<TypedExpression> ifBranchResults);
 
     [[nodiscard]] PartialResult addElseToUnreachable(ControlData& data);
 
-    [[nodiscard]] PartialResult addTry(BlockSignature&&, Stack& enclosingStack, ControlType& result, Stack& newStack);
-    [[nodiscard]] PartialResult addTryTable(BlockSignature&&, Stack& enclosingStack, const Vector<CatchHandler>& targets, ControlType& result, Stack& newStack);
+    [[nodiscard]] PartialResult addTry(BlockSignature&&, std::span<TypedExpression> args, ControlType& result);
+    [[nodiscard]] PartialResult addTryTable(BlockSignature&&, std::span<TypedExpression> args, const Vector<CatchHandler>& targets, ControlType& result);
 
     void emitCatchPrologue();
 
@@ -1978,11 +2015,11 @@ public:
     void emitCatchImpl(ControlData& dataCatch, const RTT& exceptionSignature, ResultList& results);
     void emitCatchTableImpl(ControlData& entryData, ControlType::TryTableTarget&);
 
-    [[nodiscard]] PartialResult addCatch(unsigned exceptionIndex, const RTT& exceptionSignature, Stack& expressionStack, ControlType& data, ResultList& results);
+    [[nodiscard]] PartialResult addCatch(unsigned exceptionIndex, const RTT& exceptionSignature, std::span<TypedExpression> expressionStack, ControlType& data, ResultList& results);
 
     [[nodiscard]] PartialResult addCatchToUnreachable(unsigned exceptionIndex, const RTT& exceptionSignature, ControlType& data, ResultList& results);
 
-    [[nodiscard]] PartialResult addCatchAll(Stack& expressionStack, ControlType& data);
+    [[nodiscard]] PartialResult addCatchAll(std::span<TypedExpression> expressionStack, ControlType& data);
 
     [[nodiscard]] PartialResult addCatchAllToUnreachable(ControlType& data);
 
@@ -1990,31 +2027,33 @@ public:
 
     [[nodiscard]] PartialResult addDelegateToUnreachable(ControlType& target, ControlType& data);
 
-    [[nodiscard]] PartialResult addThrow(unsigned exceptionIndex, ArgumentList& arguments, Stack&);
+    [[nodiscard]] PartialResult addThrow(unsigned exceptionIndex, ArgumentList& arguments, std::span<TypedExpression>);
 
     [[nodiscard]] PartialResult addRethrow(unsigned, ControlType& data);
 
-    [[nodiscard]] PartialResult addThrowRef(ExpressionType exception, Stack&);
+    [[nodiscard]] PartialResult addThrowRef(ExpressionType exception, std::span<TypedExpression>);
 
     void prepareForExceptions();
 
-    [[nodiscard]] PartialResult addReturn(const ControlData& data, const Stack& returnValues);
+    [[nodiscard]] PartialResult addReturn(const ControlData& data, std::span<const TypedExpression> returnValues);
 
-    [[nodiscard]] PartialResult addBranch(ControlData& target, Value condition, Stack& results);
+    [[nodiscard]] PartialResult addBranch(ControlData& target, Value condition, std::span<TypedExpression> results);
 
-    [[nodiscard]] PartialResult addBranchNull(ControlData& data, ExpressionType reference, Stack& returnValues, bool shouldNegate, ExpressionType& result);
+    [[nodiscard]] PartialResult addBranchNull(ControlData& data, ExpressionType reference, std::span<TypedExpression> returnValues, bool shouldNegate, ExpressionType& result);
 
-    [[nodiscard]] PartialResult addBranchCast(ControlData& data, ExpressionType reference, Stack& returnValues, bool allowNull, int32_t heapType, bool shouldNegate);
+    [[nodiscard]] PartialResult addBranchCast(ControlData& data, ExpressionType reference, std::span<TypedExpression> returnValues, bool allowNull, int32_t heapType, bool shouldNegate);
 
-    [[nodiscard]] PartialResult addSwitch(Value condition, const Vector<ControlData*>& targets, ControlData& defaultTarget, Stack& results);
+    [[nodiscard]] PartialResult addSwitch(Value condition, const Vector<ControlData*>& targets, ControlData& defaultTarget, std::span<TypedExpression> results);
 
-    [[nodiscard]] PartialResult endBlock(ControlEntry& entry, Stack& stack);
+    [[nodiscard]] PartialResult endBlock(ControlEntry& entry, std::span<TypedExpression> enclosedStack);
 
-    [[nodiscard]] PartialResult addEndToUnreachable(ControlEntry& entry, Stack& stack, bool unreachable = true);
+    [[nodiscard]] PartialResult addEndToUnreachable(ControlEntry& entry, std::span<TypedExpression> enclosedStack);
+
+    [[nodiscard]] PartialResult addEndToUnreachableImpl(ControlEntry& entry, std::span<TypedExpression> enclosedStack, bool unreachable);
 
     int alignedFrameSize(int frameSize) const;
 
-    [[nodiscard]] PartialResult endTopLevel(const Stack&);
+    [[nodiscard]] PartialResult endTopLevel(std::span<const TypedExpression>);
 
     enum BranchFoldResult {
         BranchAlwaysTaken,
@@ -2027,10 +2066,10 @@ public:
     [[nodiscard]] BranchFoldResult tryFoldFusedBranchCompare(OpType, ExpressionType, ExpressionType);
     [[nodiscard]] Jump emitFusedBranchCompareBranch(OpType, ExpressionType, Location, ExpressionType, Location);
 
-    [[nodiscard]] PartialResult addFusedBranchCompare(OpType, ControlType& target, ExpressionType, Stack&);
-    [[nodiscard]] PartialResult addFusedBranchCompare(OpType, ControlType& target, ExpressionType, ExpressionType, Stack&);
-    [[nodiscard]] PartialResult addFusedIfCompare(OpType, ExpressionType, BlockSignature&&, Stack&, ControlType&, Stack&);
-    [[nodiscard]] PartialResult addFusedIfCompare(OpType, ExpressionType, ExpressionType, BlockSignature&&, Stack&, ControlType&, Stack&);
+    [[nodiscard]] PartialResult addFusedBranchCompare(OpType, ControlType& target, ExpressionType, std::span<TypedExpression>);
+    [[nodiscard]] PartialResult addFusedBranchCompare(OpType, ControlType& target, ExpressionType, ExpressionType, std::span<TypedExpression>);
+    [[nodiscard]] PartialResult addFusedIfCompare(OpType, ExpressionType, BlockSignature&&, std::span<TypedExpression> args, ControlType&);
+    [[nodiscard]] PartialResult addFusedIfCompare(OpType, ExpressionType, ExpressionType, BlockSignature&&, std::span<TypedExpression> args, ControlType&);
 
     // Flush a value to its canonical slot.
     void flushValue(Value value);

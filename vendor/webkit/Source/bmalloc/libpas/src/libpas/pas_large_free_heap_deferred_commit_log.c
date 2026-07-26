@@ -87,17 +87,17 @@ static void dump_large_commit(pas_stream* stream, void* arg)
 static void commit(pas_large_virtual_range range)
 {
     static const bool verbose = false;
-    
+
     if (pas_large_virtual_range_is_empty(range))
         return;
-    
+
     if (verbose) {
         pas_log("Committing %p...%p.\n",
                (void*)range.begin,
                (void*)range.end);
     }
-    
-    pas_page_malloc_commit((void*)range.begin, pas_large_virtual_range_size(range), range.mmap_capability);
+
+    pas_page_malloc_commit((void*)range.begin, pas_large_virtual_range_size(range), range.page_flags);
 
     if (PAS_DEBUG_SPECTRUM_USE_FOR_COMMIT)
         pas_debug_spectrum_add(dump_large_commit, dump_large_commit, pas_large_virtual_range_size(range));
@@ -109,24 +109,24 @@ static void commit_all(
     bool for_real)
 {
     pas_large_virtual_range current_range;
-    
+
     if (!log->total)
         return;
-    
+
     current_range = pas_large_virtual_range_create_empty();
-    
+
     for (;;) {
         pas_large_virtual_range next_range = pas_large_virtual_range_min_heap_take_min(&log->impl);
         if (pas_large_virtual_range_is_empty(next_range))
             break;
-        
+
         PAS_ASSERT(!pas_large_virtual_range_overlaps(current_range, next_range));
-        
-        if (next_range.begin == current_range.end) {
+
+        if (next_range.begin == current_range.end && next_range.page_flags == current_range.page_flags) {
             current_range.end = next_range.end;
             continue;
         }
-        
+
         if (for_real)
             commit(current_range);
         current_range = next_range;

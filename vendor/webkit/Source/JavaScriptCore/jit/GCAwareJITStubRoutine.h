@@ -29,6 +29,7 @@
 #include "JITStubRoutine.h"
 #include "JSObject.h"
 #include "WriteBarrier.h"
+#include <wtf/Bag.h>
 #include <wtf/FixedVector.h>
 #include <wtf/Hasher.h>
 #include <wtf/Vector.h>
@@ -58,6 +59,7 @@ class GCAwareJITStubRoutine : public JITStubRoutine {
 public:
     using Base = JITStubRoutine;
     friend class JITStubRoutine;
+    friend class JSDollarVMHelper;
     GCAwareJITStubRoutine(Type, const MacroAssemblerCodeRef<JITStubRoutinePtrTag>&, JSCell* owner, bool isCodeImmutable);
 
     static Ref<JITStubRoutine> create(VM& vm, const MacroAssemblerCodeRef<JITStubRoutinePtrTag>& code, JSCell* owner, bool isCodeImmutable)

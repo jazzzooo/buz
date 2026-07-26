@@ -78,7 +78,7 @@ public:
             m_assembler.pacibsp();
             return;
         }
-        RELEASE_ASSERT(Options::allowNonSPTagging());
+        RELEASE_ASSERT(Options::allowNonSPTagging() || (target == ARM64Registers::lr && tag == ARM64Registers::fp));
         m_assembler.pacib(target, tag);
     }
 

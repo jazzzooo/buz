@@ -36,14 +36,14 @@
 
 static const bool verbose = false;
 
-void pas_commit_span_construct(pas_commit_span* span, pas_mmap_capability mmap_capability)
+void pas_commit_span_construct(pas_commit_span* span, pas_page_flags page_flags)
 {
     if (verbose)
         pas_log("%p: creating commit span.\n", span);
     span->index_of_start_of_span = UINTPTR_MAX;
     span->did_add_first = false;
     span->total_bytes = 0;
-    span->mmap_capability = mmap_capability;
+    span->page_flags = page_flags;
 }
 
 void pas_commit_span_add_to_change(pas_commit_span* span, uintptr_t granule_index)
@@ -88,8 +88,8 @@ static void commit(void* base, size_t size, void* arg)
     pas_commit_span* span;
 
     span = arg;
-    
-    pas_page_malloc_commit(base, size, span->mmap_capability);
+
+    pas_page_malloc_commit(base, size, span->page_flags);
 }
 
 void pas_commit_span_add_unchanged_and_commit(pas_commit_span* span,
@@ -122,7 +122,7 @@ static void decommit(void* base, size_t size, void* arg)
             (uintptr_t)base,
             (uintptr_t)base + size,
             data->span->did_add_first ? NULL : data->commit_lock,
-            data->span->mmap_capability),
+            data->span->page_flags),
         data->heap_lock_hold_mode);
 }
 

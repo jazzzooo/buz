@@ -31,7 +31,6 @@
 
 #include "pas_bitfit_directory.h"
 #include "pas_heap_lock.h"
-#include "pas_immortal_heap.h"
 
 pas_compact_atomic_bitfit_size_class_ptr*
 pas_bitfit_size_class_find_insertion_point(pas_bitfit_directory* directory,

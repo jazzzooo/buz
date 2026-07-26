@@ -90,7 +90,7 @@ class CppProtocolTypesImplementationGenerator(CppGenerator):
             return []
 
         lines = []
-        lines.append('static const auto enum_constant_values = std::to_array<ASCIILiteral>({')
+        lines.append('static const auto enum_constant_values = WTF::toArray<ASCIILiteral>({')
         lines.extend(['    "%s"_s,' % enum_value for enum_value in self.assigned_enum_values()])
         lines.append('});')
         lines.append('')
@@ -109,7 +109,7 @@ class CppProtocolTypesImplementationGenerator(CppGenerator):
             body_lines.extend([
                 'template<> std::optional<%s> parseEnumValueFromString<%s>(const String& protocolString)' % (cpp_protocol_type, cpp_protocol_type),
                 '{',
-                '    static const auto constantValues = std::to_array<size_t>({',
+                '    static const auto constantValues = WTF::toArray<size_t>({',
             ])
 
             enum_values = enum_type.enum_values()

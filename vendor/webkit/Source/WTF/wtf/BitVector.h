@@ -257,7 +257,7 @@ public:
         m_bitsOrPointer &= other.m_bitsOrPointer;
         ASSERT(isInline());
     }
-    
+
     void exclude(const BitVector& other)
     {
         if (!isInline() || !other.isInline()) {
@@ -403,17 +403,17 @@ private:
     friend class JSC::CachedBitVector;
     friend class FixedBitVector;
 
-    static unsigned bitsInPointer()
+    static constexpr unsigned bitsInPointer()
     {
         return sizeof(void*) << 3;
     }
 
-    static unsigned maxInlineBits()
+    static constexpr unsigned maxInlineBits()
     {
         return bitsInPointer() - 1;
     }
 
-    static size_t byteCount(size_t bitCount)
+    static constexpr size_t byteCount(size_t bitCount)
     {
         return (bitCount + 7) >> 3;
     }

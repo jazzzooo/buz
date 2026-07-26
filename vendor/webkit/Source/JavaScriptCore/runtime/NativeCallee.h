@@ -65,13 +65,20 @@ public:
     using StorageType = CalleeBits;
     // Use an intermediate cast to uintptr_t to silence unsafe casting warning. It's locally "obvious" (other than the fact that RefPtr uses StorageType's constructor instead of a wrap) the
     // return value is of type T.
-    static T* unwrap(const CalleeBits& calleeBits) { return reinterpret_cast<T*>(reinterpret_cast<uintptr_t>(calleeBits.asNativeCallee())); }
+    static T* unwrap(const CalleeBits& calleeBits)
+    {
+        if (!calleeBits)
+            return nullptr;
+        return reinterpret_cast<T*>(reinterpret_cast<uintptr_t>(calleeBits.asNativeCallee()));
+    }
     static T* exchange(CalleeBits& calleeBits, T* newCallee)
     {
         T* result = unwrap(calleeBits);
         calleeBits = newCallee;
         return result;
     }
+
+    static void swap(CalleeBits& a, CalleeBits& b) { std::swap(a, b); }
 
     // FIXME: This isn't hashable since we don't have hashTableDeletedValue() or isHashTableDeletedValue()
     // but those probably shouldn't be hard to add if needed.

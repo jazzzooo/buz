@@ -31,7 +31,6 @@
 #include "CCallHelpers.h"
 #include "JITPlan.h"
 #include "LinkBuffer.h"
-#include <wtf/BubbleSort.h>
 #include <wtf/TZoneMallocInlines.h>
 
 namespace JSC {

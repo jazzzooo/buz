@@ -165,6 +165,11 @@ LValue Output::mul(LValue left, LValue right)
     return m_block->appendNew<B3::Value>(m_proc, B3::Mul, origin(), left, right);
 }
 
+LValue Output::uMulHigh(LValue left, LValue right)
+{
+    return m_block->appendNew<B3::Value>(m_proc, B3::UMulHigh, origin(), left, right);
+}
+
 LValue Output::div(LValue left, LValue right)
 {
     return m_block->appendNew<B3::Value>(m_proc, B3::Div, origin(), left, right);

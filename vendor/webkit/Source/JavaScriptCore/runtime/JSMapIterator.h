@@ -145,32 +145,6 @@ public:
         return true;
     }
 
-    JSValue next(VM& vm)
-    {
-        auto result = nextWithAdvance(vm);
-        return result.key.isEmpty() ? jsBoolean(true) : jsBoolean(false);
-    }
-
-    JSValue peekKey(VM& vm)
-    {
-        JSMap::Helper::Entry entry = this->entry() - 1;
-        JSCell* storage = this->tryGetStorage();
-        ASSERT(storage);
-        ASSERT_UNUSED(vm, storage != vm.orderedHashTableSentinel());
-        JSMap::Storage& storageRef = *uncheckedDowncast<JSMap::Storage>(storage);
-        return JSMap::Helper::getKey(storageRef, entry);
-    }
-
-    JSValue peekValue(VM& vm)
-    {
-        JSMap::Helper::Entry entry = this->entry() - 1;
-        JSCell* storage = this->tryGetStorage();
-        ASSERT(storage);
-        ASSERT_UNUSED(vm, storage != vm.orderedHashTableSentinel());
-        JSMap::Storage& storageRef = *uncheckedDowncast<JSMap::Storage>(storage);
-        return JSMap::Helper::getValue(storageRef, entry);
-    }
-
     IterationKind kind() const { return static_cast<IterationKind>(internalField(Field::Kind).get().asUInt32AsAnyInt()); }
     JSMap* iteratedObject() const { return uncheckedDowncast<JSMap>(internalField(Field::IteratedObject).get()); }
     JSCell* tryGetStorage() const
@@ -185,6 +159,11 @@ public:
     void setIteratedObject(VM& vm, JSMap* map) { internalField(Field::IteratedObject).set(vm, this, map); }
     void setStorage(VM& vm, JSCell* storage) { internalField(Field::Storage).set(vm, this, storage); }
     void setEntry(VM& vm, JSMap::Helper::Entry entry) { internalField(Field::Entry).set(vm, this, JSMap::Helper::toJSValue(entry)); }
+
+    void close(VM& vm)
+    {
+        markClosed(vm.orderedHashTableSentinel());
+    }
 
 private:
     JSMapIterator(VM& vm, Structure* structure)
@@ -201,9 +180,5 @@ private:
     void finishCreation(VM&);
 };
 STATIC_ASSERT_IS_TRIVIALLY_DESTRUCTIBLE(JSMapIterator);
-
-JSC_DECLARE_HOST_FUNCTION(mapIteratorPrivateFuncMapIteratorNext);
-JSC_DECLARE_HOST_FUNCTION(mapIteratorPrivateFuncMapIteratorKey);
-JSC_DECLARE_HOST_FUNCTION(mapIteratorPrivateFuncMapIteratorValue);
 
 } // namespace JSC

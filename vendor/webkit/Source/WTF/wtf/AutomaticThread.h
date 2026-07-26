@@ -30,9 +30,10 @@
 #include <wtf/CheckedPtr.h>
 #include <wtf/Condition.h>
 #include <wtf/Lock.h>
+#include <wtf/StackAllocation.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/ThreadSafeRefCounted.h>
-#include <wtf/Threading.h>
+#include <wtf/ThreadingEnums.h>
 #include <wtf/Vector.h>
 
 namespace WTF {

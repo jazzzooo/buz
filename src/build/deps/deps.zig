@@ -283,9 +283,8 @@ pub const bun_c_includes: []const Include = &.{
     .{ .repo = "packages/bun-usockets/src" },
     .{ .repo = "src/jsc/bindings" },
     .{ .repo = "src/jsc/bindings/libuv" },
-    .{ .repo = "vendor/webkit" },
-    .{ .repo = "vendor/webkit/Source/WTF" },
     .{ .dep = .{ "lshpack", "" } },
     .{ .dep = .{ "boringssl", "include" } },
     .{ .dep = .{ "lsquic", "include" } },
+    .webkit,
 };

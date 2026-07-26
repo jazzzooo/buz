@@ -128,20 +128,12 @@ declare function $arrayPush(array: T[], item: T): void;
 declare function $getByValWithThis(target: any, receiver: any, propertyKey: string): void;
 /** gets the prototype of an object */
 declare function $getPrototypeOf(value: any): any;
-/**
- * Gets an internal property on a promise
- *
- *  You can pass
- *  - {@link $promiseFieldFlags} - get a number with flags
- *  - {@link $promiseFieldReactionsOrResult} - get the result (like {@link Bun.peek})
- *
- * @param promise the promise to get the field from
- * @param key an internal field id.
- */
-declare function $getPromiseInternalField<K extends PromiseFieldType, V>(
-  promise: Promise<V>,
-  key: K,
-): PromiseFieldToValue<K, V>;
+/** Returns `0` for pending, `1` for fulfilled, or `2` for rejected. */
+declare function $peekPromiseStatus(promise: Promise<any>): number;
+/** Returns the fulfillment value or rejection reason, or `undefined` while pending. */
+declare function $peekPromiseSettledValue<V>(promise: Promise<V>): V | undefined;
+/** Marks a promise as handled for unhandled-rejection tracking. */
+declare function $pokePromiseAsHandled(promise: Promise<any>): void;
 declare function $getInternalField<Fields extends any[], N extends keyof Fields>(
   base: InternalFieldObject<Fields>,
   number: N,
@@ -177,12 +169,7 @@ declare function $rejectPromise(promise: Promise<unknown>, value: unknown): void
 
 declare function $loadEsmIntoCjs(...args: any[]): TODO;
 declare function $getGeneratorInternalField(): TODO;
-declare function $getAsyncGeneratorInternalField(): TODO;
-declare function $getAbstractModuleRecordInternalField(): TODO;
 declare function $getArrayIteratorInternalField(): TODO;
-declare function $getStringIteratorInternalField(): TODO;
-declare function $getMapIteratorInternalField(): TODO;
-declare function $getSetIteratorInternalField(): TODO;
 declare function $getProxyInternalField(): TODO;
 declare function $idWithProfile(): TODO;
 /**
@@ -207,15 +194,11 @@ declare function $isJSArray(obj: unknown): obj is any[];
 declare function $isProxyObject(obj: unknown): obj is Proxy;
 declare function $isDerivedArray(): TODO;
 declare function $isGenerator(obj: unknown): obj is Generator<any, any, any>;
-declare function $isAsyncGenerator(obj: unknown): obj is AsyncGenerator<any, any, any>;
 declare function $isRegExpObject(obj: unknown): obj is RegExp;
 declare function $isMap<K, V>(obj: unknown): obj is Map<K, V>;
 declare function $isSet<V>(obj: unknown): obj is Set<V>;
 declare function $isShadowRealm(obj: unknown): obj is ShadowRealm;
-declare function $isStringIterator(obj: unknown): obj is Iterator<string>;
 declare function $isArrayIterator(obj: unknown): obj is Iterator<any>;
-declare function $isMapIterator(obj: unknown): obj is Iterator<any>;
-declare function $isSetIterator(obj: unknown): obj is Iterator<any>;
 declare function $isUndefinedOrNull(obj: unknown): obj is null | undefined;
 declare function $tailCallForwardArguments(fn: CallableFunction, thisValue: ThisType): any;
 /**
@@ -233,8 +216,6 @@ declare function $throwRangeError(message: string): never;
  * @deprecated
  */
 declare function $throwOutOfMemoryError(): never;
-declare function $tryGetById(): TODO;
-declare function $tryGetByIdWithWellKnownSymbol(obj: any, key: WellKnownSymbol): any;
 declare function $putByIdDirect(obj: any, key: PropertyKey, value: any): void;
 
 /**
@@ -259,17 +240,8 @@ declare function $putInternalField<Fields extends any[], N extends keyof Fields>
   number: N,
   value: Fields[N],
 ): void;
-declare function $putPromiseInternalField<T extends PromiseFieldType, P extends Promise<any>>(
-  promise: P,
-  key: T,
-  value: PromiseFieldToValue<T, P>,
-): void;
 declare function $putGeneratorInternalField(): TODO;
-declare function $putAsyncGeneratorInternalField(): TODO;
 declare function $putArrayIteratorInternalField(): TODO;
-declare function $putStringIteratorInternalField(): TODO;
-declare function $putMapIteratorInternalField(): TODO;
-declare function $putSetIteratorInternalField(): TODO;
 declare function $superSamplerBegin(): TODO;
 declare function $superSamplerEnd(): TODO;
 declare function $toNumber(x: any): number;
@@ -314,23 +286,12 @@ declare const $ModuleInstantiate: number;
 declare const $ModuleSatisfy: number;
 declare const $ModuleLink: number;
 declare const $ModuleReady: number;
-declare const $promiseRejectionReject: TODO;
-declare const $promiseRejectionHandle: TODO;
-declare const $promiseStatePending: number;
-declare const $promiseStateFulfilled: number;
-declare const $promiseStateRejected: number;
-declare const $promiseStateMask: number;
-declare const $promiseFlagsIsHandled: number;
-declare const $promiseFlagsIsFirstResolvingFunctionCalled: number;
-declare const $promiseFieldFlags: 0;
-declare const $promiseFieldReactionsOrResult: 1;
 declare const $proxyFieldTarget: TODO;
 declare const $proxyFieldHandler: TODO;
 declare const $generatorFieldState: TODO;
 declare const $generatorFieldNext: TODO;
 declare const $generatorFieldThis: TODO;
 declare const $generatorFieldFrame: TODO;
-declare const $generatorFieldContext: TODO;
 declare const $GeneratorResumeModeNormal: TODO;
 declare const $GeneratorResumeModeThrow: TODO;
 declare const $GeneratorResumeModeReturn: TODO;
@@ -340,23 +301,7 @@ declare const $arrayIteratorFieldIndex: TODO;
 declare const $arrayIteratorFieldIteratedObject: TODO;
 declare const $arrayIteratorFieldKind: TODO;
 declare const $mapIteratorFieldMapBucket: TODO;
-declare const $mapIteratorFieldKind: TODO;
 declare const $setIteratorFieldSetBucket: TODO;
-declare const $setIteratorFieldKind: TODO;
-declare const $stringIteratorFieldIndex: TODO;
-declare const $stringIteratorFieldIteratedString: TODO;
-declare const $asyncGeneratorFieldSuspendReason: TODO;
-declare const $asyncGeneratorFieldQueueFirst: TODO;
-declare const $asyncGeneratorFieldQueueLast: TODO;
-declare const $AsyncGeneratorStateCompleted: TODO;
-declare const $AsyncGeneratorStateExecuting: TODO;
-declare const $AsyncGeneratorStateAwaitingReturn: TODO;
-declare const $AsyncGeneratorStateSuspendedStart: TODO;
-declare const $AsyncGeneratorStateSuspendedYield: TODO;
-declare const $AsyncGeneratorSuspendReasonYield: TODO;
-declare const $AsyncGeneratorSuspendReasonAwait: TODO;
-declare const $AsyncGeneratorSuspendReasonNone: TODO;
-declare const $abstractModuleRecordFieldState: TODO;
 declare const $processBindingConstants: {
   os: typeof import("os").constants;
   fs: typeof import("fs").constants;
@@ -550,15 +495,6 @@ declare const __internal: unique symbol;
 interface InternalFieldObject<T extends any[]> {
   [__internal]: T;
 }
-
-// Types used in the above functions
-type PromiseFieldType = typeof $promiseFieldFlags | typeof $promiseFieldReactionsOrResult;
-type PromiseFieldToValue<X extends PromiseFieldType, V> = X extends typeof $promiseFieldFlags
-  ? number
-  : X extends typeof $promiseFieldReactionsOrResult
-    ? V | any
-    : any;
-type WellKnownSymbol = keyof { [K in keyof SymbolConstructor as SymbolConstructor[K] extends symbol ? K : never]: K };
 
 // You can also `@` on any method on a classes to avoid prototype pollution and secret internals
 type ClassWithIntrinsics<T> = { [K in keyof T as T[K] extends Function ? `$${K}` : never]: T[K] };

@@ -29,7 +29,6 @@
 
 #include "pas_large_map.h"
 
-#include "pas_large_heap.h"
 #include "pas_large_utility_free_heap.h"
 #include "pas_mte.h"
 

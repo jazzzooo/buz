@@ -43,8 +43,6 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include "JSCast.h"
 #include "JSDestructibleObject.h"
 #include "JSFunction.h"
-#include "JSHeapDouble.h"
-#include "JSHeapInt32.h"
 #include "JSObject.h"
 #include "JSString.h"
 #include "LocalAllocatorInlines.h"
@@ -380,14 +378,6 @@ ALWAYS_INLINE JSString* JSCell::toStringInline(JSGlobalObject* globalObject) con
     if (isString())
         return asString(this);
     return toStringSlowCase(globalObject);
-}
-
-ALWAYS_INLINE bool JSCell::putInline(JSGlobalObject* globalObject, PropertyName propertyName, JSValue value, PutPropertySlot& slot)
-{
-    Structure* structure = this->structure();
-    if (!structure->typeInfo().overridesPut()) [[likely]]
-        return JSObject::putInlineForJSObject(asObject(this), globalObject, propertyName, value, slot);
-    return structure->methodTable()->put(this, globalObject, propertyName, value, slot);
 }
 
 inline bool isWebAssemblyInstance(const JSCell* cell)

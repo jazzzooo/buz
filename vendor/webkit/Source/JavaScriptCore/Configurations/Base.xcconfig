@@ -24,6 +24,8 @@
 #include "../../../Configurations/CommonBase.xcconfig"
 
 ALWAYS_SEARCH_USER_PATHS = NO;
+ENABLE_USER_SCRIPT_SANDBOXING = YES;
+EXCLUDED_USER_SCRIPT_SANDBOXING_PHASE_NAMES = $(inherited) "Generate Unified Sources" "Generate Derived Sources" "Generate <wtf/Platform.h> args" "Check For Inappropriate Files In Framework" "Check For Inappropriate Macros in External Headers" "Check .xcfilelists" "Copy jsc into JavaScriptCore.framework" "Audit SPI use" "Create Versions/Current/Helpers symlink" "Work around rdar://109484516";
 
 CLANG_CXX_LANGUAGE_STANDARD = c++2b;
 CLANG_CXX_LIBRARY = libc++;
@@ -91,7 +93,7 @@ GCC_WARN_UNUSED_FUNCTION = YES;
 GCC_WARN_UNUSED_VARIABLE = YES;
 CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
 PREBINDING = NO;
-WARNING_CFLAGS = $(inherited) -Wcast-qual -Wchar-subscripts -Wextra-tokens -Winit-self -Wmissing-noreturn -Wpacked -Wpointer-arith -Wredundant-decls -Wwrite-strings -Wexit-time-destructors -Wglobal-constructors -Wtautological-compare -Wimplicit-fallthrough -Wvla -Wliteral-conversion -Wthread-safety -Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled -Wno-backend-plugin -Wunsafe-buffer-usage -Wno-unknown-warning-option -fsafe-buffer-usage-suggestions;
+WARNING_CFLAGS = $(inherited) -Wcast-qual -Wchar-subscripts -Wextra-tokens -Winit-self -Wmissing-noreturn -Wpacked -Wpointer-arith -Wredundant-decls -Wwrite-strings -Wexit-time-destructors -Wglobal-constructors -Wtautological-compare -Wimplicit-fallthrough -Wvla -Wliteral-conversion -Wthread-safety -Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled -Wno-backend-plugin -Wunsafe-buffer-usage -Wno-unknown-warning-option;
 
 HEADER_SEARCH_PATHS = $(SRCROOT) "$(BUILT_PRODUCTS_DIR)$(WK_LIBRARY_HEADERS_FOLDER_PATH)" $(HEADER_SEARCH_PATHS);
 LIBRARY_SEARCH_PATHS = $(SDK_DIR)$(WK_LIBRARY_INSTALL_PATH) $(inherited);

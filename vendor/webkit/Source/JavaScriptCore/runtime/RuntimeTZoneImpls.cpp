@@ -30,7 +30,6 @@
 #include "StructureTransitionTable.h"
 #include "WeakGCMap.h"
 #include <wtf/TZoneMallocInlines.h>
-#include <wtf/text/SymbolImpl.h>
 
 namespace JSC {
 

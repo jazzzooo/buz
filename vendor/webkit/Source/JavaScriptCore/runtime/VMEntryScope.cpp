@@ -33,7 +33,6 @@
 #include "WasmCapabilities.h"
 #include "WasmMachineThreads.h"
 #include "Watchdog.h"
-#include <wtf/WTFConfig.h>
 
 namespace JSC {
 

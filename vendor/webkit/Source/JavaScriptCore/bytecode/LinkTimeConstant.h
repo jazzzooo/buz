@@ -42,15 +42,10 @@ class JSGlobalObject;
     v(mapIterationEntry, nullptr) \
     v(mapIterationEntryKey, nullptr) \
     v(mapIterationEntryValue, nullptr) \
-    v(mapIteratorNext, nullptr) \
-    v(mapIteratorKey, nullptr) \
-    v(mapIteratorValue, nullptr) \
     v(setStorage, nullptr) \
     v(setIterationNext, nullptr) \
     v(setIterationEntry, nullptr) \
     v(setIterationEntryKey, nullptr) \
-    v(setIteratorNext, nullptr) \
-    v(setIteratorKey, nullptr) \
     v(setPrototypeDirect, nullptr) \
     v(setPrototypeDirectOrThrow, nullptr) \
     v(copyDataProperties, nullptr) \
@@ -58,16 +53,17 @@ class JSGlobalObject;
     v(resolvePromise, nullptr) \
     v(rejectPromise, nullptr) \
     v(fulfillPromise, nullptr) \
+    v(markPromiseAsHandled, nullptr) \
+    v(isPromiseStatePending, nullptr) \
     v(resolvePromiseWithFirstResolvingFunctionCallCheck, nullptr) \
     v(rejectPromiseWithFirstResolvingFunctionCallCheck, nullptr) \
     v(fulfillPromiseWithFirstResolvingFunctionCallCheck, nullptr) \
     v(newResolvedPromise, nullptr) \
     v(newRejectedPromise, nullptr) \
     v(resolveWithInternalMicrotaskForAsyncAwait, nullptr) \
-    v(asyncGeneratorQueueEnqueue, nullptr) \
-    v(asyncGeneratorQueueDequeueResolve, nullptr) \
-    v(asyncGeneratorQueueDequeueReject, nullptr) \
-    v(driveAsyncFunction, nullptr) \
+    v(asyncGeneratorPrototypeNext, nullptr) \
+    v(asyncIteratorPrototypeSymbolAsyncIterator, nullptr) \
+    v(asyncFunctionDrive, nullptr) \
     v(newHandledRejectedPromise, nullptr) \
     v(promiseReturnUndefinedOnFulfilled, nullptr) \
     v(promiseResolve, nullptr) \
@@ -84,6 +80,7 @@ class JSGlobalObject;
     v(isResizableOrGrowableSharedTypedArrayView, nullptr) \
     v(typedArrayFromFast, nullptr) \
     v(isDetached, nullptr) \
+    v(isTypedArrayOutOfBounds, nullptr) \
     v(isFinite, nullptr) \
     v(instanceOf, nullptr) \
     v(BuiltinLog, nullptr) \
@@ -116,20 +113,16 @@ class JSGlobalObject;
     v(regExpBuiltinExec, nullptr) \
     v(regExpCreate, nullptr) \
     v(isRegExp, nullptr) \
-    v(regExpMatchFast, nullptr) \
     v(regExpSearchFast, nullptr) \
-    v(regExpSplitFast, nullptr) \
     v(regExpPrototypeSymbolMatch, nullptr) \
+    v(regExpPrototypeSymbolMatchAll, nullptr) \
     v(regExpPrototypeSymbolReplace, nullptr) \
     v(stringIncludesInternal, nullptr) \
     v(stringIndexOfInternal, nullptr) \
-    v(stringSplitFast, nullptr) \
     v(stringSubstring, nullptr) \
     v(handleNegativeProxyHasTrapResult, nullptr) \
     v(handlePositiveProxySetTrapResult, nullptr) \
     v(handleProxyGetTrapResult, nullptr) \
-    v(webAssemblyCompileStreamingInternal, nullptr) \
-    v(webAssemblyInstantiateStreamingInternal, nullptr) \
     v(Object, nullptr) \
     v(Array, nullptr) \
     v(applyFunction, nullptr) \

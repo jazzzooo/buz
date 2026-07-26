@@ -29,6 +29,7 @@
 #include "Identifier.h"
 #include "Symbol.h"
 #include "VM.h"
+#include <JavaScriptCore/JSString.h>
 
 namespace JSC  {
 
@@ -116,7 +117,12 @@ inline Ref<AtomStringImpl> Identifier::add(VM& vm, StringImpl* r)
     return *AtomStringImpl::addWithStringTableProvider(vm, r);
 }
 
-inline Identifier Identifier::fromUid(VM& vm, UniquedStringImpl* uid)
+inline Identifier Identifier::createLatin1(VM& vm, std::span<const char16_t> string)
+{
+    return Identifier(vm, add8(vm, string));
+}
+
+SUPPRESS_NODELETE inline Identifier Identifier::fromUid(VM& vm, UniquedStringImpl* uid)
 {
     if (!uid || !uid->isSymbol())
         return Identifier(vm, uid);

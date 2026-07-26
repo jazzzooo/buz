@@ -45,6 +45,7 @@ private:
 static_assert(sizeof(StringConstructor) == sizeof(JSFunction), "Allocate StringConstructor in JSFunction IsoSubspace");
 
 JSString* stringFromCharCode(JSGlobalObject*, int32_t);
+JSString* stringFromCodePoint(JSGlobalObject*, int32_t);
 JSString* stringConstructor(JSGlobalObject*, JSValue);
 
 } // namespace JSC

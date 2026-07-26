@@ -28,6 +28,7 @@
 
 #include "BytecodeIndex.h"
 #include "Instruction.h"
+#include <wtf/UnalignedAccess.h>
 #include <wtf/Vector.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
@@ -241,43 +242,24 @@ public:
         return m_position;
     }
 
-    void write(uint8_t byte)
+    template<typename... Args>
+        requires (sizeof...(Args) > 0 && (... && std::integral<Args>))
+    void write(Args... args)
     {
-        ASSERT(!m_finalized);
-        if (m_position < m_instructions.size())
-            m_instructions[m_position++] = byte;
-        else {
-            m_instructions.append(byte);
-            m_position++;
-        }
+        constexpr size_t totalSize = (sizeof(Args) + ...);
+        auto* p = static_cast<uint8_t*>(reserve<totalSize>());
+        ((WTF::unalignedStore(p, args), p += sizeof(args)), ...);
     }
 
-    void write(uint16_t h)
+    template<size_t size>
+    uint8_t* reserve()
     {
         ASSERT(!m_finalized);
-        uint8_t bytes[2];
-        std::memcpy(bytes, &h, sizeof(h));
-
-        // Though not always obvious, we don't have to invert the order of the
-        // bytes written here for CPU(BIG_ENDIAN). This is because the incoming
-        // i value is already ordered in big endian on CPU(BIG_EDNDIAN) platforms.
-        write(bytes[0]);
-        write(bytes[1]);
-    }
-
-    void write(uint32_t i)
-    {
-        ASSERT(!m_finalized);
-        uint8_t bytes[4];
-        std::memcpy(bytes, &i, sizeof(i));
-
-        // Though not always obvious, we don't have to invert the order of the
-        // bytes written here for CPU(BIG_ENDIAN). This is because the incoming
-        // i value is already ordered in big endian on CPU(BIG_EDNDIAN) platforms.
-        write(bytes[0]);
-        write(bytes[1]);
-        write(bytes[2]);
-        write(bytes[3]);
+        if ((m_position + size) > m_instructions.size())
+            m_instructions.grow(m_position + size);
+        auto* result = m_instructions.mutableSpan().data() + m_position;
+        m_position += size;
+        return result;
     }
 
     void rewind(MutableRef& ref)

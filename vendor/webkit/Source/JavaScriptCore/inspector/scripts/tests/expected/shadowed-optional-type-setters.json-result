@@ -515,7 +515,7 @@ namespace Protocol {
 
 namespace TestHelpers {
 
-static const auto enum_constant_values = std::to_array<ASCIILiteral>({
+static const auto enum_constant_values = WTF::toArray<ASCIILiteral>({
     "null"_s,
     "string"_s,
     "array"_s,
@@ -529,7 +529,7 @@ String getEnumConstantValue(int code) {
 
 template<> std::optional<Protocol::Runtime::KeyPath::Type> parseEnumValueFromString<Protocol::Runtime::KeyPath::Type>(const String& protocolString)
 {
-    static const auto constantValues = std::to_array<size_t>({
+    static const auto constantValues = WTF::toArray<size_t>({
         (size_t)Protocol::Runtime::KeyPath::Type::Null,
         (size_t)Protocol::Runtime::KeyPath::Type::String,
         (size_t)Protocol::Runtime::KeyPath::Type::Array,
@@ -930,7 +930,7 @@ inline String toProtocolString(TestProtocolRuntimeKeyPathType value)
 template<>
 inline std::optional<TestProtocolRuntimeKeyPathType> fromProtocolString(const String& value)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, TestProtocolRuntimeKeyPathType>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, TestProtocolRuntimeKeyPathType>>({
         { "array"_s, TestProtocolRuntimeKeyPathTypeArray },
         { "null"_s, TestProtocolRuntimeKeyPathTypeNull },
         { "string"_s, TestProtocolRuntimeKeyPathTypeString },

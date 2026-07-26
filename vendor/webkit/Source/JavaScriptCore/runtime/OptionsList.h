@@ -25,9 +25,10 @@
 
 #pragma once
 
-#include "GCLogging.h"
-#include "JSExportMacros.h"
-#include "OSCheck.h"
+#include <JavaScriptCore/GCLogging.h>
+#include <JavaScriptCore/JSCWebPreferenceOptions.h>
+#include <JavaScriptCore/JSExportMacros.h>
+#include <JavaScriptCore/OSCheck.h>
 #include <wtf/MathExtras.h>
 
 #if OS(DARWIN)
@@ -121,6 +122,7 @@ bool hasCapacityToUseLargeGigacage();
     v(Bool, debuggerTriggersBreakpointException, false, Normal, "Using the debugger statement will trigger an breakpoint exception (Useful when lldbing)"_s) \
     v(Bool, verboseWasmDebugger, false, Normal, nullptr) \
     v(Bool, enableWasmDebugger, false, Normal, nullptr) \
+    v(Bool, verboseWasmTypeCleanup, false, Normal, "Log per-invocation counts from Wasm::TypeInformation::tryCleanup (scanned / live / reclaimed)."_s) \
     v(Bool, dumpBytecodesBeforeGeneratorification, false, Normal, nullptr) \
     v(Unsigned, switchJumpTableAmountThreshold, 15, Normal, nullptr) \
     \
@@ -130,8 +132,6 @@ bool hasCapacityToUseLargeGigacage();
     v(Bool, alwaysUseShadowChicken, false, Normal, nullptr) \
     v(Unsigned, shadowChickenLogSize, 1000, Normal, nullptr) \
     v(Unsigned, shadowChickenMaxTailDeletedFramesSize, 128, Normal, nullptr) \
-    \
-    v(Bool, useIterationIntrinsics, true, Normal, nullptr) \
     \
     v(OSLogType, useOSLog, OSLogType::None, Normal, "Log dataLog()s to os_log instead of stderr"_s) \
     /* dumpDisassembly implies dumpDFGDisassembly. */ \
@@ -256,7 +256,7 @@ bool hasCapacityToUseLargeGigacage();
     \
     v(Bool, useFTLJIT, true, Normal, "allows the FTL JIT to be used if true"_s) \
     v(Bool, validateFTLOSRExitLiveness, false, Normal, nullptr) \
-    v(Bool, poisonDeadOSRExitVariables, false, Normal, "Put 0xbad0beef into dead OSR exit values rather than jsUndefined"_s) \
+    v(Bool, poisonDeadOSRExitVariables, ASSERT_ENABLED, Normal, "Put an unmapped cell-like pointer (poisonedDeadOSRExitValue) into dead OSR exit values rather than jsUndefined, so accidental reads of dead variables crash at the access site"_s) \
     v(Unsigned, defaultB3OptLevel, 2, Normal, nullptr) \
     v(Bool, b3AlwaysFailsBeforeCompile, false, Normal, nullptr) \
     v(Bool, b3AlwaysFailsBeforeLink, false, Normal, nullptr) \
@@ -338,6 +338,7 @@ bool hasCapacityToUseLargeGigacage();
     v(Unsigned, maximumBinaryStringSwitchCaseLength, 50, Normal, nullptr) \
     v(Unsigned, maximumBinaryStringSwitchTotalLength, 2000, Normal, nullptr) \
     v(Unsigned, maximumRegExpTestInlineCodesize, 500, Normal, "Maximum code size in bytes for inlined RegExp.test JIT code."_s) \
+    v(Unsigned, maximumRegExpJITCodeSize, 16 * MB, Normal, "Maximum generated code size in bytes for RegExp JIT compilation before falling back to the interpreter."_s) \
     \
     v(Unsigned, wasmInliningMaximumDepth, 7, Normal, "Maximum inlining depth to consider inlining a wasm function."_s) \
     v(Unsigned, wasmInliningMaximumWasmCalleeSize, 500, Normal, "Maximum wasm size in bytes to consider inlining a wasm function."_s) \
@@ -345,10 +346,14 @@ bool hasCapacityToUseLargeGigacage();
     v(Unsigned, wasmInliningMinimumBudget, 50, Normal, "Minimum budget for which the wasmInliningFactor does not apply"_s) \
     v(Unsigned, wasmInliningFactor, 5, Normal, "Maximum multiple budget in comparison to initial wasm size"_s) \
     v(Unsigned, wasmInliningBudget, 6000, Normal, "Maximum budget that allows inlining more"_s) \
+    v(Double, wasmInliningLargeFunctionGrowthFactor, 1.4, Normal, "Minimum growth factor (multiplied by initial wasm size) that bounds the large-function inlining budget."_s) \
     v(Unsigned, wasmInliningTinyFunctionThreshold, 12, Normal, "Wasm size threshold for tiny wasm functions"_s) \
     v(Unsigned, wasmInliningSmallFunctionThreshold, 50, Normal, "Wasm size threshold for small wasm functions"_s) \
     \
     v(Double, jitPolicyScale, 1.0, Normal, "scale JIT thresholds to this specified ratio between 0.0 (compile ASAP) and 1.0 (compile like normal)."_s) \
+    v(Int32, numberOfP0CoresOverrides, 0, Normal, "If non-zero, overrides the number of P0 (highest-performance) cores reported by hwNumberOfP0Cores(); 0 means use the value reported by the hardware."_s) \
+    v(Double, dfgThresholdScaleForLowP0Cores, 2.0, Normal, "On low P0-core-count Apple silicon Macs, scale the DFG tier-up thresholds (thresholdForOptimize*) by this factor."_s) \
+    v(Double, ftlThresholdScaleForLowP0Cores, 1.5, Normal, "On low P0-core-count Apple silicon Macs, scale the FTL tier-up thresholds (thresholdForFTLOptimize*) by this factor."_s) \
     v(Bool, forceEagerCompilation, false, Normal, nullptr) \
     v(Int32, thresholdForJITAfterWarmUp, 500, Normal, nullptr) \
     v(Int32, thresholdForJITSoon, 100, Normal, nullptr) \
@@ -410,7 +415,7 @@ bool hasCapacityToUseLargeGigacage();
     \
     v(Double, percentCPUPerMBForFullTimer, 0.0003125, Normal, nullptr) \
     v(Double, percentCPUPerMBForEdenTimer, 0.0025, Normal, nullptr) \
-    v(Double, collectionTimerMaxPercentCPU, 0.05, Normal, nullptr) \
+    v(Double, collectionTimerMaxPercentCPU, 0.10, Normal, nullptr) \
     \
     v(Bool, forceWeakRandomSeed, false, Normal, nullptr) \
     v(Unsigned, forcedWeakRandomSeed, 0, Normal, nullptr) \
@@ -526,6 +531,8 @@ bool hasCapacityToUseLargeGigacage();
     v(Unsigned, maxB3TailDupBlockSuccessors, 3, Normal, nullptr) \
     v(Bool, useB3HoistLoopInvariantValues, true, Normal, nullptr) \
     v(Bool, useB3CanonicalizePrePostIncrements, false, Normal, nullptr) \
+    v(Bool, useB3EliminateWasmGCAllocations, true, Normal, "eliminate non-escaping wasm-GC struct allocations in B3"_s) \
+    v(Bool, useB3ReduceStrengthFixpoint, false, Normal, "iterate B3 reduceStrength to a fixpoint instead of a single pass (for debugging)"_s) \
     v(Bool, useAirOptimizePairedLoadStore, true, Normal, nullptr) \
     \
     v(Bool, useDollarVM, false, Restricted, "installs the $vm debugging tool in global objects"_s) \
@@ -556,7 +563,6 @@ bool hasCapacityToUseLargeGigacage();
     v(Bool, useSuperSampler, false, Normal, nullptr) \
     \
     v(Bool, useSourceProviderCache, true, Normal, "If false, the parser will not use the source provider cache. It's good to verify everything works when this is false. Because the cache is so successful, it can mask bugs."_s) \
-    v(Bool, useEagerIIFEParsing, true, Normal, "Eagerly build AST for likely IIFEs during the initial parse."_s) \
     v(Bool, useCodeCache, true, Normal, "If false, the unlinked byte code cache will not be used."_s) \
     \
     v(Bool, useWasm, canUseWasm(), Normal, "Expose the Wasm global object."_s) \
@@ -663,31 +669,14 @@ bool hasCapacityToUseLargeGigacage();
     \
     /* Feature Flags */\
     \
+    /* Feature-flag options whose source of truth is UnifiedWebPreferences.yaml. */ \
+    FOR_EACH_JSC_WEB_PREFERENCE_OPTION(v) \
     /* Restricted so some app doesn't set this environment variable and start using it. */ \
-    v(Bool, useAsyncStackTrace, true, Normal, "Enable async stack traces") \
     v(Bool, disallowMixedWasmExceptions, true, Restricted, "Disallow using both legacy and modern (try_table) wasm exception specs in the same module."_s) \
-    v(Bool, useExplicitResourceManagement, false, Normal, "Enable explicit resource management builtins and syntax."_s) \
-    v(Bool, useImportDefer, false, Normal, "Enable deferred module import."_s) \
-    v(Bool, useIteratorChunking, false, Normal, "Expose the Iterator.prototype.chunks and Iterator.prototype.windows methods."_s) \
-    v(Bool, useIteratorSequencing, true, Normal, "Expose the Iterator.concat method."_s) \
-    v(Bool, useIteratorIncludes, false, Normal, "Expose the Iterator.includes method."_s) \
-    v(Bool, useIteratorJoin, false, Normal, "Expose the Iterator.prototype.join method."_s) \
-    v(Bool, useJSONSourceTextAccess, true, Normal, "Expose JSON source text access feature."_s) \
-    v(Bool, useJSPI, true, Normal, "Enable the implementation of JavaScript Promise Integration."_s) \
-    v(Bool, useMoreCurrencyDisplayChoices, false, Normal, "Enable more currencyDisplay choices for Intl.NumberFormat"_s) \
-    v(Bool, usePromiseIsPromise, false, Normal, nullptr) \
+    /* Not sourced from UnifiedWebPreferences.yaml: force-enabled via the cross-origin-isolation path and consumed in WebCore. */ \
     v(Bool, useSharedArrayBuffer, false, Normal, nullptr) \
-    v(Bool, useShadowRealm, false, Normal, "Expose the ShadowRealm object."_s) \
-    v(Bool, useTemporal, false, Normal, "Expose the Temporal object."_s) \
+    /* Not sourced from UnifiedWebPreferences.yaml: shares its semantics with the WebCore-bound TrustedTypes feature. */ \
     v(Bool, useTrustedTypes, true, Normal, "Enable trusted types eval protection feature."_s) \
-    v(Bool, useWasmJSStringBuiltins, true, Normal, "Enable the implementation of the JS String Builtins proposal."_s) \
-    v(Bool, useWasmMemory64, false, Normal, "Allow the Memory64 proposal for WebAssembly. This feature is currently only supported in the IPInt tier."_s) \
-    v(Bool, useWasmMemoryToBufferAPIs, true, Normal, "Enable the toFixedLengthBuffer() and toResizableBuffer() Wasm Memory.prototype functions."_s) \
-    v(Bool, useWasmMultiMemory, false, Normal, "Allow wasm code to access multiple linear memories") \
-    v(Bool, useWasmRelaxedSIMD, false, Normal, "Allow the relaxed simd instructions and types from the wasm relaxed simd spec."_s) \
-    v(Bool, useWasmSIMD, true, Normal, "Allow the new simd instructions and types from the wasm simd spec."_s) \
-    v(Bool, useWasmTailCalls, true, Normal, "Allow the new instructions from the wasm tail calls spec."_s) \
-    v(Bool, useWasmWideArithmetic, false, Normal, "Allow the wide arithmetic instructions from the wasm wide-arithmetic spec."_s) \
 
 
 
@@ -764,7 +753,7 @@ public:
     void dump(PrintStream& out) const;
 
 private:
-    static const char* const s_nullRangeStr;
+    JS_EXPORT_PRIVATE static const char* const s_nullRangeStr;
 
     RangeState m_state { Uninitialized };
     const char* m_rangeString { nullptr };

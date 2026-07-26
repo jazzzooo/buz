@@ -259,7 +259,7 @@ public:
         return argObservedType().isEmpty();
     }
 
-    friend class JSC::LLIntOffsetsExtractor;
+    friend class LLIntOffsetsExtractor;
 };
 
 /* This class stores the following components in 16 bits:
@@ -384,7 +384,7 @@ public:
         return lhsObservedType().isEmpty() && rhsObservedType().isEmpty();
     }
 
-    friend class JSC::LLIntOffsetsExtractor;
+    friend class LLIntOffsetsExtractor;
 };
 
 } // namespace JSC

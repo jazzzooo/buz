@@ -34,6 +34,7 @@
 
 #include "JSCInlines.h"
 #include "JSLock.h"
+#include "TopExceptionScope.h"
 #include <wtf/text/WTFString.h>
 
 namespace Inspector {

@@ -35,7 +35,6 @@
 #include "JITWorklistThread.h"
 #include "SlotVisitorInlines.h"
 #include "VMInlines.h"
-#include <wtf/CompilationThread.h>
 #include <wtf/TZoneMallocInlines.h>
 
 namespace JSC {
@@ -193,6 +192,12 @@ size_t JITWorklist::queueLength(const AbstractLocker&) const
     for (unsigned i = 0; i < static_cast<unsigned>(JITPlan::Tier::Count); ++i)
         queueLength += m_queues[i].size();
     return queueLength;
+}
+
+size_t JITWorklist::totalOngoingCompilations() const
+{
+    Locker locker { *m_lock };
+    return totalOngoingCompilations(locker);
 }
 
 size_t JITWorklist::totalOngoingCompilations(const AbstractLocker&) const

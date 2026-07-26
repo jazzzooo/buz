@@ -37,7 +37,6 @@
 #include <array>
 #include <wtf/CheckedArithmetic.h>
 #include <wtf/ForbidHeapAllocation.h>
-#include <wtf/MathExtras.h>
 #include <wtf/UnalignedAccess.h>
 #include <wtf/text/StringView.h>
 
@@ -354,6 +353,7 @@ public:
     }
 
     // We use lower 3bits of fiber0 for flags. These bits are usable due to alignment, and it is OK even in 32bit architecture.
+    static constexpr unsigned s_maxInternalRopeLength = 3;
     static constexpr uintptr_t is8BitInPointer = static_cast<uintptr_t>(StringImpl::flagIs8Bit());
     static constexpr uintptr_t isSubstringInPointer = 0x2;
     static_assert(is8BitInPointer == 0b100);
@@ -405,6 +405,8 @@ public:
         static constexpr ptrdiff_t offsetOfLength() { return OBJECT_OFFSETOF(CompactFibers, m_length); }
         static constexpr ptrdiff_t offsetOfFiber1() { return OBJECT_OFFSETOF(CompactFibers, m_length); }
         static constexpr ptrdiff_t offsetOfFiber2() { return OBJECT_OFFSETOF(CompactFibers, m_fiber1Upper); }
+        static constexpr ptrdiff_t offsetOfFiber1Lower() { return OBJECT_OFFSETOF(CompactFibers, m_fiber1Lower); }
+        static constexpr ptrdiff_t offsetOfFiber2Lower() { return OBJECT_OFFSETOF(CompactFibers, m_fiber2Lower); }
 
     private:
         friend class LLIntOffsetsExtractor;
@@ -467,11 +469,12 @@ public:
 
         bool append(JSString* jsString)
         {
+            static_assert(3 == JSRopeString::s_maxInternalRopeLength);
             if (this->hasOverflowed()) [[unlikely]]
                 return false;
             if (!jsString->length())
                 return true;
-            if (m_strings.size() == JSRopeString::s_maxInternalRopeLength)
+            if (m_index == JSRopeString::s_maxInternalRopeLength)
                 expand();
 
             static_assert(JSString::MaxLength == std::numeric_limits<int32_t>::max());
@@ -481,7 +484,7 @@ public:
                 return false;
             }
             ASSERT(static_cast<unsigned>(sum) <= MaxLength);
-            m_strings.append(jsString);
+            m_strings[m_index++] = jsString;
             m_length = static_cast<unsigned>(sum);
             return true;
         }
@@ -490,22 +493,23 @@ public:
         {
             RELEASE_ASSERT(!this->hasOverflowed());
             JSString* result = nullptr;
-            switch (m_strings.size()) {
+            static_assert(3 == JSRopeString::s_maxInternalRopeLength);
+            switch (m_index) {
             case 0: {
                 ASSERT(!m_length);
                 result = jsEmptyString(m_vm);
                 break;
             }
             case 1: {
-                result = asString(m_strings.at(0));
+                result = m_strings[0];
                 break;
             }
             case 2: {
-                result = JSRopeString::create(m_vm, asString(m_strings.at(0)), asString(m_strings.at(1)));
+                result = JSRopeString::create(m_vm, m_strings[0], m_strings[1]);
                 break;
             }
             case 3: {
-                result = JSRopeString::create(m_vm, asString(m_strings.at(0)), asString(m_strings.at(1)), asString(m_strings.at(2)));
+                result = JSRopeString::create(m_vm, m_strings[0], m_strings[1], m_strings[2]);
                 break;
             }
             default:
@@ -513,7 +517,7 @@ public:
                 break;
             }
             ASSERT(result->length() == m_length);
-            m_strings.clear();
+            m_index = 0;
             m_length = 0;
             return result;
         }
@@ -528,7 +532,8 @@ public:
         void expand();
 
         VM& m_vm;
-        MarkedArgumentBuffer m_strings;
+        std::array<JSString*, JSRopeString::s_maxInternalRopeLength> m_strings { };
+        unsigned m_index { 0 };
         unsigned m_length { 0 };
     };
 
@@ -626,8 +631,10 @@ public:
     static constexpr ptrdiff_t offsetOfFiber0() { return offsetOfValue(); }
     static constexpr ptrdiff_t offsetOfFiber1() { return OBJECT_OFFSETOF(JSRopeString, m_compactFibers) + CompactFibers::offsetOfFiber1(); }
     static constexpr ptrdiff_t offsetOfFiber2() { return OBJECT_OFFSETOF(JSRopeString, m_compactFibers) + CompactFibers::offsetOfFiber2(); }
-
-    static constexpr unsigned s_maxInternalRopeLength = 3;
+#if CPU(ADDRESS64)
+    static constexpr ptrdiff_t offsetOfFiber1Lower() { return OBJECT_OFFSETOF(JSRopeString, m_compactFibers) + CompactFibers::offsetOfFiber1Lower(); }
+    static constexpr ptrdiff_t offsetOfFiber2Lower() { return OBJECT_OFFSETOF(JSRopeString, m_compactFibers) + CompactFibers::offsetOfFiber2Lower(); }
+#endif
 
     // If nullOrExecForOOM is null, resolveRope() will be do nothing in the event of an OOM error.
     // The rope value will remain a null string in that case.
@@ -770,6 +777,8 @@ private:
     friend JSString* jsAtomString(JSGlobalObject*, VM&, JSString*, JSString*, JSString*);
 };
 
+template<> void JSRopeString::RopeBuilder<RecordOverflow>::expand();
+
 JS_EXPORT_PRIVATE JSString* jsStringWithCacheSlowCase(VM&, StringImpl&);
 
 // JSString::is8Bit is safe to be called concurrently. Concurrent threads can access is8Bit even if the main thread
@@ -862,15 +871,19 @@ ALWAYS_INLINE Identifier JSRopeString::toIdentifier(JSGlobalObject* globalObject
 
 ALWAYS_INLINE void JSString::swapToAtomString(VM& vm, RefPtr<AtomStringImpl>&& atom) const
 {
-    // We replace currently held string with new AtomString. But the old string can be accessed from concurrent compilers and GC threads at any time.
-    // So, we keep the old string alive by appending it to Heap::m_possiblyAccessedStringsFromConcurrentThreads. And GC clears that list when GC finishes.
-    // This is OK since (1) when finishing GC concurrent compiler threads and GC threads are stopped, and (2) AtomString is already held in the atom table,
-    // and we anyway keep this old string until this JSString* is GC-ed. So it does not increase any memory pressure, we release at the same timing.
+    // When we swap a JSString's value to an AtomString, the old StringImpl can still be accessed
+    // by concurrent JIT compiler threads, GC threads, or via GCOwnedDataScope references on the stack.
+    // We keep the old string alive by appending it (paired with its owning JSString*) to
+    // Heap::m_possiblyAccessedStringsFromConcurrentThreadsOrGCOwnedDataScope.
+    // During GC, conservative root scanning discovers which JSStrings are still on the stack; at GC
+    // end we prune entries whose JSString was not discovered. Between GCs,
+    // Heap::clearConcurrentRetainedDataIfPossible clears the vector entirely when no JS is executing
+    // and no JIT compilations are in progress.
     ASSERT(!isCompilationThread() && !Thread::mayBeGCThread());
     String target(WTF::move(atom));
     WTF::storeStoreFence(); // Ensure AtomStringImpl's string is fully initialized when it is exposed to concurrent threads.
     valueInternal().swap(target);
-    vm.heap.appendPossiblyAccessedStringFromConcurrentThreads(WTF::move(target));
+    vm.heap.appendPossiblyAccessedStringFromConcurrentThreadsOrGCOwnedDataScope(this, WTF::move(target));
 }
 
 ALWAYS_INLINE Identifier JSString::toIdentifier(JSGlobalObject* globalObject) const
@@ -969,6 +982,13 @@ inline JSString* JSString::getIndex(JSGlobalObject* globalObject, unsigned i)
     auto view = this->view(globalObject);
     RETURN_IF_EXCEPTION(scope, nullptr);
     return jsSingleCharacterString(vm, view[i]);
+}
+
+// (1) Cost of making JSString    : sizeof(JSString) (for new string) + sizeof(StringImpl header) + totalLength
+// (2) Cost of making JSRopeString: sizeof(JSRopeString) + newFiberCount * sizeof(JSString) (for fibers not already wrapped in a JSString)
+ALWAYS_INLINE bool shouldMakeRope(size_t totalLength, unsigned newFiberCount)
+{
+    return StringImpl::headerSize<Latin1Character>() + totalLength >= sizeof(JSRopeString) + (newFiberCount - 1) * sizeof(JSString);
 }
 
 inline JSString* jsString(VM& vm, const String& s)

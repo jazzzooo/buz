@@ -32,13 +32,13 @@ void StringBuilder::appendQuotedJSONString(const String& string)
         return;
     }
 
-    // We need to use saturatedSum<uint32_t>() below instead of saturatedSum<int32_t>
+    // We need to use saturatingSum<uint32_t>() below instead of saturatingSum<int32_t>
     // because INT_MAX is a valid capacity value. If stringLengthValue is greater than
     // INT_MAX, but is saturated to INT_MAX, then we'll end up allocating an INT_MAX
     // sized buffer and try to write beyond it resulting in a crash due to std:::span.
     // Ideally, we should fail with an overflow instead.
     //
-    // Using saturatedSum<uint32_t>(), the sum can be:
+    // Using saturatingSum<uint32_t>(), the sum can be:
     // 1. less or equal to INT_MAX.
     // 2. greater than INT_MAX but not be saturated.
     // 3. be saturated at UINT_MAX.
@@ -50,7 +50,7 @@ void StringBuilder::appendQuotedJSONString(const String& string)
     auto stringLengthValue = static_cast<uint32_t>(stringLength.value());
 
     if (is8Bit() && string.is8Bit()) {
-        if (auto output = extendBufferForAppending<Latin1Character>(saturatedSum<uint32_t>(m_length, stringLengthValue)); output.data()) {
+        if (auto output = extendBufferForAppending<Latin1Character>(saturatingSum<uint32_t>(m_length, stringLengthValue)); output.data()) {
             output = output.first(stringLengthValue);
             consume(output) = '"';
             appendEscapedJSONStringContent(output, string.span8());
@@ -59,7 +59,7 @@ void StringBuilder::appendQuotedJSONString(const String& string)
                 shrink(m_length - output.size());
         }
     } else {
-        if (auto output = extendBufferForAppendingWithUpconvert(saturatedSum<uint32_t>(m_length, stringLengthValue)); output.data()) {
+        if (auto output = extendBufferForAppendingWithUpconvert(saturatingSum<uint32_t>(m_length, stringLengthValue)); output.data()) {
             output = output.first(stringLengthValue);
             consume(output) = '"';
             if (string.is8Bit())

@@ -59,6 +59,7 @@ class MediaTime;
 class MonotonicTime;
 class OrdinalNumber;
 class PrintStream;
+class ReducedResolutionSeconds;
 class SHA1;
 class Seconds;
 class SerialFunctionDispatcher;
@@ -126,7 +127,8 @@ template<typename, size_t = 0> class Deque;
 template<typename Key, typename, Key> class EnumeratedArray;
 template<typename> class EnumSet;
 template<typename, typename = EmbeddedFixedVectorMalloc> class FixedVector;
-template<typename, size_t = 8, size_t = 0, typename = SegmentedVectorMalloc> class SegmentedVector;
+enum class SegmentedVectorGrowthPolicy : uint8_t { Constant, Doubling };
+template<typename, size_t = 8, size_t = 0, SegmentedVectorGrowthPolicy = SegmentedVectorGrowthPolicy::Constant, typename = SegmentedVectorMalloc> class SegmentedVector;
 template<typename> class Function;
 template<typename> struct FlatteningVariantTraits;
 template<typename> struct IsSmartPtr;
@@ -139,6 +141,7 @@ template<typename T, typename = DefaultOSObjectRetainTraits<T, ARCEnabled>> clas
 template<typename, typename, typename> class ObjectIdentifierGeneric;
 template<typename T, typename RawValue = uint64_t> using ObjectIdentifier = ObjectIdentifierGeneric<T, ObjectIdentifierMainThreadAccessTraits<RawValue>, RawValue>;
 template<typename T, typename RawValue = uint64_t> using AtomicObjectIdentifier = ObjectIdentifierGeneric<T, ObjectIdentifierThreadSafeAccessTraits<RawValue>, RawValue>;
+template<typename T> using UUIDObjectIdentifier = AtomicObjectIdentifier<T, UUID>;
 template<typename> class Observer;
 template<typename, ConcurrencyTag = ConcurrencyTag::None> class OptionSet;
 template<typename> class Packed;
@@ -160,7 +163,7 @@ template<typename, size_t = 0> class VariantList;
 template<typename, size_t = 0> struct VariantListConstIterator;
 template<typename> struct VariantListProxy;
 template<typename> struct VariantListSizer;
-template<typename, size_t = 0, typename = CrashOnOverflow, size_t = 16, typename = VectorBufferMalloc> class Vector;
+template<typename T, size_t inlineCapacity = 0, typename OverflowHandler = CrashOnOverflow, size_t minCapacity = 16, typename Malloc = VectorBufferMalloc> class Vector;
 template<typename, typename WeakPtrImpl = DefaultWeakPtrImpl, typename = RawPtrTraits<WeakPtrImpl>> class WeakPtr;
 template<typename, typename = DefaultWeakPtrImpl> class WeakRef;
 template<typename T> class InlineWeakPtr;
@@ -169,7 +172,7 @@ template<typename T, typename = NoTaggingTraits<T>> class ThreadSafeWeakPtr;
 template<typename T, typename = NoTaggingTraits<T>> class ThreadSafeWeakRef;
 
 template <typename T>
-using SaSegmentedVector = SegmentedVector<T, 8, 0, SequesteredArenaMalloc>;
+using SaSegmentedVector = SegmentedVector<T, 8, 0, SegmentedVectorGrowthPolicy::Constant, SequesteredArenaMalloc>;
 template <typename T>
 using SaFixedVector = FixedVector<T, SequesteredArenaMalloc>;
 template <typename T>
@@ -201,6 +204,8 @@ template<typename KeyArg, typename MappedArg, typename KeyHash = DefaultHash<Key
 using UncheckedKeyHashMap = HashMap<KeyArg, MappedArg, KeyHash, KeyTraits, MappedTraits, HashTraits, ShouldValidateKey::No, Malloc>;
 template<typename ValueArg, typename = DefaultHash<ValueArg>, typename = HashTraits<ValueArg>, typename = HashTableTraits, ShouldValidateKey = ShouldValidateKey::Yes> class HashSet;
 template<typename ValueArg, typename = DefaultHash<ValueArg>> class ListHashSet;
+template<typename KeyArg, typename MappedArg, typename = DefaultHash<KeyArg>, typename = HashTraits<KeyArg>, typename = HashTraits<MappedArg>, typename = HashTableMalloc> class OrderedHashMap;
+template<typename ValueArg, typename = DefaultHash<ValueArg>, typename = HashTraits<ValueArg>, typename = HashTableMalloc> class OrderedHashSet;
 template<typename ValueArg, typename HashArg = DefaultHash<ValueArg>, typename TraitsArg = HashTraits<ValueArg>, typename TableTraitsArg = HashTableTraits>
 using UncheckedKeyHashSet = HashSet<ValueArg, HashArg, TraitsArg, TableTraitsArg, ShouldValidateKey::No>;
 template<typename ResolveValueT, typename RejectValueT, unsigned options = 0> class NativePromise;
@@ -293,10 +298,13 @@ using WTF::ObjectIdentifier;
 using WTF::ObjectIdentifierGeneric;
 using WTF::Observer;
 using WTF::OptionSet;
+using WTF::OrderedHashMap;
+using WTF::OrderedHashSet;
 using WTF::OrdinalNumber;
 using WTF::PrintStream;
 using WTF::RawPtrTraits;
 using WTF::RawValueTraits;
+using WTF::ReducedResolutionSeconds;
 using WTF::Ref;
 using WTF::RefPtr;
 using WTF::RetainPtr;
@@ -317,6 +325,7 @@ using WTF::SuspendableWorkQueue;
 using WTF::TextPosition;
 using WTF::TextStream;
 using WTF::URL;
+using WTF::UUIDObjectIdentifier;
 using WTF::UncheckedKeyHashMap;
 using WTF::UncheckedKeyHashSet;
 using WTF::UniqueRef;

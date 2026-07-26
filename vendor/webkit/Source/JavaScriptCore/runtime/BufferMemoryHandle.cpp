@@ -30,9 +30,7 @@
 #include "Options.h"
 #include "WasmFaultSignalHandler.h"
 #include <cstring>
-#include <limits>
 #include <mutex>
-#include <wtf/CheckedArithmetic.h>
 #include <wtf/DataLog.h>
 #include <wtf/FastMalloc.h>
 #include <wtf/Lock.h>
@@ -40,7 +38,6 @@
 #include <wtf/OSAllocator.h>
 #include <wtf/Platform.h>
 #include <wtf/PrintStream.h>
-#include <wtf/SafeStrerror.h>
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/Vector.h>
 

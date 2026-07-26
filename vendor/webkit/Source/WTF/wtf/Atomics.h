@@ -491,21 +491,22 @@ InputAndValue<InputType, ValueType> inputAndValue(InputType input, ValueType val
     return InputAndValue<InputType, ValueType>(input, value);
 }
 
-template<typename T, typename Func>
-ALWAYS_INLINE T& ensurePointer(Atomic<T*>& pointer, const Func& func)
+template<typename T>
+ALWAYS_INLINE T& ensurePointer(Atomic<T*>& pointer, const Invocable<T*()> auto& func)
 {
-    for (;;) {
-        T* oldValue = pointer.load(std::memory_order_relaxed);
-        if (oldValue) {
-            // On all sensible CPUs, we get an implicit dependency-based load-load barrier when
-            // loading this.
-            return *oldValue;
-        }
-        T* newValue = func();
-        if (pointer.compareExchangeWeak(oldValue, newValue))
-            return *newValue;
-        delete newValue;
+    T* oldValue = pointer.load(std::memory_order_relaxed);
+    if (oldValue) {
+        // On all sensible CPUs, we get an implicit dependency-based load-load barrier when
+        // loading this.
+        return *oldValue;
     }
+    T* newValue = func();
+    if (T* actual = pointer.compareExchangeStrong(nullptr, newValue, std::memory_order_release, std::memory_order_relaxed)) {
+        // Someone beat us to it, memory_order_relaxed is fine in this case, we didn't publish newValue to any other thread.
+        delete newValue;
+        return *actual;
+    }
+    return *newValue;
 }
 
 } // namespace WTF

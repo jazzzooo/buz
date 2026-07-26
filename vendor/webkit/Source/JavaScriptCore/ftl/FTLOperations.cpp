@@ -39,6 +39,7 @@
 #include "JSArrayIterator.h"
 #include "JSAsyncFromSyncIterator.h"
 #include "JSAsyncFunction.h"
+#include "JSAsyncFunctionGenerator.h"
 #include "JSAsyncGenerator.h"
 #include "JSAsyncGeneratorFunction.h"
 #include "JSCellButterfly.h"
@@ -46,7 +47,7 @@
 #include "JSGenerator.h"
 #include "JSGeneratorFunction.h"
 #include "JSIteratorHelper.h"
-#include "JSLexicalEnvironment.h"
+#include "JSLexicalEnvironmentInlines.h"
 #include "JSMapIterator.h"
 #include "JSPromise.h"
 #include "JSPromiseReaction.h"
@@ -104,9 +105,34 @@ JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationPopulateObjectInOSR, void, (JSGlobalO
             // double-to-contiguous conversion. This is safe because values written to sunk double
             // arrays use DoubleRepRealUse (proven non-NaN), so any NaN here must be the hole
             // sentinel and is not user-visible.
-            if (hasDouble(array->indexingType()) && value.isNumber() && std::isnan(value.asNumber())) [[unlikely]]
+            //
+            // The analogous case for Int32/Contiguous arrays: an unwritten element's Phi resolves
+            // to the empty JSValue, which is the hole sentinel for these indexing types. For Int32
+            // arrays, putDirectIndex would spuriously convert the array to Contiguous because the
+            // empty JSValue is not an Int32. Contiguous is also handled here for the debug ASSERT
+            // in putDirectIndex that null-derefs on the empty JSValue. Write directly into the
+            // butterfly to preserve the indexing type.
+            //
+            // If the VM had a bad time between FTL compilation and this OSR exit, the Array was
+            // switched to SlowPutArrayStorage in operationMaterializeObjectInOSR. A hole must then
+            // be cleared in the ArrayStorage vector rather than the contiguous butterfly to match
+            // the rematerialized layout. Note that the hole arrives as the hole sentinel of the
+            // indexing type the Array was sunk with, not of the Array's current indexing type:
+            // boxed NaN if the Array was sunk as Double, the empty JSValue otherwise.
+            // m_numValuesInVector is also decremented because the cleared slot was counted when
+            // the sentinel-filled butterfly was converted to ArrayStorage.
+            bool valueIsHole = hasDouble(materialization->indexingType()) ? value.isNumber() && isHole(value.asNumber()) : !value;
+            if (hasDouble(array->indexingType()) && valueIsHole) [[unlikely]]
                 array->butterfly()->contiguousDouble().atUnsafe(index) = PNaN;
-            else
+            else if ((hasInt32(array->indexingType()) || hasContiguous(array->indexingType())) && valueIsHole) [[unlikely]]
+                array->butterfly()->contiguous().atUnsafe(index).setStartingValue(JSValue());
+            else if (hasAnyArrayStorage(array->indexingType()) && valueIsHole) [[unlikely]] {
+                ArrayStorage* storage = array->butterfly()->arrayStorage();
+                ASSERT(storage->m_vector[index]);
+                ASSERT(storage->m_numValuesInVector);
+                storage->m_vector[index].clear();
+                storage->m_numValuesInVector--;
+            } else
                 array->putDirectIndex(globalObject, index, value);
 
             scope.assertNoExceptionExceptTermination();
@@ -155,6 +181,7 @@ JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationPopulateObjectInOSR, void, (JSGlobalO
     case PhantomSpread:
     case PhantomNewArrayWithSpread:
     case PhantomNewArrayBuffer:
+    case PhantomNewPromise:
         // Those are completely handled by operationMaterializeObjectInOSR
         break;
 
@@ -215,12 +242,11 @@ JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationPopulateObjectInOSR, void, (JSGlobalO
         case JSGeneratorType:
             materialize(uncheckedDowncast<JSGenerator>(target));
             break;
+        case JSAsyncFunctionGeneratorType:
+            materialize(uncheckedDowncast<JSAsyncFunctionGenerator>(target));
+            break;
         case JSAsyncGeneratorType:
             materialize(uncheckedDowncast<JSAsyncGenerator>(target));
-            break;
-        case JSPromiseType:
-            ASSERT(target->classInfo() == JSPromise::info());
-            materialize(uncheckedDowncast<JSPromise>(target));
             break;
         default:
             RELEASE_ASSERT_NOT_REACHED();
@@ -298,7 +324,13 @@ JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationMaterializeObjectInOSR, HeapCell*, (J
     }
 
     case PhantomNewArrayWithButterfly: {
-        Structure* structure = globalObject->arrayStructureForIndexingTypeDuringAllocation(materialization->indexingType());
+        // Rematerialized butterflies are always non-ArrayStorage. However, isHavingABadTime could
+        // have become true between the FTL compilation and the rematerialization, which would have
+        // switched arrayStructureForIndexingTypeDuringAllocation to SlowPutArrayStorage for all
+        // indexing types. To avoid a layout mismatch, the original Array structure is used to
+        // rematerialize the Array initially. If we're having a bad time, the layout is switched to
+        // SlowPutArrayStorage below.
+        Structure* structure = globalObject->originalArrayStructureForIndexingType(materialization->indexingType());
 
         Butterfly* butterfly = nullptr;
         for (unsigned i = 0; i < materialization->properties().size(); ++i) {
@@ -337,6 +369,14 @@ JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationMaterializeObjectInOSR, HeapCell*, (J
                 butterfly->contiguousDouble().atUnsafe(index) = static_cast<double>(sentinel);
             else
                 butterfly->contiguous().atUnsafe(index).setStartingValue(jsNumber(sentinel));
+        }
+
+        if (globalObject->isHavingABadTime()) [[unlikely]] {
+#if ASSERT_ENABLED
+            Structure* originalStructure = globalObject->arrayStructureForIndexingTypeDuringAllocation(materialization->indexingType());
+            ASSERT(!originalStructure || hasSlowPutArrayStorage(originalStructure->indexingType()));
+#endif
+            result->switchToSlowPutArrayStorage(vm);
         }
 
         return result;
@@ -514,15 +554,28 @@ JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationMaterializeObjectInOSR, HeapCell*, (J
             return create.operator()<JSRegExpStringIterator>();
         case JSGeneratorType:
             return create.operator()<JSGenerator>();
+        case JSAsyncFunctionGeneratorType:
+            return create.operator()<JSAsyncFunctionGenerator>();
         case JSAsyncGeneratorType:
             return create.operator()<JSAsyncGenerator>();
-        case JSPromiseType:
-            ASSERT(structure->classInfoForCells() == JSPromise::info());
-            return create.operator()<JSPromise>();
         default:
             RELEASE_ASSERT_NOT_REACHED();
             return nullptr;
         }
+    }
+
+    case PhantomNewPromise: {
+        Structure* structure = nullptr;
+        for (unsigned i = materialization->properties().size(); i--;) {
+            const ExitPropertyValue& property = materialization->properties()[i];
+            if (property.location() == PromotedLocationDescriptor(StructurePLoc)) {
+                RELEASE_ASSERT(JSValue::decode(values[i]).asCell()->inherits<Structure>());
+                structure = uncheckedDowncast<Structure>(JSValue::decode(values[i]));
+            }
+        }
+        RELEASE_ASSERT(structure);
+        ASSERT(structure->classInfoForCells() == JSPromise::info());
+        return JSPromise::create(vm, structure);
     }
 
     case PhantomCreateRest:

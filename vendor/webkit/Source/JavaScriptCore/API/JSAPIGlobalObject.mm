@@ -141,13 +141,13 @@ Identifier JSAPIGlobalObject::moduleLoaderResolve(JSGlobalObject* globalObject, 
     return { };
 }
 
-JSPromise* JSAPIGlobalObject::moduleLoaderImportModule(JSGlobalObject* globalObject, JSModuleLoader*, JSString* specifierValue, RefPtr<ScriptFetchParameters> fetchParams, const SourceOrigin& sourceOrigin)
+JSPromise* JSAPIGlobalObject::moduleLoaderImportModule(JSGlobalObject* globalObject, JSModuleLoader*, JSString* specifierValue, RefPtr<ScriptFetchParameters> fetchParams, const SourceOrigin& sourceOrigin, bool deferred)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
     auto reject = [&] (ThrowScope& scope) -> JSPromise* {
         auto* promise = JSPromise::create(vm, globalObject->promiseStructure());
-        return promise->rejectWithCaughtException(globalObject, scope);
+        return promise->rejectWithCaughtException(vm, scope);
     };
 
     auto specifier = specifierValue->value(globalObject);
@@ -156,7 +156,7 @@ JSPromise* JSAPIGlobalObject::moduleLoaderImportModule(JSGlobalObject* globalObj
     Identifier originURL;
     if (const String& originString = sourceOrigin.string(); !originString.isNull())
         originURL = Identifier::fromString(vm, originString);
-    auto result = importModule(globalObject, Identifier::fromString(vm, specifier), originURL, WTF::move(fetchParams), nullptr);
+    auto result = importModule(globalObject, Identifier::fromString(vm, specifier), originURL, WTF::move(fetchParams), nullptr, deferred);
     RETURN_IF_EXCEPTION(scope, reject(scope));
     return result;
 }
@@ -172,11 +172,11 @@ JSPromise* JSAPIGlobalObject::moduleLoaderFetch(JSGlobalObject* globalObject, JS
     JSPromise* promise = JSPromise::create(vm, globalObject->promiseStructure());
 
     Identifier moduleKey = key.toPropertyKey(globalObject);
-    RETURN_IF_EXCEPTION(scope, promise->rejectWithCaughtException(globalObject, scope));
+    RETURN_IF_EXCEPTION(scope, promise->rejectWithCaughtException(vm, scope));
 
     if (![context moduleLoaderDelegate]) [[unlikely]] {
         scope.release();
-        promise->reject(vm, globalObject, createError(globalObject, "No module loader provided."_s));
+        promise->reject(vm, createError(globalObject, "No module loader provided."_s));
         return promise;
     }
 
@@ -187,7 +187,7 @@ JSPromise* JSAPIGlobalObject::moduleLoaderFetch(JSGlobalObject* globalObject, JS
         id script = valueToObject(context, toRef(globalObject, callFrame->argument(0)));
 
         auto rejectPromise = [&] (String message) {
-            promise->reject(vm, globalObject, createTypeError(globalObject, message));
+            promise->reject(vm, createTypeError(globalObject, message));
             return encodedJSUndefined();
         };
 
@@ -210,14 +210,14 @@ JSPromise* JSAPIGlobalObject::moduleLoaderFetch(JSGlobalObject* globalObject, JS
     }, promise);
 
     auto* reject = JSNativeStdFunction::create(vm, globalObject, 1, "reject"_s, [promise] (JSGlobalObject* globalObject, CallFrame* callFrame) {
-        promise->reject(globalObject->vm(), globalObject, callFrame->argument(0));
+        promise->reject(globalObject->vm(), callFrame->argument(0));
         return encodedJSUndefined();
     }, promise);
 
     [[context moduleLoaderDelegate] context:context fetchModuleForIdentifier:[::JSValue valueWithJSValueRef:toRef(globalObject, key) inContext:context] withResolveHandler:[::JSValue valueWithJSValueRef:toRef(globalObject, resolve) inContext:context] andRejectHandler:[::JSValue valueWithJSValueRef:toRef(globalObject, reject) inContext:context]];
     if (context.exception) {
         scope.release();
-        promise->reject(vm, globalObject, toJS(globalObject, [context.exception JSValueRef]));
+        promise->reject(vm, toJS(globalObject, [context.exception JSValueRef]));
         context.exception = nil;
     }
     return promise;

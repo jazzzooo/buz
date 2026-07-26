@@ -49,18 +49,11 @@ enum class LinkTimeConstant : int32_t;
     macro(getByValWithThis) \
     macro(getPrototypeOf) \
     macro(getInternalField) \
-    macro(getPromiseInternalField) \
     macro(getGeneratorInternalField) \
     macro(getIteratorHelperInternalField) \
     macro(getAsyncDisposableStackInternalField) \
     macro(getAsyncFromSyncIteratorInternalField) \
-    macro(getAsyncGeneratorInternalField) \
-    macro(getAbstractModuleRecordInternalField) \
     macro(getArrayIteratorInternalField) \
-    macro(getStringIteratorInternalField) \
-    macro(getMapIteratorInternalField) \
-    macro(getSetIteratorInternalField) \
-    macro(getRegExpStringIteratorInternalField) \
     macro(getProxyInternalField) \
     macro(getWrapForValidIteratorInternalField) \
     macro(getDisposableStackInternalField) \
@@ -75,40 +68,27 @@ enum class LinkTimeConstant : int32_t;
     macro(isDerivedArray) \
     macro(isGenerator) \
     macro(isIteratorHelper) \
-    macro(isAsyncGenerator) \
     macro(isPromise) \
     macro(isRegExpObject) \
     macro(isMap) \
     macro(isSet) \
     macro(isShadowRealm) \
-    macro(isStringIterator) \
     macro(isArrayIterator) \
-    macro(isMapIterator) \
-    macro(isSetIterator) \
     macro(isUndefinedOrNull) \
     macro(isWrapForValidIterator) \
-    macro(isRegExpStringIterator) \
     macro(isDisposableStack) \
     macro(throwTypeError) \
     macro(throwRangeError) \
     macro(throwOutOfMemoryError) \
-    macro(tryGetById) \
-    macro(tryGetByIdWithWellKnownSymbol) \
     macro(putByIdDirect) \
     macro(putByIdDirectPrivate) \
     macro(putByValDirect) \
     macro(putByValWithThisSloppy) \
     macro(putByValWithThisStrict) \
     macro(putInternalField) \
-    macro(putPromiseInternalField) \
     macro(putGeneratorInternalField) \
     macro(putAsyncDisposableStackInternalField) \
-    macro(putAsyncGeneratorInternalField) \
     macro(putArrayIteratorInternalField) \
-    macro(putStringIteratorInternalField) \
-    macro(putMapIteratorInternalField) \
-    macro(putSetIteratorInternalField) \
-    macro(putRegExpStringIteratorInternalField) \
     macro(putDisposableStackInternalField) \
     macro(superSamplerBegin) \
     macro(superSamplerEnd) \
@@ -146,23 +126,12 @@ enum class LinkTimeConstant : int32_t;
     macro(ModuleSatisfy) \
     macro(ModuleLink) \
     macro(ModuleReady) \
-    macro(promiseRejectionReject) \
-    macro(promiseRejectionHandle) \
-    macro(promiseStatePending) \
-    macro(promiseStateFulfilled) \
-    macro(promiseStateRejected) \
-    macro(promiseStateMask) \
-    macro(promiseFlagsIsHandled) \
-    macro(promiseFlagsIsFirstResolvingFunctionCalled) \
-    macro(promiseFieldFlags) \
-    macro(promiseFieldReactionsOrResult) \
     macro(proxyFieldTarget) \
     macro(proxyFieldHandler) \
     macro(generatorFieldState) \
     macro(generatorFieldNext) \
     macro(generatorFieldThis) \
     macro(generatorFieldFrame) \
-    macro(generatorFieldContext) \
     macro(GeneratorResumeModeNormal) \
     macro(GeneratorResumeModeThrow) \
     macro(GeneratorResumeModeReturn) \
@@ -174,40 +143,10 @@ enum class LinkTimeConstant : int32_t;
     macro(arrayIteratorFieldIndex) \
     macro(arrayIteratorFieldIteratedObject) \
     macro(arrayIteratorFieldKind) \
-    macro(mapIteratorFieldEntry) \
-    macro(mapIteratorFieldIteratedObject) \
-    macro(mapIteratorFieldStorage) \
-    macro(mapIteratorFieldKind) \
-    macro(setIteratorFieldEntry) \
-    macro(setIteratorFieldIteratedObject) \
-    macro(setIteratorFieldStorage) \
-    macro(setIteratorFieldKind) \
-    macro(stringIteratorFieldIndex) \
-    macro(stringIteratorFieldIteratedString) \
-    macro(asyncGeneratorFieldQueue) \
-    macro(asyncGeneratorFieldResumeValue) \
-    macro(asyncGeneratorFieldResumeMode) \
-    macro(asyncGeneratorFieldResumePromise) \
-    macro(AsyncGeneratorResumeModeEmpty) \
-    macro(AsyncGeneratorStateCompleted) \
-    macro(AsyncGeneratorStateExecuting) \
-    macro(AsyncGeneratorStateAwaitingReturn) \
-    macro(AsyncGeneratorStateInit) \
-    macro(AsyncGeneratorSuspendReasonYield) \
-    macro(AsyncGeneratorSuspendReasonAwait) \
-    macro(AsyncGeneratorSuspendReasonShift) \
-    macro(AsyncGeneratorSuspendReasonMask) \
     macro(asyncFromSyncIteratorFieldSyncIterator) \
     macro(asyncFromSyncIteratorFieldNextMethod) \
-    macro(abstractModuleRecordFieldState) \
     macro(wrapForValidIteratorFieldIteratedIterator) \
     macro(wrapForValidIteratorFieldIteratedNextMethod) \
-    macro(regExpStringIteratorFieldRegExp) \
-    macro(regExpStringIteratorFieldString) \
-    macro(regExpStringIteratorFieldFlags) \
-    macro(regExpStringIteratorFlagGlobal) \
-    macro(regExpStringIteratorFlagFullUnicode) \
-    macro(regExpStringIteratorFlagDone) \
     macro(disposableStackFieldState) \
     macro(disposableStackFieldCapability) \
     macro(DisposableStackStatePending) \
@@ -218,10 +157,6 @@ enum class LinkTimeConstant : int32_t;
     macro(AsyncDisposableStackStateDisposed) \
     macro(InternalMicrotaskAsyncFromSyncIteratorContinue) \
     macro(InternalMicrotaskAsyncFromSyncIteratorDone) \
-    macro(InternalMicrotaskAsyncGeneratorYieldAwaited) \
-    macro(InternalMicrotaskAsyncGeneratorBodyCallNormal) \
-    macro(InternalMicrotaskAsyncGeneratorBodyCallReturn) \
-    macro(InternalMicrotaskAsyncGeneratorResumeNext) \
 
 
 #define JSC_COMMON_BYTECODE_INTRINSIC_CONSTANTS_CUSTOM_EACH_NAME(macro) \

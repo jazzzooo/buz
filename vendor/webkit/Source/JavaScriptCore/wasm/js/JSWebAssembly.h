@@ -63,9 +63,6 @@ private:
     void finishCreation(VM&, JSGlobalObject*);
 };
 
-JSC_DECLARE_HOST_FUNCTION(webAssemblyCompileStreamingInternal);
-JSC_DECLARE_HOST_FUNCTION(webAssemblyInstantiateStreamingInternal);
-
 } // namespace JSC
 
 #endif // ENABLE(WEBASSEMBLY)

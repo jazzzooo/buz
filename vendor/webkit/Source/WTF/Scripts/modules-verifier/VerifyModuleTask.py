@@ -75,7 +75,14 @@ class VerifyModuleTask:
         self.target = target_set.target.value()
         self.source_file = str(inputs.main)
 
-        self.other_c_flags = shlex.split(environment.get("OTHER_CFLAGS", ""))
+        # PGO flags reference $(arch), which is not resolved in this script's
+        # context, and they're not needed for syntax-only module verification.
+        def filter_incompatible_flags(flags):
+            return [f for f in flags if not f.startswith("-fprofile-")]
+
+        self.other_c_flags = filter_incompatible_flags(
+            shlex.split(environment.get("OTHER_CFLAGS", ""))
+        )
         self.other_c_flags += [
             f"-Wsystem-headers-in-module={product_name}",
             "-Werror=non-modular-include-in-module",
@@ -89,6 +96,8 @@ class VerifyModuleTask:
             "-Werror=undef-prefix",
             "-Werror=module-import-in-extern-c",
             "-ferror-limit=0",
+            "-Wno-private-header",
+            "-Wno-nullability-completeness"
         ]
 
         self.other_verifier_flags = shlex.split(
@@ -97,7 +106,9 @@ class VerifyModuleTask:
         if len(self.other_verifier_flags) > 1:
             self.other_c_flags += self.other_verifier_flags[1:]
 
-        self.other_cxx_flags = shlex.split(environment.get("OTHER_CPLUSPLUSFLAGS", ""))
+        self.other_cxx_flags = filter_incompatible_flags(
+            shlex.split(environment.get("OTHER_CPLUSPLUSFLAGS", ""))
+        )
         self.other_cxx_flags += ["-fcxx-modules"]
         self.other_cxx_flags += self.other_c_flags
 

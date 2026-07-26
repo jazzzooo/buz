@@ -27,7 +27,6 @@
 
 #include "JSExportMacros.h"
 #include <cstdint>
-#include <wtf/Assertions.h>
 
 namespace JSC {
 

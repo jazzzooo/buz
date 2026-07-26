@@ -32,14 +32,17 @@
 #include "JSWebAssemblyArray.h"
 #include "JSWebAssemblyException.h"
 #include "JSWebAssemblyStruct.h"
+#include "Options.h"
 #include "WasmCallee.h"
+#include "WasmCallingConvention.h"
 #include "WasmFormat.h"
+#include "WasmIPIntGenerator.h"
 #include "WasmTypeDefinitionInlines.h"
 #include "WasmTypeSectionState.h"
 #include "WebAssemblyFunctionBase.h"
 #include <wtf/CommaPrinter.h>
+#include <wtf/DataLog.h>
 #include <wtf/FastMalloc.h>
-#include <wtf/ReferenceWrapperVector.h>
 #include <wtf/StringPrintStream.h>
 #include <wtf/TZoneMallocInlines.h>
 
@@ -153,7 +156,7 @@ RTTGroup::~RTTGroup()
         rtt->setCanonicalGroup(nullptr, 0);
 }
 
-void RTT::rewriteInternalRefs(TypeSectionState* state, const Vector<Ref<const RTT>>& groupMembers, const RecursionGroup* recursionGroup)
+void RTT::rewriteInternalRefs(TypeSectionState* state, std::span<const Ref<const RTT>> groupMembers, const RecursionGroup* recursionGroup)
 {
     // Walk every ref-bearing TypeSlot in the payload. For each placeholder
     // Projection ref, rewrite the slot's Type::index to the canonical RTT
@@ -206,6 +209,26 @@ void RTT::clearReferencedRTTs()
     visitChildrenRTT([](TypeSlot& slot) {
         slot.rttAnchor = nullptr;
     });
+}
+
+void RTT::clearAllDisplayRefs()
+{
+    for (unsigned i = 0; i < (m_displaySizeExcludingThis + 1); ++i)
+        at(i) = nullptr;
+}
+
+void RTT::setSelfDisplaySlot() const
+{
+    ASSERT(!at(m_displaySizeExcludingThis));
+    const_cast<RTT*>(this)->at(m_displaySizeExcludingThis) = this;
+}
+
+void TypeInformation::breakCyclesForReclamation(const RTT& rtt)
+{
+    RTT& mutableRTT = const_cast<RTT&>(rtt);
+    mutableRTT.clearAllDisplayRefs();
+    mutableRTT.clearReferencedRTTs();
+    rtt.setCanonicalGroup(nullptr, 0);
 }
 
 void RTT::dump(PrintStream& out) const
@@ -363,6 +386,9 @@ inline bool equalFieldTypes(FieldType a, IntraLookupA&& aIntra, FieldType b, Int
 template<typename IntraLookup>
 unsigned hashRTTForRecGroup(const RTT& rtt, IntraLookup&& intra)
 {
+    if (unsigned hash = rtt.hashMayBeEmpty())
+        return hash;
+
     unsigned h = static_cast<unsigned>(rtt.kind());
     h = WTF::pairIntHash(h, rtt.isFinalType() ? 1 : 0);
     h = WTF::pairIntHash(h, rtt.displaySizeExcludingThis());
@@ -392,6 +418,8 @@ unsigned hashRTTForRecGroup(const RTT& rtt, IntraLookup&& intra)
         h = WTF::pairIntHash(h, hashFieldType(rtt.arrayPayload().elementType(), intra));
         break;
     }
+
+    rtt.setHash(h);
     return h;
 }
 
@@ -481,11 +509,11 @@ struct GroupLookup {
 
 // Singleton lookup: only matches the entry's own RTT at projection index 0.
 struct SingletonSelfRef {
-    SUPPRESS_UNCOUNTED_MEMBER const RTT* self;
+    SUPPRESS_UNCOUNTED_MEMBER const RTT& self;
     std::optional<size_t> operator()(const RTT* rtt) const
     {
-        if (rtt == self)
-            return size_t { 0 };
+        if (rtt == &self)
+            return 0;
         return std::nullopt;
     }
 };
@@ -636,11 +664,16 @@ Ref<const RTT> TypeInformation::getCanonicalRTT(TypeIndex type)
 // =====================================================================
 unsigned CanonicalRecursionGroupEntryHash::hash(const CanonicalRecursionGroupEntry& entry)
 {
+    if (unsigned hash = entry.group->hashMayBeEmpty())
+        return hash;
+
     const auto& rtts = entry.group->rtts();
     GroupLookup lookup { entry.group };
     unsigned h = rtts.size();
     for (const auto& rtt : rtts)
         h = WTF::pairIntHash(h, hashRTTForRecGroup(rtt, lookup));
+
+    entry.group->setHash(h);
     return h;
 }
 
@@ -666,15 +699,12 @@ bool CanonicalRecursionGroupEntry::operator==(const CanonicalRecursionGroupEntry
 
 unsigned CanonicalSingletonEntryHash::hash(const CanonicalSingletonEntry& entry)
 {
-    ASSERT(entry.rtt);
-    return hashRTTForRecGroup(*entry.rtt, SingletonSelfRef { entry.rtt.get() });
+    return hashRTTForRecGroup(entry.rtt.get(), SingletonSelfRef { entry.rtt.get() });
 }
 
 bool CanonicalSingletonEntryHash::equal(const CanonicalSingletonEntry& a, const CanonicalSingletonEntry& b)
 {
-    if (!a.rtt || !b.rtt)
-        return a.rtt == b.rtt;
-    return equalRTTsForRecGroup(*a.rtt, SingletonSelfRef { a.rtt.get() }, *b.rtt, SingletonSelfRef { b.rtt.get() });
+    return equalRTTsForRecGroup(a.rtt.get(), SingletonSelfRef { a.rtt.get() }, b.rtt.get(), SingletonSelfRef { b.rtt.get() });
 }
 
 bool CanonicalSingletonEntry::operator==(const CanonicalSingletonEntry& other) const
@@ -715,68 +745,45 @@ Vector<Ref<const RTT>> TypeInformation::canonicalizeRecursionGroupImpl(TypeSecti
     // The loop/HashSet logic below is correct for any size >= 1.
     ASSERT(!candidateRTTs.isEmpty());
 
-    Locker locker { m_lock };
-
-    // Rewrite internal Projection refs to canonical RTT pointers
-    // (self-references among the candidate RTTs themselves). Non-recursive
-    // RTTs have no placeholder-tagged refs in their payloads, so skip the
-    // rewrite walk entirely for them.
-    for (auto& rtt : candidateRTTs) {
-        if (rtt->hasRecursiveReference())
-            const_cast<RTT&>(rtt.get()).rewriteInternalRefs(state, candidateRTTs, recursionGroup);
+    auto candidateGroup = RTTGroup::create(WTF::move(candidateRTTs));
+    for (uint32_t i = 0; i < candidateGroup->size(); ++i) {
+        auto& rtt = candidateGroup->at(i);
+        // Resolve placeholder Projection refs to bare canonical RTT
+        // pointers. Pass candidateGroup->rtts(), not the moved-from
+        // candidateRTTs.
+        if (rtt.hasRecursiveReference())
+            const_cast<RTT&>(rtt).rewriteInternalRefs(state, candidateGroup->rtts().span(), recursionGroup);
+        rtt.setSelfDisplaySlot();
+        rtt.setCanonicalGroup(candidateGroup.ptr(), i);
     }
 
-    // Wrap the candidate RTTs in an RTTGroup and tag each member's
-    // canonicalGroup() back-pointer. Hash/equal can then O(1)-detect
-    // intra-group refs via rtt->canonicalGroup() == candidateGroup.get().
-    // If the candidate matches an existing canonical entry, the inserted
-    // Ref is dropped; our local candidateGroup keeps the RTTs alive while
-    // we break the intra-group rttAnchor cycles created by
-    // rewriteInternalRefs so they can actually be freed. RTTGroup's
-    // destructor then nulls each member's back-pointer for safety.
-    auto candidateGroup = RTTGroup::create(WTF::move(candidateRTTs));
-    for (uint32_t i = 0; i < candidateGroup->size(); ++i)
-        candidateGroup->at(i).setCanonicalGroup(candidateGroup.ptr(), i);
-
+    Locker locker { m_lock };
     CanonicalRecursionGroupEntry candidate { candidateGroup.copyRef() };
     auto addResult = m_canonicalRecursionGroups.add(WTF::move(candidate));
-
     if (!addResult.isNewEntry) {
-        for (auto& rtt : candidateGroup->rtts())
-            const_cast<RTT&>(rtt.get()).clearReferencedRTTs();
+        for (const Ref<const RTT>& member : candidateGroup->rtts())
+            breakCyclesForReclamation(member.get());
     }
-    // After add, addResult.iterator->group is either the existing canonical
-    // group or the just-inserted candidate group (both have equivalent rtts).
     return addResult.iterator->group->rtts();
 }
 
 Ref<const RTT> TypeInformation::canonicalizeSingletonImpl(TypeSectionState* state, const RecursionGroup* recursionGroup, Ref<const RTT>&& candidate)
 {
-    // Rewrite intra-group placeholder refs to the candidate RTT* so the
-    // singleton hash/equal can detect self-refs via pointer identity.
-    // Non-recursive payloads have nothing to rewrite; skip the walk.
-    bool hasRecursiveReference = candidate->hasRecursiveReference();
-    if (hasRecursiveReference) {
-        // rewriteInternalRefs consults the Vector<Ref<const RTT>>& to map
-        // projection indices to RTT pointers. A singleton's only valid
-        // projection index is 0, pointing at the candidate itself.
-        Vector<Ref<const RTT>> groupMembers;
+    // Rewrite self-ref placeholders to the candidate RTT so hash/equal can
+    // detect self-refs by pointer identity.
+    if (candidate->hasRecursiveReference()) {
+        Vector<Ref<const RTT>, 1> groupMembers;
         groupMembers.append(candidate.copyRef());
-        const_cast<RTT&>(candidate.get()).rewriteInternalRefs(state, groupMembers, recursionGroup);
+        const_cast<RTT&>(candidate.get()).rewriteInternalRefs(state, groupMembers.span(), recursionGroup);
     }
+    candidate->setSelfDisplaySlot();
 
     Locker locker { m_lock };
-    // Retain an external ref across HashSet::add so we can break the
-    // self-cycle that rewriteInternalRefs wrote into the candidate's
-    // TypeSlot anchors if the candidate is discarded as a duplicate. Only
-    // needed when the candidate actually went through rewriteInternalRefs
-    // (recursive case); non-recursive singletons have no self-refs to break.
-    Ref<const RTT> retainer = candidate.copyRef();
-    CanonicalSingletonEntry entry { WTF::move(candidate) };
+    CanonicalSingletonEntry entry { candidate.copyRef() };
     auto addResult = m_canonicalSingletonGroups.add(WTF::move(entry));
-    if (!addResult.isNewEntry && hasRecursiveReference)
-        const_cast<RTT&>(retainer.get()).clearReferencedRTTs();
-    return Ref<const RTT> { *addResult.iterator->rtt };
+    if (!addResult.isNewEntry)
+        breakCyclesForReclamation(candidate.get());
+    return addResult.iterator->rtt.copyRef();
 }
 
 Ref<const RTT> TypeInformation::canonicalizeStandaloneRTT(Ref<const RTT>&& candidate)
@@ -855,26 +862,156 @@ void TypeInformation::tryCleanup()
     auto& info = singleton();
     Locker locker { info.m_lock };
 
-    bool changed = false;
-    do {
-        changed = false;
-        info.m_canonicalSingletonGroups.removeIf([&](const CanonicalSingletonEntry& entry) {
-            if (entry.rtt && entry.rtt->hasOneRef()) {
-                changed = true;
-                return true;
-            }
-            return false;
-        });
-    } while (changed);
+    // Bacon-Rajan synchronous cycle collection. Snapshot -> trial-decrement
+    // internal edges -> restore via BFS from roots -> sweep zeros.
 
-    // Multi-member m_canonicalRecursionGroups: skipped. Members anchor each
-    // other through TypeSlot::rttAnchor (rewriteInternalRefs builds the
-    // cycles intentionally), so per-member hasOneRef() never fires. A
-    // correct collector would have to detect that the entire group's
-    // external refcount is zero and drop all members atomically; not worth
-    // the complexity until profiling justifies it. Also, if singleton case
-    // includes recursion, then it is also leaking.
-    // FIXME: Implement group-level reclamation. https://bugs.webkit.org/show_bug.cgi?id=313185
+    auto forEachCandidateGroup = [&](auto&& cb) {
+        for (const auto& entry : info.m_canonicalRecursionGroups)
+            cb(entry.group.get());
+    };
+    auto forEachCandidateRTT = [&](auto&& cb) {
+        forEachCandidateGroup([&](auto& group) {
+            for (const auto& rtt : group.rtts())
+                cb(rtt.get());
+        });
+        for (const auto& entry : info.m_canonicalSingletonGroups)
+            cb(entry.rtt.get());
+    };
+
+    // Phase 1: snapshot refCount() into scratch.
+    forEachCandidateGroup([](const RTTGroup& group) {
+        group.setVirtualRefCount(group.refCount());
+    });
+    forEachCandidateRTT([](const RTT& rtt) {
+        rtt.setVirtualRefCount(rtt.refCount());
+    });
+
+    auto decRTT = [](const RTT* tgt) {
+        if (!tgt)
+            return;
+        ASSERT(tgt->virtualRefCount() > 0);
+        tgt->setVirtualRefCount(tgt->virtualRefCount() - 1);
+    };
+    auto decGroup = [](const RTTGroup* tgt) {
+        if (!tgt)
+            return;
+        ASSERT(tgt->virtualRefCount() > 0);
+        tgt->setVirtualRefCount(tgt->virtualRefCount() - 1);
+    };
+
+    auto decEdgesFromRTT = [&](const RTT& rtt) {
+        decGroup(rtt.canonicalGroup());
+        rtt.forEachPayloadRTTRef(decRTT);
+        for (unsigned i = 0; i <= rtt.displaySizeExcludingThis(); ++i)
+            decRTT(rtt.displayEntry(i));
+    };
+
+    // Phase 2: trial-decrement every internal structural edge.
+    // Unlike original Bacon-Rajan, we do not need tri-color graph traversal since
+    // all RTTs and groups are reachable from m_canonicalRecursionGroups and m_canonicalSingletonGroups.
+
+    // Visit each group and RTT, perform trial-decrement for each edge.
+    // This edge includes edges from m_canonicalRecursionGroups / m_canonicalSingletonGroups.
+    for (const auto& entry : info.m_canonicalRecursionGroups) {
+        const RTTGroup& group = entry.group.get();
+        decGroup(&group);
+        for (const auto& rtt : group.rtts()) {
+            decRTT(rtt.ptr());
+            decEdgesFromRTT(rtt.get());
+        }
+    }
+    for (const auto& entry : info.m_canonicalSingletonGroups) {
+        decRTT(entry.rtt.ptr());
+        decEdgesFromRTT(entry.rtt.get());
+    }
+
+    // Phase 3: transitive-closure restore from any object still > 0.
+    Vector<const RTT*, 16> rttWorklist;
+    Vector<const RTTGroup*, 16> groupWorklist;
+
+    // After trial-decrement, if group / RTT are still non-zero count,
+    // this indicates that they are actually referenced outside of this registry.
+    forEachCandidateRTT([&](const RTT& rtt) {
+        if (rtt.virtualRefCount() > 0)
+            rttWorklist.append(&rtt);
+    });
+    forEachCandidateGroup([&](const RTTGroup& group) {
+        if (group.virtualRefCount() > 0)
+            groupWorklist.append(&group);
+    });
+
+    // Then restore virtualRefCount non-zero which are reachable from the above really live RTTs and groups.
+    auto incRTT = [&](const RTT* tgt) {
+        if (!tgt)
+            return;
+        bool wasZero = !tgt->virtualRefCount();
+        tgt->setVirtualRefCount(tgt->virtualRefCount() + 1);
+        if (wasZero)
+            rttWorklist.append(tgt);
+    };
+    auto incGroup = [&](const RTTGroup* tgt) {
+        if (!tgt)
+            return;
+        bool wasZero = !tgt->virtualRefCount();
+        tgt->setVirtualRefCount(tgt->virtualRefCount() + 1);
+        if (wasZero)
+            groupWorklist.append(tgt);
+    };
+
+    while (!rttWorklist.isEmpty() || !groupWorklist.isEmpty()) {
+        while (!groupWorklist.isEmpty()) {
+            const RTTGroup* group = groupWorklist.takeLast();
+            for (const auto& rtt : group->rtts())
+                incRTT(rtt.ptr());
+        }
+        while (!rttWorklist.isEmpty()) {
+            const RTT* rtt = rttWorklist.takeLast();
+            incGroup(rtt->canonicalGroup());
+            rtt->forEachPayloadRTTRef(incRTT);
+            for (unsigned i = 0; i <= rtt->displaySizeExcludingThis(); ++i)
+                incRTT(rtt->displayEntry(i));
+        }
+    }
+
+    // Phase 4: sweep objects whose virtualRefCount stayed 0.
+    size_t groupsBeforeSweep = info.m_canonicalRecursionGroups.size();
+    size_t singletonsBeforeSweep = info.m_canonicalSingletonGroups.size();
+    info.m_canonicalRecursionGroups.removeIf([&](const CanonicalRecursionGroupEntry& entry) {
+        const RTTGroup& group = entry.group.get();
+        if (group.virtualRefCount() > 0)
+            return false;
+        // Clear intra-group display / payload / m_group refs so the natural
+        // destructor cascade can drive each member's refcount to 0 once the
+        // table entry drops.
+        for (const auto& member : group.rtts())
+            breakCyclesForReclamation(member.get());
+        return true;
+    });
+
+    info.m_canonicalSingletonGroups.removeIf([&](const CanonicalSingletonEntry& entry) {
+        if (entry.rtt->virtualRefCount() > 0)
+            return false;
+        breakCyclesForReclamation(entry.rtt.get());
+        return true;
+    });
+
+    if (Options::verboseWasmTypeCleanup()) [[unlikely]] {
+        size_t groupsAfter = info.m_canonicalRecursionGroups.size();
+        size_t singletonsAfter = info.m_canonicalSingletonGroups.size();
+        dataLogLn("[Wasm::TypeInformation::tryCleanup] groups scanned=", groupsBeforeSweep,
+            " reclaimed=", groupsBeforeSweep - groupsAfter,
+            " live=", groupsAfter,
+            " | singletons scanned=", singletonsBeforeSweep,
+            " reclaimed=", singletonsBeforeSweep - singletonsAfter,
+            " live=", singletonsAfter);
+    }
+}
+
+size_t TypeInformation::canonicalTypeCount()
+{
+    auto& info = singleton();
+    Locker locker { info.m_lock };
+    return info.m_canonicalRecursionGroups.size() + info.m_canonicalSingletonGroups.size();
 }
 
 bool NODELETE Type::definitelyIsCellOrNull() const
@@ -937,6 +1074,313 @@ void Type::dump(PrintStream& out) const
         FOR_EACH_WASM_TYPE(CREATE_CASE)
 #undef CREATE_CASE
     }
+}
+
+void RTT::ensureArgumINTBytecode(const CallInformation& callCC) const
+{
+    ASSERT(kind() == RTTKind::Function);
+
+    constexpr static int NUM_ARGUMINT_GPRS = 8;
+    constexpr static int NUM_ARGUMINT_FPRS = 8;
+
+    ASSERT_UNUSED(NUM_ARGUMINT_GPRS, wasmCallingConvention().jsrArgs.size() <= NUM_ARGUMINT_GPRS);
+    ASSERT_UNUSED(NUM_ARGUMINT_FPRS, wasmCallingConvention().fprArgs.size() <= NUM_ARGUMINT_FPRS);
+
+    m_argumINTBytecode.ensure([&] {
+        auto numArgs = argumentCount();
+        auto candidate = IPIntSharedBytecode::createWithSizeFromGenerator(numArgs + 1,
+            [&](size_t index) -> uint8_t {
+                if (index == numArgs)
+                    return static_cast<uint8_t>(IPInt::ArgumINTBytecode::End);
+
+                const ArgumentLocation& argLoc = callCC.params[index];
+                const ValueLocation& loc = argLoc.location;
+
+                if (loc.isGPR()) {
+#if USE(JSVALUE64)
+                    ASSERT_UNUSED(NUM_ARGUMINT_GPRS, GPRInfo::toArgumentIndex(loc.jsr().gpr()) < NUM_ARGUMINT_GPRS);
+                    return static_cast<uint8_t>(IPInt::ArgumINTBytecode::ArgGPR) + GPRInfo::toArgumentIndex(loc.jsr().gpr());
+#elif USE(JSVALUE32_64)
+                    ASSERT_UNUSED(NUM_ARGUMINT_GPRS, GPRInfo::toArgumentIndex(loc.jsr().payloadGPR()) < NUM_ARGUMINT_GPRS);
+                    ASSERT_UNUSED(NUM_ARGUMINT_GPRS, GPRInfo::toArgumentIndex(loc.jsr().tagGPR()) < NUM_ARGUMINT_GPRS);
+                    return static_cast<uint8_t>(IPInt::ArgumINTBytecode::ArgGPR) + GPRInfo::toArgumentIndex(loc.jsr().gpr(WhichValueWord::PayloadWord)) / 2;
+#endif
+                }
+
+                if (loc.isFPR()) {
+                    ASSERT_UNUSED(NUM_ARGUMINT_FPRS, FPRInfo::toArgumentIndex(loc.fpr()) < NUM_ARGUMINT_FPRS);
+                    return static_cast<uint8_t>(IPInt::ArgumINTBytecode::ArgFPR) + FPRInfo::toArgumentIndex(loc.fpr());
+                }
+
+                RELEASE_ASSERT(loc.isStack());
+                switch (argLoc.width) {
+                case Width::Width64:
+                    return static_cast<uint8_t>(IPInt::ArgumINTBytecode::Stack);
+                case Width::Width128:
+                    return static_cast<uint8_t>(IPInt::ArgumINTBytecode::StackVector);
+                default:
+                    RELEASE_ASSERT_NOT_REACHED("No argumINT bytecode for result width");
+                }
+            });
+
+        ASSERT(candidate->size() == numArgs + 1u);
+        ASSERT(candidate->last() == static_cast<uint8_t>(IPInt::ArgumINTBytecode::End));
+        return candidate;
+    });
+}
+
+void RTT::ensureUINTBytecode(const CallInformation& returnCC) const
+{
+    ASSERT(kind() == RTTKind::Function);
+
+    // uINT: the interpreter smaller than mINT
+    constexpr static int NUM_UINT_GPRS = 8;
+    constexpr static int NUM_UINT_FPRS = 8;
+    ASSERT_UNUSED(NUM_UINT_GPRS, wasmCallingConvention().jsrArgs.size() <= NUM_UINT_GPRS);
+    ASSERT_UNUSED(NUM_UINT_FPRS, wasmCallingConvention().fprArgs.size() <= NUM_UINT_FPRS);
+
+    m_uINTBytecode.ensure([&] {
+        // Offset past the last stack-typed return, in signature order.
+        uint32_t topOfReturnStackFPOffset = 0;
+        for (const auto& argLoc : returnCC.results) {
+            if (argLoc.location.isStack())
+                topOfReturnStackFPOffset = argLoc.location.offsetFromFP() + bytesForWidth(argLoc.width);
+        }
+
+        auto encode = [&](unsigned index) -> uint8_t {
+            const ArgumentLocation& argLoc = returnCC.results[index];
+            const ValueLocation& loc = argLoc.location;
+
+            if (loc.isGPR()) {
+#if USE(JSVALUE64)
+                ASSERT_UNUSED(NUM_UINT_GPRS, GPRInfo::toArgumentIndex(loc.jsr().gpr()) < NUM_UINT_GPRS);
+                return static_cast<uint8_t>(IPInt::UINTBytecode::RetGPR) + GPRInfo::toArgumentIndex(loc.jsr().gpr());
+#elif USE(JSVALUE32_64)
+                ASSERT_UNUSED(NUM_UINT_GPRS, GPRInfo::toArgumentIndex(loc.jsr().payloadGPR()) < NUM_UINT_GPRS);
+                ASSERT_UNUSED(NUM_UINT_GPRS, GPRInfo::toArgumentIndex(loc.jsr().tagGPR()) < NUM_UINT_GPRS);
+                return static_cast<uint8_t>(IPInt::UINTBytecode::RetGPR) + GPRInfo::toArgumentIndex(loc.jsr().gpr(WhichValueWord::PayloadWord));
+#endif
+            }
+
+            if (loc.isFPR()) {
+                ASSERT_UNUSED(NUM_UINT_FPRS, FPRInfo::toArgumentIndex(loc.fpr()) < NUM_UINT_FPRS);
+                return static_cast<uint8_t>(IPInt::UINTBytecode::RetFPR) + FPRInfo::toArgumentIndex(loc.fpr());
+            }
+
+            RELEASE_ASSERT(loc.isStack());
+            switch (argLoc.width) {
+            case Width::Width64:
+                return static_cast<uint8_t>(IPInt::UINTBytecode::Stack);
+            case Width::Width128:
+                return static_cast<uint8_t>(IPInt::UINTBytecode::StackVector);
+            default:
+                RELEASE_ASSERT_NOT_REACHED("No uINT bytecode for result width");
+            }
+        };
+
+        // Layout: [topOfReturnStackFPOffset : u32][encode(last)..encode(first)][End].
+        // Results are consumed in reverse by the uINT dispatcher, so emit in reverse.
+        unsigned size = returnCC.results.size();
+        auto headerBytes = std::bit_cast<std::array<uint8_t, sizeof(uint32_t)>>(topOfReturnStackFPOffset);
+        auto candidate = IPIntSharedBytecode::createWithSizeFromGenerator(sizeof(uint32_t) + size + 1,
+            [&](size_t index) -> uint8_t {
+                if (index < sizeof(uint32_t))
+                    return headerBytes[index];
+                size_t i = index - sizeof(uint32_t);
+                if (i == size)
+                    return static_cast<uint8_t>(IPInt::UINTBytecode::End);
+                return encode(size - 1 - i);
+            });
+
+        ASSERT(candidate->size() == sizeof(uint32_t) + size + 1u);
+        ASSERT(candidate->last() == static_cast<uint8_t>(IPInt::UINTBytecode::End));
+        return candidate;
+    });
+}
+
+template<bool isTailCall>
+static Vector<uint8_t, 16> buildCallArgumentBytecode(const CallInformation& callConvention)
+{
+    constexpr static int NUM_MINT_CALL_GPRS = 8;
+    constexpr static int NUM_MINT_CALL_FPRS = 8;
+    ASSERT_UNUSED(NUM_MINT_CALL_GPRS, wasmCallingConvention().jsrArgs.size() <= NUM_MINT_CALL_GPRS);
+    ASSERT_UNUSED(NUM_MINT_CALL_FPRS, wasmCallingConvention().fprArgs.size() <= NUM_MINT_CALL_FPRS);
+
+    auto toBytecodeUint8 = [](IPInt::CallArgumentBytecode bytecode) {
+        constexpr uint8_t tailBytecodeOffset = static_cast<uint8_t>(IPInt::CallArgumentBytecode::TailCallArgDecSP) - static_cast<uint8_t>(IPInt::CallArgumentBytecode::CallArgDecSP);
+        uint8_t bytecodeUint8 = static_cast<uint8_t>(bytecode);
+        ASSERT(static_cast<uint8_t>(IPInt::CallArgumentBytecode::CallArgDecSP) <= bytecodeUint8
+            && bytecodeUint8 <= static_cast<uint8_t>(IPInt::CallArgumentBytecode::CallArgDecSPStoreVector8));
+        if constexpr (isTailCall)
+            bytecodeUint8 += tailBytecodeOffset;
+        return bytecodeUint8;
+    };
+
+    Vector<uint8_t, 16> results;
+    results.append(static_cast<uint8_t>(isTailCall ? IPInt::CallArgumentBytecode::TailCall : IPInt::CallArgumentBytecode::Call));
+
+    intptr_t spOffset = callConvention.headerIncludingThisSizeInBytes;
+    auto isAligned16 = [&spOffset]() ALWAYS_INLINE_LAMBDA {
+        return !(spOffset & 0xf);
+    };
+
+    ASSERT(isAligned16());
+    results.appendUsingFunctor(callConvention.params.size(),
+        [&](unsigned index) -> uint8_t {
+            const ArgumentLocation& argLoc = callConvention.params[index];
+            const ValueLocation& loc = argLoc.location;
+
+            if (loc.isGPR()) {
+#if USE(JSVALUE64)
+                ASSERT_UNUSED(NUM_MINT_CALL_GPRS, GPRInfo::toArgumentIndex(loc.jsr().gpr()) < NUM_MINT_CALL_GPRS);
+                return static_cast<uint8_t>(IPInt::CallArgumentBytecode::ArgumentGPR) + GPRInfo::toArgumentIndex(loc.jsr().gpr());
+#elif USE(JSVALUE32_64)
+                ASSERT_UNUSED(NUM_MINT_CALL_GPRS, GPRInfo::toArgumentIndex(loc.jsr().payloadGPR()) < NUM_MINT_CALL_GPRS);
+                ASSERT_UNUSED(NUM_MINT_CALL_GPRS, GPRInfo::toArgumentIndex(loc.jsr().tagGPR()) < NUM_MINT_CALL_GPRS);
+                return static_cast<uint8_t>(IPInt::CallArgumentBytecode::ArgumentGPR) + GPRInfo::toArgumentIndex(loc.jsr().gpr(WhichValueWord::PayloadWord));
+#endif
+            }
+
+            if (loc.isFPR()) {
+                ASSERT_UNUSED(NUM_MINT_CALL_FPRS, FPRInfo::toArgumentIndex(loc.fpr()) < NUM_MINT_CALL_FPRS);
+                return static_cast<uint8_t>(IPInt::CallArgumentBytecode::ArgumentFPR) + FPRInfo::toArgumentIndex(loc.fpr());
+            }
+            RELEASE_ASSERT(loc.isStackArgument());
+            ASSERT(loc.offsetFromSP() == spOffset);
+            IPInt::CallArgumentBytecode bytecode;
+            switch (argLoc.width) {
+            case Width64:
+                bytecode = isAligned16() ? IPInt::CallArgumentBytecode::CallArgStore0 : IPInt::CallArgumentBytecode::CallArgDecSPStore8;
+                spOffset += 8;
+                break;
+            case Width128:
+                bytecode = isAligned16() ? IPInt::CallArgumentBytecode::CallArgDecSPStoreVector0 : IPInt::CallArgumentBytecode::CallArgDecSPStoreVector8;
+                spOffset += 16;
+                break;
+            default:
+                RELEASE_ASSERT_NOT_REACHED("No bytecode for stack argument location width");
+            }
+            return toBytecodeUint8(bytecode);
+        });
+
+    if (!isAligned16()) {
+        spOffset += 8;
+        results.append(toBytecodeUint8(IPInt::CallArgumentBytecode::CallArgDecSP));
+    }
+    intptr_t frameSize = roundUpToMultipleOf<stackAlignmentBytes()>(callConvention.headerAndArgumentStackSizeInBytes);
+    ASSERT(frameSize >= spOffset);
+    ASSERT(isAligned16());
+    for (; spOffset < frameSize; spOffset += 16)
+        results.append(toBytecodeUint8(IPInt::CallArgumentBytecode::CallArgDecSP));
+    ASSERT(spOffset == frameSize);
+
+    results.reverse();
+    return results;
+}
+
+static intptr_t buildCallResultBytecode(Vector<uint8_t, 16>& results, const CallInformation& callConvention)
+{
+    constexpr static int NUM_MINT_RET_GPRS = 8;
+    constexpr static int NUM_MINT_RET_FPRS = 8;
+    ASSERT_UNUSED(NUM_MINT_RET_GPRS, wasmCallingConvention().jsrArgs.size() <= NUM_MINT_RET_GPRS);
+    ASSERT_UNUSED(NUM_MINT_RET_FPRS, wasmCallingConvention().fprArgs.size() <= NUM_MINT_RET_FPRS);
+
+    intptr_t firstStackResultSPOffset = 0;
+    bool hasSeenStackResult = false;
+    intptr_t spOffset = 0;
+
+    results.appendUsingFunctor(callConvention.results.size(),
+        [&](unsigned index) -> uint8_t {
+            const ArgumentLocation& argLoc = callConvention.results[index];
+            const ValueLocation& loc = argLoc.location;
+
+            if (loc.isGPR()) {
+                ASSERT_UNUSED(NUM_MINT_RET_GPRS, GPRInfo::toArgumentIndex(loc.jsr().payloadGPR()) < NUM_MINT_RET_GPRS);
+#if USE(JSVALUE64)
+                return static_cast<uint8_t>(IPInt::CallResultBytecode::ResultGPR) + GPRInfo::toArgumentIndex(loc.jsr().gpr());
+#elif USE(JSVALUE32_64)
+                return static_cast<uint8_t>(IPInt::CallResultBytecode::ResultGPR) + GPRInfo::toArgumentIndex(loc.jsr().gpr(WhichValueWord::PayloadWord));
+#endif
+            }
+
+            if (loc.isFPR()) {
+                ASSERT_UNUSED(NUM_MINT_RET_FPRS, FPRInfo::toArgumentIndex(loc.fpr()) < NUM_MINT_RET_FPRS);
+                return static_cast<uint8_t>(IPInt::CallResultBytecode::ResultFPR) + FPRInfo::toArgumentIndex(loc.fpr());
+            }
+            RELEASE_ASSERT(loc.isStackArgument());
+
+            if (!hasSeenStackResult) {
+                hasSeenStackResult = true;
+                spOffset = loc.offsetFromSP();
+                firstStackResultSPOffset = spOffset;
+            }
+            ASSERT(loc.offsetFromSP() == spOffset);
+            switch (argLoc.width) {
+            case Width::Width64:
+                spOffset += 8;
+                return static_cast<uint8_t>(IPInt::CallResultBytecode::ResultStack);
+            case Width::Width128:
+                spOffset += 16;
+                return static_cast<uint8_t>(IPInt::CallResultBytecode::ResultStackVector);
+            default:
+                ASSERT_NOT_REACHED("No bytecode for stack result location width");
+                return 0;
+            }
+        });
+    results.append(static_cast<uint8_t>(IPInt::CallResultBytecode::End));
+    return firstStackResultSPOffset;
+}
+
+void RTT::ensureCallBytecode() const
+{
+    ASSERT(kind() == RTTKind::Function);
+
+    m_callBytecode.ensure([&] {
+        // Build [arg bytecode][Call][CallReturnMetadata][result bytecode][End] -- the same
+        // layout the generator used to emit inline into m_metadata. MC walks the whole
+        // thing during one call: arg dispatch leaves MC at CallReturnMetadata (inside the
+        // buffer), and ret dispatch continues from there.
+        auto callConvention = wasmCallingConvention().callInformationFor(*this, CallRole::Caller);
+        Vector<uint8_t, 16> bytes = buildCallArgumentBytecode</* isTailCall */ false>(callConvention);
+
+        Checked<uint32_t> frameSize = WTF::roundUpToMultipleOf<stackAlignmentBytes()>(callConvention.headerAndArgumentStackSizeInBytes);
+        IPInt::CallReturnMetadata returnMeta {
+            .stackFrameSize = frameSize,
+            .firstStackResultSPOffset = 0,
+        };
+
+        Vector<uint8_t, 16> resultBytes;
+        Checked<uint32_t> firstStackResultSPOffset = buildCallResultBytecode(resultBytes, callConvention);
+        returnMeta.firstStackResultSPOffset = firstStackResultSPOffset;
+
+        auto toSpan = [&](auto& value) {
+            auto start = std::bit_cast<const uint8_t*>(&value);
+            return std::span { start, start + sizeof(value) };
+        };
+        bytes.append(toSpan(returnMeta));
+        bytes.append(resultBytes.span());
+
+        return IPIntSharedBytecode::createFromVector(WTF::move(bytes));
+    });
+}
+
+void RTT::ensureTailCallBytecode() const
+{
+    ASSERT(kind() == RTTKind::Function);
+
+    m_tailCallBytecode.ensure([&] {
+        // [arg bytecode][TailCall terminator][stackArgumentsAndResultsInBytes (u32)].
+        // The trailing u32 is read by .ipint_perform_tail_call via `loadi [MC]`
+        // after mINT dispatch hits TailCall, so MC naturally lands on it.
+        auto callConvention = wasmCallingConvention().callInformationFor(*this, CallRole::Caller);
+        auto bytes = buildCallArgumentBytecode</* isTailCall */ true>(callConvention);
+
+        uint32_t stackArgumentsAndResultsInBytes = roundUpToMultipleOf<stackAlignmentBytes()>(callConvention.headerAndArgumentStackSizeInBytes) - callConvention.headerIncludingThisSizeInBytes;
+        ASSERT(!(stackArgumentsAndResultsInBytes % 16));
+        bytes.append(std::span { std::bit_cast<const uint8_t*>(&stackArgumentsAndResultsInBytes), sizeof(stackArgumentsAndResultsInBytes) });
+
+        return IPIntSharedBytecode::createFromVector(WTF::move(bytes));
+    });
 }
 
 } } // namespace JSC::Wasm

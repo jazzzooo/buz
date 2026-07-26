@@ -119,17 +119,6 @@ struct ModuleInformation final : public ThreadSafeRefCounted<ModuleInformation> 
     const TableInformation& table(unsigned index) const { return tables[index]; }
     const GlobalInformation& global(unsigned index) const { return globals[index]; }
 
-    void initializeFunctionTrackers() const
-    {
-        size_t totalNumberOfFunctions = functionIndexSpaceSize();
-        m_referencedFunctions = FixedBitVector(totalNumberOfFunctions);
-        m_clobberingTailCalls = FixedBitVector(totalNumberOfFunctions);
-    }
-
-    const FixedBitVector& referencedFunctions() const LIFETIME_BOUND { return m_referencedFunctions; }
-    bool hasReferencedFunction(FunctionSpaceIndex functionIndexSpace) const { return m_referencedFunctions.test(functionIndexSpace); }
-    void addReferencedFunction(FunctionSpaceIndex functionIndexSpace) const { m_referencedFunctions.concurrentTestAndSet(functionIndexSpace); }
-
     bool isDeclaredFunction(FunctionSpaceIndex index) const { return m_declaredFunctions.contains(index); }
     void addDeclaredFunction(FunctionSpaceIndex index) { m_declaredFunctions.set(index); }
 
@@ -188,11 +177,6 @@ struct ModuleInformation final : public ThreadSafeRefCounted<ModuleInformation> 
             : it->value.getBranchHint(branchOffset);
     }
 
-    // FIXME: This should probably be FunctionCodeIndex as calling an import always clobbers the instance.
-    const FixedBitVector& clobberingTailCalls() const LIFETIME_BOUND { return m_clobberingTailCalls; }
-    bool callCanClobberInstance(FunctionSpaceIndex functionIndexSpace) const { return m_clobberingTailCalls.test(functionIndexSpace); }
-    void addClobberingTailCall(FunctionSpaceIndex functionIndexSpace) { m_clobberingTailCalls.concurrentTestAndSet(functionIndexSpace); }
-
     void setTotalFunctionSize(size_t totalFunctionSize)
     {
         m_totalFunctionSize = totalFunctionSize;
@@ -202,6 +186,11 @@ struct ModuleInformation final : public ThreadSafeRefCounted<ModuleInformation> 
     void applyCompileOptions(const WebAssemblyCompileOptions&);
     bool importedStringConstantsEquals(const String& expected) const { return m_importedStringConstants && m_importedStringConstants.value() == expected; }
     bool builtinSetsInclude(const String& qualifiedName) const { return m_qualifiedBuiltinSetNames.contains(qualifiedName); }
+
+    // nameSection is read from compiler threads (lock-free via atomic pointer)
+    // and written from the main thread when the custom "name" section is parsed.
+    NameSection& nameSection() const { return *m_nameSectionPtr.load(std::memory_order_acquire); }
+    void setNameSection(Ref<NameSection>&&);
 
     // FIXME: These should probably be FixedVectors.
     Vector<Import> imports;
@@ -227,7 +216,6 @@ struct ModuleInformation final : public ThreadSafeRefCounted<ModuleInformation> 
     unsigned firstInternalGlobal { 0 };
     uint32_t codeSectionSize { 0 };
     Vector<CustomSection> customSections;
-    Ref<NameSection> nameSection;
     BranchHints branchHints;
     std::optional<uint32_t> numberOfDataSegments;
     using ConstantExpressionAndSourceOffset = std::pair<Vector<uint8_t>, size_t>;
@@ -239,8 +227,6 @@ struct ModuleInformation final : public ThreadSafeRefCounted<ModuleInformation> 
 
     BitVector m_declaredFunctions;
     BitVector m_declaredExceptions;
-    mutable FixedBitVector m_referencedFunctions;
-    mutable FixedBitVector m_clobberingTailCalls;
     size_t m_totalFunctionSize { 0 };
     uint32_t m_numSmallFunctions { 0 };
 
@@ -253,6 +239,10 @@ private:
 
     std::optional<String> m_importedStringConstants;
     Vector<String> m_qualifiedBuiltinSetNames;
+    Ref<NameSection> m_nameSection;
+    RefPtr<NameSection> m_retiredNameSection;
+    std::atomic<NameSection*> m_nameSectionPtr { nullptr };
+    bool m_hasCustomNameSection { false };
 };
 
     

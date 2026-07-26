@@ -31,7 +31,6 @@
 // (BigIntPrototype.h, StringPrototype.h, SymbolPrototype.h, BrandedStructure.h,
 // WebAssemblyGCStructure.h, JSArrayBufferView.h, PropertyTable.h, etc.).
 
-#include <JavaScriptCore/JSCJSValueStructure.h>
 #include <JavaScriptCore/JSCellInlines.h>
 #include <JavaScriptCore/JSGlobalProxy.h>
 #include <JavaScriptCore/Structure.h>

@@ -215,26 +215,28 @@ static void decommit_all(pas_deferred_decommit_log* log,
                 break;
             
             next_range = *pas_virtual_range_min_heap_get_ptr_by_index(&log->impl, next_index);
-            
+
             PAS_ASSERT(!pas_virtual_range_overlaps(range, next_range));
             PAS_ASSERT(next_range.begin >= range.end);
-            
-            if (next_range.begin != range.end
-                || next_range.mmap_capability != range.mmap_capability)
+
+            if (next_range.begin != range.end)
+                break;
+
+            if (next_range.page_flags != range.page_flags)
                 break;
 
             range.end = next_range.end;
             end_index = next_index;
         }
-        
+
         if (for_real) {
             if (verbose) {
                 pas_log("Decommitting %p...%p.\n",
                         (void*)range.begin,
                         (void*)range.end);
             }
-            
-            pas_page_malloc_decommit((void*)range.begin, pas_virtual_range_size(range), range.mmap_capability);
+
+            pas_page_malloc_decommit((void*)range.begin, pas_virtual_range_size(range), range.page_flags);
         }
         
         PAS_ASSERT(end_index);

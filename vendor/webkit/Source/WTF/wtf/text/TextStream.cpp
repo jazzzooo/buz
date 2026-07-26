@@ -29,6 +29,7 @@
 #include <wtf/MathExtras.h>
 #include <wtf/MediaTime.h>
 #include <wtf/ObjectIdentifier.h>
+#include <wtf/ReducedResolutionSeconds.h>
 #include <wtf/Seconds.h>
 #include <wtf/URL.h>
 #include <wtf/UUID.h>
@@ -230,6 +231,12 @@ void writeIndent(TextStream& ts, int indent)
 TextStream& operator<<(TextStream& ts, Seconds seconds)
 {
     ts << seconds.value() << 's';
+    return ts;
+}
+
+TextStream& operator<<(TextStream& ts, ReducedResolutionSeconds time)
+{
+    ts << time.seconds() << 's';
     return ts;
 }
 

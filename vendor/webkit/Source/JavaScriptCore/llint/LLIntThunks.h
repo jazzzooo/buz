@@ -121,6 +121,7 @@ MacroAssemblerCodeRef<JSEntryPtrTag> normalOSRExitTrampolineThunk();
 #if ENABLE(DFG_JIT)
 MacroAssemblerCodeRef<JSEntryPtrTag> checkpointOSRExitTrampolineThunk();
 MacroAssemblerCodeRef<JSEntryPtrTag> checkpointOSRExitFromInlinedCallTrampolineThunk();
+MacroAssemblerCodeRef<JSEntryPtrTag> arraySortComparatorReturnTrampolineThunk();
 MacroAssemblerCodeRef<JSEntryPtrTag> returnLocationThunk(OpcodeID, OpcodeSize);
 #endif
 
@@ -137,6 +138,9 @@ MacroAssemblerCodeRef<NativeToJITGatePtrTag> relocateJITReturnPCThunk(void*);
 MacroAssemblerCodeRef<NativeToJITGatePtrTag> exitImplantedSliceGateThunk(void*);
 MacroAssemblerCodeRef<NativeToJITGatePtrTag> getSentinelFrameReturnPCGateThunk(void*);
 #endif
+#if ENABLE(JIT_CAGE)
+MacroAssemblerCodeRef<NativeToJITGatePtrTag> wasmRestoreFrameGateThunk();
+#endif // ENABLE(JIT_CAGE)
 #endif // ENABLE(WEBASSEMBLY)
 
 } } // namespace JSC::LLInt

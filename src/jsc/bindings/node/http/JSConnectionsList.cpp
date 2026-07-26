@@ -139,14 +139,12 @@ JSArray* JSConnectionsList::expired(JSGlobalObject* globalObject, uint64_t heade
     auto iter = JSSetIterator::create(vm, globalObject->setIteratorStructure(), active, IterationKind::Keys);
     RETURN_IF_EXCEPTION(scope, nullptr);
 
-    JSValue item = iter->next(vm);
+    JSValue item;
     size_t i = 0;
-    while (!item.isEmpty()) {
+    while (iter->next(globalObject, item)) {
         JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(item);
-        if (!parser) {
-            item = iter->next(vm);
+        if (!parser)
             continue;
-        }
 
         if ((!parser->impl()->headersCompleted() && headersDeadline > 0 && parser->impl()->lastMessageStart() < headersDeadline) || (requestDeadline > 0 && parser->impl()->lastMessageStart() < requestDeadline)) {
             result->putDirectIndex(globalObject, i++, item);

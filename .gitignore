@@ -105,6 +105,7 @@ pnpm-lock.yaml
 profile.json
 README.md.template
 release/
+!vendor/webkit/config/release/
 scripts/env.local
 sign.*.json
 sign.json

@@ -42,6 +42,7 @@
 #include "WasmIPIntTierUpCounter.h"
 #include "WasmIndexOrName.h"
 #include "WasmTierUpCount.h"
+#include <JavaScriptCore/CallFrame.h>
 #include <wtf/EmbeddedFixedVector.h>
 #include <wtf/FixedVector.h>
 #include <wtf/RefCountedFixedVector.h>
@@ -110,10 +111,12 @@ protected:
     template<typename Func>
     void runWithDowncast(const Func&) const;
 
+    void setIndexOrName(IndexOrName&&);
+
 private:
     const CompilationMode m_compilationMode;
     const FunctionSpaceIndex m_index;
-    const IndexOrName m_indexOrName;
+    IndexOrName m_indexOrName;
 
 protected:
     FixedVector<HandlerInfo> m_exceptionHandlers;
@@ -211,6 +214,26 @@ private:
     CodePtr<WasmEntryPtrTag> entrypointImpl() const { return { }; }
     const RegisterAtOffsetList* calleeSaveRegistersImpl() { return nullptr; }
 };
+
+class RestoreFrameCallee final : public Callee {
+    WTF_MAKE_COMPACT_TZONE_ALLOCATED(RestoreFrameCallee);
+public:
+    friend class Callee;
+    friend class JSC::LLIntOffsetsExtractor;
+
+    static constexpr size_t restoreFrameSizeInBytes = (static_cast<size_t>(CallFrameSlot::callee) + 1) * sizeof(Register);
+
+    static RestoreFrameCallee& singleton();
+
+private:
+    RestoreFrameCallee();
+    std::tuple<void*, void*> rangeImpl() const { return { nullptr, nullptr }; }
+    CodePtr<WasmEntryPtrTag> entrypointImpl() const { return { }; }
+    const RegisterAtOffsetList* calleeSaveRegistersImpl() { return nullptr; }
+};
+
+extern "C" EncodedJSValue g_restoreFrameCalleeBoxed;
+extern "C" void wasm_restore_frame_return();
 
 #if ENABLE(JIT)
 
@@ -446,18 +469,20 @@ private:
 
 
 class IPIntCallee final : public Callee {
+    using Base = Callee;
     WTF_MAKE_COMPACT_TZONE_ALLOCATED(IPIntCallee);
     friend class JSC::LLIntOffsetsExtractor;
     friend class Callee;
 public:
-    static Ref<IPIntCallee> create(FunctionIPIntMetadataGenerator& generator, FunctionSpaceIndex index, std::pair<const Name*, RefPtr<NameSection>>&& name)
+    static Ref<IPIntCallee> create(FunctionIPIntMetadataGenerator& generator, FunctionSpaceIndex index, const RTT& signatureRTT, std::pair<const Name*, RefPtr<NameSection>>&& name)
     {
-        return adoptRef(*new IPIntCallee(generator, index, WTF::move(name)));
+        return adoptRef(*new IPIntCallee(generator, index, signatureRTT, WTF::move(name)));
     }
 
     FunctionCodeIndex functionIndex() const { return m_functionIndex; }
     void setEntrypoint(CodePtr<WasmEntryPtrTag>);
     void setEntrypointWithoutRegistration(CodePtr<WasmEntryPtrTag>);
+    void setName(std::pair<const Name*, RefPtr<NameSection>>&& name) { setIndexOrName(IndexOrName(index(), WTF::move(name))); }
     const uint8_t* bytecode() const { return m_bytecode; }
     const uint8_t* bytecodeEnd() const { return m_bytecodeEnd; }
     const uint8_t* metadata() const LIFETIME_BOUND { return m_metadata.span().data(); }
@@ -476,12 +501,14 @@ public:
 
     FunctionSpaceIndex callTarget(unsigned callProfileIndex) const { return m_callTargets[callProfileIndex]; }
 
+    const RTT& signatureRTT() const LIFETIME_BOUND { return *m_signatureRTT; }
+
     using OutOfLineJumpTargets = UncheckedKeyHashMap<unsigned, int>;
 
     unsigned computeCodeHashImpl() const;
 
 private:
-    IPIntCallee(FunctionIPIntMetadataGenerator&, FunctionSpaceIndex index, std::pair<const Name*, RefPtr<NameSection>>&&);
+    IPIntCallee(FunctionIPIntMetadataGenerator&, FunctionSpaceIndex, const RTT& signatureRTT, std::pair<const Name*, RefPtr<NameSection>>&&);
 
     CodePtr<WasmEntryPtrTag> entrypointImpl() const { return m_entrypoint; }
     std::tuple<void*, void*> rangeImpl() const { return { nullptr, nullptr }; };
@@ -493,11 +520,9 @@ private:
     const uint8_t* m_bytecode;
     const uint8_t* m_bytecodeEnd;
     Vector<uint8_t> m_metadata;
-    Vector<uint8_t> m_argumINTBytecode;
-    Vector<uint8_t> m_uINTBytecode;
+    Vector<uint8_t> m_localInitBytecode;
+    RefPtr<const RTT> m_signatureRTT;
     Vector<FunctionSpaceIndex> m_callTargets;
-
-    unsigned m_topOfReturnStackFPOffset;
 
     unsigned m_localSizeToAlloc;
     unsigned m_numRethrowSlotsToAlloc;
@@ -619,6 +644,13 @@ SPECIALIZE_TYPE_TRAITS_BEGIN(JSC::Wasm::WasmBuiltinCallee)
     static bool isType(const JSC::Wasm::Callee& callee)
     {
         return callee.compilationMode() == JSC::Wasm::CompilationMode::WasmBuiltinMode;
+    }
+SPECIALIZE_TYPE_TRAITS_END()
+
+SPECIALIZE_TYPE_TRAITS_BEGIN(JSC::Wasm::RestoreFrameCallee)
+    static bool isType(const JSC::Wasm::Callee& callee)
+    {
+        return callee.compilationMode() == JSC::Wasm::CompilationMode::RestoreFrameMode;
     }
 SPECIALIZE_TYPE_TRAITS_END()
 

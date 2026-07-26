@@ -25,7 +25,6 @@
 
 #pragma once
 
-#include <unicode/umachine.h>
 #include <wtf/text/AtomStringImpl.h>
 
 namespace JSC {
@@ -36,7 +35,7 @@ class VM;
 class JSONAtomStringCache {
 public:
     static constexpr auto maxStringLengthForCache = 27;
-    static constexpr auto capacity = 256;
+    static constexpr auto capacity = 512;
 
     struct Slot {
         char16_t m_buffer[maxStringLengthForCache] { };

@@ -30,7 +30,9 @@
 #include <wtf/Forward.h>
 #include <wtf/FunctionDispatcher.h>
 #include <wtf/Seconds.h>
-#include <wtf/Threading.h>
+#include <wtf/ThreadAssertions.h>
+#include <wtf/ThreadSafeRefCounted.h>
+#include <wtf/ThreadingEnums.h>
 
 #if USE(COCOA_EVENT_LOOP)
 #include <wtf/darwin/DispatchOSObject.h>
@@ -42,7 +44,7 @@ namespace WTF {
 
 class WorkQueueBase : protected ThreadLike {
 public:
-    using QOS = Thread::QOS;
+    using QOS = ThreadQOS;
 
     WTF_EXPORT_PRIVATE virtual ~WorkQueueBase();
 

@@ -29,18 +29,15 @@
 #include "PageCount.h"
 
 #include <atomic>
-#include <set>
 
 #include <wtf/CagedPtr.h>
-#include <wtf/Expected.h>
-#include <wtf/Function.h>
+#include <wtf/Lock.h>
 #include <wtf/RAMSize.h>
-#include <wtf/RefCounted.h>
-#include <wtf/RefPtr.h>
 #include <wtf/StdSet.h>
 #include <wtf/TZoneMalloc.h>
+#include <wtf/ThreadSafeRefCounted.h>
+#include <wtf/ThreadSafeWeakHashSet.h>
 #include <wtf/Vector.h>
-#include <wtf/WeakPtr.h>
 
 namespace WTF {
 class PrintStream;
@@ -136,7 +133,7 @@ public:
     BufferMemoryHandle(void*, size_t size, size_t mappedCapacity, PageCount initial, PageCount maximum, MemorySharingMode, MemoryMode);
     JS_EXPORT_PRIVATE ~BufferMemoryHandle();
 
-    void* memory() const;
+    JS_EXPORT_PRIVATE void* memory() const;
     size_t size(std::memory_order order = std::memory_order_seq_cst) const
     {
         if (m_sharingMode == MemorySharingMode::Default)

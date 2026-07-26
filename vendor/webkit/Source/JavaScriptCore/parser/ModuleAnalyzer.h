@@ -28,6 +28,7 @@
 #include "ErrorType.h"
 #include "JSModuleRecord.h"
 #include "Nodes.h"
+#include <wtf/EnumeratedArray.h>
 
 namespace JSC {
 
@@ -47,7 +48,7 @@ public:
 
     JSModuleRecord* moduleRecord() { return m_moduleRecord; }
 
-    void appendRequestedModule(const Identifier&, RefPtr<ScriptFetchParameters>&&);
+    void appendRequestedModule(const Identifier&, RefPtr<ScriptFetchParameters>&&, AbstractModuleRecord::ModulePhase = AbstractModuleRecord::ModulePhase::Evaluation);
 
     void fail(std::tuple<ErrorType, String>&& errorMessage) { m_errorMessage = errorMessage; }
 
@@ -56,7 +57,7 @@ private:
 
     VM& m_vm;
     JSModuleRecord* m_moduleRecord;
-    IdentifierSet m_requestedModules;
+    EnumeratedArray<AbstractModuleRecord::ModulePhase, IdentifierSet, AbstractModuleRecord::ModulePhase::Defer> m_requestedModules;
     std::tuple<ErrorType, String> m_errorMessage;
 };
 

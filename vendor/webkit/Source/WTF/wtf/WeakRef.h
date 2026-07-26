@@ -25,11 +25,11 @@
 
 #pragma once
 
+#include <wtf/CurrentThread.h>
 #include <wtf/GetPtr.h>
 #include <wtf/HashTraits.h>
 #include <wtf/SingleThreadIntegralWrapper.h>
 #include <wtf/ThreadSafeRefCounted.h>
-#include <wtf/Threading.h>
 #include <wtf/TypeCasts.h>
 #include <wtf/TypeTraits.h>
 #include <wtf/WeakPtrImpl.h>
@@ -138,7 +138,7 @@ private:
         return !m_impl
             || !m_shouldEnableAssertions
             || m_impl->threadAssertion().isCurrent()
-            || Thread::mayBeGCThread();
+            || currentThreadMayBeGCThread();
     }
 #endif
 

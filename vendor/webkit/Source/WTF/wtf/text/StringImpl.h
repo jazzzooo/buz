@@ -88,7 +88,7 @@ template<typename> struct HashAndCharactersTranslator;
 // Define STRING_STATS to 1 turn on runtime statistics of string sizes and memory usage.
 #define STRING_STATS 0
 
-template<bool isSpecialCharacter(char16_t), typename CharacterType, std::size_t Extent = std::dynamic_extent> bool containsOnly(std::span<const CharacterType, Extent>);
+template<bool isSpecialCharacter(char16_t), typename CharacterType, std::size_t Extent = std::dynamic_extent> bool NODELETE containsOnly(std::span<const CharacterType, Extent>);
 
 #if STRING_STATS
 
@@ -423,6 +423,7 @@ public:
         template<unsigned characterCount> explicit constexpr StaticStringImpl(const char16_t (&characters)[characterCount], StringKind = StringNormal);
         operator StringImpl&();
         operator const StringImpl&() const;
+        ASCIILiteral literal() const { return ASCIILiteral::fromLiteralUnsafe(m_data8Char); }
     };
 
     WTF_EXPORT_PRIVATE static StaticStringImpl s_emptyAtomString;
@@ -489,19 +490,19 @@ public:
 
     bool containsOnlyASCII() const;
     bool containsOnlyLatin1() const;
-    template<bool isSpecialCharacter(char16_t)> bool containsOnly() const;
+    template<bool isSpecialCharacter(char16_t)> bool NODELETE containsOnly() const;
 
     size_t NODELETE find(Latin1Character, size_t start = 0);
-    size_t find(char, size_t start = 0);
-    size_t find(char16_t, size_t start = 0);
+    size_t NODELETE find(char, size_t start = 0);
+    size_t NODELETE find(char16_t, size_t start = 0);
     template<typename CodeUnitMatchFunction>
         requires (std::is_invocable_r_v<bool, CodeUnitMatchFunction, char16_t>)
-    size_t find(CodeUnitMatchFunction, size_t start = 0);
+    size_t NODELETE find(CodeUnitMatchFunction, size_t start = 0);
     ALWAYS_INLINE size_t find(ASCIILiteral literal, size_t start = 0) { return find(literal.span8(), start); }
-    WTF_EXPORT_PRIVATE size_t find(StringView);
-    WTF_EXPORT_PRIVATE size_t find(StringView, size_t start);
-    WTF_EXPORT_PRIVATE size_t findIgnoringASCIICase(StringView) const;
-    WTF_EXPORT_PRIVATE size_t findIgnoringASCIICase(StringView, size_t start) const;
+    WTF_EXPORT_PRIVATE size_t NODELETE find(StringView);
+    WTF_EXPORT_PRIVATE size_t NODELETE find(StringView, size_t start);
+    WTF_EXPORT_PRIVATE size_t NODELETE findIgnoringASCIICase(StringView) const;
+    WTF_EXPORT_PRIVATE size_t NODELETE findIgnoringASCIICase(StringView, size_t start) const;
 
     WTF_EXPORT_PRIVATE size_t NODELETE reverseFind(char16_t, size_t start = MaxLength);
     WTF_EXPORT_PRIVATE size_t NODELETE reverseFind(StringView, size_t start = MaxLength);
@@ -715,7 +716,8 @@ template<typename CodeUnit, typename CodeUnitMatchFunction>
 inline size_t find(std::span<const CodeUnit> characters, CodeUnitMatchFunction&& matchFunction, size_t start)
 {
     while (start < characters.size()) {
-        if (matchFunction(characters[start]))
+        // FIXME: support NODELETE predicates (rdar://178355573).
+        SUPPRESS_NODELETE if (matchFunction(characters[start]))
             return start;
         ++start;
     }
@@ -816,8 +818,12 @@ inline std::strong_ordering codePointCompare(std::span<const CharacterType1> cha
         using ChunkType = std::conditional_t<sizeof(CharacterType1) == 1, uint32_t, uint64_t>;
         constexpr size_t stride = sizeof(ChunkType) / sizeof(CharacterType1);
         for (; position + (stride - 1) < commonLength;) {
-            auto lhs = *std::bit_cast<const ChunkType*>(characters1Ptr);
-            auto rhs = *std::bit_cast<const ChunkType*>(characters2Ptr);
+            // Even though CPU does not need aligned access, we cannot
+            // simply dereference ChunkType* or the compiler may perform
+            // optimizations based on the assumption that all ChunkType
+            // objects are naturally aligned.
+            auto lhs = unalignedLoad<ChunkType>(characters1Ptr);
+            auto rhs = unalignedLoad<ChunkType>(characters2Ptr);
             if (lhs != rhs) {
                 if constexpr (sizeof(CharacterType1) == 1)
                     return (flipBytes(lhs) > flipBytes(rhs)) ? std::strong_ordering::greater : std::strong_ordering::less;
@@ -1286,6 +1292,21 @@ template<typename T> inline T* StringImpl::tailPointer()
     return reinterpret_cast_ptr<T*>(reinterpret_cast<uint8_t*>(this) + tailOffset<T>());
 }
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
+
+template<typename CharacterType> inline Ref<StringImpl> StringImpl::createUninitializedInternalNonEmpty(size_t length, std::span<CharacterType>& data)
+{
+    ASSERT(length);
+
+    // Allocate a single buffer large enough to contain the StringImpl
+    // struct as well as the data which it contains. This removes one
+    // heap allocation from this call.
+    if (!isValidLength<CharacterType>(length))
+        CRASH();
+
+    SUPPRESS_UNCOUNTED_LOCAL StringImpl* string = static_cast<StringImpl*>(StringImplMalloc::malloc(allocationSize<CharacterType>(length)));
+    data = unsafeMakeSpan(string->tailPointer<CharacterType>(), length);
+    return constructInternal<CharacterType>(*string, length);
+}
 
 inline StringImpl* const& StringImpl::substringBuffer() const
 {

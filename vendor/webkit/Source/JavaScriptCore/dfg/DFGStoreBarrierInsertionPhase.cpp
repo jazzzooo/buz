@@ -29,7 +29,6 @@
 #if ENABLE(DFG_JIT)
 
 #include "DFGAbstractInterpreterInlines.h"
-#include "DFGBlockMapInlines.h"
 #include "DFGClobberize.h"
 #include "DFGDoesGC.h"
 #include "DFGGraph.h"
@@ -40,6 +39,7 @@
 #include "StructureID.h"
 #include <wtf/CommaPrinter.h>
 #include <wtf/HashSet.h>
+#include <wtf/IndexMap.h>
 
 namespace JSC { namespace DFG {
 
@@ -68,6 +68,8 @@ enum class PhaseMode {
     Global
 };
 
+// FIXME(rdar://177100632): Document barrier placement invariants expected of nodes for this phase
+// and improve barrier-related phases overall.
 template<PhaseMode mode>
 class StoreBarrierInsertionPhase : public Phase {
 public:
@@ -106,8 +108,8 @@ public:
             // towards believing that all nodes need barriers. "Needing a barrier" is like
             // saying that the node is in a past epoch. "Not needing a barrier" is like saying
             // that the node is in the current epoch.
-            m_stateAtHead = makeUniqueWithoutFastMallocCheck<BlockMap<UncheckedKeyHashSet<Node*>>>(m_graph);
-            m_stateAtTail = makeUniqueWithoutFastMallocCheck<BlockMap<UncheckedKeyHashSet<Node*>>>(m_graph);
+            m_stateAtHead = makeUniqueWithoutFastMallocCheck<IndexMap<BasicBlock*, UncheckedKeyHashSet<Node*>>>(m_graph.numBlocks());
+            m_stateAtTail = makeUniqueWithoutFastMallocCheck<IndexMap<BasicBlock*, UncheckedKeyHashSet<Node*>>>(m_graph.numBlocks());
             
             BlockList postOrder = m_graph.blocksInPostOrder();
             
@@ -268,8 +270,9 @@ private:
                 }
                 break;
             }
-                
-            case ArrayPush: {
+
+            case ArrayPush:
+            case ArrayUnshift: {
                 switch (m_node->arrayMode().type()) {
                 case Array::Contiguous:
                 case Array::ArrayStorage:
@@ -289,7 +292,15 @@ private:
                 }
                 break;
             }
-                
+
+            case ArraySortCommit: {
+                considerBarrier(m_node->child1());
+                break;
+            }
+            case ArraySortCompact: {
+                considerBarrier(Edge(m_node, KnownCellUse));
+                break;
+            }
             case PutPrivateName: {
                 if (!m_graph.m_slowPutByVal.contains(m_node) && (m_node->child1().useKind() == CellUse || m_node->child1().useKind() == KnownCellUse))
                     // FIXME: there are some cases where we can avoid a store barrier by considering the value https://bugs.webkit.org/show_bug.cgi?id=230377
@@ -342,6 +353,17 @@ private:
                 break;
             }
 
+            case PerformPromiseThenOneHandler: {
+                considerBarrier(m_node->child1(), m_node->child2());
+                considerBarrier(m_node->child1(), m_node->child3());
+                break;
+            }
+
+            case PutCellButterflySlot: {
+                considerBarrier(m_node->child1(), m_node->child3());
+                break;
+            }
+
             case EnumeratorPutByVal:
             case PutByValMegamorphic: {
                 Edge child1 = m_graph.varArgChild(m_node, 0);
@@ -349,9 +371,20 @@ private:
                 break;
             }
                 
-            case MultiPutByOffset:
+            case MultiPutByOffset: {
+                // This node may cause a transition before performing a store if it reallocates
+                // storage. This is different from the usual assumption in this phase a node's fast
+                // path either does GC or performs a store, but not both within the same node (a
+                // slow path call to an operation always performs its own barrier). In this special
+                // case, bump the epoch before considering the barrier.
+                if (m_node->multiPutByOffsetData().reallocatesStorage())
+                    m_currentEpoch.bump();
+                considerBarrier(m_node->child1());
+                break;
+            }
+
             case MultiDeleteByOffset: {
-                // These nodes may cause transition too.
+                // This node may cause a transition but does not GC.
                 considerBarrier(m_node->child1());
                 break;
             }
@@ -370,7 +403,7 @@ private:
                 considerBarrier(m_node->child1(), m_node->child2());
                 break;
             }
-                
+
             case NukeStructureAndSetButterfly: {
                 considerBarrier(m_node->child1());
                 break;
@@ -394,6 +427,7 @@ private:
             case NewArrayWithSizeAndStructure:
             case NewArrayBuffer:
             case NewInternalFieldObject:
+            case NewPromise:
             case NewTypedArray:
             case NewTypedArrayBuffer:
             case NewRegExp:
@@ -401,6 +435,8 @@ private:
             case NewStringObject:
             case NewMap:
             case NewSet:
+            case NewWeakMap:
+            case NewWeakSet:
             case NewSymbol:
             case MaterializeNewObject:
             case MaterializeNewArrayWithButterfly:
@@ -514,6 +550,10 @@ private:
                         break;
                     case NukeStructureAndSetButterfly:
                         escape(m_node->child2().node());
+                        break;
+                    case PerformPromiseThenOneHandler:
+                        escape(m_node->child2().node());
+                        escape(m_node->child3().node());
                         break;
                     case SetLocal:
                     case PutStack:
@@ -666,8 +706,8 @@ private:
     // Things we only use in Global mode.
     std::unique_ptr<InPlaceAbstractState> m_state;
     std::unique_ptr<AbstractInterpreter<InPlaceAbstractState>> m_interpreter;
-    std::unique_ptr<BlockMap<UncheckedKeyHashSet<Node*>>> m_stateAtHead;
-    std::unique_ptr<BlockMap<UncheckedKeyHashSet<Node*>>> m_stateAtTail;
+    std::unique_ptr<IndexMap<BasicBlock*, UncheckedKeyHashSet<Node*>>> m_stateAtHead;
+    std::unique_ptr<IndexMap<BasicBlock*, UncheckedKeyHashSet<Node*>>> m_stateAtTail;
     bool m_isConverged;
 };
 

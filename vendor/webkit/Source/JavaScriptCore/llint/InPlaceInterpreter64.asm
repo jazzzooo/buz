@@ -189,7 +189,9 @@ macro ipintEntry()
     # so after localSizeToAlloc handlers, argumINTDst = argumINTDsp - LocalSize.
     move argumINTDsp, argumINTEnd
     subp LocalSize, argumINTEnd
-    loadp Wasm::IPIntCallee::m_argumINTBytecode + VectorBufferOffset[ws0], MC
+    loadp Wasm::IPIntCallee::m_signatureRTT[ws0], MC
+    loadp Wasm::RTT::m_argumINTBytecode[MC], MC
+    addp (constexpr (Wasm::IPIntSharedBytecode::offsetOfData())), MC
 
     push argumINTTmp, argumINTDst, argumINTSrc, argumINTEnd
 
@@ -385,7 +387,7 @@ end)
 macro uintDispatch()
     loadb [MC], sc1
     addq 1, MC
-    bigteq sc1, (constexpr IPInt::UIntBytecode::NumOpcodes), _ipint_uint_dispatch_err
+    bigteq sc1, (constexpr IPInt::UINTBytecode::NumOpcodes), _ipint_uint_dispatch_err
     lshiftq (constexpr (WTF::fastLog2(JSC::IPInt::alignUInt))), sc1
     pcrtoaddr _uint_begin, PC
     addq PC, sc1
@@ -405,13 +407,18 @@ end)
 
 # This implementation is specially defined out of ipintOp scope to make end implementation tight.
 .ipint_end_ret:
-    loadp Wasm::IPIntCallee::m_uINTBytecode + VectorBufferOffset[ws0], MC
     ipintEpilogueOSR(10)
 if X86_64
     loadp UnboxedWasmCalleeStackSlot[cfr], ws0
 end
-    loadi Wasm::IPIntCallee::m_topOfReturnStackFPOffset[ws0], sc0
+    # uINT buffer lives on the signature RTT. The stack-return FP offset is
+    # embedded as a u32 at the head of the buffer.
+    loadp Wasm::IPIntCallee::m_signatureRTT[ws0], MC
+    loadp Wasm::RTT::m_uINTBytecode[MC], MC
+    addp (constexpr (Wasm::IPIntSharedBytecode::offsetOfData())), MC
+    loadi [MC], sc0
     addp cfr, sc0
+    addp 4, MC
 
     // We've already validateOpcodeConfig() in all the places that can jump to .ipint_end_ret.
     uintDispatch()
@@ -518,7 +525,6 @@ ipintOp(_call, macro()
 
     move cfr, a1
     move MC, a2
-    advanceMC(IPInt::CallMetadata::signature)
 
     subq 16, sp
     move sp, a3
@@ -529,6 +535,8 @@ ipintOp(_call, macro()
     loadq [sp], IPIntCallCallee
     loadq 8[sp], IPIntCallFunctionSlot
     addq 16, sp
+
+    advanceMC(constexpr (sizeof(IPInt::CallMetadata)))
 
     # call
     jmp .ipint_call_common
@@ -551,7 +559,7 @@ ipintOp(_call_indirect, macro()
     # Otherwise, the wrong call site index will be saved.
     loadb IPInt::CallIndirectMetadata::length[MC], t3
     advancePCByReg(t3)
-    advanceMC(IPInt::CallIndirectMetadata::signature)
+    advanceMC(constexpr (sizeof(IPInt::CallIndirectMetadata)))
 
     loadq [sp], IPIntCallCallee
     loadq 8[sp], IPIntCallFunctionSlot
@@ -574,14 +582,16 @@ ipintOp(_return_call, macro()
 
     # operation returns the entrypoint in r0 and the target instance in r1
     # this operation stores the boxed Callee into *r2
-    operationCall(macro() cCall4(_ipint_extern_prepare_call) end)
+    operationCall(macro() cCall4(_ipint_extern_prepare_tail_call) end)
 
     loadq [sp], IPIntCallCallee
     loadq 8[sp], IPIntCallFunctionSlot
     addq 16, sp
 
     loadi IPInt::TailCallMetadata::callerStackArgSize[MC], t3
-    advanceMC(IPInt::TailCallMetadata::argumentBytecode)
+    loadp IPInt::TailCallMetadata::rtt[MC], t5
+    loadp Wasm::RTT::m_tailCallBytecode[t5], MC
+    addp (constexpr (Wasm::IPIntSharedBytecode::offsetOfData())), MC
     jmp .ipint_tail_call_common
 end)
 
@@ -595,7 +605,7 @@ ipintOp(_return_call_indirect, macro()
     # Get callIndirectMetadata
     move cfr, a1
     move MC, a3
-    operationCallMayThrow(macro() cCall4(_ipint_extern_prepare_call_indirect) end)
+    operationCallMayThrow(macro() cCall4(_ipint_extern_prepare_tail_call_indirect) end)
 
     # operationCallMayThrow saves the call site index, so we have to advance the PC after.
     # Otherwise, the wrong call site index will be saved.
@@ -607,7 +617,9 @@ ipintOp(_return_call_indirect, macro()
     addq 16, sp
 
     loadi IPInt::TailCallIndirectMetadata::callerStackArgSize[MC], t3
-    advanceMC(IPInt::TailCallIndirectMetadata::argumentBytecode)
+    loadp IPInt::TailCallIndirectMetadata::rtt[MC], t5
+    loadp Wasm::RTT::m_tailCallBytecode[t5], MC
+    addp (constexpr (Wasm::IPIntSharedBytecode::offsetOfData())), MC
     jmp .ipint_tail_call_common
 end)
 
@@ -625,7 +637,7 @@ ipintOp(_call_ref, macro()
     addq 16, sp
 
     loadb IPInt::CallRefMetadata::length[MC], t3
-    advanceMC(IPInt::CallRefMetadata::signature)
+    advanceMC(constexpr (sizeof(IPInt::CallRefMetadata)))
     advancePCByReg(t3)
 
     jmp .ipint_call_common
@@ -638,7 +650,7 @@ ipintOp(_return_call_ref, macro()
     move cfr, a1
     move MC, a2
     move sp, a3
-    operationCallMayThrow(macro() cCall4(_ipint_extern_prepare_call_ref) end)
+    operationCallMayThrow(macro() cCall4(_ipint_extern_prepare_tail_call_ref) end)
 
     # operationCallMayThrow saves the call site index, so we have to advance the PC after.
     # Otherwise, the wrong call site index will be saved.
@@ -650,7 +662,9 @@ ipintOp(_return_call_ref, macro()
     addq 16, sp
 
     loadi IPInt::TailCallRefMetadata::callerStackArgSize[MC], t3
-    advanceMC(IPInt::TailCallRefMetadata::argumentBytecode)
+    loadp IPInt::TailCallRefMetadata::rtt[MC], t5
+    loadp Wasm::RTT::m_tailCallBytecode[t5], MC
+    addp (constexpr (Wasm::IPIntSharedBytecode::offsetOfData())), MC
     jmp .ipint_tail_call_common
 end)
 
@@ -1271,7 +1285,7 @@ ipintOp(_memory_grow, macro()
     advanceMC(constexpr (sizeof(IPInt::MemoryGrowMetadata)))
     operationCall(macro() cCall3(_ipint_extern_memory_grow) end)
     pushInt32(r0)
-    ipintReloadMemory()
+    ipintReloadMemory(t2)
     advancePC(2)
     nextIPIntInstruction()
 end)
@@ -10092,16 +10106,26 @@ ipintAtomicOp(_memory_atomic_wait32, macro()
     loadb IPInt::AtomicMemoryAccessMetadata::memoryIndex[MC], t0
     pushInt32(t0)
     loadq (StackValueSize * 3)[sp], t0
+    btbnz JSWebAssemblyInstance::m_cachedIsMemory64[wasmInstance], .pointerIsMemory64
+    zxi2q t0, t0
+.pointerIsMemory64:
     loadq IPInt::AtomicMemoryAccessMetadata::offset[MC], t1
-    addq t1, t0
+    baddpc(t1, t0, _ipint_throw_OutOfBoundsMemoryAccess)
     storeq t0, (StackValueSize * 3)[sp] # replace pointer with pointer + offset
+
+    # Push callee/cfr/PC/MC for debugger; operands shift to args[4..7].
+    subq (StackValueSize * 4), sp
+    storeq ws0, (StackValueSize * 0)[sp]  # args[0] = IPIntCallee*
+    storeq cfr, (StackValueSize * 1)[sp]  # args[1] = cfr
+    storeq PC,  (StackValueSize * 2)[sp]  # args[2] = PC
+    storeq MC,  (StackValueSize * 3)[sp]  # args[3] = MC
 
     move sp, a1
 
     operationCall(macro() cCall2(_ipint_extern_memory_atomic_wait32) end)
     bilt r0, 0, _ipint_throw_OutOfBoundsMemoryAccess
 
-    addq (StackValueSize * 4), sp
+    addq (StackValueSize * 8), sp
 
     pushInt32(r0)
     loadb IPInt::AtomicMemoryAccessMetadata::instructionLength[MC], t0
@@ -10115,16 +10139,26 @@ ipintAtomicOp(_memory_atomic_wait64, macro()
     loadb IPInt::AtomicMemoryAccessMetadata::memoryIndex[MC], t0
     pushInt32(t0)
     loadq (StackValueSize * 3)[sp], t0
+    btbnz JSWebAssemblyInstance::m_cachedIsMemory64[wasmInstance], .pointerIsMemory64
+    zxi2q t0, t0
+.pointerIsMemory64:
     loadq IPInt::AtomicMemoryAccessMetadata::offset[MC], t1
-    addq t1, t0
+    baddpc(t1, t0, _ipint_throw_OutOfBoundsMemoryAccess)
     storeq t0, (StackValueSize * 3)[sp] # replace pointer with pointer + offset
+
+    # Push callee/cfr/PC/MC for debugger; operands shift to args[4..7].
+    subq (StackValueSize * 4), sp
+    storeq ws0, (StackValueSize * 0)[sp]  # args[0] = IPIntCallee*
+    storeq cfr, (StackValueSize * 1)[sp]  # args[1] = cfr
+    storeq PC,  (StackValueSize * 2)[sp]  # args[2] = PC
+    storeq MC,  (StackValueSize * 3)[sp]  # args[3] = MC
 
     move sp, a1
 
     operationCall(macro() cCall2(_ipint_extern_memory_atomic_wait64) end)
     bilt r0, 0, _ipint_throw_OutOfBoundsMemoryAccess
 
-    addq (StackValueSize * 4), sp
+    addq (StackValueSize * 8), sp
 
     pushInt32(r0)
     loadb IPInt::AtomicMemoryAccessMetadata::instructionLength[MC], t0
@@ -11802,16 +11836,19 @@ end
     move r0, targetEntrypoint
     move r1, targetInstance
 
+    # MC points at the metadata for the next instruction. We can access to CallSignatureMetadata
+    # via negative offset as Call Metadata family is guaranteed to end with CallSignatureMetadata
+    loadp (-1 * constexpr (sizeof(IPInt::CallSignatureMetadata)) + IPInt::CallSignatureMetadata::rtt)[MC], t5
+
     const extraSpaceForReturns = t0
     const stackFrameSize = t1
     const numArguments = t2
 
-    loadi IPInt::CallSignatureMetadata::stackFrameSize[MC], stackFrameSize
-    loadh IPInt::CallSignatureMetadata::numExtraResults[MC], extraSpaceForReturns
+    loadi (-1 * constexpr (sizeof(IPInt::CallSignatureMetadata)) + IPInt::CallSignatureMetadata::stackFrameSize)[MC], stackFrameSize
+    loadh (-1 * constexpr (sizeof(IPInt::CallSignatureMetadata)) + IPInt::CallSignatureMetadata::numExtraResults)[MC], extraSpaceForReturns
     mulq StackValueSize, extraSpaceForReturns
-    loadh IPInt::CallSignatureMetadata::numArguments[MC], numArguments
+    loadh (-1 * constexpr (sizeof(IPInt::CallSignatureMetadata)) + IPInt::CallSignatureMetadata::numArguments)[MC], numArguments
     mulq StackValueSize, numArguments
-    advanceMC(constexpr (sizeof(IPInt::CallSignatureMetadata)))
 
     # calculate the SP after popping all arguments
     move sp, t3
@@ -11841,7 +11878,7 @@ end
     # t3 is not used after this
     subp cfr, t3
     push t3, PC
-    push t3, wasmInstance
+    push MC, wasmInstance
 
     # set up the call frame
     move sp, t2
@@ -11855,7 +11892,7 @@ end
     # reserved
     # reserved
     # (first_non_arg_addr - cfr), PC
-    # unused, wasmInstance <- t2 = native argument stack (pushed by mINT)
+    # MC, wasmInstance <- t2 = native argument stack (pushed by mINT)
     # call frame
     # call frame
     # call frame
@@ -11870,12 +11907,103 @@ end
     push targetEntrypoint, targetInstance
 
     move t2, sc3
+    # Use MC for shared bytecode cursor.
+    loadp Wasm::RTT::m_callBytecode[t5], MC
+    addp (constexpr (Wasm::IPIntSharedBytecode::offsetOfData())), MC
     move t4, mintSS
 
     # need a common entrypoint because of x86 PC base
     jmp .ipint_mint_arg_dispatch
 
 .ipint_tail_call_common:
+    # Check if we need to insert a restore frame for cross-instance tail calls.
+    # Registers on entry:
+    #   r0 = entrypoint, r1 = targetInstance, wasmInstance = current instance,
+    #   t3 = callerStackArgSize, IPIntCallCallee = callee, IPIntCallFunctionSlot = func info
+    # Scratch: t4, t5. Do not clobber anything else.
+    # On x86_64 r1==t2 (both rdx) and on ARM64 r1==t1, so neither t2 nor t1
+    # may be used freely. The ARM64 copy loop uses t2 for pair loads; that is
+    # safe because r1==t1 there (t2 is a distinct register).
+    bpeq r1, wasmInstance, .ipint_tail_call_no_restore_frame
+
+    loadp ReturnPC[cfr], t4
+    removeCodePtrTag t4
+if ARM64E
+    leap _g_config, t5
+    loadp JSCConfigGateMapOffset + (constexpr Gate::wasmRestoreFrame) * PtrSize[t5], t5
+    removeCodePtrTag t5
+else
+    pcrtoaddr _wasm_restore_frame_return, t5
+end
+    bpeq t4, t5, .ipint_tail_call_no_restore_frame
+
+    const RestoreFrameSize = constexpr Wasm::RestoreFrameCallee::restoreFrameSizeInBytes
+
+    # Step 1: Write the restore frame at cfr + 16 + t3.
+    # cfr hasn't shifted yet, so this is cfr_old + (FirstArgumentOffset - RestoreFrameSize) + t3.
+    leap (FirstArgumentOffset - RestoreFrameSize)[cfr, t3], t4   # t4 = restore_cfr
+
+    loadp [cfr], t5
+    storep t5, [t4]                         # originalCallerFrame
+if ARM64E
+    loadp ReturnPC[cfr], lr
+    addp CallerFrameAndPCSize, cfr, t5
+    untagReturnAddress t5
+    addp CallerFrameAndPCSize, t4, t5
+    tagReturnAddress t5
+    storep lr, ReturnPC[t4]                 # originalReturnPC (resigned for restore_cfr)
+else
+    loadp ReturnPC[cfr], t5
+    storep t5, ReturnPC[t4]                 # originalReturnPC
+end
+    storep wasmInstance, CodeBlock[t4]       # saved instance
+    leap _g_restoreFrameCalleeBoxed, t5
+    loadp [t5], t5
+    storep t5, Callee[t4]                   # RestoreFrameCallee
+
+    # Step 2: Copy [sp, cfr) down by RestoreFrameSize bytes.
+    move sp, t4
+
+    # Move sp down now so don't write below it in the copy loop.
+    subp RestoreFrameSize, sp
+
+.ipint_restore_frame_copy_loop:
+    bpaeq t4, cfr, .ipint_restore_frame_copy_loop_done
+if ARM64 or ARM64E
+    # t2 is safe here because r1==t1 on ARM64 (t2 is x2, a distinct register).
+    loadpairq [t4], t2, t5
+    storepairq t2, t5, -RestoreFrameSize[t4]
+elsif X86_64
+    loadp [t4], t5
+    storep t5, -RestoreFrameSize[t4]
+    loadp 8[t4], t5
+    storep t5, (8 - RestoreFrameSize)[t4]
+end
+    addp 16, t4
+    jmp .ipint_restore_frame_copy_loop
+
+.ipint_restore_frame_copy_loop_done:
+
+    # Step 3: Shift cfr down by 32, sp was handled before the copy loop.
+    subp RestoreFrameSize, cfr
+
+    # Step 4: Write redirect at cfr_new.
+    # restore_cfr = cfr_new + FirstArgumentOffset + t3
+    leap FirstArgumentOffset[cfr, t3], t4   # t4 = restore_cfr
+    storep t4, [cfr]                        # CallerFrame = restore_cfr
+
+if ARM64E
+    leap _g_config, t4
+    loadp JSCConfigGateMapOffset + (constexpr Gate::wasmRestoreFrame) * PtrSize[t4], t4
+    removeCodePtrTag t4
+    addp CallerFrameAndPCSize, cfr, t5
+    tagCodePtr t4, t5
+else
+    pcrtoaddr _wasm_restore_frame_return, t4
+end
+    storep t4, ReturnPC[cfr]                # ReturnPC = wasmRestoreFrame gate
+
+.ipint_tail_call_no_restore_frame:
     # Free up r0 to be used as argument register
 
     #  <caller frame>
@@ -12091,34 +12219,34 @@ mintAlign(_call_argument_dec_sp)
 
 # CallArgumentBytecode::CallArgStore0 (0x11)
 mintAlign(_call_argument_store_0)
-    mintPop(sc2)
-    storeq sc2, [sc3]
+    mintPop(sc0)
+    storeq sc0, [sc3]
     mintArgDispatch()
 
 # CallArgumentBytecode::CallArgDecSPStore8 (0x12)
 mintAlign(_call_argument_dec_sp_store_8)
-    mintPop(sc2)
+    mintPop(sc0)
     subp 2 * SlotSize, sc3
-    storeq sc2, 8[sc3]
+    storeq sc0, 8[sc3]
     mintArgDispatch()
 
 # CallArgumentBytecode::CallArgDecSPStoreVector0 (0x13)
 mintAlign(_call_argument_dec_sp_store_vector_0)
     subp 2 * SlotSize, sc3
-    loadq [mintSS], sc2
-    storeq sc2, [sc3]
-    loadq 8[mintSS], sc2
-    storeq sc2, 8[sc3]
+    loadq [mintSS], sc0
+    storeq sc0, [sc3]
+    loadq 8[mintSS], sc0
+    storeq sc0, 8[sc3]
     addq StackValueSize, mintSS
     mintArgDispatch()
 
 # CallArgumentBytecode::TailCallArgDecSPStoreVector8 (0x14)
 mintAlign(_call_argument_dec_sp_store_vector_8)
     subp 2 * SlotSize, sc3
-    loadq [mintSS], sc2
-    storeq sc2, 8[sc3]
-    loadq 8[mintSS], sc2
-    storeq sc2, 16[sc3]
+    loadq [mintSS], sc0
+    storeq sc0, 8[sc3]
+    loadq 8[mintSS], sc0
+    storeq sc0, 16[sc3]
     addq StackValueSize, mintSS
     mintArgDispatch()
 
@@ -12133,34 +12261,34 @@ mintAlign(_tail_call_argument_dec_sp)
 
 # CallArgumentBytecode::TailCallArgStore0 (0x16)
 mintAlign(_tail_call_argument_store_0)
-    mintPop(sc3)
-    storeq sc3, [sp]
+    mintPop(sc0)
+    storeq sc0, [sp]
     mintArgDispatch()
 
 # CallArgumentBytecode::TailCallArgDecSPStore8 (0x17)
 mintAlign(_tail_call_argument_dec_sp_store_8)
-    mintPop(sc3)
+    mintPop(sc0)
     subp 2 * SlotSize, sp
-    storeq sc3, 8[sp]
+    storeq sc0, 8[sp]
     mintArgDispatch()
 
 # CallArgumentBytecode::TailCallArgDecSPStoreVector0 (0x18)
 mintAlign(_tail_call_argument_dec_sp_store_vector_0)
     subp 2 * SlotSize, sp
-    loadq [mintSS], sc3
-    storeq sc3, [sp]
-    loadq 8[mintSS], sc3
-    storeq sc3, 8[sp]
+    loadq [mintSS], sc0
+    storeq sc0, [sp]
+    loadq 8[mintSS], sc0
+    storeq sc0, 8[sp]
     addq StackValueSize, mintSS
     mintArgDispatch()
 
 # CallArgumentBytecode::TailCallArgDecSPStoreVector8 (0x19)
 mintAlign(_tail_call_argument_dec_sp_store_vector_8)
     subp 2 * SlotSize, sp
-    loadq [mintSS], sc3
-    storeq sc3, 8[sp]
-    loadq 8[mintSS], sc3
-    storeq sc3, 16[sp]
+    loadq [mintSS], sc0
+    storeq sc0, 8[sp]
+    loadq 8[mintSS], sc0
+    storeq sc0, 16[sp]
     addq StackValueSize, mintSS
     mintArgDispatch()
 
@@ -12179,9 +12307,7 @@ mintAlign(_call)
     storep sc1, ThisArgumentOffset[cfr]
 
     # Set up memory
-    push t2, t3
-    ipintReloadMemory()
-    pop t3, t2
+    ipintReloadMemory(ws1)
 
     # Make the call
 if ARM64E
@@ -12210,7 +12336,7 @@ _wasm_ipint_call_return_location_wide32:
 
     # mintRetSrc: read stack results from the callee's SP (current SP)
     loadi IPInt::CallReturnMetadata::firstStackResultSPOffset[MC], mintRetSrc
-    advanceMC(IPInt::CallReturnMetadata::resultBytecode)
+    advanceMC(constexpr (sizeof(IPInt::CallReturnMetadata)))
     leap [sp, mintRetSrc], mintRetSrc
 
     # load (first_non_arg_addr - cfr) from the stack and make it absolute
@@ -12358,18 +12484,17 @@ mintAlign(_end)
     # return result
     # return result     <- mintRetDst => new SP
     # (first_non_arg_addr - cfr), PC
-    # unused, wasmInstance  <- sc3
+    # MC, wasmInstance  <- sc3
     # call frame
     # call frame
     # call frame
     # call frame        <- callee's SP (not yet restored)
 
-    # note: we don't care about t3 anymore
 if ARM64 or ARM64E
-    loadpairq [sc3], t3, wasmInstance
+    loadpairq [sc3], MC, wasmInstance
 elsif X86_64
     loadq [sc3], wasmInstance
-    loadq 8[sc3], t3
+    loadq 8[sc3], MC
     loadp (2 * SlotSize)[sc3], PC
 end
     move mintRetDst, sp
@@ -12380,7 +12505,7 @@ end
     storep ws0, UnboxedWasmCalleeStackSlot[cfr]
 
     # Restore memory
-    ipintReloadMemory()
+    ipintReloadMemory(t2)
     nextIPIntInstruction()
 
 .ipint_perform_tail_call:
@@ -12490,9 +12615,7 @@ end
     move targetInstance, wasmInstance
 
     # set up memory
-    push t2, t3
-    ipintReloadMemory()
-    pop t3, t2
+    ipintReloadMemory(ws1)
 
     addp CallerFrameAndPCSize, sp
 
@@ -12791,4 +12914,28 @@ if ARM64E
     _wasmTailCallTrampoline:
         untagReturnAddress ws2
         jmp ws0, WasmEntryPtrTag
+end
+
+# Restore frame return stub: only used when JIT cage is disabled.
+# When JIT cage is enabled, the wasmRestoreFrame gate thunk handles this.
+# At entry: return values in wa/wfa registers and at sp (don't change these)
+global _wasm_restore_frame_return
+_wasm_restore_frame_return:
+    loadp CodeBlock[cfr], wasmInstance
+    ipintReloadMemory(ws0)
+
+if ARM64E
+    loadp ReturnPC[cfr], lr
+    addp CallerFrameAndPCSize, cfr, ws0
+    untagReturnAddress ws0
+    loadp [cfr], cfr
+    tagReturnAddress sp
+    ret
+elsif ARM64
+    loadpairq [cfr], cfr, lr
+    ret
+elsif X86_64
+    loadp ReturnPC[cfr], ws1
+    loadp [cfr], cfr
+    jmp ws1
 end

@@ -29,6 +29,7 @@
 
 #include <wtf/CryptographicallyRandomNumber.h>
 #include <wtf/FileHandle.h>
+#include <wtf/Function.h>
 #include <wtf/HexNumber.h>
 #include <wtf/Logging.h>
 #include <wtf/MappedFileData.h>
@@ -40,6 +41,7 @@
 #include <wtf/text/StringBuilder.h>
 
 #if !OS(WINDOWS)
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/param.h>
 #include <sys/stat.h>
@@ -250,6 +252,12 @@ String lastComponentOfPathIgnoringTrailingSlash(const String& path)
     return path.substring(position + 1, endOfSubstring - position);
 }
 
+void removeTrailingSlash(String& path)
+{
+    if (path.length() > 1 && path.endsWith(FileSystem::pathSeparator))
+        path = path.left(path.length() - 1);
+}
+
 bool filesHaveSameVolume(const String& fileA, const String& fileB)
 {
     if (fileA.isNull() || fileB.isNull())
@@ -326,10 +334,27 @@ MappedFileData createMappedFileData(const String& path, size_t bytesSize, FileHa
     if (!handle)
         return { };
 
+    bool succeeded = false;
+    auto removeOrphanOnFailure = makeScopeExit([&] {
+        if (!succeeded)
+            FileSystem::deleteFile(path);
+    });
+
     if (!handle.truncate(bytesSize)) {
         RELEASE_LOG_FAULT(MemoryPressure, "Unable to truncate file");
         return { };
     }
+
+#if HAVE(FALLOCATE)
+    // Reserve real blocks so a later mmap'd memcpy() can't SIGBUS on ENOSPC.
+    // EOPNOTSUPP: filesystem doesn't support pre-allocation -> preserve old behavior.
+    // posix_fallocate is avoided because it falls back to zero-filling when pre-allocation
+    // is not supported by the FS.
+    if (fallocate(handle.platformHandle(), 0, 0, bytesSize) == -1 && errno != EOPNOTSUPP) {
+        RELEASE_LOG_ERROR(MemoryPressure, "Unable to reserve %zu bytes for cache file (errno=%d)", bytesSize, errno);
+        return { };
+    }
+#endif
 
     if (!FileSystem::makeSafeToUseMemoryMapForPath(path))
         return { };
@@ -341,6 +366,7 @@ MappedFileData createMappedFileData(const String& path, size_t bytesSize, FileHa
     if (outputHandle)
         *outputHandle = WTF::move(handle);
 
+    succeeded = true;
     return WTF::move(*mappedFile);
 }
 
@@ -689,10 +715,8 @@ bool isAncestor(const String& possibleAncestor, const String& possibleChild)
 {
     auto possibleChildLexicallyNormal = lexicallyNormal(possibleChild);
     auto possibleAncestorLexicallyNormal = lexicallyNormal(possibleAncestor);
-    if (possibleChildLexicallyNormal.endsWith(static_cast<char16_t>(std::filesystem::path::preferred_separator)))
-        possibleChildLexicallyNormal = possibleChildLexicallyNormal.left(possibleChildLexicallyNormal.length() - 1);
-    if (possibleAncestorLexicallyNormal.endsWith(static_cast<char16_t>(std::filesystem::path::preferred_separator)))
-        possibleAncestorLexicallyNormal = possibleAncestorLexicallyNormal.left(possibleAncestorLexicallyNormal.length() - 1);
+    removeTrailingSlash(possibleChildLexicallyNormal);
+    removeTrailingSlash(possibleAncestorLexicallyNormal);
     return possibleChildLexicallyNormal.startsWith(possibleAncestorLexicallyNormal)
         && possibleChildLexicallyNormal.length() > possibleAncestorLexicallyNormal.length()
         && possibleChildLexicallyNormal[possibleAncestorLexicallyNormal.length()] == static_cast<char16_t>(std::filesystem::path::preferred_separator);

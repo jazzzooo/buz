@@ -150,14 +150,6 @@ void DesiredWatchpoints::addLazily(DesiredGlobalProperty&& property)
     m_globalProperties.addLazily(WTF::move(property));
 }
 
-bool DesiredWatchpoints::consider(Structure* structure)
-{
-    if (!structure->dfgShouldWatch())
-        return false;
-    addLazily(structure->transitionWatchpointSet());
-    return true;
-}
-
 void DesiredWatchpoints::countWatchpoints(CodeBlock* codeBlock, DesiredIdentifiers& identifiers, CommonData* commonData)
 {
     WatchpointCollector collector(*commonData);

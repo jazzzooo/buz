@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <string.h>
 #include <wtf/Assertions.h>
+#include <wtf/MathExtras.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/SIMDHelpers.h>
 
@@ -77,7 +78,7 @@ void BitVector::clearAll()
 
 auto BitVector::OutOfLineBits::create(size_t numBits) -> OutOfLineBits*
 {
-    numBits = (numBits + bitsInPointer() - 1) & ~(static_cast<size_t>(bitsInPointer()) - 1);
+    numBits = roundUpToMultipleOf<bitsInPointer()>(numBits);
     size_t size = sizeof(OutOfLineBits) + sizeof(uintptr_t) * (numBits / bitsInPointer());
     return new (NotNull, BitVectorMalloc::malloc(size)) OutOfLineBits(numBits);
 }

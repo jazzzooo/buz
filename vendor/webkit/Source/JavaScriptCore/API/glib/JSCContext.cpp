@@ -373,7 +373,7 @@ GUniquePtr<char*> jscContextJSArrayToGStrv(JSCContext* context, JSValueRef jsArr
     if (*exception)
         return nullptr;
 
-    auto sizeInBytes = checkedSum<size_t>(length + 1);
+    auto sizeInBytes = checkedSum<size_t>(length, 1);
     sizeInBytes *= sizeof(char*);
     if (sizeInBytes.hasOverflowed())
         return nullptr;

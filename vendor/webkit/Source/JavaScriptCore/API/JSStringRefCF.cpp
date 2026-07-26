@@ -32,7 +32,6 @@
 #include "JSStringRef.h"
 #include "OpaqueJSString.h"
 #include <wtf/StdLibExtras.h>
-#include <wtf/cf/VectorCF.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 

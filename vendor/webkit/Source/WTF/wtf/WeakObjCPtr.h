@@ -25,6 +25,10 @@
 
 #pragma once
 
+#include <wtf/Platform.h>
+
+#if PLATFORM(COCOA)
+
 #include <objc/runtime.h>
 #include <type_traits>
 #include <wtf/RetainPtr.h>
@@ -131,3 +135,5 @@ inline RetainPtr<typename WeakObjCPtr<T>::ValueType> protect(const WeakObjCPtr<T
 
 using WTF::protect;
 using WTF::WeakObjCPtr;
+
+#endif // PLATFORM(COCOA)

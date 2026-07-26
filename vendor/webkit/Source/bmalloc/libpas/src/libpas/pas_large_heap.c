@@ -30,7 +30,6 @@
 #include "pas_large_heap.h"
 
 #include "pas_allocation_mode.h"
-#include "pas_bootstrap_free_heap.h"
 #include "pas_compute_summary_object_callbacks.h"
 #include "pas_heap.h"
 #include "pas_heap_config.h"
@@ -39,7 +38,6 @@
 #include "pas_large_sharing_pool.h"
 #include "pas_large_map.h"
 #include "pas_mte.h"
-#include "pas_page_malloc.h"
 #include "pas_probabilistic_guard_malloc_allocator.h"
 #include "pas_system_heap.h"
 #include "pas_zero_mode.h"
@@ -147,7 +145,7 @@ static pas_allocation_result allocate_impl(pas_large_heap* heap,
             pas_range_create(result.begin, result.begin + *size),
             transaction,
             pas_physical_memory_is_locked_by_virtual_range_common_lock,
-            heap_config->mmap_capability)) {
+            heap_config->page_flags)) {
         pas_fast_large_free_heap_deallocate(
             &heap->free_heap, result.begin, result.begin + *size,
             result.zero_mode, &config);
@@ -285,7 +283,7 @@ bool pas_large_heap_try_deallocate(uintptr_t begin,
         pas_large_sharing_pool_free(
             pas_range_create(map_entry.begin, map_entry.end),
             pas_physical_memory_is_locked_by_virtual_range_common_lock,
-            heap_config->mmap_capability);
+            heap_config->page_flags);
     }
 
     initialize_config(&config, NULL, map_entry.heap, heap_config);
@@ -344,7 +342,7 @@ bool pas_large_heap_try_shrink(uintptr_t begin,
         pas_large_sharing_pool_free(
             pas_range_create(map_entry.begin + new_size, map_entry.end),
             pas_physical_memory_is_locked_by_virtual_range_common_lock,
-            heap_config->mmap_capability);
+            heap_config->page_flags);
     }
 
     initialize_config(&config, NULL, heap, heap_config);

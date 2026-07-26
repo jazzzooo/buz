@@ -69,10 +69,6 @@ bool InliningDecision::canInline(InliningNode* target, size_t initialWasmSize, s
     if (wasmSize > Options::wasmInliningMaximumWasmCalleeSize())
         return false;
 
-    // FIXME: There's no fundamental reason we can't inline these including imports.
-    if (m_module.moduleInformation().callCanClobberInstance(target->callee().index()))
-        return false;
-
     // For tiny functions, let's be a bit more generous.
     if (wasmSize < Options::wasmInliningTinyFunctionThreshold()) {
         if (inlinedWasmSize > 100)
@@ -93,14 +89,10 @@ bool InliningDecision::canInline(InliningNode* target, size_t initialWasmSize, s
     // For large functions, growing by the same factor would add too much
     // compilation effort, so we also apply a fixed cap. However, independent
     // of the budget cap, for large functions we should still allow a little
-    // inlining, which is why we allow 10% of the graph size is the minimal
-    // budget even for large functions that exceed the regular budget.
-    //
-    // Note for future tuning: it might make sense to allow 20% here, and in
-    // turn perhaps lower --wasmInliningBudget. The drawback is that this
-    // would allow truly huge functions to grow even bigger; the benefit is
-    // that we wouldn't fall off as steep a cliff when hitting the cap.
-    size_t budgetLargeFunction = std::max<size_t>(m_budgetCap, initialWasmSize * 1.1);
+    // inlining, which is why we allow a configurable fraction of the graph
+    // size as the minimal budget even for large functions that exceed the
+    // regular budget.
+    size_t budgetLargeFunction = std::max<size_t>(m_budgetCap, initialWasmSize * Options::wasmInliningLargeFunctionGrowthFactor());
     size_t totalSize = initialWasmSize + inlinedWasmSize + wasmSize;
     return totalSize < std::min<size_t>(budgetSmallFunction, budgetLargeFunction);
 }

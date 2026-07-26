@@ -39,8 +39,7 @@
 #include <wtf/RetainPtr.h>
 #include <wtf/Seconds.h>
 #include <wtf/ThreadSafetyAnalysis.h>
-#include <wtf/ThreadSpecific.h>
-#include <wtf/Threading.h>
+#include <wtf/ThreadingEnums.h>
 #include <wtf/ThreadingPrimitives.h>
 #include <wtf/TypeTraits.h>
 #include <wtf/Variant.h>
@@ -62,6 +61,8 @@
 #endif
 
 namespace WTF {
+
+template<typename, CanBeGCThread> class ThreadSpecific;
 
 #if USE(GLIB_EVENT_LOOP)
 class ActivityObserver;
@@ -117,7 +118,7 @@ public:
     WTF_EXPORT_PRIVATE static RunLoop& webSingleton();
     WTF_EXPORT_PRIVATE static RunLoop* webIfExists();
 #endif
-    WTF_EXPORT_PRIVATE static Ref<RunLoop> create(ASCIILiteral threadName, ThreadType = ThreadType::Unknown, Thread::QOS = Thread::QOS::UserInitiated);
+    WTF_EXPORT_PRIVATE static Ref<RunLoop> create(ASCIILiteral threadName, ThreadType = ThreadType::Unknown, ThreadQOS = ThreadQOS::UserInitiated);
 
     static bool isMain() { return mainSingleton().isCurrent(); }
     WTF_EXPORT_PRIVATE bool isCurrent() const final;
@@ -164,6 +165,8 @@ public:
 #endif
 
 #if USE(WINDOWS_EVENT_LOOP)
+    using WindowsMessageHandler = Function<bool(MSG&)>;
+    WTF_EXPORT_PRIVATE static void setWindowsMessageHandler(WindowsMessageHandler&&);
     static void registerRunLoopMessageWindowClass();
 #endif
 
@@ -172,16 +175,27 @@ public:
     WTF_EXPORT_PRIVATE Kind kind() const { return m_genericState ? Kind::Generic : Kind::Bun; }
 #endif
 
+    // A RunLoop::Timer is owned by the thread whose run loop it is constructed with: it fires on that
+    // run loop's thread, and stop() and the destructor must run on that thread. Stopping or destroying
+    // a timer from another thread races with an in-flight callback and is a use-after-free; both assert
+    // RunLoop::isCurrent() in debug builds (see assertIsCurrent()). Starting/re-arming a timer from
+    // another thread is allowed -- it only schedules onto the run loop and never frees the timer -- which
+    // is how RunLoop::dispatch()/dispatchAfter() and cross-thread timer schedulers (e.g. JSRunLoopTimer)
+    // work.
     class TimerBase {
         friend class RunLoop;
     public:
         WTF_EXPORT_PRIVATE explicit TimerBase(Ref<RunLoop>&&, ASCIILiteral description);
+        // Must run on the run loop's thread if the timer is active (asserted in debug); see class comment.
         WTF_EXPORT_PRIVATE virtual ~TimerBase();
 
+        // May be called from any thread; (re)schedules the timer onto its run loop's thread.
         void startRepeating(Seconds interval) { start(std::max(interval, 0_s), true); }
         void startOneShot(Seconds interval) { start(std::max(interval, 0_s), false); }
 
+        // Must be called on the run loop's thread when the timer is active (asserted in debug).
         WTF_EXPORT_PRIVATE void stop();
+
         WTF_EXPORT_PRIVATE bool isActive() const;
         WTF_EXPORT_PRIVATE Seconds secondsUntilFire() const;
 
@@ -344,7 +358,7 @@ public:
 
 private:
     class Holder;
-    static ThreadSpecific<Holder>& runLoopHolder();
+    static ThreadSpecific<Holder, CanBeGCThread::False>& runLoopHolder();
 
     RunLoop();
 
@@ -375,10 +389,14 @@ private:
 #if USE(WINDOWS_EVENT_LOOP)
     static LRESULT CALLBACK RunLoopWndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT wndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    void dispatchMessage(MSG&);
+    DWORD msTillNextTimer();
+    void fireTimers();
     HWND m_runLoopMessageWindow;
-    UncheckedKeyHashSet<UINT_PTR> m_liveTimers;
+    Deque<TimerBase*> m_timers;
 
     Lock m_loopLock;
+    WindowsMessageHandler m_windowsMessageHandler;
 #elif USE(COCOA_EVENT_LOOP)
     static void performWork(void*);
     const RetainPtr<CFRunLoopRef> m_runLoop;
@@ -490,7 +508,16 @@ private:
 
 inline void assertIsCurrent(const RunLoop& runLoop) WTF_ASSERTS_ACQUIRED_CAPABILITY(runLoop)
 {
-    ASSERT_UNUSED(runLoop, runLoop.isCurrent());
+    UNUSED_PARAM(runLoop);
+    ASSERT_WITH_SECURITY_IMPLICATION(runLoop.isCurrent());
+}
+
+// Like assertIsCurrent(), but enforced in release builds too. Used by RunLoop::Timer::stop() and the
+// destructor, where running off the run loop's thread while the timer is active is a cross-thread
+// use-after-free, so it must crash even when debug assertions are disabled.
+inline void releaseAssertIsCurrent(const RunLoop& runLoop) WTF_ASSERTS_ACQUIRED_CAPABILITY(runLoop)
+{
+    RELEASE_ASSERT(runLoop.isCurrent());
 }
 
 } // namespace WTF
@@ -498,3 +525,4 @@ inline void assertIsCurrent(const RunLoop& runLoop) WTF_ASSERTS_ACQUIRED_CAPABIL
 using WTF::RunLoop;
 using WTF::RunLoopMode;
 using WTF::assertIsCurrent;
+using WTF::releaseAssertIsCurrent;

@@ -44,6 +44,7 @@
 #import "JavaScriptCore.h"
 #import "ObjcRuntimeExtras.h"
 #import "StrongInlines.h"
+#import "TopExceptionScope.h"
 #import <wtf/RetainPtr.h>
 #import <wtf/WeakObjCPtr.h>
 

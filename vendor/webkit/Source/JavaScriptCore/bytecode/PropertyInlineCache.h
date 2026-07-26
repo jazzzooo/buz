@@ -29,7 +29,6 @@
 #include "CodeBlock.h"
 #include "CodeOrigin.h"
 #include "InlineCacheCompiler.h"
-#include "Instruction.h"
 #include "JITStubRoutine.h"
 #include "MacroAssembler.h"
 #include "Options.h"
@@ -37,8 +36,6 @@
 #include "PropertyInlineCacheSummary.h"
 #include "RegisterSet.h"
 #include "Structure.h"
-#include "StructureSet.h"
-#include <wtf/Box.h>
 #include <wtf/Lock.h>
 #include <wtf/TZoneMalloc.h>
 
@@ -59,7 +56,6 @@ class PolymorphicAccess;
     macro(GetById) \
     macro(GetByIdWithThis) \
     macro(GetByIdDirect) \
-    macro(TryGetById) \
     macro(GetByVal) \
     macro(GetByValWithThis) \
     macro(PutByIdStrict) \
@@ -391,6 +387,10 @@ public:
 
     JSGlobalObject* globalObject() const { return m_globalObject; }
 
+    inline ScalarRegisterSet usedRegisters() const;
+    inline void setUsedRegisters(ScalarRegisterSet);
+    inline void removeUsedRegister(GPRReg);
+
     void resetStubAsJumpInAccess(CodeBlock*);
 
     GPRReg thisGPR() const { return m_extraGPR; }
@@ -440,8 +440,6 @@ private:
     // That's not so bad - we'll get rid of the redundant ones once we regenerate.
     Variant<std::monostate, Vector<StructureID>, Vector<std::tuple<StructureID, CacheableIdentifier>>> m_bufferedStructures WTF_GUARDED_BY_LOCK(m_bufferedStructuresLock);
 public:
-
-    ScalarRegisterSet usedRegisters;
 
     CallSiteIndex callSiteIndex;
 
@@ -700,6 +698,8 @@ public:
     CodeLocationCall<JSInternalPtrTag> m_slowPathCallLocation;
     std::unique_ptr<PolymorphicAccess> m_stub;
 
+    ScalarRegisterSet m_usedRegisters;
+
     uint32_t inlineCodeSize() const
     {
         int32_t inlineSize = MacroAssembler::differenceBetweenCodePtr(startLocation, doneLocation);
@@ -708,13 +708,30 @@ public:
     }
 };
 
+inline ScalarRegisterSet PropertyInlineCache::usedRegisters() const
+{
+    if (auto* repatching = dynamicDowncast<RepatchingPropertyInlineCache>(*this))
+        return repatching->m_usedRegisters;
+    return RegisterSet::stubUnavailableRegisters().toScalarRegisterSet();
+}
+
+inline void PropertyInlineCache::setUsedRegisters(ScalarRegisterSet value)
+{
+    ASSERT(is<RepatchingPropertyInlineCache>(*this));
+    downcast<RepatchingPropertyInlineCache>(*this).m_usedRegisters = value;
+}
+
+inline void PropertyInlineCache::removeUsedRegister(GPRReg reg)
+{
+    ASSERT(is<RepatchingPropertyInlineCache>(*this));
+    downcast<RepatchingPropertyInlineCache>(*this).m_usedRegisters.remove(reg);
+}
+
 inline auto appropriateGetByIdOptimizeFunction(AccessType type) -> decltype(&operationGetByIdOptimize)
 {
     switch (type) {
     case AccessType::GetById:
         return operationGetByIdOptimize;
-    case AccessType::TryGetById:
-        return operationTryGetByIdOptimize;
     case AccessType::GetByIdDirect:
         return operationGetByIdDirectOptimize;
     case AccessType::GetPrivateNameById:
@@ -731,8 +748,6 @@ inline auto appropriateGetByIdGenericFunction(AccessType type) -> decltype(&oper
     switch (type) {
     case AccessType::GetById:
         return operationGetByIdGeneric;
-    case AccessType::TryGetById:
-        return operationTryGetByIdGeneric;
     case AccessType::GetByIdDirect:
         return operationGetByIdDirectGeneric;
     case AccessType::GetPrivateNameById:
@@ -791,7 +806,6 @@ inline bool hasConstantIdentifier(AccessType accessType)
     case AccessType::DeleteByIdStrict:
     case AccessType::DeleteByIdSloppy:
     case AccessType::InById:
-    case AccessType::TryGetById:
     case AccessType::GetByIdDirect:
     case AccessType::GetById:
     case AccessType::GetPrivateNameById:

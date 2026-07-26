@@ -27,6 +27,7 @@
 #include "config.h"
 #include "WasmFunctionIPIntMetadataGenerator.h"
 
+#include "WasmTypeDefinition.h"
 #include <numeric>
 #include <wtf/TZoneMallocInlines.h>
 
@@ -39,14 +40,6 @@ namespace JSC {
 namespace Wasm {
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(FunctionIPIntMetadataGenerator);
-
-void FunctionIPIntMetadataGenerator::setTailCall(uint32_t functionIndex, bool isImportedFunctionFromFunctionIndexSpace)
-{
-    m_hasTailCallSuccessors = true;
-    m_tailCallSuccessors.set(functionIndex);
-    if (isImportedFunctionFromFunctionIndexSpace)
-        setTailCallClobbersInstance();
-}
 
 void FunctionIPIntMetadataGenerator::addLength(size_t length)
 {
@@ -147,52 +140,6 @@ void FunctionIPIntMetadataGenerator::addAtomicMemoryAccess(uint8_t memoryIndex, 
         .instructionLength = { .length = safeCast<uint8_t>(length) }
     };
     appendMetadata(md);
-}
-
-void FunctionIPIntMetadataGenerator::addReturnData(const RTT& sig, const CallInformation& returnCC)
-{
-    m_uINTBytecode.reserveInitialCapacity(sig.returnCount() + 1);
-    // uINT: the interpreter smaller than mINT
-    constexpr static int NUM_UINT_GPRS = 8;
-    constexpr static int NUM_UINT_FPRS = 8;
-    ASSERT_UNUSED(NUM_UINT_GPRS, wasmCallingConvention().jsrArgs.size() <= NUM_UINT_GPRS);
-    ASSERT_UNUSED(NUM_UINT_FPRS, wasmCallingConvention().fprArgs.size() <= NUM_UINT_FPRS);
-
-    m_uINTBytecode.appendUsingFunctor(returnCC.results.size(),
-        [&](unsigned index) -> uint8_t {
-            const ArgumentLocation& argLoc = returnCC.results[index];
-            const ValueLocation& loc = argLoc.location;
-
-            if (loc.isGPR()) {
-#if USE(JSVALUE64)
-                ASSERT_UNUSED(NUM_UINT_GPRS, GPRInfo::toArgumentIndex(loc.jsr().gpr()) < NUM_UINT_GPRS);
-                return static_cast<uint8_t>(IPInt::UIntBytecode::RetGPR) + GPRInfo::toArgumentIndex(loc.jsr().gpr());
-#elif USE(JSVALUE32_64)
-                ASSERT_UNUSED(NUM_UINT_GPRS, GPRInfo::toArgumentIndex(loc.jsr().payloadGPR()) < NUM_UINT_GPRS);
-                ASSERT_UNUSED(NUM_UINT_GPRS, GPRInfo::toArgumentIndex(loc.jsr().tagGPR()) < NUM_UINT_GPRS);
-                return static_cast<uint8_t>(IPInt::UIntBytecode::RetGPR) + GPRInfo::toArgumentIndex(loc.jsr().gpr(WhichValueWord::PayloadWord));
-#endif
-            }
-
-            if (loc.isFPR()) {
-                ASSERT_UNUSED(NUM_UINT_FPRS, FPRInfo::toArgumentIndex(loc.fpr()) < NUM_UINT_FPRS);
-                return static_cast<uint8_t>(IPInt::UIntBytecode::RetFPR) + FPRInfo::toArgumentIndex(loc.fpr());
-            }
-
-            RELEASE_ASSERT(loc.isStack());
-            m_topOfReturnStackFPOffset = loc.offsetFromFP() + bytesForWidth(argLoc.width);
-            switch (argLoc.width) {
-            case Width::Width64:
-                return static_cast<uint8_t>(IPInt::UIntBytecode::Stack);
-            case Width::Width128:
-                return static_cast<uint8_t>(IPInt::UIntBytecode::StackVector);
-            default:
-                RELEASE_ASSERT_NOT_REACHED("No uINT bytecode for result width");
-            }
-        });
-
-    m_uINTBytecode.reverse();
-    m_uINTBytecode.append(static_cast<uint8_t>(IPInt::UIntBytecode::End));
 }
 
 

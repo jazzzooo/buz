@@ -29,9 +29,11 @@
 
 #pragma once
 
-#include "BytecodeIndex.h"
-#include "JSCJSValue.h"
-#include "MacroAssemblerCodeRef.h"
+#include <JavaScriptCore/BytecodeIndex.h>
+#include <JavaScriptCore/JSCJSValue.h>
+#include <JavaScriptCore/MacroAssemblerCodeRef.h>
+#include <JavaScriptCore/VMEntryRecord.h>
+#include <span>
 #include <wtf/HashMap.h>
 #include <wtf/Platform.h>
 #include <wtf/TZoneMalloc.h>
@@ -77,6 +79,7 @@ using JSOrWasmInstruction = Variant<const JSInstruction*, uintptr_t /* IPIntOffs
     class ProgramExecutable;
     class ModuleProgramExecutable;
     class Register;
+    class JSAsyncFunctionGenerator;
     class JSGenerator;
     class JSObject;
     class JSScope;
@@ -164,7 +167,7 @@ using JSOrWasmInstruction = Variant<const JSInstruction*, uintptr_t /* IPIntOffs
         void getStackTrace(JSCell* owner, Vector<StackFrame>& results, size_t framesToSkip = 0, size_t maxStackSize = std::numeric_limits<size_t>::max(), JSCell* caller = nullptr, JSCell* ownerOfCallLinkInfo = nullptr, CallLinkInfo* = nullptr);
 
     private:
-        void getAsyncStackTrace(JSCell* owner, Vector<StackFrame>& results, JSGenerator* initialGenerator, size_t maxStackSize);
+        void getAsyncStackTrace(JSCell* owner, Vector<StackFrame>& results, JSAsyncFunctionGenerator* initialGenerator, size_t maxStackSize);
         enum ExecutionFlag { Normal, InitializeAndReturn };
 
         CodeBlock* prepareForCachedCall(CachedCall&, JSFunction*);
@@ -205,14 +208,16 @@ using JSOrWasmInstruction = Variant<const JSInstruction*, uintptr_t /* IPIntOffs
 
     class UnwindFunctorBase {
     protected:
-        UnwindFunctorBase(VM& vm)
-            : m_vm(vm)
-        { }
+        inline UnwindFunctorBase(VM&);
 
         void copyCalleeSavesToEntryFrameCalleeSavesBuffer(StackVisitor&) const;
         void notifyDebuggerOfUnwinding(JSGlobalObject*, CallFrame*) const;
 
         VM& m_vm;
+#if ENABLE(ASSEMBLER)
+        std::span<const int8_t> m_vmCalleeSaveBufferSlotsByRegIndex;
+        VMEntryRecord* m_vmEntryRecord;
+#endif
     };
 } // namespace JSC
 

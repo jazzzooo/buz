@@ -91,6 +91,7 @@ bool doesGC(Graph& graph, Node* node)
     case ArithPow:
     case ArithSqrt:
     case ArithRandom:
+    case DateNow:
     case ArithRound:
     case ArithFloor:
     case ArithCeil:
@@ -179,6 +180,9 @@ bool doesGC(Graph& graph, Node* node)
     case FencedStoreBarrier:
     case InvalidationPoint:
     case NotifyWrite:
+    case GetCellButterflySlot:
+    case PutCellButterflySlot:
+    case ArraySortCommit:
     case AssertInBounds:
     case CheckInBounds:
     case CheckInBoundsInt52:
@@ -220,6 +224,7 @@ bool doesGC(Graph& graph, Node* node)
     case PhantomNewAsyncFunction:
     case PhantomNewAsyncGeneratorFunction:
     case PhantomNewInternalFieldObject:
+    case PhantomNewPromise:
     case PhantomCreateActivation:
     case PhantomDirectArguments:
     case PhantomCreateRest:
@@ -259,7 +264,6 @@ bool doesGC(Graph& graph, Node* node)
     case FilterSetPrivateBrandStatus:
     case DateGetInt32OrNaN:
     case DateGetTime:
-    case DataViewGetInt:
     case DataViewGetFloat:
     case DataViewSet:
     case PutByOffset:
@@ -285,6 +289,8 @@ bool doesGC(Graph& graph, Node* node)
 #if ASSERT_ENABLED
     case ArrayPush:
     case ArrayPop:
+    case ArrayShift:
+    case ArrayUnshift:
     case ArraySplice:
     case PushWithScope:
     case CreateActivation:
@@ -307,6 +313,7 @@ bool doesGC(Graph& graph, Node* node)
     case DefineDataProperty:
     case DefineAccessorProperty:
     case ObjectDefineProperty:
+    case ObjectDefinePropertyFromFields:
     case DeleteById:
     case DeleteByVal:
     case DirectCall:
@@ -368,8 +375,11 @@ bool doesGC(Graph& graph, Node* node)
     case PutToArguments:
     case RegExpExec:
     case RegExpExecNonGlobalOrSticky:
+    case RegExpExecSticky:
     case RegExpMatchFast:
     case RegExpMatchFastGlobal:
+    case RegExpSplitFast:
+    case RegExpStringIteratorNext:
     case RegExpTest:
     case RegExpTestInline:
     case RegExpSearch:
@@ -393,7 +403,6 @@ bool doesGC(Graph& graph, Node* node)
     case ToPropertyKey:
     case ToPropertyKeyOrNumber:
     case ToThis:
-    case TryGetById:
     case CreateThis:
     case CreatePromise:
     case CreateGenerator:
@@ -404,6 +413,7 @@ bool doesGC(Graph& graph, Node* node)
     case ObjectGetOwnPropertyNames:
     case ObjectGetOwnPropertySymbols:
     case ObjectToString:
+    case SymbolToString:
     case ReflectOwnKeys:
     case AllocatePropertyStorage:
     case ReallocatePropertyStorage:
@@ -413,8 +423,10 @@ bool doesGC(Graph& graph, Node* node)
     case NewArray:
     case NewArrayWithSpread:
     case NewInternalFieldObject:
+    case NewPromise:
     case Spread:
     case NewButterflyWithSize:
+    case ArraySortCompact:
     case NewArrayWithSize:
     case NewArrayWithButterfly:
     case NewArrayWithSpecies:
@@ -425,6 +437,8 @@ bool doesGC(Graph& graph, Node* node)
     case NewStringObject:
     case NewMap:
     case NewSet:
+    case NewWeakMap:
+    case NewWeakSet:
     case NewSymbol:
     case MakeRope:
     case MakeAtomString:
@@ -446,6 +460,7 @@ bool doesGC(Graph& graph, Node* node)
     case MaterializeNewInternalFieldObject:
     case MaterializeCreateActivation:
     case SetFunctionName:
+    case EnqueueAsyncGeneratorDriver:
     case StrCat:
     case StringReplace:
     case StringReplaceAll:
@@ -453,15 +468,22 @@ bool doesGC(Graph& graph, Node* node)
     case StringReplaceString:
     case StringSlice:
     case StringSubstring:
+    case StringSubstr:
+    case StringIteratorNext:
+    case StringIteratorNextWithUndefined:
     case StringValueOf:
     case CreateRest:
     case ToUpperCase:
     case ToLowerCase:
+    case StringTrim:
     case CallDOMGetter:
     case CallDOM:
     case ArraySlice:
+    case ArrayConcatArray:
+    case ArrayConcatAppendOne:
     case ArrayIncludes:
     case ArrayIndexOf:
+    case ArrayJoin:
     case ParseInt: // We might resolve a rope even though we don't clobber anything.
     case SetAdd:
     case MapSet:
@@ -486,6 +508,9 @@ bool doesGC(Graph& graph, Node* node)
     case StringLastIndexOf:
     case StringStartsWith:
     case StringEndsWith:
+    case StringSplit:
+    case StringMatch:
+    case StringSearch:
     case ResolvePromiseFirstResolving:
     case RejectPromiseFirstResolving:
     case FulfillPromiseFirstResolving:
@@ -495,6 +520,7 @@ bool doesGC(Graph& graph, Node* node)
     case PromiseReject:
     case PromiseThen:
     case PerformPromiseThen:
+    case PerformPromiseThenOneHandler:
     case ArrayIsArray:
 #else // not ASSERT_ENABLED
     // See comment at the top for why the default for all nodes should be to
@@ -508,6 +534,9 @@ bool doesGC(Graph& graph, Node* node)
     case GlobalIsFinite:
     case GlobalIsNaN:
         return node->child1().useKind() == UntypedUse;
+
+    case DataViewGetInt:
+        return node->dataViewData().byteSize == 8;
 
     case CallNumberConstructor:
         switch (node->child1().useKind()) {
@@ -652,6 +681,7 @@ bool doesGC(Graph& graph, Node* node)
         return true;
 
     case StringFromCharCode:
+    case StringFromCodePoint:
         if (node->child1()->isInt32Constant() && (node->child1()->asUInt32() <= maxSingleCharacterString))
             return false;
         return true;

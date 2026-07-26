@@ -187,6 +187,7 @@ struct MarkableTraits<ObjectIdentifierGeneric<T, ThreadSafety, RawValue>> {
 
 template<typename T, typename RawValue> using ObjectIdentifier = ObjectIdentifierGeneric<T, ObjectIdentifierMainThreadAccessTraits<RawValue>, RawValue>;
 template<typename T, typename RawValue> using AtomicObjectIdentifier = ObjectIdentifierGeneric<T, ObjectIdentifierThreadSafeAccessTraits<RawValue>, RawValue>;
+template<typename T> using UUIDObjectIdentifier = AtomicObjectIdentifier<T, UUID>;
 
 inline void add(Hasher& hasher, const ObjectIdentifierGenericBase<uint64_t>& identifier)
 {
@@ -271,6 +272,7 @@ std::strong_ordering operator<=>(const ObjectIdentifierGeneric<T, ThreadSafety, 
 } // namespace WTF
 
 using WTF::AtomicObjectIdentifier;
+using WTF::UUIDObjectIdentifier;
 using WTF::ObjectIdentifierGenericBase;
 using WTF::ObjectIdentifierGeneric;
 using WTF::ObjectIdentifier;

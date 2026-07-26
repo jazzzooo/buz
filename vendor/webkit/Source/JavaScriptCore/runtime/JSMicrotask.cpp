@@ -38,6 +38,7 @@
 #include "IteratorOperations.h"
 #include "MicrotaskCallInlines.h"
 #include "JSArray.h"
+#include "JSAsyncFunctionGenerator.h"
 #include "JSAsyncGenerator.h"
 #include "JSFunction.h"
 #include "JSGenerator.h"
@@ -47,11 +48,11 @@
 #include "JSModuleNamespaceObject.h"
 #include "JSModuleRecord.h"
 #include "JSPromise.h"
-#include "JSPromiseCombinatorsContext.h"
 #include "JSPromiseCombinatorsGlobalContext.h"
 #include "JSPromiseConstructor.h"
 #include "JSPromisePrototype.h"
 #include "JSPromiseReaction.h"
+#include "JSSentinel.h"
 #include "LLIntThunks.h"
 #include "Microtask.h"
 #include "ModuleGraphLoadingState.h"
@@ -64,8 +65,12 @@
 #include "TopExceptionScope.h"
 #include "VMTrapsInlines.h"
 #if USE(BUN_JSC_ADDITIONS)
-#include "InternalFieldTuple.h"
+#include "AsyncContextSwapScope.h"
 extern "C" __attribute__((weak)) void Bun__reportUnhandledError(JSC::JSGlobalObject*, JSC::EncodedJSValue);
+#endif
+#if ENABLE(WEBASSEMBLY)
+#include "JSWebAssemblyStreamingContext.h"
+#include "WebAssemblyCompileOptions.h"
 #endif
 #include <wtf/NoTailCalls.h>
 
@@ -81,7 +86,7 @@ static ALWAYS_INLINE JSCell* NODELETE dynamicCastToCell(JSValue value)
 }
 
 template<typename... Args> requires (std::is_convertible_v<Args, JSValue> && ...)
-static JSValue callMicrotask(JSGlobalObject* globalObject, JSValue functionObject, JSValue thisValue, JSCell* context, ASCIILiteral message, MicrotaskCall* microtaskCall, Args... args)
+static JSValue callMicrotask(JSGlobalObject* globalObject, JSValue functionObject, JSValue thisValue, JSCell* context, ASCIILiteral message, MicrotaskCallCache* microtaskCallCache, Args... args)
 {
     NO_TAIL_CALLS();
 
@@ -89,15 +94,17 @@ static JSValue callMicrotask(JSGlobalObject* globalObject, JSValue functionObjec
     auto scope = DECLARE_THROW_SCOPE(vm);
     static_assert(sizeof...(args) <= MicrotaskCall::maxCallArguments);
 
-    if (microtaskCall && microtaskCall->canUseCall(functionObject)) [[likely]] {
-        if (!vm.isSafeToRecurseSoft()) [[unlikely]]
-            return throwStackOverflowError(globalObject, scope);
-        auto* jsFunction = uncheckedDowncast<JSFunction>(functionObject.asCell());
-        if (auto result = microtaskCall->tryCallWithArguments(vm, jsFunction, thisValue, context, args...)) [[likely]] {
-            scope.release();
-            return result;
+    if (microtaskCallCache) [[likely]] {
+        if (auto* microtaskCall = microtaskCallCache->find(functionObject)) [[likely]] {
+            if (!vm.isSafeToRecurseSoft()) [[unlikely]]
+                return throwStackOverflowError(globalObject, scope);
+            auto* jsFunction = uncheckedDowncast<JSFunction>(functionObject.asCell());
+            if (auto result = microtaskCall->tryCallWithArguments(vm, jsFunction, thisValue, context, args...)) [[likely]] {
+                scope.release();
+                return result;
+            }
+            RETURN_IF_EXCEPTION_WITH_TRAPS_DEFERRED(scope, scope.exception());
         }
-        RETURN_IF_EXCEPTION_WITH_TRAPS_DEFERRED(scope, scope.exception());
     }
 
     auto callData = JSC::getCallDataInline(functionObject);
@@ -135,8 +142,11 @@ static JSValue callMicrotask(JSGlobalObject* globalObject, JSValue functionObjec
             newCodeBlock->m_shouldAlwaysBeInlined = false;
         }
 
-        if (microtaskCall) {
+        if (microtaskCallCache) {
             auto* jsFunction = uncheckedDowncast<JSFunction>(functionObject.asCell());
+            auto* microtaskCall = microtaskCallCache->find(functionObject);
+            if (!microtaskCall)
+                microtaskCall = microtaskCallCache->nextEntryToReplace();
             microtaskCall->initialize(vm, jsFunction);
             RETURN_IF_EXCEPTION_WITH_TRAPS_DEFERRED(scope, scope.exception());
 
@@ -207,16 +217,19 @@ static void promiseResolveThenableJobFastSlow(JSGlobalObject* globalObject, JSPr
     VM& vm = globalObject->vm();
     auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
 
-    JSObject* constructor = promiseSpeciesConstructor(globalObject, promise);
-    if (scope.exception()) [[unlikely]]
-        return;
-
+    // https://tc39.es/ecma262/#sec-newpromiseresolvethenablejob
+    // NewPromiseResolveThenableJob step a: create resolving functions first so
+    // an abrupt completion of the inlined `then` (SpeciesConstructor or
+    // NewPromiseCapability throwing) routes to reject(error) per step c.
     auto [resolve, reject] = promiseToResolve->createResolvingFunctions(vm, globalObject);
 
-    auto capability = JSPromise::createNewPromiseCapability(globalObject, constructor);
+    JSObject* constructor = promiseSpeciesConstructor(globalObject, promise);
     if (!scope.exception()) [[likely]] {
-        promise->performPromiseThen(vm, globalObject, resolve, reject, capability);
-        return;
+        auto capability = JSPromise::createNewPromiseCapability(globalObject, constructor);
+        if (!scope.exception()) [[likely]] {
+            promise->performPromiseThen(vm, globalObject, resolve, reject, capability);
+            return;
+        }
     }
 
     JSValue error = scope.exception()->value();
@@ -236,16 +249,15 @@ static void promiseResolveThenableJobWithInternalMicrotaskFastSlow(JSGlobalObjec
     VM& vm = globalObject->vm();
     auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
 
-    JSObject* constructor = promiseSpeciesConstructor(globalObject, promise);
-    if (scope.exception()) [[unlikely]]
-        return;
-
     auto [resolve, reject] = JSPromise::createResolvingFunctionsWithInternalMicrotask(vm, globalObject, task, context);
 
-    auto capability = JSPromise::createNewPromiseCapability(globalObject, constructor);
+    JSObject* constructor = promiseSpeciesConstructor(globalObject, promise);
     if (!scope.exception()) [[likely]] {
-        promise->performPromiseThen(vm, globalObject, resolve, reject, capability);
-        return;
+        auto capability = JSPromise::createNewPromiseCapability(globalObject, constructor);
+        if (!scope.exception()) [[likely]] {
+            promise->performPromiseThen(vm, globalObject, resolve, reject, capability);
+            return;
+        }
     }
 
     JSValue error = scope.exception()->value();
@@ -260,13 +272,13 @@ static void promiseResolveThenableJobWithInternalMicrotaskFastSlow(JSGlobalObjec
     EXCEPTION_ASSERT(scope.exception() || true);
 }
 
-static void promiseResolveThenableJob(JSGlobalObject* globalObject, JSValue promise, JSValue then, JSValue resolve, JSValue reject)
+static void promiseResolveThenableJob(JSGlobalObject* globalObject, JSValue promise, JSValue then, JSValue resolve, JSValue reject, MicrotaskCallCache* microtaskCallCache = nullptr)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
 
     {
-        callMicrotask(globalObject, then, promise, dynamicCastToCell(then), "|then| is not a function"_s, nullptr, resolve, reject);
+        callMicrotask(globalObject, then, promise, dynamicCastToCell(then), "|then| is not a function"_s, microtaskCallCache, resolve, reject);
         if (!scope.exception()) [[likely]]
             return;
     }
@@ -282,13 +294,11 @@ static void promiseResolveThenableJob(JSGlobalObject* globalObject, JSValue prom
     EXCEPTION_ASSERT(scope.exception() || true);
 }
 
-static void asyncFromSyncIteratorContinueOrDone(JSGlobalObject* globalObject, VM& vm, JSValue context, JSValue result, JSPromise::Status status, bool done)
+static void asyncFromSyncIteratorContinueOrDone(JSGlobalObject* globalObject, VM& vm, JSPromise* promise, JSValue context, JSValue result, JSPromise::Status status, bool done, MicrotaskCallCache* microtaskCallCache)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     auto* contextObject = asObject(context);
-    JSValue promise = contextObject->getDirect(vm, vm.propertyNames->builtinNames().promisePrivateName());
-    ASSERT(promise.inherits<JSPromise>());
 
     switch (status) {
     case JSPromise::Status::Pending: {
@@ -297,38 +307,24 @@ static void asyncFromSyncIteratorContinueOrDone(JSGlobalObject* globalObject, VM
     }
     case JSPromise::Status::Rejected: {
         JSValue syncIterator = contextObject->getDirect(vm, vm.propertyNames->builtinNames().syncIteratorPrivateName());
-        if (syncIterator.isObject()) {
-            JSValue returnMethod;
-            JSValue error;
-            {
-                auto catchScope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-                returnMethod = asObject(syncIterator)->get(globalObject, vm.propertyNames->returnKeyword);
-                if (catchScope.exception()) [[unlikely]] {
-                    error = catchScope.exception()->value();
-                    if (!catchScope.clearExceptionExceptTermination()) [[unlikely]] {
-                        scope.release();
-                        return;
-                    }
-                }
-            }
-            if (error) [[unlikely]] {
-                uncheckedDowncast<JSPromise>(promise)->reject(vm, globalObject, error);
+        if (!done && syncIterator.isObject()) {
+            auto catchScope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+            JSValue returnMethod = asObject(syncIterator)->get(globalObject, vm.propertyNames->returnKeyword);
+            if (!catchScope.exception() && returnMethod.isCallable())
+                callMicrotask(globalObject, returnMethod, syncIterator, dynamicCastToCell(returnMethod), "return is not a function"_s, microtaskCallCache);
+            if (!catchScope.clearExceptionExceptTermination()) [[unlikely]] {
+                scope.release();
                 return;
-            }
-            if (returnMethod.isCallable()) {
-                callMicrotask(globalObject, returnMethod, syncIterator, dynamicCastToCell(returnMethod), "return is not a function"_s, nullptr);
-                if (scope.exception()) [[unlikely]]
-                    return;
             }
         }
         scope.release();
-        uncheckedDowncast<JSPromise>(promise)->reject(vm, globalObject, result);
+        promise->reject(vm, result);
         break;
     }
     case JSPromise::Status::Fulfilled: {
         auto* resultObject = createIteratorResultObject(globalObject, result, done);
         scope.release();
-        uncheckedDowncast<JSPromise>(promise)->resolve(globalObject, vm, resultObject);
+        promise->resolve(globalObject, vm, resultObject);
         break;
     }
     }
@@ -353,17 +349,16 @@ static void promiseRaceResolveJob(JSGlobalObject* globalObject, VM& vm, JSPromis
     }
     case JSPromise::Status::Rejected: {
         scope.release();
-        promise->reject(vm, globalObject, resolution);
+        promise->reject(vm, resolution);
         break;
     }
     }
 }
 
-static void promiseAllResolveJob(JSGlobalObject* globalObject, VM& vm, JSPromise* promise, JSValue resolution, JSPromiseCombinatorsContext* context, JSPromise::Status status)
+static void promiseAllResolveJob(JSGlobalObject* globalObject, VM& vm, JSPromiseCombinatorsGlobalContext* globalContext, JSValue resolution, uint64_t index, JSPromise::Status status)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto* globalContext = context->globalContext();
     switch (status) {
     case JSPromise::Status::Pending: {
         RELEASE_ASSERT_NOT_REACHED();
@@ -371,37 +366,33 @@ static void promiseAllResolveJob(JSGlobalObject* globalObject, VM& vm, JSPromise
     }
     case JSPromise::Status::Fulfilled: {
         auto* values = uncheckedDowncast<JSArray>(globalContext->values());
-        uint64_t index = context->index();
 
         values->putDirectIndex(globalObject, index, resolution);
         RETURN_IF_EXCEPTION(scope, void());
 
-        uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-        RETURN_IF_EXCEPTION(scope, void());
-
-        --count;
-        globalContext->setRemainingElementsCount(vm, jsNumber(count));
+        uint64_t count = globalContext->remainingElementsCount() - 1;
+        globalContext->setRemainingElementsCount(count);
         if (!count) {
+            auto* promise = uncheckedDowncast<JSPromise>(globalContext->promise());
             scope.release();
             promise->resolve(globalObject, vm, values);
         }
         break;
     }
     case JSPromise::Status::Rejected: {
+        auto* promise = uncheckedDowncast<JSPromise>(globalContext->promise());
         scope.release();
-        promise->reject(vm, globalObject, resolution);
+        promise->reject(vm, resolution);
         break;
     }
     }
 }
 
-static void promiseAllSettledResolveJob(JSGlobalObject* globalObject, VM& vm, JSPromise* promise, JSValue resolution, JSPromiseCombinatorsContext* context, JSPromise::Status status)
+static void promiseAllSettledResolveJob(JSGlobalObject* globalObject, VM& vm, JSPromiseCombinatorsGlobalContext* globalContext, JSValue resolution, uint64_t index, JSPromise::Status status)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto* globalContext = context->globalContext();
     auto* values = uncheckedDowncast<JSArray>(globalContext->values());
-    uint64_t index = context->index();
 
     JSObject* resultObject = nullptr;
     switch (status) {
@@ -422,22 +413,18 @@ static void promiseAllSettledResolveJob(JSGlobalObject* globalObject, VM& vm, JS
     values->putDirectIndex(globalObject, index, resultObject);
     RETURN_IF_EXCEPTION(scope, void());
 
-    uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-    RETURN_IF_EXCEPTION(scope, void());
-
-    --count;
-    globalContext->setRemainingElementsCount(vm, jsNumber(count));
+    uint64_t count = globalContext->remainingElementsCount() - 1;
+    globalContext->setRemainingElementsCount(count);
     if (!count) {
+        auto* promise = uncheckedDowncast<JSPromise>(globalContext->promise());
         scope.release();
         promise->resolve(globalObject, vm, values);
     }
 }
 
-static void promiseAnyResolveJob(JSGlobalObject* globalObject, VM& vm, JSPromise* promise, JSValue resolution, JSPromiseCombinatorsContext* context, JSPromise::Status status)
+static void promiseAnyResolveJob(JSGlobalObject* globalObject, VM& vm, JSPromiseCombinatorsGlobalContext* globalContext, JSValue resolution, uint64_t index, JSPromise::Status status)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* globalContext = context->globalContext();
 
     switch (status) {
     case JSPromise::Status::Pending: {
@@ -445,84 +432,119 @@ static void promiseAnyResolveJob(JSGlobalObject* globalObject, VM& vm, JSPromise
         break;
     }
     case JSPromise::Status::Fulfilled: {
+        auto* promise = uncheckedDowncast<JSPromise>(globalContext->promise());
         scope.release();
         promise->resolve(globalObject, vm, resolution);
         break;
     }
     case JSPromise::Status::Rejected: {
         auto* errors = uncheckedDowncast<JSArray>(globalContext->values());
-        uint64_t index = context->index();
 
         errors->putDirectIndex(globalObject, index, resolution);
         RETURN_IF_EXCEPTION(scope, void());
 
-        uint64_t count = globalContext->remainingElementsCount().toIndex(globalObject, "count exceeds size"_s);
-        RETURN_IF_EXCEPTION(scope, void());
-
-        --count;
-        globalContext->setRemainingElementsCount(vm, jsNumber(count));
+        uint64_t count = globalContext->remainingElementsCount() - 1;
+        globalContext->setRemainingElementsCount(count);
         if (!count) {
+            auto* promise = uncheckedDowncast<JSPromise>(globalContext->promise());
             auto* aggregateError = createAggregateError(vm, globalObject->errorStructure(ErrorType::AggregateError), errors, String(), jsUndefined());
             scope.release();
-            promise->reject(vm, globalObject, aggregateError);
+            promise->reject(vm, aggregateError);
         }
         break;
     }
     }
 }
 
-static bool NODELETE isSuspendYieldState(int32_t state)
-{
-    return state > 0 && (state & JSAsyncGenerator::reasonMask) == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorSuspendReason::Yield);
-}
+static void asyncGeneratorBodyCall(JSGlobalObject*, JSAsyncGenerator*, JSValue resumeValue, int32_t resumeMode, MicrotaskCallCache*);
+static void asyncGeneratorCompleteStep(JSGlobalObject*, JSAsyncGenerator*, JSValue, bool isThrow, bool done);
+static void asyncGeneratorDrainQueue(JSGlobalObject*, JSAsyncGenerator*);
+static void asyncGeneratorDispatchSuspend(JSGlobalObject*, JSAsyncGenerator*, JSValue value, MicrotaskCallCache*);
 
-static void asyncGeneratorResumeNext(JSGlobalObject*, JSAsyncGenerator*);
-
-template<IterationStatus status>
-static void asyncGeneratorReject(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue error)
+// https://tc39.es/ecma262/#sec-asyncgeneratorcompletestep
+static void asyncGeneratorCompleteStep(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue value, bool isThrow, bool done)
 {
     VM& vm = globalObject->vm();
 
-    auto [value, resumeMode, promise] = generator->dequeue(vm);
-    ASSERT(promise);
+    // 1-4. Remove the first request from the queue.
+    auto* target = generator->dequeue(vm);
+    ASSERT(target);
 
-    promise->reject(vm, globalObject, error);
+    // A real .next()/.throw()/.return() settles its result JSPromise directly.
+    if (auto* promise = dynamicDowncast<JSPromise>(target)) {
+        // 6. throw completion -> reject.
+        if (isThrow) {
+            promise->reject(vm, value);
+            return;
+        }
 
-    if constexpr (status == IterationStatus::Continue)
-        asyncGeneratorResumeNext(globalObject, generator);
+        // 7. normal completion -> resolve with CreateIteratorResultObject(value, done).
+        auto* iteratorResult = createIteratorResultObject(globalObject, value, done);
+        promise->resolve(globalObject, vm, iteratorResult);
+        return;
+    }
+
+    // `target` is the driver. resumed via an AsyncGeneratorDriverResume microtask.
+    // resolveWithInternalMicrotask keeps resolvePromise's spec thenable check,
+    // so the fast path stays behaviorally identical to a real Promise settlement.
+#if USE(BUN_JSC_ADDITIONS)
+    JSValue wrappedTarget = AsyncContextSwapScope::wrapWithCurrent(vm, globalObject, target);
+#else
+    JSValue wrappedTarget = target;
+#endif
+    if (isThrow) {
+        JSPromise::rejectWithInternalMicrotask(vm, globalObject, value, InternalMicrotask::AsyncGeneratorDriverResume, wrappedTarget);
+        return;
+    }
+
+    auto* iteratorResult = createIteratorResultObject(globalObject, value, done);
+    JSPromise::resolveWithInternalMicrotask(globalObject, vm, iteratorResult, InternalMicrotask::AsyncGeneratorDriverResume, wrappedTarget);
 }
 
-template<IterationStatus status>
-static void asyncGeneratorResolve(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue value, bool done)
+// https://tc39.es/ecma262/#sec-asyncgeneratorawaitreturn
+void asyncGeneratorAwaitReturn(JSGlobalObject* globalObject, JSAsyncGenerator* generator)
+{
+    VM& vm = globalObject->vm();
+    ASSERT(generator->state() == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::DrainingQueue));
+    JSPromise::resolveWithInternalMicrotaskForAsyncAwait(globalObject, vm, generator->resumeValue(), InternalMicrotask::AsyncGeneratorAwaitReturn, generator);
+}
+
+// https://tc39.es/ecma262/#sec-asyncgeneratordrainqueue
+static void asyncGeneratorDrainQueue(JSGlobalObject* globalObject, JSAsyncGenerator* generator)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto [itemValue, itemResumeMode, promise] = generator->dequeue(vm);
-    ASSERT(promise);
+    ASSERT(generator->state() == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::DrainingQueue));
 
-    auto* iteratorResult = createIteratorResultObject(globalObject, value, done);
+    // 3. Repeat, while the queue is not empty.
+    while (!generator->isQueueEmpty()) {
+        int32_t resumeMode = generator->resumeMode();
 
-    promise->resolve(globalObject, vm, iteratorResult);
-    RETURN_IF_EXCEPTION(scope, void());
+        // 5c. return completion -> AsyncGeneratorAwaitReturn and stop.
+        if (resumeMode == static_cast<int32_t>(JSGenerator::ResumeMode::ReturnMode)) {
+            scope.release();
+            asyncGeneratorAwaitReturn(globalObject, generator);
+            return;
+        }
 
-    if constexpr (status == IterationStatus::Continue)
-        RELEASE_AND_RETURN(scope, asyncGeneratorResumeNext(globalObject, generator));
-}
-
-template<IterationStatus status>
-static bool asyncGeneratorBodyCall(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue resumeValue, int32_t resumeMode)
-{
-    VM& vm = globalObject->vm();
-
-    int32_t state = generator->state();
-    if (resumeMode == static_cast<int32_t>(JSGenerator::ResumeMode::ReturnMode) && isSuspendYieldState(state)) {
-        state = (state & ~JSAsyncGenerator::reasonMask) | static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorSuspendReason::Await);
-        generator->setState(state);
-        JSPromise::resolveWithInternalMicrotaskForAsyncAwait(globalObject, vm, resumeValue, InternalMicrotask::AsyncGeneratorBodyCallReturn, generator);
-        return false;
+        // 5d. throw -> reject; normal -> resolve { undefined, true }.
+        bool isThrow = resumeMode == static_cast<int32_t>(JSGenerator::ResumeMode::ThrowMode);
+        asyncGeneratorCompleteStep(globalObject, generator, isThrow ? generator->resumeValue() : jsUndefined(), isThrow, /* done */ true);
+        RETURN_IF_EXCEPTION(scope, void());
     }
 
+    // 3a. queue empty -> completed.
+    generator->setState(static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Completed));
+}
+
+// https://tc39.es/ecma262/#sec-asyncgeneratorresume (then AsyncGeneratorStart's completion handling).
+static void asyncGeneratorBodyCall(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue resumeValue, int32_t resumeMode, MicrotaskCallCache* microtaskCallCache)
+{
+    VM& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    int32_t state = generator->state();
     generator->setState(static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Executing));
 
     JSValue generatorFunction = generator->next();
@@ -532,191 +554,263 @@ static bool asyncGeneratorBodyCall(JSGlobalObject* globalObject, JSAsyncGenerato
     JSValue value;
     JSValue error;
     {
-        auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-        value = callMicrotask(globalObject, generatorFunction, generatorThis, generator, "handler is not a function"_s, nullptr,
+        auto catchScope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+        value = callMicrotask(globalObject, generatorFunction, generatorThis, generator, "handler is not a function"_s, microtaskCallCache,
             generator, jsNumber(state >> JSAsyncGenerator::reasonShift), resumeValue, jsNumber(resumeMode), generatorFrame);
-        if (scope.exception()) [[unlikely]] {
-            error = scope.exception()->value();
-            if (!scope.clearExceptionExceptTermination()) [[unlikely]]
-                return false;
+        if (catchScope.exception()) [[unlikely]] {
+            error = catchScope.exception()->value();
+            if (!catchScope.clearExceptionExceptTermination()) [[unlikely]]
+                return;
         }
-    }
-
-    if (error) [[unlikely]] {
-        generator->setState(static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Completed));
-        asyncGeneratorReject<status>(globalObject, generator, error);
-        return true;
     }
 
     state = generator->state();
-    if (state == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Executing)) {
-        generator->setState(static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Completed));
-        state = static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Completed);
-    }
 
+    // The body suspended at an `await` or a `yield`/`yield*`.
     if (state > 0) {
-        if ((state & JSAsyncGenerator::reasonMask) == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorSuspendReason::Await)) {
-            JSPromise::resolveWithInternalMicrotaskForAsyncAwait(globalObject, vm, value, InternalMicrotask::AsyncGeneratorBodyCallNormal, generator);
-            return false;
-        }
-
-        state = (state & ~JSAsyncGenerator::reasonMask) | static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorSuspendReason::Await);
-        generator->setState(state);
-        JSPromise::resolveWithInternalMicrotaskForAsyncAwait(globalObject, vm, value, InternalMicrotask::AsyncGeneratorYieldAwaited, generator);
-        return false;
+        scope.release();
+        asyncGeneratorDispatchSuspend(globalObject, generator, value, microtaskCallCache);
+        return;
     }
 
-    if (state == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Completed)) {
-        asyncGeneratorResolve<status>(globalObject, generator, value, true);
-        return true;
-    }
-
-    return false;
+    // https://tc39.es/ecma262/#sec-asyncgeneratorstart
+    ASSERT(state == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Executing));
+    // 4.g. Set acGen.[[AsyncGeneratorState]] to draining-queue.
+    generator->setState(static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::DrainingQueue));
+    // 4.h. If result is a normal completion, set result to NormalCompletion(undefined).
+    // 4.i. If result is a return completion, set result to NormalCompletion(result.[[Value]]).
+    // 4.j. Perform AsyncGeneratorCompleteStep(acGen, result, true).
+    asyncGeneratorCompleteStep(globalObject, generator, error ? error : value, /* isThrow */ !!error, /* done */ true);
+    RETURN_IF_EXCEPTION(scope, void());
+    // 4.k. Perform AsyncGeneratorDrainQueue(acGen).
+    RELEASE_AND_RETURN(scope, asyncGeneratorDrainQueue(globalObject, generator));
 }
 
-static void asyncGeneratorResumeNext(JSGlobalObject* globalObject, JSAsyncGenerator* generator)
+// https://tc39.es/ecma262/#sec-asyncgeneratorunwrapyieldresumption
+static void asyncGeneratorUnwrapYieldResumption(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue resumeValue, int32_t resumeMode, MicrotaskCallCache* microtaskCallCache)
+{
+    VM& vm = globalObject->vm();
+    int32_t state = generator->state();
+    // A suspended-start (Init, state 0) generator may be resumed here -- e.g. the for-await driver
+    // starting a fresh producer -- which is always a Normal-mode resume handled by asyncGeneratorBodyCall
+    // below. Only the ReturnMode branch, which edits the suspend-reason bits, needs a positive state.
+    ASSERT(state > 0 || (state == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Init) && resumeMode != static_cast<int32_t>(JSGenerator::ResumeMode::ReturnMode)));
+    // 1. If resumptionValue is not a return completion, return ? resumptionValue.
+    if (resumeMode != static_cast<int32_t>(JSGenerator::ResumeMode::ReturnMode)) {
+        asyncGeneratorBodyCall(globalObject, generator, resumeValue, resumeMode, microtaskCallCache);
+        return;
+    }
+
+    // 2. Let awaited be Completion(Await(resumptionValue.[[Value]])).
+    // 3. If awaited is a throw completion, return ? awaited.
+    // 4. Assert: awaited is a normal completion.
+    // 5. Return ReturnCompletion(awaited.[[Value]]).
+    generator->setState((state & ~JSAsyncGenerator::reasonMask) | static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorSuspendReason::Await));
+    JSPromise::resolveWithInternalMicrotaskForAsyncAwait(globalObject, vm, resumeValue, InternalMicrotask::AsyncGeneratorBodyCallReturn, generator);
+}
+
+// https://tc39.es/ecma262/#sec-asyncgeneratorresume
+void asyncGeneratorResume(JSGlobalObject* globalObject, JSAsyncGenerator* generator, MicrotaskCallCache* microtaskCallCache)
+{
+    // 1. Assert: gen.[[AsyncGeneratorState]] is either suspended-start or suspended-yield.
+    ASSERT(generator->state() == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Init) || JSAsyncGenerator::isSuspendedYieldState(generator->state()));
+    asyncGeneratorUnwrapYieldResumption(globalObject, generator, generator->resumeValue(), generator->resumeMode(), microtaskCallCache);
+}
+
+void enqueueAsyncGeneratorDriver(JSGlobalObject* globalObject, JSAsyncGenerator* iterator, JSObject* driver, MicrotaskCallCache* microtaskCallCache)
+{
+    VM& vm = globalObject->vm();
+
+    // Mirror AsyncGeneratorEnqueue's completed-state fast path: settle { undefined, true } without enqueuing.
+    int32_t state = iterator->state();
+    if (state == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Completed)) {
+        auto* iteratorResult = createIteratorResultObject(globalObject, jsUndefined(), /* done */ true);
+#if USE(BUN_JSC_ADDITIONS)
+        JSPromise::resolveWithInternalMicrotask(globalObject, vm, iteratorResult, InternalMicrotask::AsyncGeneratorDriverResume, AsyncContextSwapScope::wrapWithCurrent(vm, globalObject, driver));
+#else
+        JSPromise::resolveWithInternalMicrotask(globalObject, vm, iteratorResult, InternalMicrotask::AsyncGeneratorDriverResume, driver);
+#endif
+        return;
+    }
+
+    iterator->enqueue(vm, jsUndefined(), static_cast<int32_t>(JSGenerator::ResumeMode::NormalMode), driver);
+
+    // https://tc39.es/ecma262/#sec-asyncgeneratorenqueue step 6: a non-busy generator resumes immediately.
+    if (state == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Init) || JSAsyncGenerator::isSuspendedYieldState(state))
+        asyncGeneratorResume(globalObject, iterator, microtaskCallCache);
+}
+
+JSValue asyncIteratorNextWithDriver(JSGlobalObject* globalObject, JSObject* iterator, JSObject* driver, MicrotaskCallCache* microtaskCallCache)
+{
+    VM& vm = globalObject->vm();
+    auto* generator = uncheckedDowncast<JSAsyncGenerator>(iterator);
+
+    if (globalObject->promiseSpeciesWatchpointSet().state() != IsWatched) [[unlikely]]
+        return asyncGeneratorNext(globalObject, generator, jsUndefined(), microtaskCallCache);
+
+    enqueueAsyncGeneratorDriver(globalObject, generator, driver, microtaskCallCache);
+    return vm.fastAsyncGeneratorSentinel();
+}
+
+// https://tc39.es/ecma262/#sec-asyncgeneratoryield
+static void asyncGeneratorYield(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue value, MicrotaskCallCache* microtaskCallCache)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    while (true) {
-        int32_t state = generator->state();
+    // Stay executing across CompleteStep so reentrant requests only enqueue.
+    int32_t state = generator->state();
+    generator->setState((state & ~JSAsyncGenerator::reasonMask) | static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorSuspendReason::Await));
 
-        ASSERT(state != static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Executing));
+    // 9. Perform AsyncGeneratorCompleteStep(gen, completion, false, previousRealm).
+    asyncGeneratorCompleteStep(globalObject, generator, value, /* isThrow */ false, /* done */ false);
+    RETURN_IF_EXCEPTION(scope, void());
 
-        if (state == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::AwaitingReturn))
-            return;
+    // 10. Let queue be gen.[[AsyncGeneratorQueue]].
+    // 11. If queue is not empty, then
+    if (!generator->isQueueEmpty()) {
+        // 11.a. NOTE: Execution continues without suspending the generator.
+        // 11.b. Let toYield be the first element of queue.
+        // 11.c. Let resumptionValue be Completion(toYield.[[Completion]]).
+        // 11.d. Return ? AsyncGeneratorUnwrapYieldResumption(resumptionValue).
+        scope.release();
+        asyncGeneratorUnwrapYieldResumption(globalObject, generator, generator->resumeValue(), generator->resumeMode(), microtaskCallCache);
+        return;
+    }
+    // 12. Set gen.[[AsyncGeneratorState]] to suspended-yield.
+    state = generator->state();
+    generator->setState((state & ~JSAsyncGenerator::reasonMask) | static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorSuspendReason::Yield));
+}
 
-        if (generator->isQueueEmpty())
-            return;
+// Plain `yield`'s operand Await (AsyncGeneratorYield(? Await(value))) has settled.
+static void asyncGeneratorYieldAwaited(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue result, JSPromise::Status status, MicrotaskCallCache* microtaskCallCache)
+{
+    switch (status) {
+    case JSPromise::Status::Pending:
+        RELEASE_ASSERT_NOT_REACHED();
+        return;
+    case JSPromise::Status::Rejected:
+        // `? Await(value)` threw -> resume the body with a throw at the yield.
+        asyncGeneratorBodyCall(globalObject, generator, result, static_cast<int32_t>(JSGenerator::ResumeMode::ThrowMode), microtaskCallCache);
+        return;
+    case JSPromise::Status::Fulfilled:
+        asyncGeneratorYield(globalObject, generator, result, microtaskCallCache);
+        return;
+    }
+}
 
-        JSValue nextValue = generator->resumeValue();
-        int32_t resumeMode = generator->resumeMode();
+// The body suspended (state > 0); dispatch on the suspend reason:
+//   Await        `await x`   -> resume the body once x settles (AsyncGeneratorBodyCallNormal).
+//   Yield        `yield x`   -> AsyncGeneratorYield(? Await(value)): Await first (AsyncGeneratorYieldAwaited).
+//   YieldNoAwait `yield* x`  -> AsyncGeneratorYield(value): deliver directly.
+static void asyncGeneratorDispatchSuspend(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue value, MicrotaskCallCache* microtaskCallCache)
+{
+    VM& vm = globalObject->vm();
 
-        if (resumeMode != static_cast<int32_t>(JSGenerator::ResumeMode::NormalMode)) {
-            if (state == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Init)) {
-                generator->setState(static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Completed));
-                state = static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Completed);
-            }
+    if (value == vm.fastAsyncGeneratorSentinel())
+        return;
 
-            if (state == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Completed)) {
-                if (resumeMode == static_cast<int32_t>(JSGenerator::ResumeMode::ReturnMode)) {
-                    generator->setState(static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::AwaitingReturn));
-                    RELEASE_AND_RETURN(scope, JSPromise::resolveWithInternalMicrotaskForAsyncAwait(globalObject, vm, nextValue, InternalMicrotask::AsyncGeneratorResumeNext, generator));
-                }
+    int32_t state = generator->state();
+    switch (static_cast<JSAsyncGenerator::AsyncGeneratorSuspendReason>(state & JSAsyncGenerator::reasonMask)) {
+    case JSAsyncGenerator::AsyncGeneratorSuspendReason::Await: {
+        JSPromise::resolveWithInternalMicrotaskForAsyncAwait(globalObject, vm, value, InternalMicrotask::AsyncGeneratorBodyCallNormal, generator);
+        return;
+    }
+    case JSAsyncGenerator::AsyncGeneratorSuspendReason::Yield: {
+        generator->setState((state & ~JSAsyncGenerator::reasonMask) | static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorSuspendReason::Await));
+        JSPromise::resolveWithInternalMicrotaskForAsyncAwait(globalObject, vm, value, InternalMicrotask::AsyncGeneratorYieldAwaited, generator);
+        return;
+    }
+    case JSAsyncGenerator::AsyncGeneratorSuspendReason::YieldNoAwait: {
+        asyncGeneratorYield(globalObject, generator, value, microtaskCallCache);
+        return;
+    }
+    }
+}
 
-                ASSERT(resumeMode == static_cast<int32_t>(JSGenerator::ResumeMode::ThrowMode));
-                asyncGeneratorReject<IterationStatus::Done>(globalObject, generator, nextValue);
-                continue;
-            }
-        } else if (state == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Completed)) {
-            asyncGeneratorResolve<IterationStatus::Done>(globalObject, generator, jsUndefined(), true);
-            RETURN_IF_EXCEPTION(scope, void());
-            continue;
-        }
+static void asyncGeneratorBodyCallNormal(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue result, JSPromise::Status status, MicrotaskCallCache* microtaskCallCache)
+{
+    switch (status) {
+    case JSPromise::Status::Pending:
+        RELEASE_ASSERT_NOT_REACHED();
+        break;
+    case JSPromise::Status::Rejected:
+        asyncGeneratorBodyCall(globalObject, generator, result, static_cast<int32_t>(JSGenerator::ResumeMode::ThrowMode), microtaskCallCache);
+        return;
+    case JSPromise::Status::Fulfilled:
+        asyncGeneratorBodyCall(globalObject, generator, result, static_cast<int32_t>(JSGenerator::ResumeMode::NormalMode), microtaskCallCache);
+        return;
+    }
+}
 
-        ASSERT(state == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Init) || isSuspendYieldState(state));
-        bool next = asyncGeneratorBodyCall<IterationStatus::Done>(globalObject, generator, nextValue, resumeMode);
+static void asyncGeneratorBodyCallReturn(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue result, JSPromise::Status status, MicrotaskCallCache* microtaskCallCache)
+{
+    switch (status) {
+    case JSPromise::Status::Pending:
+        RELEASE_ASSERT_NOT_REACHED();
+        break;
+    case JSPromise::Status::Rejected:
+        asyncGeneratorBodyCall(globalObject, generator, result, static_cast<int32_t>(JSGenerator::ResumeMode::ThrowMode), microtaskCallCache);
+        return;
+    case JSPromise::Status::Fulfilled:
+        asyncGeneratorBodyCall(globalObject, generator, result, static_cast<int32_t>(JSGenerator::ResumeMode::ReturnMode), microtaskCallCache);
+        return;
+    }
+}
+
+// https://tc39.es/ecma262/#sec-asyncgeneratorawaitreturn
+static void asyncGeneratorAwaitReturnContinuation(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue result, JSPromise::Status status)
+{
+    VM& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    ASSERT(generator->state() == static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::DrainingQueue));
+
+    switch (status) {
+    case JSPromise::Status::Pending:
+        RELEASE_ASSERT_NOT_REACHED();
+        return;
+    case JSPromise::Status::Fulfilled:
+        asyncGeneratorCompleteStep(globalObject, generator, result, /* isThrow */ false, /* done */ true);
         RETURN_IF_EXCEPTION(scope, void());
-        if (!next)
-            return;
-    }
-}
-
-static void asyncGeneratorYieldAwaited(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue result, JSPromise::Status status)
-{
-    switch (status) {
-    case JSPromise::Status::Pending:
-        RELEASE_ASSERT_NOT_REACHED();
         break;
     case JSPromise::Status::Rejected:
-        asyncGeneratorBodyCall<IterationStatus::Continue>(globalObject, generator, result, static_cast<int32_t>(JSGenerator::ResumeMode::ThrowMode));
-        return;
-    case JSPromise::Status::Fulfilled: {
-        int32_t state = generator->state();
-        state = (state & ~JSAsyncGenerator::reasonMask) | static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorSuspendReason::Yield);
-        generator->setState(state);
-        asyncGeneratorResolve<IterationStatus::Continue>(globalObject, generator, result, false);
-        return;
-    }
-    }
-}
-
-static void asyncGeneratorBodyCallNormal(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue result, JSPromise::Status status)
-{
-    switch (status) {
-    case JSPromise::Status::Pending:
-        RELEASE_ASSERT_NOT_REACHED();
+        asyncGeneratorCompleteStep(globalObject, generator, result, /* isThrow */ true, /* done */ true);
+        RETURN_IF_EXCEPTION(scope, void());
         break;
-    case JSPromise::Status::Rejected:
-        asyncGeneratorBodyCall<IterationStatus::Continue>(globalObject, generator, result, static_cast<int32_t>(JSGenerator::ResumeMode::ThrowMode));
-        return;
-    case JSPromise::Status::Fulfilled:
-        asyncGeneratorBodyCall<IterationStatus::Continue>(globalObject, generator, result, static_cast<int32_t>(JSGenerator::ResumeMode::NormalMode));
-        return;
     }
+
+    RELEASE_AND_RETURN(scope, asyncGeneratorDrainQueue(globalObject, generator));
 }
 
-static void asyncGeneratorBodyCallReturn(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue result, JSPromise::Status status)
-{
-    switch (status) {
-    case JSPromise::Status::Pending:
-        RELEASE_ASSERT_NOT_REACHED();
-        break;
-    case JSPromise::Status::Rejected:
-        asyncGeneratorBodyCall<IterationStatus::Continue>(globalObject, generator, result, static_cast<int32_t>(JSGenerator::ResumeMode::ThrowMode));
-        return;
-    case JSPromise::Status::Fulfilled:
-        asyncGeneratorBodyCall<IterationStatus::Continue>(globalObject, generator, result, static_cast<int32_t>(JSGenerator::ResumeMode::ReturnMode));
-        return;
-    }
-}
-
-static void asyncGeneratorResumeNextReturn(JSGlobalObject* globalObject, JSAsyncGenerator* generator, JSValue result, JSPromise::Status status)
-{
-    generator->setState(static_cast<int32_t>(JSAsyncGenerator::AsyncGeneratorState::Completed));
-
-    switch (status) {
-    case JSPromise::Status::Pending:
-        RELEASE_ASSERT_NOT_REACHED();
-        break;
-    case JSPromise::Status::Rejected:
-        asyncGeneratorReject<IterationStatus::Continue>(globalObject, generator, result);
-        return;
-    case JSPromise::Status::Fulfilled:
-        asyncGeneratorResolve<IterationStatus::Continue>(globalObject, generator, result, true);
-        return;
-    }
-}
-
-static void promiseFinallyAwaitJob(JSGlobalObject* globalObject, VM& vm, JSValue settledValue, JSPromiseCombinatorsGlobalContext* context, JSPromise::Status status)
+static void promiseFinallyAwaitJob(JSGlobalObject* globalObject, VM& vm, JSValue settledValue, JSSlimPromiseReaction* context, JSPromise::Status status)
 {
     auto* resultPromise = uncheckedDowncast<JSPromise>(context->promise());
-    JSValue originalValue = context->values();
-    bool wasFulfilled = context->remainingElementsCount().asBoolean();
+    JSValue originalValue = context->handlerOrContext();
+    bool wasFulfilled = context->isFulfillHandler();
 
     if (status == JSPromise::Status::Rejected) {
-        resultPromise->rejectPromise(vm, globalObject, settledValue);
+        resultPromise->rejectPromise(vm, settledValue);
         return;
     }
 
     if (wasFulfilled)
         resultPromise->resolvePromise(globalObject, vm, originalValue);
     else
-        resultPromise->rejectPromise(vm, globalObject, originalValue);
+        resultPromise->rejectPromise(vm, originalValue);
 }
 
-static void promiseFinallyReactionJob(JSGlobalObject* globalObject, VM& vm, JSPromise* resultPromise, JSValue valueOrReason, JSPromiseCombinatorsGlobalContext* context, JSPromise::Status status)
+static void promiseFinallyReactionJob(JSGlobalObject* globalObject, VM& vm, JSPromise* resultPromise, JSValue valueOrReason, JSSlimPromiseReaction* context, JSPromise::Status status, MicrotaskCallCache* microtaskCallCache)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSValue onFinally = context->values();
+    JSValue onFinally = context->handlerOrContext();
 
     JSValue result;
     JSValue error;
     {
         auto catchScope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-        result = callMicrotask(globalObject, onFinally, jsUndefined(), dynamicCastToCell(onFinally), "onFinally is not a function"_s, nullptr);
+        result = callMicrotask(globalObject, onFinally, jsUndefined(), dynamicCastToCell(onFinally), "onFinally is not a function"_s, microtaskCallCache);
         if (catchScope.exception()) {
             error = catchScope.exception()->value();
             if (!catchScope.clearExceptionExceptTermination()) [[unlikely]] {
@@ -727,18 +821,18 @@ static void promiseFinallyReactionJob(JSGlobalObject* globalObject, VM& vm, JSPr
     }
 
     if (error) {
-        resultPromise->rejectPromise(vm, globalObject, error);
+        resultPromise->rejectPromise(vm, error);
         return;
     }
 
-    context->setValues(vm, valueOrReason);
-    context->setRemainingElementsCount(vm, jsBoolean(status == JSPromise::Status::Fulfilled));
+    context->setHandlerOrContext(vm, valueOrReason);
+    context->setPerCellBit(status == JSPromise::Status::Fulfilled);
 
     if (result.inherits<JSPromise>()) {
         auto* promise = uncheckedDowncast<JSPromise>(result);
-        if (promise->isThenFastAndNonObservable()) {
+        if (promise->realm() == globalObject && promise->isThenFastAndNonObservable()) {
             scope.release();
-            promise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::PromiseFinallyAwaitJob, resultPromise, context);
+            promise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::PromiseFinallyAwaitJob, resultPromise, context);
             return;
         }
     }
@@ -782,27 +876,22 @@ static void promiseFinallyReactionJob(JSGlobalObject* globalObject, VM& vm, JSPr
 
     auto [resolve, reject] = JSPromise::createResolvingFunctionsWithInternalMicrotask(vm, globalObject, InternalMicrotask::PromiseFinallyAwaitJob, context);
     scope.release();
-    promiseResolveThenableJob(globalObject, resolutionObject, then, resolve, reject);
+    promiseResolveThenableJob(globalObject, resolutionObject, then, resolve, reject, microtaskCallCache);
 }
 
-static void asyncModuleExecutionDone(JSGlobalObject* globalObject, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
+static void asyncModuleExecutionDone(JSGlobalObject* globalObject, ThrowScope& scope, JSModuleRecord* module, JSValue value, JSPromise::Status status)
 {
     scope.release();
-    auto* module = uncheckedDowncast<JSModuleRecord>(arguments[2]);
-    auto status = static_cast<JSPromise::Status>(payload);
     if (status == JSPromise::Status::Fulfilled)
         module->asyncExecutionFulfilled(globalObject);
     else {
         ASSERT(status == JSPromise::Status::Rejected);
-        module->asyncExecutionRejected(globalObject, arguments[1]);
+        module->asyncExecutionRejected(globalObject, value);
     }
 }
 
-static void asyncModuleExecutionResume(JSGlobalObject* globalObject, VM& vm, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
+static void asyncModuleExecutionResume(JSGlobalObject* globalObject, VM& vm, ThrowScope& scope, JSModuleRecord* module, JSValue resolution, JSPromise::Status status)
 {
-    auto* module = uncheckedDowncast<JSModuleRecord>(arguments[2]);
-    JSValue resolution = arguments[1];
-    auto status = static_cast<JSPromise::Status>(payload);
     auto* capability = module->asyncCapability();
 
     JSValue resumeMode = jsNumber(status == JSPromise::Status::Fulfilled
@@ -812,7 +901,7 @@ static void asyncModuleExecutionResume(JSGlobalObject* globalObject, VM& vm, Thr
     JSValue result = module->evaluate(globalObject, resolution, resumeMode);
 
     if (scope.exception())
-        capability->rejectWithCaughtException(globalObject, scope);
+        capability->rejectWithCaughtException(vm, scope);
     else {
         JSValue state = module->internalField(AbstractModuleRecord::Field::State).get();
         if (!state.isNumber() || state.asNumber() == static_cast<int32_t>(JSGenerator::State::Executing))
@@ -840,16 +929,16 @@ static void moduleRegistryFetchSettled(JSGlobalObject* globalObject, VM& vm, Thr
         auto* jsSourceCode = downcast<JSSourceCode>(arguments[1]);
         JSPromise* makeModulePromise = JSModuleLoader::makeModule(globalObject, entry->key(), jsSourceCode);
         if (scope.exception()) {
-            modulePromise->rejectWithCaughtException(globalObject, scope);
+            modulePromise->rejectWithCaughtException(vm, scope);
             return;
         }
-        makeModulePromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::ModuleRegistryModuleSettled, modulePromise, entry);
+        makeModulePromise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::ModuleRegistryModuleSettled, modulePromise, entry);
     } else {
         JSValue errorValue = arguments[1];
         if (auto* error = dynamicDowncast<ErrorInstance>(errorValue))
             JSModuleLoader::attachErrorInfo(globalObject, error, nullptr, entry->key(), entry->moduleType(), JSModuleLoader::ModuleFailure::Kind::Instantiation);
         entry->setFetchError(globalObject, errorValue);
-        modulePromise->reject(vm, globalObject, errorValue);
+        modulePromise->reject(vm, errorValue);
     }
 }
 
@@ -876,11 +965,11 @@ static void moduleRegistryModuleSettled(JSGlobalObject* globalObject, VM& vm, st
     if (status == JSPromise::Status::Fulfilled) {
         auto* moduleRecord = downcast<AbstractModuleRecord>(arguments[1]);
         entry->fetchComplete(globalObject, moduleRecord);
-        modulePromise->fulfill(vm, globalObject, moduleRecord);
+        modulePromise->fulfill(vm, moduleRecord);
     } else {
         JSValue errorValue = arguments[1];
         entry->setEvaluationError(globalObject, errorValue);
-        modulePromise->reject(vm, globalObject, errorValue);
+        modulePromise->reject(vm, errorValue);
     }
 }
 
@@ -897,7 +986,7 @@ static void moduleGraphLoadingError(JSGlobalObject* globalObject, VM& vm, ThrowS
             errorValue = JSModuleLoader::maybeDuplicateFetchError(globalObject, error);
             RETURN_IF_EXCEPTION(scope, void());
         }
-        state->promise()->reject(vm, globalObject, errorValue);
+        state->promise()->reject(vm, errorValue);
     }
 }
 
@@ -918,13 +1007,13 @@ static void moduleLoadStep(JSGlobalObject* globalObject, VM& vm, ThrowScope& sco
             context->module(vm, module);
             JSPromise* requestedPromise = globalObject->moduleLoader()->loadRequestedModules(globalObject, module, context->scriptFetcher());
             if (scope.exception()) {
-                loadPromise->rejectWithCaughtException(globalObject, scope);
+                loadPromise->rejectWithCaughtException(vm, scope);
                 return;
             }
             context->setStep(ModuleLoadingContext::Step::Requested);
-            requestedPromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::ModuleLoadStep, loadPromise, context);
+            requestedPromise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::ModuleLoadStep, loadPromise, context);
         } else
-            loadPromise->reject(vm, globalObject, arguments[1]);
+            loadPromise->reject(vm, arguments[1]);
         return;
     }
     case ModuleLoadingContext::Step::Requested: {
@@ -933,7 +1022,7 @@ static void moduleLoadStep(JSGlobalObject* globalObject, VM& vm, ThrowScope& sco
             auto* module = context->module();
             globalObject->moduleLoader()->finishLoadingImportedModule(globalObject, context->referrer(), context->moduleRequest(), context->payload(), module, context->scriptFetcher());
             if (scope.exception()) {
-                loadPromise->rejectWithCaughtException(globalObject, scope);
+                loadPromise->rejectWithCaughtException(vm, scope);
                 return;
             }
 
@@ -941,18 +1030,18 @@ static void moduleLoadStep(JSGlobalObject* globalObject, VM& vm, ThrowScope& sco
             auto* entry = context->entry();
             if (auto* cyclic = dynamicDowncast<CyclicModuleRecord>(module); cyclic && cyclic->status() != CyclicModuleRecord::Status::Unlinked) {
                 ASSERT(cyclic->status() != CyclicModuleRecord::Status::Linking);
-                loadPromise->fulfill(vm, globalObject, entry->record());
+                loadPromise->fulfill(vm, entry->record());
             } else {
                 entry->setRecord(vm, module);
                 entry->setStatus(ModuleRegistryEntry::Status::Fetched);
-                loadPromise->fulfill(vm, globalObject, entry->record());
+                loadPromise->fulfill(vm, entry->record());
             }
         } else {
             // onRejected logic: store evaluation error on entry
             auto* entry = context->entry();
             JSValue errorValue = arguments[1];
             entry->setEvaluationError(globalObject, errorValue);
-            loadPromise->reject(vm, globalObject, errorValue);
+            loadPromise->reject(vm, errorValue);
         }
         return;
     }
@@ -962,15 +1051,15 @@ static void moduleLoadStep(JSGlobalObject* globalObject, VM& vm, ThrowScope& sco
             auto* module = downcast<AbstractModuleRecord>(arguments[1]);
             globalObject->moduleLoader()->finishLoadingImportedModule(globalObject, context->referrer(), context->moduleRequest(), context->payload(), module, context->scriptFetcher());
             if (scope.exception()) {
-                loadPromise->rejectWithCaughtException(globalObject, scope);
+                loadPromise->rejectWithCaughtException(vm, scope);
                 return;
             }
-            loadPromise->fulfill(vm, globalObject, module);
+            loadPromise->fulfill(vm, module);
         } else {
             auto* entry = context->entry();
             JSValue errorValue = arguments[1];
             entry->setEvaluationError(globalObject, errorValue);
-            loadPromise->reject(vm, globalObject, errorValue);
+            loadPromise->reject(vm, errorValue);
         }
         return;
     }
@@ -997,7 +1086,7 @@ static void moduleLoadTopSettled(JSGlobalObject* globalObject, VM& vm, ThrowScop
 
         globalObject->moduleLoader()->provideFetch(globalObject, specifier, type, jsSourceCode);
         if (scope.exception()) {
-            intermediatePromise->rejectWithCaughtException(globalObject, scope);
+            intermediatePromise->rejectWithCaughtException(vm, scope);
             return;
         }
 
@@ -1009,33 +1098,42 @@ static void moduleLoadTopSettled(JSGlobalObject* globalObject, VM& vm, ThrowScop
         JSCell* combinedCell;
         JSPromise* loadPromise;
 
+        OptionSet<ModuleLoadFlag> innerLoadFlags;
+        if (context->useImportMap())
+            innerLoadFlags.add(ModuleLoadFlag::UseImportMap);
         if (context->dynamic()) {
-            combinedCell = ModuleLoaderPayload::create(vm, statePromise);
-            loadPromise = globalObject->moduleLoader()->loadModule(globalObject, globalObject, request, combinedCell, scriptFetcher, false, context->useImportMap());
+#if USE(BUN_JSC_ADDITIONS)
+            combinedCell = ModuleLoaderPayload::create(vm, statePromise, context->deferred(), context->referrerAsyncOrder());
+#else
+            combinedCell = ModuleLoaderPayload::create(vm, statePromise, context->deferred());
+#endif
+            loadPromise = globalObject->moduleLoader()->loadModule(globalObject, globalObject, request, combinedCell, scriptFetcher, innerLoadFlags);
         } else {
             combinedCell = ModuleGraphLoadingState::create(vm, statePromise, scriptFetcher);
-            loadPromise = globalObject->moduleLoader()->loadModule(globalObject, globalObject, request, combinedCell, scriptFetcher, context->evaluate(), context->useImportMap());
+            if (context->evaluate())
+                innerLoadFlags.add(ModuleLoadFlag::Evaluate);
+            loadPromise = globalObject->moduleLoader()->loadModule(globalObject, globalObject, request, combinedCell, scriptFetcher, innerLoadFlags);
             if (scope.exception()) {
-                intermediatePromise->rejectWithCaughtException(globalObject, scope);
+                intermediatePromise->rejectWithCaughtException(vm, scope);
                 return;
             }
             // Specifier transform: instead of creating a closure, use a microtask
             JSPromise* transformedStatePromise = JSPromise::create(vm, globalObject->promiseStructure());
             transformedStatePromise->markAsHandled();
-            statePromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::ModuleLoadSpecifierTransform, transformedStatePromise, context);
+            statePromise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::ModuleLoadSpecifierTransform, transformedStatePromise, context);
             statePromise = transformedStatePromise;
         }
 
         if (scope.exception()) {
-            intermediatePromise->rejectWithCaughtException(globalObject, scope);
+            intermediatePromise->rejectWithCaughtException(vm, scope);
             return;
         }
 
         JSPromise* combinedPromise = JSPromise::create(vm, globalObject->promiseStructure());
         combinedPromise->markAsHandled();
 
-        loadPromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::ModuleLoadCombinedLoadSettled, combinedPromise, combinedCell);
-        statePromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::ModuleLoadCombinedStateSettled, combinedPromise, combinedCell);
+        loadPromise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::ModuleLoadCombinedLoadSettled, combinedPromise, combinedCell);
+        statePromise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::ModuleLoadCombinedStateSettled, combinedPromise, combinedCell);
 
         intermediatePromise->pipeFrom(vm, combinedPromise);
     } else {
@@ -1044,7 +1142,7 @@ static void moduleLoadTopSettled(JSGlobalObject* globalObject, VM& vm, ThrowScop
         auto type = context->moduleRequest().type();
         ModuleRegistryEntry* entry = globalObject->moduleLoader()->ensureRegistered(globalObject, specifier, type);
         if (scope.exception()) {
-            intermediatePromise->rejectWithCaughtException(globalObject, scope);
+            intermediatePromise->rejectWithCaughtException(vm, scope);
             return;
         }
         JSValue errorValue = arguments[1];
@@ -1054,8 +1152,13 @@ static void moduleLoadTopSettled(JSGlobalObject* globalObject, VM& vm, ThrowScop
                 entry->setEvaluationError(globalObject, error);
             else
                 entry->setFetchError(globalObject, error);
+        } else {
+            // This microtask reacts to the embedder fetch promise, so a rejection
+            // here is a fetch failure even when the host rejected with a non-Error
+            // value (matching moduleRegistryFetchSettled's unconditional setFetchError).
+            entry->setFetchError(globalObject, errorValue);
         }
-        intermediatePromise->reject(vm, globalObject, errorValue);
+        intermediatePromise->reject(vm, errorValue);
     }
 }
 
@@ -1069,34 +1172,34 @@ static void moduleLoadTopRejected(JSGlobalObject* globalObject, VM& vm, ThrowSco
     auto* resultPromise = uncheckedDowncast<JSPromise>(arguments[0]);
     auto status = static_cast<JSPromise::Status>(payload);
     if (status == JSPromise::Status::Fulfilled)
-        resultPromise->fulfill(vm, globalObject, arguments[1]);
+        resultPromise->fulfill(vm, arguments[1]);
     else {
         const Identifier& specifier = context->moduleRequest().m_specifier;
         auto type = context->moduleRequest().type();
         ModuleRegistryEntry* entry = globalObject->moduleLoader()->ensureRegistered(globalObject, specifier, type);
         if (scope.exception()) {
-            resultPromise->rejectWithCaughtException(globalObject, scope);
+            resultPromise->rejectWithCaughtException(vm, scope);
             return;
         }
         if (JSValue fetchErrorValue = entry->fetchError()) {
             if (ErrorInstance* fetchError = dynamicDowncast<ErrorInstance>(fetchErrorValue)) {
                 ErrorInstance* fetchErrorCopy = JSModuleLoader::maybeDuplicateFetchError(globalObject, fetchError);
                 if (scope.exception()) {
-                    resultPromise->rejectWithCaughtException(globalObject, scope);
+                    resultPromise->rejectWithCaughtException(vm, scope);
                     return;
                 }
-                resultPromise->reject(vm, globalObject, fetchErrorCopy);
+                resultPromise->reject(vm, fetchErrorCopy);
             } else
-                resultPromise->reject(vm, globalObject, fetchErrorValue);
+                resultPromise->reject(vm, fetchErrorValue);
             return;
         }
         JSValue error = arguments[1];
         entry->setEvaluationError(globalObject, error);
-        resultPromise->reject(vm, globalObject, error);
+        resultPromise->reject(vm, error);
     }
 }
 
-static void moduleLoadSpecifierTransform(JSGlobalObject* globalObject, VM& vm, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
+static void moduleLoadSpecifierTransform(JSGlobalObject*, VM& vm, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
 {
     // Transforms resolution to specifier identifier
     // arguments[0] = pre-created transformedStatePromise
@@ -1107,12 +1210,12 @@ static void moduleLoadSpecifierTransform(JSGlobalObject* globalObject, VM& vm, T
     if (status == JSPromise::Status::Fulfilled) {
         auto* context = uncheckedDowncast<ModuleLoadingContext>(arguments[2]);
         scope.release();
-        transformedPromise->fulfill(vm, globalObject, identifierToJSValue(vm, context->moduleRequest().m_specifier));
+        transformedPromise->fulfill(vm, identifierToJSValue(vm, context->moduleRequest().m_specifier));
     } else
-        transformedPromise->reject(vm, globalObject, arguments[1]);
+        transformedPromise->reject(vm, arguments[1]);
 }
 
-static void moduleLoadCombinedLoadSettled(JSGlobalObject* globalObject, VM& vm, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
+static void moduleLoadCombinedLoadSettled(JSGlobalObject*, VM& vm, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
 {
     // Combined promise: load side settled
     // arguments[0] = combinedPromise
@@ -1139,9 +1242,9 @@ static void moduleLoadCombinedLoadSettled(JSGlobalObject* globalObject, VM& vm, 
             else
                 fulfillmentValue = uncheckedDowncast<ModuleLoaderPayload>(combinedCell)->fulfillment();
             ASSERT(fulfillmentValue);
-            combinedPromise->fulfill(vm, globalObject, fulfillmentValue);
+            combinedPromise->fulfill(vm, fulfillmentValue);
         } else
-            combinedPromise->reject(vm, globalObject, arguments[1]);
+            combinedPromise->reject(vm, arguments[1]);
         return;
     }
     default:
@@ -1149,7 +1252,7 @@ static void moduleLoadCombinedLoadSettled(JSGlobalObject* globalObject, VM& vm, 
     }
 }
 
-static void moduleLoadCombinedStateSettled(JSGlobalObject* globalObject, VM& vm, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
+static void moduleLoadCombinedStateSettled(JSGlobalObject*, VM& vm, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
 {
     // Combined promise: state side settled
     // arguments[0] = combinedPromise
@@ -1175,9 +1278,9 @@ static void moduleLoadCombinedStateSettled(JSGlobalObject* globalObject, VM& vm,
     case JSPromise::Status::Pending:
         if (status == JSPromise::Status::Fulfilled) {
             if (fullySettled)
-                combinedPromise->fulfill(vm, globalObject, arguments[1]);
+                combinedPromise->fulfill(vm, arguments[1]);
         } else
-            combinedPromise->reject(vm, globalObject, arguments[1]);
+            combinedPromise->reject(vm, arguments[1]);
         return;
     default:
         return;
@@ -1199,24 +1302,24 @@ static void moduleLoadLinkEvaluateSettled(JSGlobalObject* globalObject, VM& vm, 
             record->link(globalObject, context->scriptFetcher());
             JSModuleLoader::attachErrorInfo(globalObject, scope, record, record->moduleKey(), record->moduleType(), JSModuleLoader::ModuleFailure::Kind::Instantiation);
             if (scope.exception()) {
-                resultPromise->rejectWithCaughtException(globalObject, scope);
+                resultPromise->rejectWithCaughtException(vm, scope);
                 return;
             }
             JSPromise* evaluatePromise = record->evaluate(globalObject);
             JSModuleLoader::attachErrorInfo(globalObject, scope, record, record->moduleKey(), record->moduleType(), JSModuleLoader::ModuleFailure::Kind::Evaluation);
             if (scope.exception()) {
-                resultPromise->rejectWithCaughtException(globalObject, scope);
+                resultPromise->rejectWithCaughtException(vm, scope);
                 return;
             }
             // Chain: when evaluation completes, resolve resultPromise with record
-            evaluatePromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::ModuleLoadReturnRecord, resultPromise, record);
+            evaluatePromise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::ModuleLoadReturnRecord, resultPromise, record);
         } else
-            resultPromise->fulfill(vm, globalObject, identifierToJSValue(vm, record->moduleKey()));
+            resultPromise->fulfill(vm, identifierToJSValue(vm, record->moduleKey()));
     } else
-        resultPromise->reject(vm, globalObject, arguments[1]);
+        resultPromise->reject(vm, arguments[1]);
 }
 
-static void moduleLoadReturnRecord(JSGlobalObject* globalObject, VM& vm, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
+static void moduleLoadReturnRecord(JSGlobalObject*, VM& vm, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
 {
     // Resolves promise with the record after evaluation completes
     // arguments[0] = resultPromise
@@ -1226,9 +1329,9 @@ static void moduleLoadReturnRecord(JSGlobalObject* globalObject, VM& vm, ThrowSc
     auto status = static_cast<JSPromise::Status>(payload);
     scope.release();
     if (status == JSPromise::Status::Fulfilled)
-        resultPromise->fulfill(vm, globalObject, arguments[2]);
+        resultPromise->fulfill(vm, arguments[2]);
     else
-        resultPromise->reject(vm, globalObject, arguments[1]);
+        resultPromise->reject(vm, arguments[1]);
 }
 
 static void moduleLoadStoreError(JSGlobalObject* globalObject, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
@@ -1258,45 +1361,140 @@ static void moduleLoadStoreError(JSGlobalObject* globalObject, ThrowScope& scope
     }
 }
 
-static void dynamicImportLoadSettled(JSGlobalObject* globalObject, VM& vm, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
+static void resolveDeferredImportNamespace(JSGlobalObject* globalObject, VM& vm, ThrowScope& scope, JSPromise* capabilityPromise, AbstractModuleRecord* module)
+{
+    // ContinueDynamicImport, fulfilledClosure with phase = defer
+    // https://tc39.es/proposal-defer-import-eval/#sec-ContinueDynamicImport
+    // Let namespace be GetModuleNamespace(module, phase).
+    JSModuleNamespaceObject* moduleNamespace = module->getModuleNamespace(globalObject, AbstractModuleRecord::ModulePhase::Defer);
+    if (scope.exception()) [[unlikely]] {
+        capabilityPromise->rejectWithCaughtException(vm, scope);
+        return;
+    }
+    // Perform ! Call(promiseCapability.[[Resolve]], undefined, « namespace »).
+    // (See dynamicImportEvaluateSettled for why fulfill is used on this internal promise.)
+    capabilityPromise->fulfill(vm, moduleNamespace);
+}
+
+static void dynamicImportLoadSettled(JSGlobalObject* globalObject, VM& vm, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload, bool deferred)
 {
     // https://tc39.es/ecma262/#sec-ContinueDynamicImport
+    // https://tc39.es/proposal-defer-import-eval/#sec-ContinueDynamicImport (deferred)
     // Step-4 rejectedClosure or Step-6 linkAndEvaluateClosure
     //
     // continueDynamicImport: loadPromise settled
-    // arguments[0] = capabilityPromise
+    // arguments[0] = AbstractModuleRecord*
     // arguments[1] = resolution or error
-    // arguments[2] = AbstractModuleRecord*
-    auto* capabilityPromise = uncheckedDowncast<JSPromise>(arguments[0]);
-    auto* module = uncheckedDowncast<AbstractModuleRecord>(arguments[2]);
+    // arguments[2] = ModuleLoaderPayload*
+    auto* module = uncheckedDowncast<AbstractModuleRecord>(arguments[0]);
+    auto* dynamicPayload = uncheckedDowncast<ModuleLoaderPayload>(arguments[2]);
+    auto* capabilityPromise = dynamicPayload->promise();
     auto status = static_cast<JSPromise::Status>(payload);
-    if (status == JSPromise::Status::Fulfilled) {
-        // Step-6 linkAndEvaluateClosure
-        // 6.a. Let link be Completion(module.Link()).
-        module->link(globalObject, nullptr);
+    if (status != JSPromise::Status::Fulfilled) {
+        // Step-4 rejectedClosure
+        // 4.a. Perform ! Call(promiseCapability.[[Reject]], undefined, « reason »).
+        capabilityPromise->reject(vm, arguments[1]);
+        return;
+    }
 
-        // 6.b. If link is an abrupt completion, then
-        if (Exception* exception = scope.exception()) [[unlikely]] {
-            // 6.b.i. Perform ! Call(promiseCapability.[[Reject]], undefined, « link.[[Value]] »).
-            JSModuleLoader::attachErrorInfo(globalObject, exception, module, module->moduleKey(), module->moduleType(), JSModuleLoader::ModuleFailure::Kind::Instantiation);
-            capabilityPromise->rejectWithCaughtException(globalObject, scope);
-            return;
-        }
+    // Step-6 linkAndEvaluateClosure
+    // 6.a. Let link be Completion(module.Link()).
+    module->link(globalObject, nullptr);
 
+    // 6.b. If link is an abrupt completion, then
+    if (Exception* exception = scope.exception()) [[unlikely]] {
+        // 6.b.i. Perform ! Call(promiseCapability.[[Reject]], undefined, « link.[[Value]] »).
+        JSModuleLoader::attachErrorInfo(globalObject, exception, module, module->moduleKey(), module->moduleType(), JSModuleLoader::ModuleFailure::Kind::Instantiation);
+        capabilityPromise->rejectWithCaughtException(vm, scope);
+        return;
+    }
+
+    if (!deferred) {
         // 6.c. Let evaluatePromise be module.Evaluate().
+#if USE(BUN_JSC_ADDITIONS)
+        JSPromise* evaluatePromise = module->evaluate(globalObject, dynamicPayload->referrerAsyncOrder());
+#else
         JSPromise* evaluatePromise = module->evaluate(globalObject);
+#endif
         if (scope.exception()) [[unlikely]] {
-            capabilityPromise->rejectWithCaughtException(globalObject, scope);
+            capabilityPromise->rejectWithCaughtException(vm, scope);
             return;
         }
 
         // 6.d-f. Perform PerformPromiseThen(evaluatePromise, onFulfilled, onRejected).
-        evaluatePromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::DynamicImportEvaluateSettled, capabilityPromise, module);
-    } else {
-        // Step-4 rejectedClosure
-        // 4.a. Perform ! Call(promiseCapability.[[Reject]], undefined, « reason »).
-        capabilityPromise->reject(vm, globalObject, arguments[1]);
+        evaluatePromise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::DynamicImportEvaluateSettled, capabilityPromise, module);
+        return;
     }
+
+    // Deferred phase: do not evaluate the deferred root. Eagerly evaluate only the
+    // post-order list of unexecuted top-level-await modules in the graph; once they
+    // all settle, hand back the deferred namespace.
+    //
+    // Let evaluationList be GatherAsynchronousTransitiveDependencies(module).
+    OrderedHashSet<AbstractModuleRecord*> evaluationList;
+    UncheckedKeyHashSet<AbstractModuleRecord*> seen;
+    module->gatherAsynchronousTransitiveDependencies(evaluationList, seen);
+
+    // If evaluationList is empty, perform fulfilledClosure() and return.
+    if (evaluationList.isEmpty()) {
+        resolveDeferredImportNamespace(globalObject, vm, scope, capabilityPromise, module);
+        return;
+    }
+
+    // For each Module Record dep of evaluationList, append dep.Evaluate() to asyncDepsEvaluationPromises.
+    MarkedArgumentBuffer asyncDepsEvaluationPromises;
+    for (AbstractModuleRecord* dep : evaluationList) {
+#if USE(BUN_JSC_ADDITIONS)
+        JSPromise* depPromise = dep->evaluate(globalObject, dynamicPayload->referrerAsyncOrder());
+#else
+        JSPromise* depPromise = dep->evaluate(globalObject);
+#endif
+        if (scope.exception()) [[unlikely]] {
+            capabilityPromise->rejectWithCaughtException(vm, scope);
+            return;
+        }
+        ASSERT(depPromise);
+        asyncDepsEvaluationPromises.append(depPromise);
+    }
+    if (asyncDepsEvaluationPromises.hasOverflowed()) [[unlikely]] {
+        throwOutOfMemoryError(globalObject, scope);
+        capabilityPromise->rejectWithCaughtException(vm, scope);
+        return;
+    }
+
+    // Let evaluatePromise be ! SafePerformPromiseAll(asyncDepsEvaluationPromises);
+    // PerformPromiseThen(evaluatePromise, onFulfilled, onRejected).
+    // We inline the AND-join: each dep promise either rejects capabilityPromise (idempotent),
+    // or decrements the join count; the last dep to fulfill resolves the deferred namespace.
+    auto* joinContext = JSPromiseCombinatorsGlobalContext::create(vm, capabilityPromise, module, asyncDepsEvaluationPromises.size());
+    for (unsigned i = 0; i < asyncDepsEvaluationPromises.size(); ++i) {
+        auto* depPromise = uncheckedDowncast<JSPromise>(asyncDepsEvaluationPromises.at(i));
+        depPromise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::DynamicImportDeferDependencySettled, capabilityPromise, joinContext);
+    }
+}
+
+static void dynamicImportDeferDependencySettled(JSGlobalObject* globalObject, VM& vm, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
+{
+    // SafePerformPromiseAll AND-join for the deferred-phase ContinueDynamicImport.
+    // arguments[0] = capabilityPromise
+    // arguments[1] = resolution or error
+    // arguments[2] = JSPromiseCombinatorsGlobalContext* (m_promise = capabilityPromise, m_values = module, m_remainingElementsCount = count)
+    auto* capabilityPromise = uncheckedDowncast<JSPromise>(arguments[0]);
+    auto* joinContext = uncheckedDowncast<JSPromiseCombinatorsGlobalContext>(arguments[2]);
+    auto status = static_cast<JSPromise::Status>(payload);
+    if (status != JSPromise::Status::Fulfilled) {
+        // First rejection wins; reject() on a settled promise is a no-op.
+        capabilityPromise->reject(vm, arguments[1]);
+        return;
+    }
+    uint64_t count = joinContext->remainingElementsCount();
+    ASSERT(count > 0);
+    uint64_t remaining = count - 1;
+    joinContext->setRemainingElementsCount(remaining);
+    if (remaining)
+        return;
+    auto* module = uncheckedDowncast<AbstractModuleRecord>(joinContext->values());
+    resolveDeferredImportNamespace(globalObject, vm, scope, capabilityPromise, module);
 }
 
 static void dynamicImportEvaluateSettled(JSGlobalObject* globalObject, VM& vm, ThrowScope& scope, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
@@ -1315,7 +1513,7 @@ static void dynamicImportEvaluateSettled(JSGlobalObject* globalObject, VM& vm, T
         // 6.d.i. Let namespace be GetModuleNamespace(module).
         JSModuleNamespaceObject* moduleNamespace = module->getModuleNamespace(globalObject);
         if (scope.exception()) [[unlikely]] {
-            capabilityPromise->rejectWithCaughtException(globalObject, scope);
+            capabilityPromise->rejectWithCaughtException(vm, scope);
             return;
         }
 
@@ -1330,9 +1528,9 @@ static void dynamicImportEvaluateSettled(JSGlobalObject* globalObject, VM& vm, T
         // aligned (as "resolve" will happen in resultPromise side from dynamic import).
         // But ideally, this carried capabilityPromise should be the last user-observable
         // promise and we should do "resolve" here. This requires some clean up.
-        capabilityPromise->fulfill(vm, globalObject, moduleNamespace);
+        capabilityPromise->fulfill(vm, moduleNamespace);
     } else
-        capabilityPromise->reject(vm, globalObject, arguments[1]);
+        capabilityPromise->reject(vm, arguments[1]);
 }
 
 static void importModuleNamespace(JSGlobalObject* globalObject, VM& vm, ThrowScope&, std::span<const JSValue, maxMicrotaskArguments> arguments, uint8_t payload)
@@ -1353,7 +1551,7 @@ static void importModuleNamespace(JSGlobalObject* globalObject, VM& vm, ThrowSco
         auto* moduleNamespace = downcast<JSModuleNamespaceObject>(arguments[1]);
         resultPromise->resolve(globalObject, vm, moduleNamespace);
     } else
-        resultPromise->reject(vm, globalObject, arguments[1]);
+        resultPromise->reject(vm, arguments[1]);
     return;
 }
 
@@ -1391,10 +1589,10 @@ static void promiseResolveWithoutHandlerJob(JSGlobalObject* globalObject, VM& vm
             RELEASE_ASSERT_NOT_REACHED();
             break;
         case JSPromise::Status::Fulfilled:
-            promise->resolvePromise(globalObject, vm, resolution);
+            promise->resolvePromise(promise->realm(), vm, resolution);
             break;
         case JSPromise::Status::Rejected:
-            promise->rejectPromise(vm, globalObject, resolution);
+            promise->rejectPromise(vm, resolution);
             break;
         }
         return;
@@ -1403,7 +1601,114 @@ static void promiseResolveWithoutHandlerJob(JSGlobalObject* globalObject, VM& vm
     promiseResolveWithoutHandlerJobSlow(globalObject, vm, promiseOrCapability, resolution, status);
 }
 
-void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotask task, uint8_t payload, std::span<const JSValue, maxMicrotaskArguments> arguments, MicrotaskCall* microtaskCall)
+#if ENABLE(WEBASSEMBLY)
+static void webAssemblyCompileStreaming(JSGlobalObject* globalObject, VM& vm, JSValue resolution, JSWebAssemblyStreamingContext* context, JSPromise::Status status)
+{
+    JSPromise* outerPromise = context->promise();
+    if (status == JSPromise::Status::Rejected) {
+        outerPromise->reject(vm, resolution);
+        return;
+    }
+    ASSERT(globalObject->globalObjectMethodTable()->compileStreaming);
+    globalObject->globalObjectMethodTable()->compileStreaming(globalObject, outerPromise, resolution, context->takeCompileOptions());
+}
+
+static void webAssemblyInstantiateStreaming(JSGlobalObject* globalObject, VM& vm, JSValue resolution, JSWebAssemblyStreamingContext* context, JSPromise::Status status)
+{
+    JSPromise* outerPromise = context->promise();
+    if (status == JSPromise::Status::Rejected) {
+        outerPromise->reject(vm, resolution);
+        return;
+    }
+
+    // FIXME: <http://webkit.org/b/184888> if there's an importObject and it contains a Memory, then we can compile the module with the right memory type (fast or not) by looking at the memory's type.
+    ASSERT(globalObject->globalObjectMethodTable()->instantiateStreaming);
+    globalObject->globalObjectMethodTable()->instantiateStreaming(globalObject, outerPromise, resolution, context->importObject(), context->takeCompileOptions());
+}
+#endif
+
+static void asyncFunctionArrangeAwaitResume(JSGlobalObject* globalObject, VM& vm, JSAsyncFunctionGenerator* generator, JSValue value)
+{
+    if (value == vm.fastAsyncGeneratorSentinel())
+        return;
+    JSPromise::resolveWithInternalMicrotaskForAsyncAwait(globalObject, vm, value, InternalMicrotask::AsyncFunctionResume, generator);
+}
+
+// Drives one step of a suspended async function's continuation.
+static void asyncFunctionGeneratorBodyCall(JSGlobalObject* generatorGlobalObject, VM& vm, JSAsyncFunctionGenerator* generator, JSValue resolution, JSGenerator::ResumeMode resumeMode, MicrotaskCallCache* microtaskCallCache)
+{
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    int32_t state = generator->state();
+    generator->setState(static_cast<int32_t>(JSGenerator::State::Executing));
+    JSValue next = generator->next();
+    JSValue thisValue = generator->thisValue();
+    JSValue frame = generator->frame();
+    JSValue value;
+    JSValue error;
+    {
+        auto catchScope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+        value = callMicrotask(generatorGlobalObject, next, thisValue, generator, "handler is not a function"_s, microtaskCallCache,
+            generator, jsNumber(state), resolution, jsNumber(static_cast<int32_t>(resumeMode)), frame);
+        if (catchScope.exception()) {
+            error = catchScope.exception()->value();
+            if (!catchScope.clearExceptionExceptTermination()) [[unlikely]] {
+                scope.release();
+                return;
+            }
+        }
+    }
+
+    if (error) {
+        auto* promise = uncheckedDowncast<JSPromise>(generator->context());
+        promise->reject(vm, error);
+        return;
+    }
+
+    if (generator->state() == static_cast<int32_t>(JSGenerator::State::Executing)) {
+        auto* promise = uncheckedDowncast<JSPromise>(generator->context());
+        scope.release();
+        promise->resolve(generatorGlobalObject, vm, value);
+        return;
+    }
+
+    // The body suspended again at op_async_iterator_next's fast branch + op_yield. The resume
+    // is already arranged by enqueuing this driver on the producer, so skip the normal
+    // await-Promise attachment below.
+    scope.release();
+    asyncFunctionArrangeAwaitResume(generatorGlobalObject, vm, generator, value);
+}
+
+JSC_DEFINE_HOST_FUNCTION(asyncFunctionDrive, (JSGlobalObject* globalObject, CallFrame* callFrame))
+{
+    VM& vm = globalObject->vm();
+    JSValue resolution = callFrame->uncheckedArgument(0);
+    auto* generator = uncheckedDowncast<JSAsyncFunctionGenerator>(callFrame->uncheckedArgument(1));
+    asyncFunctionArrangeAwaitResume(globalObject, vm, generator, resolution);
+    return encodedJSUndefined();
+}
+
+static JSGenerator::ResumeMode resumeModeForStatus(JSPromise::Status status)
+{
+    RELEASE_ASSERT(status != JSPromise::Status::Pending);
+    return status == JSPromise::Status::Rejected ? JSGenerator::ResumeMode::ThrowMode : JSGenerator::ResumeMode::NormalMode;
+}
+
+// A for-await driver (op_async_iterator_next's fast branch) resumed directly by the producer it is
+// consuming. `context` is the driver.
+static void asyncGeneratorDriverResume(VM& vm, JSValue context, JSValue resolution, JSPromise::Status status, MicrotaskCallCache* microtaskCallCache)
+{
+    JSGenerator::ResumeMode resumeMode = resumeModeForStatus(status);
+    if (auto* asyncFunctionGenerator = dynamicDowncast<JSAsyncFunctionGenerator>(context)) {
+        asyncFunctionGeneratorBodyCall(asyncFunctionGenerator->realm(), vm, asyncFunctionGenerator, resolution, resumeMode, microtaskCallCache);
+        return;
+    }
+
+    auto* generator = uncheckedDowncast<JSAsyncGenerator>(context);
+    asyncGeneratorBodyCall(generator->realm(), generator, resolution, static_cast<int32_t>(resumeMode), microtaskCallCache);
+}
+
+void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotask task, uint8_t payload, std::span<const JSValue, maxMicrotaskArguments> arguments, MicrotaskCallCache* microtaskCallCache)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
 
@@ -1416,34 +1721,16 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
     case InternalMicrotask::PromiseResolveThenableJobFast: {
         auto* promise = uncheckedDowncast<JSPromise>(arguments[0]);
         auto* promiseToResolve = uncheckedDowncast<JSPromise>(arguments[1]);
-#if USE(BUN_JSC_ADDITIONS)
-        JSValue asyncContext = arguments[2];
-#endif
 
         if (!promiseSpeciesWatchpointIsValid(vm, promise)) [[unlikely]]
             RELEASE_AND_RETURN(scope, promiseResolveThenableJobFastSlow(globalObject, promise, promiseToResolve));
 
 #if USE(BUN_JSC_ADDITIONS)
-        // Set up async context for promise resolution
-        InternalFieldTuple* asyncContextData = nullptr;
-        JSValue restoreAsyncContext;
-        if (!asyncContext.isUndefined()) {
-            asyncContextData = globalObject->m_asyncContextData.get();
-            if (asyncContextData) {
-                restoreAsyncContext = asyncContextData->getInternalField(0);
-                asyncContextData->putInternalField(vm, 0, asyncContext);
-            }
-        }
+        AsyncContextSwapScope asyncContextScope(vm, globalObject, arguments[2]);
 #endif
 
         scope.release();
-        promise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::PromiseResolveWithoutHandlerJob, promiseToResolve, jsUndefined());
-
-#if USE(BUN_JSC_ADDITIONS)
-        // Restore async context
-        if (asyncContextData)
-            asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
+        promise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::PromiseResolveWithoutHandlerJob, promiseToResolve, jsUndefined());
         return;
     }
 
@@ -1455,26 +1742,7 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
         if (!promiseSpeciesWatchpointIsValid(vm, promise)) [[unlikely]]
             RELEASE_AND_RETURN(scope, promiseResolveThenableJobWithInternalMicrotaskFastSlow(globalObject, promise, task, context));
 
-        JSValue reactionsOrResult = promise->reactionsOrResult();
-        switch (promise->status()) {
-        case JSPromise::Status::Pending: {
-            auto* reaction = JSSlimPromiseReaction::create(vm, jsUndefined(), task, context, reactionsOrResult ? uncheckedDowncast<JSPromiseReaction>(reactionsOrResult) : nullptr);
-            promise->setReactionsOrResult(vm, reaction);
-            promise->markAsHandled();
-            break;
-        }
-        case JSPromise::Status::Rejected: {
-            if (!promise->isHandled())
-                globalObject->globalObjectMethodTable()->promiseRejectionTracker(globalObject, promise, JSPromiseRejectionOperation::Handle);
-            JSPromise::rejectWithInternalMicrotask(vm, globalObject, reactionsOrResult, task, context);
-            promise->markAsHandled();
-            break;
-        }
-        case JSPromise::Status::Fulfilled: {
-            JSPromise::fulfillWithInternalMicrotask(vm, globalObject, reactionsOrResult, task, context);
-            break;
-        }
-        }
+        promise->performPromiseThenWithInternalMicrotask(vm, task, nullptr, context);
         return;
     }
 
@@ -1483,28 +1751,12 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
         JSValue then = arguments[1];
         JSPromise* promiseToResolve = uncheckedDowncast<JSPromise>(arguments[2]);
 #if USE(BUN_JSC_ADDITIONS)
-        JSValue asyncContext = arguments[3];
-
-        // Set up async context for thenable resolution
-        InternalFieldTuple* asyncContextData = nullptr;
-        JSValue restoreAsyncContext;
-        if (!asyncContext.isUndefined()) {
-            asyncContextData = globalObject->m_asyncContextData.get();
-            if (asyncContextData) {
-                restoreAsyncContext = asyncContextData->getInternalField(0);
-                asyncContextData->putInternalField(vm, 0, asyncContext);
-            }
-        }
+        AsyncContextSwapScope asyncContextScope(vm, globalObject, arguments[3]);
 #endif
 
         auto [resolve, reject] = promiseToResolve->createResolvingFunctions(vm, globalObject);
-        promiseResolveThenableJob(globalObject, promise, then, resolve, reject);
-
-#if USE(BUN_JSC_ADDITIONS)
-        // Restore async context after calling thenable's then method
-        if (asyncContextData)
-            asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
+        scope.release();
+        promiseResolveThenableJob(globalObject, promise, then, resolve, reject, microtaskCallCache);
         return;
     }
 
@@ -1515,29 +1767,15 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
         JSValue context = arguments[2];
 
 #if USE(BUN_JSC_ADDITIONS)
-        // Extract async context from the context tuple and set it up before calling thenable's then method
-        InternalFieldTuple* asyncContextData = nullptr;
-        JSValue restoreAsyncContext;
-        if (auto* tuple = dynamicDowncast<InternalFieldTuple>(context)) {
-            JSValue asyncContext = tuple->getInternalField(1);
-            if (!asyncContext.isUndefined()) {
-                asyncContextData = globalObject->m_asyncContextData.get();
-                if (asyncContextData) {
-                    restoreAsyncContext = asyncContextData->getInternalField(0);
-                    asyncContextData->putInternalField(vm, 0, asyncContext);
-                }
-            }
-        }
+        // context may be an InternalFieldTuple [userContext, asyncContext]; the resolving
+        // functions keep the tuple as-is, so only peek at field 1 for the swap.
+        JSValue peek = context;
+        AsyncContextSwapScope asyncContextScope(vm, globalObject, AsyncContextSwapScope::unwrapContextTuple(peek));
 #endif
 
         auto [resolve, reject] = JSPromise::createResolvingFunctionsWithInternalMicrotask(vm, globalObject, task, context);
-        promiseResolveThenableJob(globalObject, promise, then, resolve, reject);
-
-#if USE(BUN_JSC_ADDITIONS)
-        // Restore async context after calling thenable's then method
-        if (asyncContextData)
-            asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
+        scope.release();
+        promiseResolveThenableJob(globalObject, promise, then, resolve, reject, microtaskCallCache);
         return;
     }
 
@@ -1561,60 +1799,49 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
             break;
         case JSPromise::Status::Fulfilled:
             scope.release();
-            promise->fulfillPromise(vm, globalObject, resolution);
+            promise->fulfillPromise(vm, resolution);
             break;
         case JSPromise::Status::Rejected:
             scope.release();
-            promise->rejectPromise(vm, globalObject, resolution);
+            promise->rejectPromise(vm, resolution);
             break;
         }
         return;
     }
 
-    case InternalMicrotask::PromiseRaceResolveJob:
-        RELEASE_AND_RETURN(scope, promiseRaceResolveJob(globalObject, vm, uncheckedDowncast<JSPromise>(arguments[0]), arguments[1], static_cast<JSPromise::Status>(payload)));
+    case InternalMicrotask::PromiseRaceResolveJob: {
+        auto* promise = uncheckedDowncast<JSPromise>(arguments[0]);
+        RELEASE_AND_RETURN(scope, promiseRaceResolveJob(promise->realm(), vm, promise, arguments[1], static_cast<JSPromise::Status>(payload)));
+    }
 
-    case InternalMicrotask::PromiseAllResolveJob:
-        RELEASE_AND_RETURN(scope, promiseAllResolveJob(globalObject, vm, uncheckedDowncast<JSPromise>(arguments[0]), arguments[1], uncheckedDowncast<JSPromiseCombinatorsContext>(arguments[2]), static_cast<JSPromise::Status>(payload)));
+    case InternalMicrotask::PromiseAllResolveJob: {
+        auto* globalContext = uncheckedDowncast<JSPromiseCombinatorsGlobalContext>(arguments[0]);
+        auto* resultPromise = uncheckedDowncast<JSPromise>(globalContext->promise());
+        RELEASE_AND_RETURN(scope, promiseAllResolveJob(resultPromise->realm(), vm, globalContext, arguments[1], static_cast<uint64_t>(arguments[2].asAnyInt()), static_cast<JSPromise::Status>(payload)));
+    }
 
-    case InternalMicrotask::PromiseAllSettledResolveJob:
-        RELEASE_AND_RETURN(scope, promiseAllSettledResolveJob(globalObject, vm, uncheckedDowncast<JSPromise>(arguments[0]), arguments[1], uncheckedDowncast<JSPromiseCombinatorsContext>(arguments[2]), static_cast<JSPromise::Status>(payload)));
+    case InternalMicrotask::PromiseAllSettledResolveJob: {
+        auto* globalContext = uncheckedDowncast<JSPromiseCombinatorsGlobalContext>(arguments[0]);
+        auto* resultPromise = uncheckedDowncast<JSPromise>(globalContext->promise());
+        RELEASE_AND_RETURN(scope, promiseAllSettledResolveJob(resultPromise->realm(), vm, globalContext, arguments[1], static_cast<uint64_t>(arguments[2].asAnyInt()), static_cast<JSPromise::Status>(payload)));
+    }
 
-    case InternalMicrotask::PromiseAnyResolveJob:
-        RELEASE_AND_RETURN(scope, promiseAnyResolveJob(globalObject, vm, uncheckedDowncast<JSPromise>(arguments[0]), arguments[1], uncheckedDowncast<JSPromiseCombinatorsContext>(arguments[2]), static_cast<JSPromise::Status>(payload)));
+    case InternalMicrotask::PromiseAnyResolveJob: {
+        auto* globalContext = uncheckedDowncast<JSPromiseCombinatorsGlobalContext>(arguments[0]);
+        auto* resultPromise = uncheckedDowncast<JSPromise>(globalContext->promise());
+        RELEASE_AND_RETURN(scope, promiseAnyResolveJob(resultPromise->realm(), vm, globalContext, arguments[1], static_cast<uint64_t>(arguments[2].asAnyInt()), static_cast<JSPromise::Status>(payload)));
+    }
 
     case InternalMicrotask::PromiseReactionJob: {
         JSValue promiseOrCapability = arguments[0];
         JSValue handler = arguments[1];
 #if USE(BUN_JSC_ADDITIONS)
-        // Extract userContext and asyncContext from arguments[3]
-        // If it's an InternalFieldTuple: [userContext, asyncContext]
-        // Otherwise: it's userContext directly (legacy behavior)
-        JSValue contextArg = arguments[3];
-        JSValue userContext = jsUndefined();
-        JSValue asyncContext = jsUndefined();
-
-        if (!contextArg.isEmpty() && contextArg.isCell()) {
-            if (auto* tuple = dynamicDowncast<InternalFieldTuple>(contextArg)) {
-                userContext = tuple->getInternalField(0);
-                asyncContext = tuple->getInternalField(1);
-            } else {
-                userContext = contextArg;
-            }
-        } else if (!contextArg.isEmpty() && !contextArg.isUndefinedOrNull()) {
-            userContext = contextArg;
-        }
-
-        // Set up async context before calling handler
-        InternalFieldTuple* asyncContextData = nullptr;
-        JSValue restoreAsyncContext;
-        if (!asyncContext.isUndefined()) {
-            asyncContextData = globalObject->m_asyncContextData.get();
-            if (asyncContextData) {
-                restoreAsyncContext = asyncContextData->getInternalField(0);
-                asyncContextData->putInternalField(vm, 0, asyncContext);
-            }
-        }
+        // arguments[3] is either an InternalFieldTuple [userContext, asyncContext]
+        // or userContext directly (legacy behavior). The scope stays active through
+        // resolvePromise/rejectPromise so thenables returned from the handler
+        // capture the correct async context, and restores on every return.
+        JSValue userContext = arguments[3];
+        AsyncContextSwapScope asyncContextScope(vm, globalObject, AsyncContextSwapScope::unwrapContextTuple(userContext));
 #endif
 
         JSValue result;
@@ -1626,37 +1853,25 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
             // When userContext is defined (not empty, undefined, or null), pass 2 arguments and use userContext as the cell context
             // When userContext is empty/undefined/null, pass 1 argument only
             if (userContext.isEmpty() || userContext.isUndefinedOrNull())
-                result = callMicrotask(globalObject, handler, jsUndefined(), dynamicCastToCell(handler), "handler is not a function"_s, microtaskCall, arguments[2]);
+                result = callMicrotask(globalObject, handler, jsUndefined(), dynamicCastToCell(handler), "handler is not a function"_s, microtaskCallCache, arguments[2]);
             else
-                result = callMicrotask(globalObject, handler, jsUndefined(), dynamicCastToCell(userContext), "handler is not a function"_s, microtaskCall, arguments[2], userContext);
+                result = callMicrotask(globalObject, handler, jsUndefined(), dynamicCastToCell(userContext), "handler is not a function"_s, microtaskCallCache, arguments[2], userContext);
 #else
-            result = callMicrotask(globalObject, handler, jsUndefined(), dynamicCastToCell(handler), "handler is not a function"_s, microtaskCall, arguments[2]);
+            result = callMicrotask(globalObject, handler, jsUndefined(), dynamicCastToCell(handler), "handler is not a function"_s, microtaskCallCache, arguments[2]);
 #endif
             if (catchScope.exception()) {
                 if (promiseOrCapability.isUndefinedOrNull()) {
-#if USE(BUN_JSC_ADDITIONS)
-                    if (asyncContextData)
-                        asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
                     scope.release();
                     return;
                 }
                 error = catchScope.exception()->value();
                 if (!catchScope.clearExceptionExceptTermination()) [[unlikely]] {
-#if USE(BUN_JSC_ADDITIONS)
-                    if (asyncContextData)
-                        asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
                     scope.release();
                     return;
                 }
             }
 
             if (promiseOrCapability.isUndefinedOrNull()) {
-#if USE(BUN_JSC_ADDITIONS)
-                if (asyncContextData)
-                    asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
                 scope.release();
                 return;
             }
@@ -1664,17 +1879,10 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
             ASSERT(result || error);
         }
 
-        // Note: Keep async context active during resolvePromise/rejectPromise
-        // so that any thenables returned from the handler can capture the correct async context
-
         if (error) {
             if (auto* promise = dynamicDowncast<JSPromise>(promiseOrCapability)) {
                 scope.release();
-                promise->rejectPromise(vm, globalObject, error);
-#if USE(BUN_JSC_ADDITIONS)
-                if (asyncContextData)
-                    asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
+                promise->rejectPromise(vm, error);
                 return;
             }
 
@@ -1686,20 +1894,12 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
             ASSERT(!arguments.hasOverflowed());
             scope.release();
             call(globalObject, reject, jsUndefined(), arguments, "reject is not a function"_s);
-#if USE(BUN_JSC_ADDITIONS)
-            if (asyncContextData)
-                asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
             return;
         }
 
         if (auto* promise = dynamicDowncast<JSPromise>(promiseOrCapability)) {
             scope.release();
-            promise->resolvePromise(globalObject, vm, result);
-#if USE(BUN_JSC_ADDITIONS)
-            if (asyncContextData)
-                asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
+            promise->resolvePromise(promise->realm(), vm, result);
             return;
         }
 
@@ -1711,17 +1911,13 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
         ASSERT(!arguments.hasOverflowed());
         scope.release();
         call(globalObject, resolve, jsUndefined(), arguments, "resolve is not a function"_s);
-#if USE(BUN_JSC_ADDITIONS)
-        if (asyncContextData)
-            asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
         return;
     }
 
     case InternalMicrotask::InvokeFunctionJob: {
         JSValue handler = arguments[0];
         scope.release();
-        callMicrotask(globalObject, handler, jsUndefined(), nullptr, "handler is not a function"_s, microtaskCall);
+        callMicrotask(globalObject, handler, jsUndefined(), nullptr, "handler is not a function"_s, microtaskCallCache);
         return;
     }
 
@@ -1730,278 +1926,104 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
         JSValue contextArg = arguments[2];
 
 #if USE(BUN_JSC_ADDITIONS)
-        // Extract generator and async context from InternalFieldTuple if wrapped
-        JSGenerator* generator;
-        JSValue asyncContext;
-        if (auto* tuple = dynamicDowncast<InternalFieldTuple>(contextArg)) {
-            generator = uncheckedDowncast<JSGenerator>(tuple->getInternalField(0));
-            asyncContext = tuple->getInternalField(1);
-        } else {
-            generator = uncheckedDowncast<JSGenerator>(contextArg);
-            asyncContext = jsUndefined();
-        }
-
-        // Set up Bun's async context before resuming the async function
-        InternalFieldTuple* asyncContextData = nullptr;
-        JSValue restoreAsyncContext;
-        if (!asyncContext.isUndefined()) {
-            asyncContextData = globalObject->m_asyncContextData.get();
-            if (asyncContextData) {
-                restoreAsyncContext = asyncContextData->getInternalField(0);
-                asyncContextData->putInternalField(vm, 0, asyncContext);
-            }
-        }
-#else
-        auto* generator = uncheckedDowncast<JSGenerator>(contextArg);
+        // contextArg may be an InternalFieldTuple [generator, asyncContext].
+        AsyncContextSwapScope asyncContextScope(vm, globalObject, AsyncContextSwapScope::unwrapContextTuple(contextArg));
 #endif
-
-        JSGenerator::ResumeMode resumeMode = JSGenerator::ResumeMode::NormalMode;
-        switch (static_cast<JSPromise::Status>(payload)) {
-        case JSPromise::Status::Pending: {
-            RELEASE_ASSERT_NOT_REACHED();
-            break;
-        }
-        case JSPromise::Status::Rejected: {
-            resumeMode = JSGenerator::ResumeMode::ThrowMode;
-            break;
-        }
-        case JSPromise::Status::Fulfilled: {
-            resumeMode = JSGenerator::ResumeMode::NormalMode;
-            break;
-        }
-        }
-
-        int32_t state = generator->state();
-        generator->setState(static_cast<int32_t>(JSGenerator::State::Executing));
-        JSValue next = generator->next();
-        JSValue thisValue = generator->thisValue();
-        JSValue frame = generator->frame();
-        JSValue value;
-        JSValue error;
-        {
-            auto catchScope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-            value = callMicrotask(globalObject, next, thisValue, generator, "handler is not a function"_s, microtaskCall,
-                generator, jsNumber(state), resolution, jsNumber(static_cast<int32_t>(resumeMode)), frame);
-            if (catchScope.exception()) {
-                error = catchScope.exception()->value();
-                if (!catchScope.clearExceptionExceptTermination()) [[unlikely]] {
-#if USE(BUN_JSC_ADDITIONS)
-                    // Restore async context before returning
-                    if (asyncContextData)
-                        asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
-                    scope.release();
-                    return;
-                }
-            }
-        }
-
-        if (error) {
-            auto* promise = uncheckedDowncast<JSPromise>(generator->context());
-#if USE(BUN_JSC_ADDITIONS)
-            if (asyncContextData)
-                asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
-            scope.release();
-            promise->reject(vm, globalObject, error);
-            return;
-        }
-
-        if (generator->state() == static_cast<int32_t>(JSGenerator::State::Executing)) {
-            auto* promise = uncheckedDowncast<JSPromise>(generator->context());
-#if USE(BUN_JSC_ADDITIONS)
-            if (asyncContextData)
-                asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
-            scope.release();
-            promise->resolve(globalObject, vm, value);
-            return;
-        }
+        auto* generator = uncheckedDowncast<JSAsyncFunctionGenerator>(contextArg);
+        JSGlobalObject* generatorGlobalObject = generator->realm();
+        JSGenerator::ResumeMode resumeMode = resumeModeForStatus(static_cast<JSPromise::Status>(payload));
 
         scope.release();
-        JSPromise::resolveWithInternalMicrotaskForAsyncAwait(globalObject, vm, value, InternalMicrotask::AsyncFunctionResume, generator);
-#if USE(BUN_JSC_ADDITIONS)
-        // Restore async context after capturing it for the next await iteration
-        if (asyncContextData)
-            asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#endif
+        asyncFunctionGeneratorBodyCall(generatorGlobalObject, vm, generator, resolution, resumeMode, microtaskCallCache);
         return;
     }
 
     case InternalMicrotask::AsyncFromSyncIteratorContinue:
     case InternalMicrotask::AsyncFromSyncIteratorDone: {
 #if USE(BUN_JSC_ADDITIONS)
-        // Extract context from InternalFieldTuple if wrapped
         JSValue contextArg = arguments[2];
-        if (auto* tuple = dynamicDowncast<InternalFieldTuple>(contextArg))
-            contextArg = tuple->getInternalField(0);
-        RELEASE_AND_RETURN(scope, asyncFromSyncIteratorContinueOrDone(globalObject, vm, contextArg, arguments[1], static_cast<JSPromise::Status>(payload), task == InternalMicrotask::AsyncFromSyncIteratorDone));
+        AsyncContextSwapScope::unwrapContextTuple(contextArg);
+        auto* promise = uncheckedDowncast<JSPromise>(asObject(contextArg)->getDirect(vm, vm.propertyNames->builtinNames().promisePrivateName()));
+        RELEASE_AND_RETURN(scope, asyncFromSyncIteratorContinueOrDone(promise->realm(), vm, promise, contextArg, arguments[1], static_cast<JSPromise::Status>(payload), task == InternalMicrotask::AsyncFromSyncIteratorDone, microtaskCallCache));
 #else
-        RELEASE_AND_RETURN(scope, asyncFromSyncIteratorContinueOrDone(globalObject, vm, arguments[2], arguments[1], static_cast<JSPromise::Status>(payload), task == InternalMicrotask::AsyncFromSyncIteratorDone));
+        auto* promise = uncheckedDowncast<JSPromise>(asObject(arguments[2])->getDirect(vm, vm.propertyNames->builtinNames().promisePrivateName()));
+        RELEASE_AND_RETURN(scope, asyncFromSyncIteratorContinueOrDone(promise->realm(), vm, promise, arguments[2], arguments[1], static_cast<JSPromise::Status>(payload), task == InternalMicrotask::AsyncFromSyncIteratorDone, microtaskCallCache));
 #endif
     }
 
     case InternalMicrotask::AsyncGeneratorYieldAwaited: {
-#if USE(BUN_JSC_ADDITIONS)
-        // Extract generator and async context from InternalFieldTuple if wrapped
         JSValue contextArg = arguments[2];
-        InternalFieldTuple* asyncContextData = nullptr;
-        JSValue restoreAsyncContext;
-        if (auto* tuple = dynamicDowncast<InternalFieldTuple>(contextArg)) {
-            contextArg = tuple->getInternalField(0);
-            JSValue asyncContext = tuple->getInternalField(1);
-            if (!asyncContext.isUndefined()) {
-                asyncContextData = globalObject->m_asyncContextData.get();
-                if (asyncContextData) {
-                    restoreAsyncContext = asyncContextData->getInternalField(0);
-                    asyncContextData->putInternalField(vm, 0, asyncContext);
-                }
-            }
-        }
-        scope.release();
-        asyncGeneratorYieldAwaited(globalObject, uncheckedDowncast<JSAsyncGenerator>(contextArg), arguments[1], static_cast<JSPromise::Status>(payload));
-        if (asyncContextData)
-            asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-        return;
-#else
-        RELEASE_AND_RETURN(scope, asyncGeneratorYieldAwaited(globalObject, uncheckedDowncast<JSAsyncGenerator>(arguments[2]), arguments[1], static_cast<JSPromise::Status>(payload)));
+#if USE(BUN_JSC_ADDITIONS)
+        AsyncContextSwapScope asyncContextScope(vm, globalObject, AsyncContextSwapScope::unwrapContextTuple(contextArg));
 #endif
+        auto* generator = uncheckedDowncast<JSAsyncGenerator>(contextArg);
+        scope.release();
+        asyncGeneratorYieldAwaited(generator->realm(), generator, arguments[1], static_cast<JSPromise::Status>(payload), microtaskCallCache);
+        return;
     }
 
     case InternalMicrotask::AsyncGeneratorBodyCallNormal: {
-#if USE(BUN_JSC_ADDITIONS)
-        // Extract generator and async context from InternalFieldTuple if wrapped
         JSValue contextArg = arguments[2];
-        InternalFieldTuple* asyncContextData = nullptr;
-        JSValue restoreAsyncContext;
-        if (auto* tuple = dynamicDowncast<InternalFieldTuple>(contextArg)) {
-            contextArg = tuple->getInternalField(0);
-            JSValue asyncContext = tuple->getInternalField(1);
-            if (!asyncContext.isUndefined()) {
-                asyncContextData = globalObject->m_asyncContextData.get();
-                if (asyncContextData) {
-                    restoreAsyncContext = asyncContextData->getInternalField(0);
-                    asyncContextData->putInternalField(vm, 0, asyncContext);
-                }
-            }
-        }
-        scope.release();
-        asyncGeneratorBodyCallNormal(globalObject, uncheckedDowncast<JSAsyncGenerator>(contextArg), arguments[1], static_cast<JSPromise::Status>(payload));
-        if (asyncContextData)
-            asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-        return;
-#else
-        RELEASE_AND_RETURN(scope, asyncGeneratorBodyCallNormal(globalObject, uncheckedDowncast<JSAsyncGenerator>(arguments[2]), arguments[1], static_cast<JSPromise::Status>(payload)));
+#if USE(BUN_JSC_ADDITIONS)
+        AsyncContextSwapScope asyncContextScope(vm, globalObject, AsyncContextSwapScope::unwrapContextTuple(contextArg));
 #endif
+        auto* generator = uncheckedDowncast<JSAsyncGenerator>(contextArg);
+        scope.release();
+        asyncGeneratorBodyCallNormal(generator->realm(), generator, arguments[1], static_cast<JSPromise::Status>(payload), microtaskCallCache);
+        return;
     }
 
     case InternalMicrotask::AsyncGeneratorBodyCallReturn: {
-#if USE(BUN_JSC_ADDITIONS)
-        // Extract generator and async context from InternalFieldTuple if wrapped
         JSValue contextArg = arguments[2];
-        InternalFieldTuple* asyncContextData = nullptr;
-        JSValue restoreAsyncContext;
-        if (auto* tuple = dynamicDowncast<InternalFieldTuple>(contextArg)) {
-            contextArg = tuple->getInternalField(0);
-            JSValue asyncContext = tuple->getInternalField(1);
-            if (!asyncContext.isUndefined()) {
-                asyncContextData = globalObject->m_asyncContextData.get();
-                if (asyncContextData) {
-                    restoreAsyncContext = asyncContextData->getInternalField(0);
-                    asyncContextData->putInternalField(vm, 0, asyncContext);
-                }
-            }
-        }
-        scope.release();
-        asyncGeneratorBodyCallReturn(globalObject, uncheckedDowncast<JSAsyncGenerator>(contextArg), arguments[1], static_cast<JSPromise::Status>(payload));
-        if (asyncContextData)
-            asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-        return;
-#else
-        RELEASE_AND_RETURN(scope, asyncGeneratorBodyCallReturn(globalObject, uncheckedDowncast<JSAsyncGenerator>(arguments[2]), arguments[1], static_cast<JSPromise::Status>(payload)));
+#if USE(BUN_JSC_ADDITIONS)
+        AsyncContextSwapScope asyncContextScope(vm, globalObject, AsyncContextSwapScope::unwrapContextTuple(contextArg));
 #endif
+        auto* generator = uncheckedDowncast<JSAsyncGenerator>(contextArg);
+        scope.release();
+        asyncGeneratorBodyCallReturn(generator->realm(), generator, arguments[1], static_cast<JSPromise::Status>(payload), microtaskCallCache);
+        return;
     }
 
-    case InternalMicrotask::AsyncGeneratorResumeNext: {
-#if USE(BUN_JSC_ADDITIONS)
-        // Extract generator and async context from InternalFieldTuple if wrapped
+    case InternalMicrotask::AsyncGeneratorAwaitReturn: {
         JSValue contextArg = arguments[2];
-        InternalFieldTuple* asyncContextData = nullptr;
-        JSValue restoreAsyncContext;
-        if (auto* tuple = dynamicDowncast<InternalFieldTuple>(contextArg)) {
-            contextArg = tuple->getInternalField(0);
-            JSValue asyncContext = tuple->getInternalField(1);
-            if (!asyncContext.isUndefined()) {
-                asyncContextData = globalObject->m_asyncContextData.get();
-                if (asyncContextData) {
-                    restoreAsyncContext = asyncContextData->getInternalField(0);
-                    asyncContextData->putInternalField(vm, 0, asyncContext);
-                }
-            }
-        }
-        scope.release();
-        asyncGeneratorResumeNextReturn(globalObject, uncheckedDowncast<JSAsyncGenerator>(contextArg), arguments[1], static_cast<JSPromise::Status>(payload));
-        if (asyncContextData)
-            asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-        return;
-#else
-        RELEASE_AND_RETURN(scope, asyncGeneratorResumeNextReturn(globalObject, uncheckedDowncast<JSAsyncGenerator>(arguments[2]), arguments[1], static_cast<JSPromise::Status>(payload)));
+#if USE(BUN_JSC_ADDITIONS)
+        AsyncContextSwapScope asyncContextScope(vm, globalObject, AsyncContextSwapScope::unwrapContextTuple(contextArg));
 #endif
+        auto* generator = uncheckedDowncast<JSAsyncGenerator>(contextArg);
+        scope.release();
+        asyncGeneratorAwaitReturnContinuation(generator->realm(), generator, arguments[1], static_cast<JSPromise::Status>(payload));
+        return;
+    }
+
+    case InternalMicrotask::AsyncGeneratorDriverResume: {
+        JSValue contextArg = arguments[2];
+#if USE(BUN_JSC_ADDITIONS)
+        AsyncContextSwapScope asyncContextScope(vm, globalObject, AsyncContextSwapScope::unwrapContextTuple(contextArg));
+#endif
+        scope.release();
+        asyncGeneratorDriverResume(vm, contextArg, arguments[1], static_cast<JSPromise::Status>(payload), microtaskCallCache);
+        return;
     }
 
     case InternalMicrotask::PromiseFinallyReactionJob: {
         // Phase 1: Original promise settled
         // arguments[0] = resultPromise
         // arguments[1] = value/reason from original promise
-        // arguments[2] = context (JSPromiseCombinatorsGlobalContext: promise=resultPromise, values=onFinally)
+        // arguments[2] = context (JSSlimPromiseReaction: promise=resultPromise, handlerOrContext=onFinally)
         //                OR InternalFieldTuple: [context, asyncContext] when Bun async context is present
         // payload = Fulfilled/Rejected status
-#if USE(BUN_JSC_ADDITIONS)
-        // Extract context and async context from InternalFieldTuple if wrapped
         JSValue contextArg = arguments[2];
-        JSPromiseCombinatorsGlobalContext* context;
-        JSValue asyncContext = jsUndefined();
-
-        if (contextArg.isCell()) {
-            if (auto* tuple = dynamicDowncast<InternalFieldTuple>(contextArg)) {
-                context = uncheckedDowncast<JSPromiseCombinatorsGlobalContext>(tuple->getInternalField(0));
-                asyncContext = tuple->getInternalField(1);
-            } else {
-                context = uncheckedDowncast<JSPromiseCombinatorsGlobalContext>(contextArg);
-            }
-        } else {
-            context = uncheckedDowncast<JSPromiseCombinatorsGlobalContext>(contextArg);
-        }
-
-        // Set up async context before calling onFinally
-        InternalFieldTuple* asyncContextData = nullptr;
-        JSValue restoreAsyncContext;
-        if (!asyncContext.isUndefined()) {
-            asyncContextData = globalObject->m_asyncContextData.get();
-            if (asyncContextData) {
-                restoreAsyncContext = asyncContextData->getInternalField(0);
-                asyncContextData->putInternalField(vm, 0, asyncContext);
-            }
-        }
-
-        scope.release();
-        promiseFinallyReactionJob(globalObject, vm,
-            uncheckedDowncast<JSPromise>(arguments[0]),
-            arguments[1],
-            context,
-            static_cast<JSPromise::Status>(payload));
-
-        // Restore async context
-        if (asyncContextData)
-            asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-#else
-        scope.release();
-        promiseFinallyReactionJob(globalObject, vm,
-            uncheckedDowncast<JSPromise>(arguments[0]),
-            arguments[1],
-            uncheckedDowncast<JSPromiseCombinatorsGlobalContext>(arguments[2]),
-            static_cast<JSPromise::Status>(payload));
+#if USE(BUN_JSC_ADDITIONS)
+        AsyncContextSwapScope asyncContextScope(vm, globalObject, AsyncContextSwapScope::unwrapContextTuple(contextArg));
 #endif
+        auto* resultPromise = uncheckedDowncast<JSPromise>(arguments[0]);
+        scope.release();
+        promiseFinallyReactionJob(resultPromise->realm(), vm,
+            resultPromise,
+            arguments[1],
+            uncheckedDowncast<JSSlimPromiseReaction>(contextArg),
+            static_cast<JSPromise::Status>(payload),
+            microtaskCallCache);
         return;
     }
 
@@ -2009,12 +2031,14 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
         // Phase 2: onFinally's result settled
         // arguments[0] = unused (we get resultPromise from context)
         // arguments[1] = settled value from onFinally's result
-        // arguments[2] = context (JSPromiseCombinatorsGlobalContext: promise=resultPromise, values=originalValue, remainingElementsCount=wasFulfilled)
+        // arguments[2] = context (JSSlimPromiseReaction: promise=resultPromise, handlerOrContext=originalValue, perCellBit=wasFulfilled)
         // payload = status of onFinally's result
+        auto* context = uncheckedDowncast<JSSlimPromiseReaction>(arguments[2]);
+        auto* resultPromise = uncheckedDowncast<JSPromise>(context->promise());
         scope.release();
-        promiseFinallyAwaitJob(globalObject, vm,
+        promiseFinallyAwaitJob(resultPromise->realm(), vm,
             arguments[1],
-            uncheckedDowncast<JSPromiseCombinatorsGlobalContext>(arguments[2]),
+            context,
             static_cast<JSPromise::Status>(payload));
         return;
     }
@@ -2034,17 +2058,7 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
         if (callData.type == CallData::Type::None)
             return;
 
-        // Save and set async context
-        InternalFieldTuple* asyncContextData = nullptr;
-        JSValue restoreAsyncContext;
-        JSValue asyncContext = arguments[1];
-        if (!asyncContext.isEmpty() && !asyncContext.isUndefined()) {
-            asyncContextData = globalObject->m_asyncContextData.get();
-            if (asyncContextData) {
-                restoreAsyncContext = asyncContextData->getInternalField(0);
-                asyncContextData->putInternalField(vm, 0, asyncContext);
-            }
-        }
+        AsyncContextSwapScope asyncContextScope(vm, globalObject, arguments[1]);
 
         {
             auto catchScope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
@@ -2052,15 +2066,14 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
             // Call job with extra arguments using optimized callMicrotask path
             auto* jobCell = dynamicCastToCell(job);
             if (!arguments[3].isEmpty())
-                callMicrotask(globalObject, job, jsUndefined(), jobCell, "performMicrotask is not a function"_s, microtaskCall, arguments[2], arguments[3]);
+                callMicrotask(globalObject, job, jsUndefined(), jobCell, "performMicrotask is not a function"_s, microtaskCallCache, arguments[2], arguments[3]);
             else if (!arguments[2].isEmpty())
-                callMicrotask(globalObject, job, jsUndefined(), jobCell, "performMicrotask is not a function"_s, microtaskCall, arguments[2]);
+                callMicrotask(globalObject, job, jsUndefined(), jobCell, "performMicrotask is not a function"_s, microtaskCallCache, arguments[2]);
             else
-                callMicrotask(globalObject, job, jsUndefined(), jobCell, "performMicrotask is not a function"_s, microtaskCall);
+                callMicrotask(globalObject, job, jsUndefined(), jobCell, "performMicrotask is not a function"_s, microtaskCallCache);
 
             // Restore async context before error reporting
-            if (asyncContextData)
-                asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
+            asyncContextScope.restoreEarly();
 
             if (auto* exception = catchScope.exception()) {
                 catchScope.clearException();
@@ -2090,12 +2103,21 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
 #endif
 
     case InternalMicrotask::AsyncModuleExecutionDone: {
-        asyncModuleExecutionDone(globalObject, scope, arguments, payload);
+        auto* module = uncheckedDowncast<JSModuleRecord>(arguments[2]);
+        asyncModuleExecutionDone(module->realm(), scope, module, arguments[1], static_cast<JSPromise::Status>(payload));
         return;
     }
 
     case InternalMicrotask::AsyncModuleExecutionResume: {
-        asyncModuleExecutionResume(globalObject, vm, scope, arguments, payload);
+        // resolveWithInternalMicrotaskForAsyncAwait wraps the module together
+        // with Bun's async context in an InternalFieldTuple when an async
+        // context is active at await time.
+        JSValue contextArg = arguments[2];
+#if USE(BUN_JSC_ADDITIONS)
+        AsyncContextSwapScope asyncContextScope(vm, globalObject, AsyncContextSwapScope::unwrapContextTuple(contextArg));
+#endif
+        auto* module = uncheckedDowncast<JSModuleRecord>(contextArg);
+        asyncModuleExecutionResume(module->realm(), vm, scope, module, arguments[1], static_cast<JSPromise::Status>(payload));
         return;
     }
 
@@ -2163,9 +2185,9 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
         scope.release();
         if (status == JSPromise::Status::Fulfilled) {
             auto* module = downcast<AbstractModuleRecord>(arguments[1]);
-            resultPromise->fulfillPromise(vm, globalObject, identifierToJSValue(vm, module->moduleKey()));
+            resultPromise->fulfillPromise(vm, identifierToJSValue(vm, module->moduleKey()));
         } else
-            resultPromise->rejectPromise(vm, globalObject, arguments[1]);
+            resultPromise->rejectPromise(vm, arguments[1]);
         return;
     }
 
@@ -2175,7 +2197,12 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
     }
 
     case InternalMicrotask::DynamicImportLoadSettled: {
-        dynamicImportLoadSettled(globalObject, vm, scope, arguments, payload);
+        dynamicImportLoadSettled(globalObject, vm, scope, arguments, payload, /* deferred */ false);
+        return;
+    }
+
+    case InternalMicrotask::DynamicImportDeferLoadSettled: {
+        dynamicImportLoadSettled(globalObject, vm, scope, arguments, payload, /* deferred */ true);
         return;
     }
 
@@ -2184,10 +2211,27 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
         return;
     }
 
+    case InternalMicrotask::DynamicImportDeferDependencySettled: {
+        dynamicImportDeferDependencySettled(globalObject, vm, scope, arguments, payload);
+        return;
+    }
+
     case InternalMicrotask::ImportModuleNamespace: {
         importModuleNamespace(globalObject, vm, scope, arguments, payload);
         return;
     }
+
+#if ENABLE(WEBASSEMBLY)
+    case InternalMicrotask::WebAssemblyCompileStreaming:
+        scope.release();
+        webAssemblyCompileStreaming(globalObject, vm, arguments[1], uncheckedDowncast<JSWebAssemblyStreamingContext>(arguments[2].asCell()), static_cast<JSPromise::Status>(payload));
+        return;
+
+    case InternalMicrotask::WebAssemblyInstantiateStreaming:
+        scope.release();
+        webAssemblyInstantiateStreaming(globalObject, vm, arguments[1], uncheckedDowncast<JSWebAssemblyStreamingContext>(arguments[2].asCell()), static_cast<JSPromise::Status>(payload));
+        return;
+#endif
 
     case InternalMicrotask::Opaque: {
         RELEASE_ASSERT_NOT_REACHED();

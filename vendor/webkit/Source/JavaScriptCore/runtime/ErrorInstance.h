@@ -56,19 +56,8 @@ public:
 
     inline static Structure* createStructure(VM&, JSGlobalObject*, JSValue);
 
-    static ErrorInstance* create(VM& vm, Structure* structure, const String& message, JSValue cause, SourceAppender appender = nullptr, RuntimeType type = TypeNothing, ErrorType errorType = ErrorType::Error, bool useCurrentFrame = true, JSCell* subclassCaller = nullptr)
-    {
-        ErrorInstance* instance = new (NotNull, allocateCell<ErrorInstance>(vm)) ErrorInstance(vm, structure, errorType);
-        instance->finishCreation(vm, message, cause, appender, type, useCurrentFrame, subclassCaller);
-        return instance;
-    }
-
-    static ErrorInstance* create(VM& vm, Structure* structure, const String& message, JSValue cause, ErrorType errorType, JSCell* owner, CallLinkInfo* callLinkInfo)
-    {
-        ErrorInstance* instance = new (NotNull, allocateCell<ErrorInstance>(vm)) ErrorInstance(vm, structure, errorType);
-        instance->finishCreation(vm, message, cause, owner, callLinkInfo);
-        return instance;
-    }
+    static ErrorInstance* create(VM&, Structure*, const String& message, JSValue cause, SourceAppender = nullptr, RuntimeType = TypeNothing, ErrorType = ErrorType::Error, bool useCurrentFrame = true, JSCell* subclassCaller = nullptr);
+    static ErrorInstance* create(VM&, Structure*, const String& message, JSValue cause, ErrorType, JSCell* owner, CallLinkInfo*);
 
     JS_EXPORT_PRIVATE static ErrorInstance* create(JSGlobalObject*, String&& message, ErrorType, LineColumn, String&& sourceURL, String&& stackString, String&& cause = { });
     static ErrorInstance* create(JSGlobalObject*, Structure*, JSValue message, JSValue options, SourceAppender = nullptr, RuntimeType = TypeNothing, ErrorType = ErrorType::Error, bool useCurrentFrame = true, JSCell* subclassCaller = nullptr);
@@ -106,6 +95,9 @@ public:
 
     void setNativeGetterTypeError() { m_nativeGetterTypeError = true; }
     bool isNativeGetterTypeError() const { return m_nativeGetterTypeError; }
+
+    void setParseError() { m_parseError = true; }
+    bool isParseError() const { return m_parseError; }
 
 #if ENABLE(WEBASSEMBLY)
     void setCatchableFromWasm(bool flag) { m_catchableFromWasm = flag; }
@@ -176,6 +168,7 @@ protected:
     bool m_errorInfoMaterialized : 1;
     bool m_stackPropertyAlreadyMaterialized : 1;
     bool m_nativeGetterTypeError : 1;
+    bool m_parseError : 1;
 #if ENABLE(WEBASSEMBLY)
     bool m_catchableFromWasm : 1;
 #endif

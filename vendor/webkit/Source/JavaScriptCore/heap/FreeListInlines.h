@@ -60,7 +60,10 @@ void FreeList::forEach(const Func& func) const
     FreeCell* cell = nextInterval();
     char* intervalStart = m_intervalStart;
     char* intervalEnd = m_intervalEnd;
-    ASSERT(intervalEnd - intervalStart < (ptrdiff_t)(16 * KB));
+    // An interval never spans more than one MarkedBlock payload. blockSize is
+    // 16 KB on most platforms, but 64 KB where CeilingOnPageSize is 64 KB
+    // (e.g. Linux ARM64) — a hardcoded 16 KB bound fires spuriously there.
+    ASSERT(intervalEnd - intervalStart < (ptrdiff_t)MarkedBlock::blockSize);
 
     while (true) {
         for (; intervalStart < intervalEnd; intervalStart += m_cellSize)

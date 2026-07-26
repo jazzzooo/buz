@@ -2,7 +2,7 @@
     "domain": "Network",
     "description": "Network domain allows tracking network activities of the page. It exposes information about http, file, data and other requests and responses, their headers, bodies, timing, etc.",
     "debuggableTypes": ["itml", "service-worker", "web-page"],
-    "targetTypes": ["itml", "page", "service-worker"],
+    "targetTypes": ["itml", "page", "service-worker", "web-page"],
     "types": [
         {
             "id": "LoaderId",
@@ -195,7 +195,7 @@
         {
             "name": "setExtraHTTPHeaders",
             "description": "Specifies whether to always send extra HTTP headers with the requests from this page.",
-            "targetTypes": ["page"],
+            "targetTypes": ["page", "web-page"],
             "parameters": [
                 { "name": "headers", "$ref": "Headers", "description": "Map with extra HTTP headers." }
             ]
@@ -203,6 +203,7 @@
         {
             "name": "getResponseBody",
             "description": "Returns content served for the given request.",
+            "async": true,
             "parameters": [
                 { "name": "requestId", "$ref": "RequestId", "description": "Identifier of the network request to get content for." }
             ],
@@ -355,7 +356,7 @@
         {
             "name": "setEmulatedConditions",
             "description": "Emulate various network conditions (e.g. bytes per second, latency, etc.).",
-            "targetTypes": ["page"],
+            "targetTypes": ["page", "web-page"],
             "condition": "defined(ENABLE_INSPECTOR_NETWORK_THROTTLING) && ENABLE_INSPECTOR_NETWORK_THROTTLING",
             "parameters": [
                 { "name": "bytesPerSecondLimit", "type": "integer", "optional": true, "description": "Limits the bytes per second of requests if positive. Removes any limits if zero or not provided." }

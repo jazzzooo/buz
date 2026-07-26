@@ -23,6 +23,8 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#pragma once
+
 #if defined(HAVE_CONFIG_H) && HAVE_CONFIG_H && defined(BUILDING_WITH_CMAKE)
 #include "cmakeconfig.h"
 #endif
@@ -59,6 +61,40 @@
 #endif
 
 #ifdef __cplusplus
+#include "B3ValueRep.h"
+#include "ButterflyInlinesLight.h"
+#include "Bytecodes.h"
+#include "CacheableIdentifierInlines.h"
+#include "CodeBlock.h"
+#include "GCSegmentedArrayInlines.h"
+#include "GenericArgumentsImplInlines.h"
+#include "Heap.h"
+#include "IsoCellSetInlines.h"
+#include "JSArray.h"
+#include "JSArrayBufferView.h"
+#include "JSCJSValue.h"
+#include "JSCJSValueInlines.h"
+#include "JSCJSValuePropertyInlines.h"
+#include "JSDataView.h"
+#include "JSGlobalObject.h"
+#include "JSLexicalEnvironment.h"
+#include "JSObject.h"
+#include "JSObjectInlines.h"
+#include "JSObjectRef.h"
+#include "JSString.h"
+#include "JSStringInlines.h"
+#include "MarkedBlockInlines.h"
+#include "Operations.h"
+#include "OperationsInlines.h"
+#include "OperandsInlines.h"
+#include "OptionsList.h"
+#include "Strong.h"
+#include "Structure.h"
+#include "StructureChain.h"
+#include "StructureInlinesLight.h"
+#include "UnlinkedMetadataTableInlines.h"
+#include "VM.h"
+#include "WeakGCMapInlines.h"
 #include <chrono>
 #include <functional>
 #include <list>
@@ -66,14 +102,40 @@
 #include <mutex>
 #include <string>
 #include <typeinfo>
+#include <wtf/HashMap.h>
+#include <wtf/HashSet.h>
+#include <wtf/MediaTime.h>
+#include <wtf/RefCountedFixedVector.h>
+#include <wtf/SIMDHelpers.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/TZoneMallocInlines.h>
+#include <wtf/ValidatedReinterpretCast.h>
 #include <wtf/Variant.h>
+#include <wtf/Vector.h>
+#include <wtf/text/WTFString.h>
+
+#if ENABLE(ASSEMBLER)
+#include "GPRInfo.h"
+#include "LinkBuffer.h"
+#include "MacroAssembler.h"
+#endif
+
+#if ENABLE(JIT)
+#include "AssemblyHelpers.h"
+#include "CCallHelpers.h"
+#include "JITOperations.h"
+#endif
+
+#if ENABLE(WEBASSEMBLY)
+#include "WasmCallee.h"
+#include "WasmCallingConvention.h"
+#include "WebAssemblyFunction.h"
+#endif
 #endif
 
 #ifdef __cplusplus
-#define new ("if you use new/delete make sure to include config.h at the top of the file"()) 
-#define delete ("if you use new/delete make sure to include config.h at the top of the file"()) 
+#define new ("if you use new/delete make sure to include config.h at the top of the file"())
+#define delete ("if you use new/delete make sure to include config.h at the top of the file"())
 #endif
 
 /* When C++ exceptions are disabled, the C++ library defines |try| and |catch|

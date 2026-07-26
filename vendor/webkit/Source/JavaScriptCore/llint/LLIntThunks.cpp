@@ -28,9 +28,11 @@
 
 #include "Gate.h"
 #include "InPlaceInterpreter.h"
+#include "JITOperations.h"
 #include "JSCConfig.h"
 #include "JSCJSValueInlines.h"
 #include "JSInterfaceJIT.h"
+#include "JSWebAssemblyInstance.h"
 #include "LLIntCLoop.h"
 #include "LLIntData.h"
 #include "LinkBuffer.h"
@@ -701,6 +703,43 @@ MacroAssemblerCodeRef<NativeToJITGatePtrTag> untagGateThunk(void* pointer)
 #endif // CPU(ARM64E)
 
 #if ENABLE(JIT_CAGE)
+#if ENABLE(WEBASSEMBLY)
+MacroAssemblerCodeRef<NativeToJITGatePtrTag> wasmRestoreFrameGateThunk()
+{
+    static LazyNeverDestroyed<MacroAssemblerCodeRef<NativeToJITGatePtrTag>> codeRef;
+    static std::once_flag onceKey;
+    std::call_once(onceKey, [&] {
+        CCallHelpers jit;
+
+        JIT_COMMENT(jit, "wasmRestoreFrame gate: restore instance and memory");
+        jit.loadPtr(CCallHelpers::Address(GPRInfo::callFrameRegister, CallFrameSlot::codeBlock * sizeof(Register)), GPRInfo::wasmContextInstancePointer);
+        jit.loadPairPtr(GPRInfo::wasmContextInstancePointer, CCallHelpers::TrustedImm32(JSWebAssemblyInstance::offsetOfCachedMemoryBaseSizePair(0)), GPRInfo::wasmBaseMemoryPointer, GPRInfo::wasmBoundsCheckingSizeRegister);
+        jit.cageConditionally(Gigacage::Primitive, GPRInfo::wasmBaseMemoryPointer, GPRInfo::wasmBoundsCheckingSizeRegister, Wasm::wasmCallingConvention().prologueScratchGPRs[0]);
+
+        JIT_COMMENT(jit, "wasmRestoreFrame gate: untag return PC, load caller frame, retag, return");
+#if CPU(ARM64E)
+        jit.loadPtr(CCallHelpers::Address(GPRInfo::callFrameRegister, CallFrame::returnPCOffset()), ARM64Registers::lr);
+        jit.addPtr(CCallHelpers::TrustedImm32(sizeof(CallerFrameAndPC)), GPRInfo::callFrameRegister, jit.scratchRegister());
+        jit.untagPtr(jit.scratchRegister(), ARM64Registers::lr);
+        jit.validateUntaggedPtr(ARM64Registers::lr, jit.scratchRegister());
+        jit.loadPtr(CCallHelpers::Address(GPRInfo::callFrameRegister), GPRInfo::callFrameRegister);
+        jit.tagPtr(MacroAssembler::stackPointerRegister, ARM64Registers::lr);
+        jit.ret();
+#elif CPU(ARM64)
+        jit.loadPairPtr(GPRInfo::callFrameRegister, GPRInfo::callFrameRegister, ARM64Registers::lr);
+        jit.ret();
+#elif CPU(X86_64)
+        jit.loadPtr(CCallHelpers::Address(GPRInfo::callFrameRegister, CallFrame::returnPCOffset()), GPRInfo::nonPreservedNonArgumentGPR0);
+        jit.loadPtr(CCallHelpers::Address(GPRInfo::callFrameRegister), GPRInfo::callFrameRegister);
+        jit.farJump(GPRInfo::nonPreservedNonArgumentGPR0, NoPtrTag);
+#endif
+
+        LinkBuffer patchBuffer(jit, GLOBAL_THUNK_ID, LinkBuffer::Profile::LLIntThunk);
+        codeRef.construct(FINALIZE_CODE(patchBuffer, NativeToJITGatePtrTag, "wasmRestoreFrame"_s, "wasmRestoreFrame thunk"));
+    });
+    return codeRef;
+}
+#endif // ENABLE(WEBASSEMBLY)
 
 MacroAssemblerCodeRef<NativeToJITGatePtrTag> jitCagePtrThunk()
 {
@@ -745,6 +784,16 @@ MacroAssemblerCodeRef<JSEntryPtrTag> checkpointOSRExitFromInlinedCallTrampolineT
     static std::once_flag onceKey;
     std::call_once(onceKey, [&] {
         codeRef.construct(generateThunkWithJumpToLLIntReturnPoint<JSEntryPtrTag>(checkpoint_osr_exit_from_inlined_call_trampoline, "checkpoint_osr_exit_from_inlined_call_trampoline thunk"));
+    });
+    return codeRef;
+}
+
+MacroAssemblerCodeRef<JSEntryPtrTag> arraySortComparatorReturnTrampolineThunk()
+{
+    static LazyNeverDestroyed<MacroAssemblerCodeRef<JSEntryPtrTag>> codeRef;
+    static std::once_flag onceKey;
+    std::call_once(onceKey, [&] {
+        codeRef.construct(generateThunkWithJumpToLLIntReturnPoint<JSEntryPtrTag>(array_sort_comparator_return_trampoline, "array_sort_comparator_return_trampoline thunk"));
     });
     return codeRef;
 }

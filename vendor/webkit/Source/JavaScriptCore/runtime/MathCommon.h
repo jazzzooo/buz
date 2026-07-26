@@ -31,7 +31,6 @@
 #include <climits>
 #include <cmath>
 #include <optional>
-#include <wtf/MathExtras.h>
 
 namespace JSC {
 

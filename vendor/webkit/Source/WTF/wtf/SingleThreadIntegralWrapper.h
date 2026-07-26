@@ -25,7 +25,10 @@
 
 #pragma once
 
-#include <wtf/Threading.h>
+#include <wtf/Assertions.h>
+#if ASSERT_ENABLED && !USE(WEB_THREAD)
+#include <wtf/CurrentThread.h>
+#endif
 
 namespace WTF {
 
@@ -51,14 +54,14 @@ public:
 
 private:
 #if ASSERT_ENABLED && !USE(WEB_THREAD)
-    void assertThread() const { ASSERT(m_thread.ptr() == &Thread::currentSingleton()); }
+    void assertThread() const { ASSERT(m_creationThread == currentThreadID()); }
 #else
     constexpr void assertThread() const { }
 #endif
 
     IntegralType m_value;
 #if ASSERT_ENABLED && !USE(WEB_THREAD)
-    const Ref<Thread> m_thread;
+    uint32_t m_creationThread;
 #endif
 };
 
@@ -66,7 +69,7 @@ template <typename IntegralType>
 inline SingleThreadIntegralWrapper<IntegralType>::SingleThreadIntegralWrapper(IntegralType value)
     : m_value { value }
 #if ASSERT_ENABLED && !USE(WEB_THREAD)
-    , m_thread { Thread::currentSingleton() }
+    , m_creationThread { currentThreadID() }
 #endif
 { }
 

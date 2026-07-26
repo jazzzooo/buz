@@ -36,7 +36,6 @@
 #include "StackVisitor.h"
 #include "VMEntryRecord.h"
 #include "VMManager.h"
-#include <mutex>
 #include <wtf/Expected.h>
 #include <wtf/TZoneMallocInlines.h>
 

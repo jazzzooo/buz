@@ -158,7 +158,7 @@ void StringBuilder::append(std::span<const char16_t> characters)
         return;
     }
     RELEASE_ASSERT(characters.size() < std::numeric_limits<uint32_t>::max());
-    if (auto destination = extendBufferForAppendingWithUpconvert(saturatedSum<uint32_t>(m_length, static_cast<uint32_t>(characters.size()))); destination.data())
+    if (auto destination = extendBufferForAppendingWithUpconvert(saturatingSum<uint32_t>(m_length, static_cast<uint32_t>(characters.size()))); destination.data())
         StringImpl::copyCharacters(destination, characters);
 }
 
@@ -168,10 +168,10 @@ void StringBuilder::append(std::span<const Latin1Character> characters)
         return;
     RELEASE_ASSERT(characters.size() < std::numeric_limits<uint32_t>::max());
     if (is8Bit()) {
-        if (auto destination = extendBufferForAppending<Latin1Character>(saturatedSum<uint32_t>(m_length, static_cast<uint32_t>(characters.size()))); destination.data())
+        if (auto destination = extendBufferForAppending<Latin1Character>(saturatingSum<uint32_t>(m_length, static_cast<uint32_t>(characters.size()))); destination.data())
             StringImpl::copyCharacters(destination, characters);
     } else {
-        if (auto destination = extendBufferForAppending<char16_t>(saturatedSum<uint32_t>(m_length, static_cast<uint32_t>(characters.size()))); destination.data())
+        if (auto destination = extendBufferForAppending<char16_t>(saturatingSum<uint32_t>(m_length, static_cast<uint32_t>(characters.size()))); destination.data())
             StringImpl::copyCharacters(destination, characters);
     }
 }

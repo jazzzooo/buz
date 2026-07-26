@@ -25,7 +25,7 @@
 
 #include "config.h"
 #include "DFGAtTailAbstractState.h"
-#include "DFGBlockMapInlines.h"
+#include <wtf/IndexMap.h>
 
 #if ENABLE(DFG_JIT)
 
@@ -35,8 +35,8 @@ namespace JSC { namespace DFG {
 
 AtTailAbstractState::AtTailAbstractState(Graph& graph)
     : m_graph(graph)
-    , m_valuesAtTailMap(m_graph)
-    , m_tupleAbstractValues(m_graph)
+    , m_valuesAtTailMap(m_graph.numBlocks())
+    , m_tupleAbstractValues(m_graph.numBlocks())
 {
     for (BasicBlock* block : graph.blocksInNaturalOrder()) {
         auto& valuesAtTail = m_valuesAtTailMap.at(block);
@@ -54,9 +54,8 @@ void AtTailAbstractState::createValueForNode(NodeFlowProjection node)
     m_valuesAtTailMap.at(m_block).add(node, AbstractValue());
 }
 
-AbstractValue& AtTailAbstractState::forNode(NodeFlowProjection node)
+AbstractValue& AtTailAbstractState::forNodeImpl(NodeFlowProjection node)
 {
-    ASSERT(!node->isTuple());
     auto& valuesAtTail = m_valuesAtTailMap.at(m_block);
     UncheckedKeyHashMap<NodeFlowProjection, AbstractValue>::iterator iter = valuesAtTail.find(node);
     DFG_ASSERT(m_graph, node.node(), iter != valuesAtTail.end());

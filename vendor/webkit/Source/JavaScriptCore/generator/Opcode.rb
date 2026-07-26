@@ -182,6 +182,13 @@ EOF
         ["enum Tmps : uint8_t {"].concat(@tmps.map {|(tmp, type)| "        #{tmp},"}).push("    };").join("\n")
     end
 
+    def emitImpl
+        operand_args = (@args || []).map(&:name)
+        operand_args << @metadata.emitter_local.name unless @metadata.empty?
+        all_args = ["opcodeID"] + operand_args
+        "            gen->template writeOpcode<__size>(#{all_args.join(", ")});"
+    end
+
     def emitter
         op_wide16 = Argument.new(wide16, opcodeIDType, 0)
         op_wide32 = Argument.new(wide32, opcodeIDType, 0)
@@ -253,12 +260,7 @@ private:
         if (checkImpl<__size>(gen#{untyped_args}#{metadata_arg})) {
             if (recordOpcode)
                 gen->recordOpcode(opcodeID);
-            if (__size == OpcodeSize::Wide16)
-                #{op_wide16.fits_write Size::Narrow}
-            else if (__size == OpcodeSize::Wide32)
-                #{op_wide32.fits_write Size::Narrow}
-            #{Argument.new("opcodeID", opcodeIDType, 0).fits_write "OpcodeIDWidthBySize<#{type_prefix}OpcodeTraits, __size>::opcodeIDSize"}
-#{map_operands_with_size("            ", "__size", &:fits_write).join "\n"}
+#{emitImpl}
             return true;
         }
         return false;

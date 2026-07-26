@@ -31,6 +31,7 @@
 #include "ConservativeRoots.h"
 #include "EvacuatedStack.h"
 #include "Exception.h"
+#include "ExceptionHelpers.h"
 #include "JSCellInlines.h"
 #include "JSPIContextInlines.h"
 #include "JSPromise.h"
@@ -116,9 +117,9 @@ extern "C" {
 
 static JSFunctionWithFields* createHandler(VM& vm, JSGlobalObject* globalObject, PinballCompletion* pinballCompletion, NativeFunction function, const String name)
 {
-    NativeExecutable* executable = vm.getHostFunction(function, ImplementationVisibility::Private, NoIntrinsic, callHostFunctionAsConstructor, nullptr, name);
     constexpr unsigned length = 1;
-    JSFunctionWithFields* handler = JSFunctionWithFields::create(vm, globalObject, executable, length, name);
+    NativeExecutable* executable = vm.getHostFunction(function, ImplementationVisibility::Private, NoIntrinsic, callHostFunctionAsConstructor, nullptr, length, name);
+    JSFunctionWithFields* handler = JSFunctionWithFields::create(vm, globalObject, executable);
     handler->setField(vm, JSFunctionWithFields::Field::PromiseHandlerPinballCompletion, pinballCompletion);
     return handler;
 }
@@ -147,6 +148,7 @@ extern "C" void SYSV_ABI pinballHandlerInitContextForReject(JSGlobalObject*, Cal
 extern "C" void SYSV_ABI pinballHandlerImplantSlice(PinballHandlerContext*, Register*, CallFrame*, CallerFrameAndPC*);
 extern "C" UCPURegister SYSV_ABI pinballHandlerFulfillFunctionContinue(PinballHandlerContext*);
 extern "C" void SYSV_ABI pinballHandlerFinishReject(PinballHandlerContext*);
+extern "C" void SYSV_ABI pinballHandlerRejectWithStackOverflow(PinballHandlerContext*);
 
 void pinballHandlerInitContextForFulfill(JSGlobalObject* globalObject, CallFrame* callFrame, PinballHandlerContext* context)
 {
@@ -214,7 +216,7 @@ UCPURegister pinballHandlerFulfillFunctionContinue(PinballHandlerContext* contex
         JSValue arg = JSValue::decode(context->arguments[0]);
         resultPromise->resolve(context->globalObject, vm, arg);
     } else {
-        resultPromise->reject(vm, context->globalObject, scope.exception());
+        resultPromise->reject(vm, scope.exception());
         scope.clearException();
     }
 
@@ -253,11 +255,26 @@ void pinballHandlerFinishReject(PinballHandlerContext* context)
         JSValue arg = JSValue::decode(context->arguments[0]);
         resultPromise->resolve(context->globalObject, vm, arg);
     } else {
-        resultPromise->reject(vm, context->globalObject, scope.exception());
+        resultPromise->reject(vm, scope.exception());
         scope.clearException();
     }
 
     context->arguments[0] = JSValue::encode(jsNull());
+    context->~PinballHandlerContext();
+}
+
+void pinballHandlerRejectWithStackOverflow(PinballHandlerContext* context)
+{
+    ASSERT(context->magic == PinballHandlerContext::expectedMagic);
+
+    VM& vm = *context->vm;
+    JSPIContext& jspiContext = context->jspiContext;
+    PinballCompletion* pinball = context->pinball;
+    JSPromise* resultPromise = pinball->resultPromise();
+
+    resultPromise->reject(vm, createStackOverflowError(context->globalObject));
+
+    jspiContext.deactivate(vm);
     context->~PinballHandlerContext();
 }
 

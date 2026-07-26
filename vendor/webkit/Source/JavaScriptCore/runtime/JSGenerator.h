@@ -26,12 +26,13 @@
 #pragma once
 
 #include "JSInternalFieldObjectImpl.h"
+#include <wtf/EnumClassOperatorOverloads.h>
 
 namespace JSC {
 
-class JSGenerator final : public JSInternalFieldObjectImpl<5> {
+class JSGenerator final : public JSInternalFieldObjectImpl<4> {
 public:
-    using Base = JSInternalFieldObjectImpl<5>;
+    using Base = JSInternalFieldObjectImpl<4>;
 
     template<typename CellType, SubspaceAccess mode>
     static GCClient::IsoSubspace* subspaceFor(VM& vm)
@@ -67,14 +68,12 @@ public:
         Next,
         This,
         Frame,
-        Context,
     };
-    static_assert(numberOfInternalFields == 5);
+    static_assert(numberOfInternalFields == 4);
     static std::array<JSValue, numberOfInternalFields> initialValues()
     {
         return { {
             jsNumber(static_cast<int32_t>(State::Init)),
-            jsUndefined(),
             jsUndefined(),
             jsUndefined(),
             jsUndefined(),
@@ -112,11 +111,6 @@ public:
     JSValue frame() const
     {
         return Base::internalField(static_cast<unsigned>(Field::Frame)).get();
-    }
-
-    JSValue context() const
-    {
-        return Base::internalField(static_cast<unsigned>(Field::Context)).get();
     }
 
     DECLARE_EXPORT_INFO;

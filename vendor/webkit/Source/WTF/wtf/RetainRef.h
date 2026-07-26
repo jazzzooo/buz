@@ -15,7 +15,6 @@
  *  along with this library; see the file COPYING.LIB.  If not, write to
  *  the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
  *  Boston, MA 02110-1301, USA.
- *
  */
 
 #pragma once
@@ -28,6 +27,7 @@
 #include <cstddef>
 #include <type_traits>
 #include <wtf/HashTraits.h>
+#include <wtf/cocoa/NSTypeTraits.h>
 
 #if USE(CF)
 #include <CoreFoundation/CoreFoundation.h>
@@ -70,8 +70,7 @@ namespace WTF {
 template<typename T> class RetainPtr;
 template<typename T> class RetainRef;
 
-template<typename T> constexpr bool IsNSType = std::is_convertible_v<T, id>;
-template<typename T> using RetainPtrType = std::conditional_t<IsNSType<T> && !std::is_same_v<T, id>, std::remove_pointer_t<T>, T>;
+template<typename T> using RetainPtrType = std::conditional_t<IsNSType<T> && !std::same_as<T, id>, std::remove_pointer_t<T>, T>;
 
 template<typename T> [[nodiscard]] constexpr RetainRef<RetainPtrType<T>> adoptCFRef(T CF_RELEASES_ARGUMENT);
 
@@ -120,7 +119,8 @@ public:
     template<typename U> RetainRef(const RetainRef<U>&);
 
     constexpr RetainRef(RetainRef&& o) : m_ptr(o.leakRef()) { ASSERT(m_ptr); }
-    template<typename U, typename = std::enable_if_t<std::is_convertible_v<typename RetainRef<RetainPtrType<U>>::PtrType, PtrType>>>
+    template<typename U>
+        requires std::convertible_to<typename RetainRef<RetainPtrType<U>>::PtrType, PtrType>
     constexpr RetainRef(RetainRef<U>&& o) : m_ptr(o.leakRef()) { ASSERT(m_ptr); }
 
     // Hash table deleted/empty values, which are only constructed and never copied or destroyed.
@@ -133,13 +133,15 @@ public:
 
     ~RetainRef();
 
-    template<typename U = StorageType> requires (std::is_same_v<U, StorageType> && IsNSType<U>)
+    template<typename U = StorageType>
+        requires (std::same_as<U, StorageType> && NSType<U>)
     [[nodiscard]] StorageType leakRef() NS_RETURNS_RETAINED RETURNS_NONNULL {
         ASSERT(m_ptr);
         return std::exchange(m_ptr, nullptr);
     }
 
-    template<typename U = StorageType> requires (std::is_same_v<U, StorageType> && !IsNSType<U>)
+    template<typename U = StorageType>
+        requires (std::same_as<U, StorageType> && !NSType<U>)
     [[nodiscard]] StorageType leakRef() CF_RETURNS_RETAINED RETURNS_NONNULL {
         ASSERT(m_ptr);
         return std::exchange(m_ptr, nullptr);
@@ -180,10 +182,12 @@ private:
 
 #if __has_feature(objc_arc)
     // ARC will try to retain/release this value, but it looks like a tagged immediate, so retain/release ends up being a no-op -- see _objc_isTaggedPointer() in <objc-internal.h>.
-    template<typename U = PtrType> requires (std::is_same_v<U, PtrType> && IsNSType<U>)
+    template<typename U = PtrType>
+        requires (std::same_as<U, PtrType> && NSType<U>)
     static constexpr PtrType hashTableDeletedValue() { return (__bridge PtrType)(void*)-1; }
 
-    template<typename U = PtrType> requires (std::is_same_v<U, PtrType> && !IsNSType<U>)
+    template<typename U = PtrType>
+        requires (std::same_as<U, PtrType> && !NSType<U>)
     static constexpr PtrType hashTableDeletedValue() { return reinterpret_cast<PtrType>(-1); }
 #else
     static constexpr PtrType hashTableDeletedValue() { return reinterpret_cast<PtrType>(-1); }

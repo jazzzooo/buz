@@ -21,27 +21,27 @@
 #pragma once
 
 #include <wtf/text/ASCIILiteral.h>
+#include <wtf/text/RapidHash.h>
 #include <wtf/text/StringHasher.h>
-#include <wtf/text/WYHash.h>
 
 namespace WTF {
 
 template<typename T, typename Converter>
 unsigned StringHasher::computeHashAndMaskTop8Bits(std::span<const T> data)
 {
-    return WYHash::computeHashAndMaskTop8Bits<T, Converter>(data);
+    return RapidHash::computeHashAndMaskTop8Bits<T, Converter>(data);
 }
 
 template<typename T, unsigned characterCount>
 constexpr unsigned StringHasher::computeLiteralHashAndMaskTop8Bits(const T (&characters)[characterCount])
 {
     constexpr unsigned characterCountWithoutNull = characterCount - 1;
-    return WYHash::computeHashAndMaskTop8Bits<T>(unsafeMakeSpan(characters, characterCountWithoutNull));
+    return RapidHash::computeHashAndMaskTop8Bits<T>(unsafeMakeSpan(characters, characterCountWithoutNull));
 }
 
 constexpr unsigned StringHasher::computeLiteralHashAndMaskTop8Bits(ASCIILiteral literal)
 {
-    return WYHash::computeHashAndMaskTop8Bits<char>(literal.span());
+    return RapidHash::computeHashAndMaskTop8Bits<char>(literal.span());
 }
 
 } // namespace WTF

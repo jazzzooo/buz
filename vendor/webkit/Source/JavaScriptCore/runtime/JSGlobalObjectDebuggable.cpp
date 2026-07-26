@@ -35,7 +35,6 @@
 #include "JSLock.h"
 #include "RemoteInspector.h"
 #include <wtf/TZoneMallocInlines.h>
-#include <wtf/threads/BinarySemaphore.h>
 
 using namespace Inspector;
 

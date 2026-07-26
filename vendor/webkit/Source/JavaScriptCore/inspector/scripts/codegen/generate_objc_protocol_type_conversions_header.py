@@ -166,7 +166,7 @@ class ObjCProtocolTypeConversionsHeaderGenerator(ObjCGenerator):
         lines.append('template<>')
         lines.append('inline std::optional<%s> fromProtocolString(const String& value)' % objc_enum_name)
         lines.append('{')
-        lines.append('    static constexpr SortedArrayMap map { std::to_array<std::pair<ComparableASCIILiteral, %s>>({' % objc_enum_name)
+        lines.append('    static constexpr SortedArrayMap map { WTF::toArray<std::pair<ComparableASCIILiteral, %s>>({' % objc_enum_name)
         for enum_value in sorted(enum_values):
             lines.append('        { "%s"_s, %s%s },' % (enum_value, objc_enum_name, Generator.stylized_name_for_enum_value(enum_value)))
         lines.append('   }) };')

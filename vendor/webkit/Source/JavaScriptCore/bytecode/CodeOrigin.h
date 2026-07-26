@@ -29,10 +29,7 @@
 #include "JSExportMacros.h"
 
 #include <limits.h>
-#include <wtf/HashMap.h>
-#include <wtf/MathExtras.h>
 #include <wtf/PrintStream.h>
-#include <wtf/StdLibExtras.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/Vector.h>
 

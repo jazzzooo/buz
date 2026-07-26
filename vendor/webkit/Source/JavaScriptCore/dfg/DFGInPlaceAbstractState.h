@@ -55,13 +55,13 @@ public:
 
     ALWAYS_INLINE AbstractValue& fastForward(AbstractValue& value)
     {
-        value.fastForwardTo(m_effectEpoch);
+        value.fastForwardTo(m_graph, m_effectEpoch);
         return value;
     }
     
     ALWAYS_INLINE FiltrationResult fastForwardAndFilterUnproven(AbstractValue& value, SpeculatedType type)
     {
-        return value.fastForwardToAndFilterUnproven(m_effectEpoch, type);
+        return value.fastForwardToAndFilterUnproven(m_graph, m_effectEpoch, type);
     }
     
     ALWAYS_INLINE AbstractValue& forNodeWithoutFastForward(NodeFlowProjection node)

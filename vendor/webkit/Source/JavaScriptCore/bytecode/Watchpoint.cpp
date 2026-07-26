@@ -44,6 +44,11 @@ namespace JSC {
 DEFINE_ALLOCATOR_WITH_HEAP_IDENTIFIER(Watchpoint);
 DEFINE_ALLOCATOR_WITH_HEAP_IDENTIFIER(WatchpointSet);
 
+StringFireDetail::StringFireDetail(ClangVTableWorkaroundTag)
+    : m_string(nullptr)
+{
+}
+
 void StringFireDetail::dump(PrintStream& out) const
 {
     out.print(m_string);

@@ -149,6 +149,13 @@ RefPtr<GenericTypedArrayView<Adaptor>> GenericTypedArrayView<Adaptor>::tryCreate
     return adoptRef(new GenericTypedArrayView(WTF::move(buffer), byteOffset, length));
 }
 
+template<typename Adaptor>
+Ref<GenericTypedArrayView<Adaptor>> GenericTypedArrayView<Adaptor>::create(Ref<ArrayBuffer>&& buffer)
+{
+    auto length = buffer->byteLength();
+    return adoptRef(*new GenericTypedArrayView(WTF::move(buffer), 0, length));
+}
+
 } // namespace JSC
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_END

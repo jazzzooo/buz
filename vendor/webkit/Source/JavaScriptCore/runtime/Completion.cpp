@@ -181,7 +181,7 @@ static JSPromise* rejectPromise(ThrowScope& scope, JSGlobalObject* globalObject)
 {
     VM& vm = globalObject->vm();
     JSPromise* promise = JSPromise::create(vm, globalObject->promiseStructure());
-    return promise->rejectWithCaughtException(globalObject, scope);
+    return promise->rejectWithCaughtException(vm, scope);
 }
 
 JSPromise* loadAndEvaluateModule(JSGlobalObject* globalObject, const String& moduleName, RefPtr<ScriptFetchParameters> parameters, RefPtr<ScriptFetcher> scriptFetcher)
@@ -195,7 +195,7 @@ JSPromise* loadAndEvaluateModule(JSGlobalObject* globalObject, const String& mod
     Identifier resolved = globalObject->moduleLoader()->resolve(globalObject, Identifier::fromString(vm, moduleName), { }, scriptFetcher, /* useImportMap */ false);
     RETURN_IF_EXCEPTION(scope, nullptr);
 
-    RELEASE_AND_RETURN(scope, globalObject->moduleLoader()->loadModule(globalObject, resolved, WTF::move(parameters), WTF::move(scriptFetcher), /* evaluate */ true, /* dynamic */ false, /* useImportMap */ false));
+    RELEASE_AND_RETURN(scope, globalObject->moduleLoader()->loadModule(globalObject, resolved, WTF::move(parameters), WTF::move(scriptFetcher), { ModuleLoadFlag::Evaluate }));
 }
 
 static ScriptFetchParameters::Type getSourceType(const SourceCode& source)
@@ -234,12 +234,12 @@ JSPromise* loadAndEvaluateModule(JSGlobalObject* globalObject, SourceCode&& sour
 
     AbstractModuleRecord::ModuleRequest request { WTF::move(key), ScriptFetchParameters::create(type) };
 
-    JSPromise* promise = globalObject->moduleLoader()->loadModule(globalObject, globalObject, request, graphLoadingState, WTF::move(scriptFetcher), /* evaluate */ true, /* useImportMap */ false);
+    JSPromise* promise = globalObject->moduleLoader()->loadModule(globalObject, globalObject, request, graphLoadingState, WTF::move(scriptFetcher), { ModuleLoadFlag::Evaluate });
     RETURN_IF_EXCEPTION(scope, rejectPromise(scope, globalObject));
 
     JSPromise* resultPromise = JSPromise::create(vm, globalObject->promiseStructure());
     resultPromise->markAsHandled();
-    promise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::ModuleLoadReturnModuleKey, resultPromise, jsUndefined());
+    promise->performPromiseThenWithInternalMicrotask(vm, InternalMicrotask::ModuleLoadReturnModuleKey, resultPromise, jsUndefined());
 
     return resultPromise;
 }
@@ -251,7 +251,7 @@ JSPromise* loadModule(JSGlobalObject* globalObject, const Identifier& moduleKey,
     RELEASE_ASSERT(vm.atomStringTable() == Thread::currentSingleton().atomStringTable());
     RELEASE_ASSERT(!vm.isCollectorBusyOnCurrentThread());
 
-    return globalObject->moduleLoader()->loadModule(globalObject, moduleKey, WTF::move(parameters), WTF::move(scriptFetcher), /* evaluate */ false, /* dynamic */ false, /* useImportMap */ false);
+    return globalObject->moduleLoader()->loadModule(globalObject, moduleKey, WTF::move(parameters), WTF::move(scriptFetcher), { });
 }
 
 JSPromise* loadModule(JSGlobalObject* globalObject, SourceCode&& source, RefPtr<ScriptFetcher> scriptFetcher)
@@ -267,7 +267,7 @@ JSPromise* loadModule(JSGlobalObject* globalObject, SourceCode&& source, RefPtr<
     // Insert the given source code to the ModuleLoader registry as the fetched registry entry.
     globalObject->moduleLoader()->provideFetch(globalObject, key, getSourceType(source), WTF::move(source));
     RETURN_IF_EXCEPTION(scope, rejectPromise(scope, globalObject));
-    RELEASE_AND_RETURN(scope, globalObject->moduleLoader()->loadModule(globalObject, key, nullptr, WTF::move(scriptFetcher), /* evaluate */ false, /* dynamic */ false, /* useImportMap */ false));
+    RELEASE_AND_RETURN(scope, globalObject->moduleLoader()->loadModule(globalObject, key, nullptr, WTF::move(scriptFetcher), { }));
 }
 
 JSPromise* linkAndEvaluateModule(JSGlobalObject* globalObject, const Identifier& moduleKey, RefPtr<ScriptFetcher> scriptFetcher)
@@ -280,14 +280,14 @@ JSPromise* linkAndEvaluateModule(JSGlobalObject* globalObject, const Identifier&
     return globalObject->moduleLoader()->linkAndEvaluateModule(globalObject, moduleKey, nullptr, WTF::move(scriptFetcher));
 }
 
-JSPromise* importModule(JSGlobalObject* globalObject, const Identifier& moduleName, const Identifier& referrer, RefPtr<ScriptFetchParameters> parameters, RefPtr<ScriptFetcher> scriptFetcher)
+JSPromise* importModule(JSGlobalObject* globalObject, const Identifier& moduleName, const Identifier& referrer, RefPtr<ScriptFetchParameters> parameters, RefPtr<ScriptFetcher> scriptFetcher, bool deferred, int64_t referrerAsyncOrder)
 {
     VM& vm = globalObject->vm();
     JSLockHolder lock(vm);
     RELEASE_ASSERT(vm.atomStringTable() == Thread::currentSingleton().atomStringTable());
     RELEASE_ASSERT(!vm.isCollectorBusyOnCurrentThread());
 
-    return globalObject->moduleLoader()->requestImportModule(globalObject, moduleName, referrer, WTF::move(parameters), WTF::move(scriptFetcher));
+    return globalObject->moduleLoader()->requestImportModule(globalObject, moduleName, referrer, WTF::move(parameters), WTF::move(scriptFetcher), deferred, referrerAsyncOrder);
 }
 
 UncheckedKeyHashMap<RefPtr<UniquedStringImpl>, String> retrieveImportAttributesFromDynamicImportOptions(JSGlobalObject* globalObject, JSValue options, const Vector<RefPtr<UniquedStringImpl>>& supportedImportAttributes)

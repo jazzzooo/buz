@@ -257,9 +257,6 @@ auto SectionParser::parseFunction() -> PartialResult
         m_info->functions.append({ start, end, Vector<uint8_t>() });
     }
 
-    // Note that `initializeFunctionTrackers` should only be used after both parseImport and parseFunction
-    // finish updating importFunctionTypeSignatureIndices and internalFunctionTypeSignatureIndices.
-    m_info->initializeFunctionTrackers();
     return { };
 }
 
@@ -372,7 +369,7 @@ auto SectionParser::parseTableHelper(bool isImport) -> PartialResult
     }
 
     TableElementType tableType = isSubtype(type, funcrefType()) ? TableElementType::Funcref : TableElementType::Externref;
-    m_info->tables.append(TableInformation(initial, maximum, isImport, tableType, type, tableInitType, initialBitsOrImportNumber));
+    m_info->tables.append(TableInformation(initial, maximum, isImport, tableType, type, tableInitType, initialBitsOrImportNumber, isTable64));
 
     return { };
 }
@@ -830,7 +827,6 @@ auto SectionParser::parseInitExpr(uint8_t& opcode, bool& isExtendedConstantExpre
         WASM_PARSER_FAIL_IF(!parseVarUInt32(index), "can't get ref.func index"_s);
         WASM_PARSER_FAIL_IF(index >= m_info->functionIndexSpaceSize(), "ref.func index "_s, index, " exceeds the number of functions "_s, m_info->functionIndexSpaceSize());
         auto spaceIndex = FunctionSpaceIndex(index);
-        m_info->addReferencedFunction(spaceIndex);
         TypeIndex typeIndex = m_info->rtt(spaceIndex).asTypeIndex();
         resultType = { TypeKind::Ref, typeIndex };
         bitsOrImportNumber = index;
@@ -888,6 +884,20 @@ auto SectionParser::parseI32InitExpr(std::optional<I32InitExpr>& initExpr, ASCII
     WASM_FAIL_IF_HELPER_FAILS(parseInitExpr(initOpcode, isExtendedConstantExpression, initExprBits, unused, Types::I32, initExprType));
     WASM_PARSER_FAIL_IF(!initExprType.isI32(), failMessage);
     initExpr = makeI32InitExpr(initOpcode, isExtendedConstantExpression, initExprBits);
+
+    return { };
+}
+
+auto SectionParser::parseI64InitExpr(std::optional<I64InitExpr>& initExpr, ASCIILiteral failMessage) -> PartialResult
+{
+    uint8_t initOpcode;
+    bool isExtendedConstantExpression;
+    uint64_t initExprBits;
+    Type initExprType;
+    v128_t unused;
+    WASM_FAIL_IF_HELPER_FAILS(parseInitExpr(initOpcode, isExtendedConstantExpression, initExprBits, unused, Types::I64, initExprType));
+    WASM_PARSER_FAIL_IF(!initExprType.isI64(), failMessage);
+    initExpr = makeI64InitExpr(initOpcode, isExtendedConstantExpression, initExprBits);
 
     return { };
 }
@@ -1303,6 +1313,11 @@ auto SectionParser::parseI32InitExprForDataSection(std::optional<I32InitExpr>& i
     return parseI32InitExpr(initExpr, "Data init_expr must produce an i32"_s);
 }
 
+auto SectionParser::parseI64InitExprForDataSection(std::optional<I64InitExpr>& initExpr) -> PartialResult
+{
+    return parseI64InitExpr(initExpr, "Data init_expr must produce an i64"_s);
+}
+
 auto SectionParser::parseGlobalType(GlobalInformation& global) -> PartialResult
 {
     uint8_t mutability;
@@ -1332,7 +1347,10 @@ auto SectionParser::parseData() -> PartialResult
             WASM_PARSER_FAIL_IF(memoryIndex >= m_info->memoryCount(), segmentNumber, "th Data segment has index "_s, memoryIndex, " which exceeds the number of Memories "_s, m_info->memoryCount());
 
             std::optional<I32InitExpr> initExpr;
-            WASM_FAIL_IF_HELPER_FAILS(parseI32InitExprForDataSection(initExpr));
+            if (m_info->memory(memoryIndex).isMemory64())
+                WASM_FAIL_IF_HELPER_FAILS(parseI64InitExprForDataSection(initExpr));
+            else
+                WASM_FAIL_IF_HELPER_FAILS(parseI32InitExprForDataSection(initExpr));
 
             uint32_t dataByteLength;
             WASM_PARSER_FAIL_IF(!parseVarUInt32(dataByteLength), "can't get "_s, segmentNumber, "th Data segment's data byte length"_s);
@@ -1373,7 +1391,10 @@ auto SectionParser::parseData() -> PartialResult
             WASM_PARSER_FAIL_IF(memoryIndex >= m_info->memoryCount(), segmentNumber, "th Data segment has index "_s, memoryIndex, " which exceeds the number of Memories "_s, m_info->memoryCount());
 
             std::optional<I32InitExpr> initExpr;
-            WASM_FAIL_IF_HELPER_FAILS(parseI32InitExprForDataSection(initExpr));
+            if (m_info->memory(memoryIndex).isMemory64())
+                WASM_FAIL_IF_HELPER_FAILS(parseI64InitExprForDataSection(initExpr));
+            else
+                WASM_FAIL_IF_HELPER_FAILS(parseI32InitExprForDataSection(initExpr));
 
             uint32_t dataByteLength;
             WASM_PARSER_FAIL_IF(!parseVarUInt32(dataByteLength), "can't get "_s, segmentNumber, "th Data segment's data byte length"_s);
@@ -1451,7 +1472,7 @@ auto SectionParser::parseCustom() -> PartialResult
         NameSectionParser nameSectionParser(section.payload, m_info);
         auto nameSection = nameSectionParser.parse();
         if (nameSection)
-            m_info->nameSection = WTF::move(*nameSection);
+            m_info->setNameSection(WTF::move(*nameSection));
         else
             dataLogLnIf(Options::dumpWasmWarnings(), "Could not parse name section: ", nameSection.error());
     } else if (WTF::Unicode::equal("metadata.code.branch_hint"_span8, section.name.span())) {

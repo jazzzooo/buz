@@ -33,8 +33,8 @@
 #include "WasmCallee.h"
 #include "WasmIPIntPlan.h"
 #include "WasmMachineThreads.h"
+#include "WasmModuleInformation.h"
 #include "WasmWorklist.h"
-#include <wtf/text/MakeString.h>
 
 namespace JSC { namespace Wasm {
 
@@ -52,12 +52,15 @@ CalleeGroup::CalleeGroup(MemoryMode mode, const CalleeGroup& other)
     : m_calleeCount(other.m_calleeCount)
     , m_mode(mode)
     , m_ipintCallees(other.m_ipintCallees)
-    , m_jsToWasmCallees(other.m_jsToWasmCallees)
     , m_callers(m_calleeCount)
     , m_wasmIndirectCallEntrypoints(other.m_wasmIndirectCallEntrypoints)
     , m_wasmIndirectCallWasmCallees(other.m_wasmIndirectCallWasmCallees)
     , m_wasmToWasmExitStubs(other.m_wasmToWasmExitStubs)
 {
+    {
+        Locker otherLocker { other.m_jsToWasmCalleesLock };
+        m_jsToWasmCallees = other.m_jsToWasmCallees;
+    }
     Locker locker { m_lock };
     setCompilationFinished();
 }
@@ -86,7 +89,6 @@ CalleeGroup::CalleeGroup(VM& vm, MemoryMode mode, ModuleInformation& moduleInfor
         }
 
         m_wasmToWasmExitStubs = m_plan->takeWasmToWasmExitStubs();
-        m_jsToWasmCallees = static_cast<IPIntPlan*>(m_plan.get())->takeJSToWasmCallees();
 
         setCompilationFinished();
     })));
@@ -103,6 +105,23 @@ CalleeGroup::CalleeGroup(VM& vm, MemoryMode mode, ModuleInformation& moduleInfor
 }
 
 CalleeGroup::~CalleeGroup() = default;
+
+JSToWasmCallee& CalleeGroup::ensureJSToWasmCallee(const ModuleInformation& moduleInformation, FunctionSpaceIndex functionIndexSpace)
+{
+    ASSERT(runnable());
+    ASSERT(functionIndexSpace >= functionImportCount());
+    unsigned calleeIndex = functionIndexSpace - functionImportCount();
+
+    Locker locker { m_jsToWasmCalleesLock };
+    auto addResult = m_jsToWasmCallees.ensure(calleeIndex, [&] {
+        auto& ipintCallee = m_ipintCallees->at(calleeIndex).get();
+        bool usesSIMD = moduleInformation.usesSIMD(FunctionCodeIndex(calleeIndex));
+        auto callee = JSToWasmCallee::create(Ref<const RTT> { ipintCallee.signatureRTT() }, usesSIMD);
+        callee->setWasmCallee(CalleeBits::encodeNativeCallee(&ipintCallee));
+        return callee;
+    });
+    return *addResult.iterator->value;
+}
 
 void CalleeGroup::waitUntilFinished()
 {
@@ -326,8 +345,11 @@ void CalleeGroup::updateCallsitesToCallUs(const AbstractLocker& locker, CodeLoca
     };
 
     // This is necessary since Callees are released under `Heap::stopThePeriphery()`, but that only stops JS compiler
-    // threads and not wasm ones. So a weakly-held BBQCallee or an OMGOSREntryCallee could die between the time we
-    // collect the callsites and when we actually repatch its callsites.
+    // threads and not wasm ones. So a weakly held BBQCallee and its OMGOSREntryCallee could die between the time we
+    // collect the callsites and when we actually repatch its callsites. Additionally, after a re-tier (where a fresh
+    // BBQCallee replaces a retired one), m_osrEntryCallees may hold a stale weak ref to an OMGOSREntryCallee not
+    // owned by the current BBQCallee, so we always keep it alive unconditionally.
+
     // FIXME: These inline capacities were picked semi-randomly. We should figure out if there's a better number.
 #if ENABLE(WEBASSEMBLY_BBQJIT)
     Vector<Ref<BBQCallee>, 4> keepAliveBBQCallees;
@@ -368,10 +390,6 @@ void CalleeGroup::updateCallsitesToCallUs(const AbstractLocker& locker, CodeLoca
         if (bbqCallee) {
             collectCallsites(bbqCallee.get());
             ASSERT(!bbqCallee->osrEntryCallee() || m_osrEntryCallees.find(callerIndex) != m_osrEntryCallees.end());
-            // A weakly-held BBQCallee can otherwise be destroyed by the collector between the
-            // collectCallsites() above and the repatchNearCall() loop below, since wasm compiler
-            // threads are neither stopped nor conservatively scanned by GC. On platforms where the
-            // executable allocator decommits freed pages (Windows), repatchNearCall() then faults.
             keepAliveBBQCallees.append(bbqCallee.releaseNonNull());
         }
 #endif
@@ -379,6 +397,7 @@ void CalleeGroup::updateCallsitesToCallUs(const AbstractLocker& locker, CodeLoca
         collectCallsites(tuple->m_omgCallee.get());
         if (auto iter = m_osrEntryCallees.find(callerIndex); iter != m_osrEntryCallees.end()) {
             if (RefPtr callee = iter->value.get()) {
+                // Since there is a OMGOSREntryCallee, we need to collect all the callsites there and also keep it alive until we patch it.
                 collectCallsites(callee.get());
                 keepAliveOSREntryCallees.append(callee.releaseNonNull());
             } else
@@ -500,6 +519,7 @@ TriState CalleeGroup::calleeIsReferenced(const AbstractLocker& locker, Wasm::Cal
     case CompilationMode::JSToWasmICMode:
     case CompilationMode::WasmToJSMode:
     case CompilationMode::WasmBuiltinMode:
+    case CompilationMode::RestoreFrameMode:
         return TriState::True;
     default:
         RELEASE_ASSERT_NOT_REACHED();

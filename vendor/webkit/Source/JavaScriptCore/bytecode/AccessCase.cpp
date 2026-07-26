@@ -68,6 +68,7 @@ Ref<AccessCase> AccessCase::create(VM& vm, JSCell* owner, AccessType type, Cache
 {
     switch (type) {
     case LoadMegamorphic:
+    case LoadMegamorphicGetter:
     case StoreMegamorphic:
     case InMegamorphic:
     case InHit:
@@ -376,6 +377,7 @@ bool AccessCase::guardedByStructureCheckSkippingConstantIdentifierCheck() const
 
     switch (m_type) {
     case LoadMegamorphic:
+    case LoadMegamorphicGetter:
     case StoreMegamorphic:
     case InMegamorphic:
     case ArrayLength:
@@ -524,6 +526,7 @@ bool AccessCase::requiresIdentifierNameMatch() const
     switch (m_type) {
     case Load:
     case LoadMegamorphic:
+    case LoadMegamorphicGetter:
     case StoreMegamorphic:
     case InMegamorphic:
     // We don't currently have a by_val for these puts, but we do care about the identifier.
@@ -672,6 +675,7 @@ bool AccessCase::requiresInt32PropertyCheck() const
     switch (m_type) {
     case Load:
     case LoadMegamorphic:
+    case LoadMegamorphicGetter:
     case StoreMegamorphic:
     case InMegamorphic:
     case Transition:
@@ -831,7 +835,9 @@ void AccessCase::forEachDependentCell(VM&, const Functor& functor) const
         break;
     }
     case CustomValueGetter:
-    case CustomValueSetter: {
+    case CustomValueSetter:
+    case CustomAccessorGetter:
+    case CustomAccessorSetter: {
         auto& accessor = this->as<GetterSetterAccessCase>();
         if (accessor.customSlotBase())
             functor(accessor.customSlotBase());
@@ -856,10 +862,9 @@ void AccessCase::forEachDependentCell(VM&, const Functor& functor) const
         if (as<InstanceOfAccessCase>().prototype())
             functor(as<InstanceOfAccessCase>().prototype());
         break;
-    case CustomAccessorGetter:
-    case CustomAccessorSetter:
     case Load:
     case LoadMegamorphic:
+    case LoadMegamorphicGetter:
     case StoreMegamorphic:
     case InMegamorphic:
     case Transition:
@@ -1015,6 +1020,7 @@ bool AccessCase::doesCalls(VM&) const
     case IndexedProxyObjectStore:
     case StoreMegamorphic:
     case IndexedMegamorphicStore:
+    case LoadMegamorphicGetter:
         doesCalls = true;
         break;
     case IntrinsicGetter: {
@@ -1194,6 +1200,7 @@ bool AccessCase::canReplace(const AccessCase& other) const
     
     switch (type()) {
     case LoadMegamorphic:
+    case LoadMegamorphicGetter:
     case StoreMegamorphic:
     case InMegamorphic:
     case IndexedMegamorphicLoad:
@@ -1464,6 +1471,7 @@ inline void AccessCase::runWithDowncast(const Func& func)
 {
     switch (m_type) {
     case LoadMegamorphic:
+    case LoadMegamorphicGetter:
     case StoreMegamorphic:
     case InMegamorphic:
     case Transition:
@@ -1662,6 +1670,7 @@ bool AccessCase::canBeShared(const AccessCase& lhs, const AccessCase& rhs)
     switch (lhs.m_type) {
     case Load:
     case LoadMegamorphic:
+    case LoadMegamorphicGetter:
     case StoreMegamorphic:
     case InMegamorphic:
     case Transition:

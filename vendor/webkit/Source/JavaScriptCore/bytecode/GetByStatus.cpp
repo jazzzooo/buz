@@ -37,6 +37,7 @@
 #include "IntrinsicGetterAccessCase.h"
 #include "ModuleNamespaceAccessCase.h"
 #include "PropertyInlineCache.h"
+#include "PropertyNameInlines.h"
 #include <wtf/ListDump.h>
 
 namespace JSC {
@@ -86,11 +87,6 @@ GetByStatus GetByStatus::computeFromLLInt(CodeBlock* profiledBlock, BytecodeInde
         break;
     }
 
-    case op_try_get_by_id:
-        structureID = instruction->as<OpTryGetById>().metadata(profiledBlock).m_structureID;
-        identifier = &(profiledBlock->identifier(instruction->as<OpTryGetById>().m_property));
-        break;
-
     case op_get_by_id_direct:
         structureID = instruction->as<OpGetByIdDirect>().metadata(profiledBlock).m_structureID;
         identifier = &(profiledBlock->identifier(instruction->as<OpGetByIdDirect>().m_property));
@@ -110,6 +106,18 @@ GetByStatus GetByStatus::computeFromLLInt(CodeBlock* profiledBlock, BytecodeInde
 
         // FIXME: We should not just bail if we see a get_by_id_proto_load.
         // https://bugs.webkit.org/show_bug.cgi?id=158039
+        if (metadata.m_modeMetadata.mode != GetByIdMode::Default)
+            return GetByStatus(NoInformation, false);
+        structureID = metadata.m_modeMetadata.defaultMode.structureID;
+        identifier = &vm.propertyNames->next;
+        break;
+    }
+
+    case op_async_iterator_open: {
+        ASSERT(bytecodeIndex.checkpoint() == OpAsyncIteratorOpen::getNext);
+        auto& metadata = instruction->as<OpAsyncIteratorOpen>().metadata(profiledBlock);
+
+        // FIXME: We should not just bail if we see a get_by_id_proto_load.
         if (metadata.m_modeMetadata.mode != GetByIdMode::Default)
             return GetByStatus(NoInformation, false);
         structureID = metadata.m_modeMetadata.defaultMode.structureID;
@@ -302,6 +310,13 @@ GetByStatus GetByStatus::computeForPropertyInlineCacheWithoutExitSiteFeedback(co
                     return GetByStatus(Megamorphic, /* wasSeenInJIT */ true);
                 break;
             }
+            case AccessCase::LoadMegamorphicGetter: {
+                // FIXME: Using MakesCalls, not Megamorphic. The value-only GetByIdMegamorphic DFG node can't
+                // service accessors, so keep it a regular GetById and let DFG/FTL install the handler.
+                if (!propertyCache->tookSlowPath)
+                    return GetByStatus(MakesCalls, /* wasSeenInJIT */ true);
+                break;
+            }
             default:
                 break;
             }
@@ -478,14 +493,10 @@ GetByStatus GetByStatus::computeFor(
     return computeFor(profiledBlock, baselineMap, didExit, callExitSiteData, codeOrigin);
 }
 
-GetByStatus GetByStatus::computeFor(JSGlobalObject* globalObject, const StructureSet& set, CacheableIdentifier identifier)
+GetByStatus GetByStatus::computeFor(JSGlobalObject* globalObject, const StructureSet& set, CacheableIdentifier identifier, GetByStatus::LookupMode mode)
 {
     // For now we only handle the super simple self access case. We could handle the
     // prototype case in the future.
-    //
-    // Note that this code is also used for GetByIdDirect since this function only looks
-    // into direct properties. When supporting prototype chains, we should split this for
-    // GetById and GetByIdDirect.
 
     if (set.isEmpty())
         return GetByStatus();
@@ -497,6 +508,9 @@ GetByStatus GetByStatus::computeFor(JSGlobalObject* globalObject, const Structur
     auto attempToFold = [&]() -> std::optional<GetByStatus> {
         Structure* structure = set.onlyStructure();
         if (!structure)
+            return std::nullopt;
+
+        if (structure->isDictionary())
             return std::nullopt;
 
         JSObject* prototype = nullptr;
@@ -580,8 +594,12 @@ GetByStatus GetByStatus::computeFor(JSGlobalObject* globalObject, const Structur
         return std::nullopt;
     };
 
-    if (auto result = attempToFold())
-        return result.value();
+    // We should do a prototype walk searching for the property only if this
+    // is a normal access. Don't consult proto for for direct accesses.
+    if (mode == GetByStatus::LookupMode::Normal) {
+        if (auto result = attempToFold())
+            return result.value();
+    }
 
     GetByStatus result;
     result.m_state = Simple;

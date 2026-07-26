@@ -24,7 +24,16 @@
  */
 
 // On Mac, you can build this like so:
-// xcrun clang++ -o LockFairnessTest Source/WTF/benchmarks/LockFairnessTest.cpp -O3 -W -ISource/WTF -ISource/WTF/icu -ISource/WTF/benchmarks -LWebKitBuild/Release -lWTF -framework Foundation -licucore -std=c++14 -fvisibility=hidden
+// INTERNAL_SDK=$(xcrun --sdk macosx.internal --show-sdk-path) && \
+// xcrun clang++ -o LockFairnessTest Source/WTF/benchmarks/LockFairnessTest.cpp \
+//     -W -ISource/WTF -ISource/WTF/icu -ISource/WTF/benchmarks \
+//     -I"$INTERNAL_SDK/usr/local/include" -IWebKitBuild/Release/usr/local/include \
+//     -LWebKitBuild/Release -lWTF -lbmalloc \
+//     -framework Foundation -framework Security -licucore \
+//     -std=c++2b -fvisibility=hidden -DNDEBUG -O3 -arch arm64e
+//
+// For an OSS build (no internal SDK), drop the INTERNAL_SDK line and the
+// -I"$INTERNAL_SDK/usr/local/include" flag, and use -arch arm64 instead of arm64e.
 
 #include "config.h"
 
@@ -61,8 +70,8 @@ struct Benchmark {
     static void run(const char* name)
     {
         LockType lock;
-        std::unique_ptr<unsigned[]> counts = makeUniqueWithoutFastMallocCheck<unsigned[]>(numThreads);
-        std::unique_ptr<RefPtr<Thread>[]> threads = makeUniqueWithoutFastMallocCheck<RefPtr<Thread>[]>(numThreads);
+        Vector<unsigned> counts(numThreads);
+        Vector<RefPtr<Thread>> threads(numThreads);
     
         std::atomic<bool> keepGoing = true;
     

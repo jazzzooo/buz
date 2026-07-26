@@ -55,15 +55,6 @@ private:
     
     void grow();
 
-    // We can't just use the copy of Heap::m_wasmCalleesPendingDestruction since new callees could be registered while
-    // we're actively scanning the stack. A bad race would be:
-    // 1) Start scanning the stack passing a frame with Wasm::Callee foo.
-    // 2) tier up finishes for foo and is added to Heap::m_wasmCalleesPendingDestruction
-    // 3) foo isn't added to m_wasmCalleesDiscovered
-    // 4) foo gets derefed and destroyed.
-    UncheckedKeyHashSet<const Wasm::Callee*> m_wasmCalleesPendingDestructionCopy;
-    UncheckedKeyHashSet<const Wasm::Callee*> m_wasmCalleesDiscovered;
-    TinyBloomFilter<uintptr_t> m_boxedWasmCalleeFilter;
     HeapCell** m_roots;
     size_t m_size;
     size_t m_capacity;

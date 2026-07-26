@@ -39,6 +39,7 @@
 #include "JSWebAssemblyModule.h"
 #include "JSWebAssemblyStruct.h"
 #include "Register.h"
+#include "VMTrapsInlines.h"
 #include "WasmBaselineData.h"
 #include "WasmConstExprGenerator.h"
 #include "WasmDebugServer.h"
@@ -47,6 +48,7 @@
 #include "WasmTypeDefinitionInlines.h"
 #include "WebAssemblyFunctionBase.h"
 #include "WebAssemblyModuleRecord.h"
+#include "WebAssemblyWrapperFunction.h"
 #include <wtf/CheckedArithmetic.h>
 #include <wtf/StdLibExtras.h>
 #include <wtf/text/MakeString.h>
@@ -162,6 +164,11 @@ void JSWebAssemblyInstance::finishCreation(VM& vm)
 
 JSWebAssemblyInstance::~JSWebAssemblyInstance()
 {
+    if (m_anchor) {
+        m_anchor->tearDown();
+        m_anchor = nullptr;
+    }
+
     m_vm->traps().unregisterMirror(m_stackMirror);
     clearJSCallICs(*m_vm);
 
@@ -173,11 +180,6 @@ JSWebAssemblyInstance::~JSWebAssemblyInstance()
 
     for (auto& slot : baselineDatas())
         std::destroy_at(&slot);
-
-    if (m_anchor) {
-        m_anchor->tearDown();
-        m_anchor = nullptr;
-    }
 }
 
 void JSWebAssemblyInstance::destroy(JSCell* cell)
@@ -347,6 +349,7 @@ JSWebAssemblyInstance* JSWebAssemblyInstance::tryCreate(VM& vm, Structure* insta
                 moduleRecord->appendRequestedModule(moduleName, nullptr);
             moduleRecord->addImportEntry(WebAssemblyModuleRecord::ImportEntry {
                 WebAssemblyModuleRecord::ImportEntryType::Single,
+                WebAssemblyModuleRecord::ModulePhase::Evaluation,
                 moduleName,
                 fieldName,
                 Identifier::fromUid(PrivateName(PrivateName::Description, "WebAssemblyImportName"_s)),
@@ -445,6 +448,38 @@ void JSWebAssemblyInstance::setFunctionWrapper(unsigned i, JSValue value)
     ASSERT(getFunctionWrapper(i) == value);
 }
 
+JSValue JSWebAssemblyInstance::ensureFunctionWrapper(FunctionSpaceIndex functionIndexSpace)
+{
+    JSValue wrapper = getFunctionWrapper(functionIndexSpace);
+    if (!wrapper.isNull())
+        return wrapper;
+
+    JSGlobalObject* globalObject = this->realm();
+    VM& vm = globalObject->vm();
+
+    if (isImportFunction(functionIndexSpace)) {
+        JSObject* functionImport = getImportFunctionObject(functionIndexSpace, globalObject);
+        if (isWebAssemblyHostFunction(functionImport))
+            wrapper = functionImport;
+        else {
+            Ref rtt = m_module->rttFromFunctionIndexSpace(functionIndexSpace);
+            wrapper = WebAssemblyWrapperFunction::create(vm, globalObject, globalObject->webAssemblyWrapperFunctionStructure(), functionImport, functionIndexSpace, this, WTF::move(rtt));
+        }
+    } else {
+        Wasm::CalleeGroup* calleeGroup = this->calleeGroup();
+        auto wasmCallee = calleeGroup->wasmCalleeFromFunctionIndexSpace(functionIndexSpace);
+        ASSERT(wasmCallee);
+        Wasm::WasmToWasmImportableFunction::LoadLocation entrypointLoadLocation = calleeGroup->entrypointLoadLocationFromFunctionIndexSpace(functionIndexSpace);
+        Ref rtt = m_module->rttFromFunctionIndexSpace(functionIndexSpace);
+        WebAssemblyFunction* function = WebAssemblyFunction::create(vm, globalObject, globalObject->webAssemblyFunctionStructure(), rtt->argumentCount(), makeString(functionIndexSpace.rawIndex()), this, *wasmCallee, entrypointLoadLocation, WTF::move(rtt));
+        wrapper = function;
+    }
+
+    ASSERT(wrapper.isCallable());
+    setFunctionWrapper(functionIndexSpace, wrapper);
+    return wrapper;
+}
+
 Table* JSWebAssemblyInstance::table(unsigned i)
 {
     return tables()[i].get();
@@ -523,8 +558,6 @@ void JSWebAssemblyInstance::initElementSegment(uint32_t tableIndex, const Elemen
     RELEASE_ASSERT(length <= segment.length());
 
     JSWebAssemblyTable* jsTable = this->jsTable(tableIndex);
-    JSGlobalObject* globalObject = this->realm();
-    VM& vm = globalObject->vm();
 
     for (uint32_t index = 0; index < length; ++index) {
         const auto srcIndex = srcOffset + index;
@@ -543,49 +576,18 @@ void JSWebAssemblyInstance::initElementSegment(uint32_t tableIndex, const Elemen
             // for the import.
             // https://bugs.webkit.org/show_bug.cgi?id=165510
             auto functionIndex = Wasm::FunctionSpaceIndex(initialBitsOrIndex);
-            Ref<const Wasm::RTT> rtt = m_module->rttFromFunctionIndexSpace(functionIndex);
-            if (isImportFunction(functionIndex)) {
-                JSObject* functionImport = getImportFunctionObject(functionIndex, globalObject);
-                if (isWebAssemblyHostFunction(functionImport)) {
-                    // If we ever import a WebAssemblyWrapperFunction, we set the import as the unwrapped value.
-                    // Because a WebAssemblyWrapperFunction can never wrap another WebAssemblyWrapperFunction,
-                    // the only type this could be is WebAssemblyFunction.
-                    WebAssemblyFunction* wasmFunction = downcast<WebAssemblyFunction>(functionImport);
-                    jsTable->set(dstIndex, wasmFunction);
-                    continue;
-                }
-                auto* wrapperFunction = WebAssemblyWrapperFunction::create(
-                    vm,
-                    globalObject,
-                    globalObject->webAssemblyWrapperFunctionStructure(),
-                    functionImport,
-                    functionIndex,
-                    this,
-                    WTF::move(rtt));
-                jsTable->set(dstIndex, wrapperFunction);
+            if (!isImportFunction(functionIndex)) {
+                // Install wasm-side metadata only; the JS wrapper is materialized
+                // on demand from table.get. Imports stay eager because their
+                // callees do not carry a recoverable FunctionSpaceIndex.
+                auto* funcRefTable = jsTable->table()->asFuncrefTable();
+                ASSERT(funcRefTable);
+                funcRefTable->setLazy(dstIndex, this, functionIndex);
                 continue;
             }
-
-            auto& jsToWasmCallee = calleeGroup()->jsToWasmCalleeFromFunctionIndexSpace(functionIndex);
-            auto wasmCallee = calleeGroup()->wasmCalleeFromFunctionIndexSpace(functionIndex);
-            ASSERT(wasmCallee);
-            WasmToWasmImportableFunction::LoadLocation entrypointLoadLocation = calleeGroup()->entrypointLoadLocationFromFunctionIndexSpace(functionIndex);
-            // FIXME: Say we export local function "foo" at function index 0.
-            // What if we also set it to the table an Element w/ index 0.
-            // Does (new Instance(...)).exports.foo === table.get(0)?
-            // https://bugs.webkit.org/show_bug.cgi?id=165825
-            WebAssemblyFunction* function = WebAssemblyFunction::create(
-                vm,
-                globalObject,
-                globalObject->webAssemblyFunctionStructure(),
-                rtt->argumentCount(),
-                WTF::makeString(functionIndex.rawIndex()),
-                this,
-                jsToWasmCallee,
-                *wasmCallee,
-                entrypointLoadLocation,
-                WTF::move(rtt));
-            jsTable->set(dstIndex, function);
+            JSValue wrapper = ensureFunctionWrapper(functionIndex);
+            ASSERT(wrapper.isCallable());
+            jsTable->set(dstIndex, wrapper);
             continue;
         }
 
@@ -672,10 +674,7 @@ void JSWebAssemblyInstance::copyElementSegment(JSWebAssemblyArray* array, const 
         if (initType == Element::InitializationType::FromRefFunc) {
             uint32_t functionIndex = static_cast<uint32_t>(initialBitsOrIndex);
 
-            // A wrapper for this function should have been created during parsing.
-            // A future optimization would be for the parser to not create the wrappers,
-            // and create them here dynamically instead.
-            JSValue value = getFunctionWrapper(functionIndex);
+            JSValue value = ensureFunctionWrapper(FunctionSpaceIndex(functionIndex));
             ASSERT(value.isCallable());
             set(i, static_cast<uint64_t>(JSValue::encode(value)));
             continue;

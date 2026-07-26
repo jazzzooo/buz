@@ -28,6 +28,7 @@
 
 #if ENABLE(WEBASSEMBLY) && ENABLE(JIT)
 
+#include "BaselineJITRegisters.h"
 #include "CCallHelpers.h"
 #include "JSCJSValueInlines.h"
 #include "JSWebAssemblyInstance.h"

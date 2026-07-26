@@ -38,6 +38,7 @@
 #include <wtf/Expected.h>
 #include <wtf/FastMalloc.h>
 #include <wtf/Forward.h>
+#include <wtf/Function.h>
 #include <wtf/FunctionDispatcher.h>
 #include <wtf/Lock.h>
 #include <wtf/Locker.h>
@@ -45,7 +46,6 @@
 #include <wtf/Ref.h>
 #include <wtf/RefCountedAndCanMakeWeakPtr.h>
 #include <wtf/RefPtr.h>
-#include <wtf/RunLoop.h>
 #include <wtf/ThreadSafeRefCounted.h>
 #include <wtf/TypeTraits.h>
 #include <wtf/Vector.h>

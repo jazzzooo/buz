@@ -42,6 +42,8 @@
 
 namespace JSC {
 
+inline PreferredPrimitiveType toPreferredPrimitiveType(JSGlobalObject*, JSValue);
+
 template <class Parent>
 inline JSCallbackObject<Parent>* JSCallbackObject<Parent>::asCallbackObject(JSValue value)
 {

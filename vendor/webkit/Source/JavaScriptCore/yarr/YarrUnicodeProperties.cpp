@@ -28,7 +28,6 @@
 
 #include "Yarr.h"
 #include "YarrPattern.h"
-#include <string_view>
 #include <wtf/text/WTFString.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN

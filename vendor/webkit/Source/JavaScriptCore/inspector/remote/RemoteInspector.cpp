@@ -33,7 +33,6 @@
 #include "RemoteInspectionTarget.h"
 #include "RemoteInspectorConstants.h"
 #include <wtf/MainThread.h>
-#include <wtf/text/WTFString.h>
 
 namespace Inspector {
 

@@ -32,7 +32,6 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
 #include "Options.h"
 #include <wtf/DataLog.h>
-#include <wtf/RawPointer.h>
 #include <wtf/TZoneMallocInlines.h>
 
 namespace JSC {

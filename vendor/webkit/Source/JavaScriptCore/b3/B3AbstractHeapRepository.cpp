@@ -47,6 +47,7 @@
 #include "JSGlobalObject.h"
 #include "JSGlobalProxy.h"
 #include "JSMap.h"
+#include "JSPromise.h"
 #include "JSPropertyNameEnumerator.h"
 #include "JSSet.h"
 #include "JSWeakMap.h"

@@ -822,8 +822,18 @@ namespace mpark {
                              integer_sequence<bool, Bs..., true>>;
 
 #ifdef MPARK_TYPE_PACK_ELEMENT
+#ifdef __clang__
     template <std::size_t I, typename... Ts>
     using type_pack_element_t = __type_pack_element<I, Ts...>;
+#else
+    template <std::size_t I, typename... Ts>
+    struct type_pack_element_impl {
+      using type = __type_pack_element<I, Ts...>;
+    };
+
+    template <std::size_t I, typename... Ts>
+    using type_pack_element_t = typename type_pack_element_impl<I, Ts...>::type;
+#endif
 #else
     template <std::size_t I, typename... Ts>
     struct type_pack_element_impl {
@@ -848,29 +858,6 @@ namespace mpark {
 
     template <std::size_t I, typename... Ts>
     using type_pack_element_t = typename type_pack_element<I, Ts...>::type;
-#endif
-
-#ifdef MPARK_TRIVIALITY_TYPE_TRAITS
-    using std::is_trivially_copy_constructible;
-    using std::is_trivially_move_constructible;
-    using std::is_trivially_copy_assignable;
-    using std::is_trivially_move_assignable;
-#else
-    template <typename T>
-    struct is_trivially_copy_constructible
-        : bool_constant<
-              std::is_copy_constructible<T>::value && __has_trivial_copy(T)> {};
-
-    template <typename T>
-    struct is_trivially_move_constructible : bool_constant<__is_trivial(T)> {};
-
-    template <typename T>
-    struct is_trivially_copy_assignable
-        : bool_constant<
-              std::is_copy_assignable<T>::value && __has_trivial_assign(T)> {};
-
-    template <typename T>
-    struct is_trivially_move_assignable : bool_constant<__is_trivial(T)> {};
 #endif
 
     template <typename T, bool>
@@ -1053,123 +1040,13 @@ namespace mpark {
 
     struct valueless_t {};
 
-    enum class Trait { TriviallyAvailable, Available, Unavailable };
-
-    template <typename T,
-              template <typename> class IsTriviallyAvailable,
-              template <typename> class IsAvailable>
-    inline constexpr Trait trait() {
-      return IsTriviallyAvailable<T>::value
-                 ? Trait::TriviallyAvailable
-                 : IsAvailable<T>::value ? Trait::Available
-                                         : Trait::Unavailable;
-    }
-
-#ifdef MPARK_CPP14_CONSTEXPR
-    template <typename... Traits>
-    inline constexpr Trait common_trait(Traits... traits_) {
-      Trait result = Trait::TriviallyAvailable;
-      lib::array<Trait, sizeof...(Traits)> traits = {{traits_...}};
-      for (std::size_t i = 0; i < sizeof...(Traits); ++i) {
-        Trait t = traits[i];
-        if (static_cast<int>(t) > static_cast<int>(result)) {
-          result = t;
-        }
-      }
-      return result;
-    }
-#else
-    inline constexpr Trait common_trait_impl(Trait result) { return result; }
-
-    template <typename... Traits>
-    inline constexpr Trait common_trait_impl(Trait result,
-                                             Trait t,
-                                             Traits... ts) {
-      return static_cast<int>(t) > static_cast<int>(result)
-                 ? common_trait_impl(t, ts...)
-                 : common_trait_impl(result, ts...);
-    }
-
-    template <typename... Traits>
-    inline constexpr Trait common_trait(Traits... ts) {
-      return common_trait_impl(Trait::TriviallyAvailable, ts...);
-    }
-#endif
-
-    template <typename... Ts>
-    struct traits {
-      static constexpr Trait copy_constructible_trait =
-          common_trait(trait<Ts,
-                             lib::is_trivially_copy_constructible,
-                             std::is_copy_constructible>()...);
-
-      static constexpr Trait move_constructible_trait =
-          common_trait(trait<Ts,
-                             lib::is_trivially_move_constructible,
-                             std::is_move_constructible>()...);
-
-      static constexpr Trait copy_assignable_trait =
-          common_trait(copy_constructible_trait,
-                       trait<Ts,
-                             lib::is_trivially_copy_assignable,
-                             std::is_copy_assignable>()...);
-
-      static constexpr Trait move_assignable_trait =
-          common_trait(move_constructible_trait,
-                       trait<Ts,
-                             lib::is_trivially_move_assignable,
-                             std::is_move_assignable>()...);
-
-      static constexpr Trait destructible_trait =
-          common_trait(trait<Ts,
-                             std::is_trivially_destructible,
-                             std::is_destructible>()...);
-    };
-
     namespace access {
-
-      struct recursive_union {
-#ifdef MPARK_RETURN_TYPE_DEDUCTION
-        template <typename V>
-        inline static constexpr auto &&get_alt(V &&v, in_place_index_t<0>) {
-          return lib::forward<V>(v).head_;
-        }
-
-        template <typename V, std::size_t I>
-        inline static constexpr auto &&get_alt(V &&v, in_place_index_t<I>) {
-          return get_alt(lib::forward<V>(v).tail_, in_place_index_t<I - 1>{});
-        }
-#else
-        template <std::size_t I, bool Dummy = true>
-        struct get_alt_impl {
-          template <typename V>
-          inline constexpr AUTO_REFREF operator()(V &&v) const
-            AUTO_REFREF_RETURN(get_alt_impl<I - 1>{}(lib::forward<V>(v).tail_))
-        };
-
-        template <bool Dummy>
-        struct get_alt_impl<0, Dummy> {
-          template <typename V>
-          inline constexpr AUTO_REFREF operator()(V &&v) const
-            AUTO_REFREF_RETURN(lib::forward<V>(v).head_)
-        };
-
-        template <typename V, std::size_t I>
-        inline static constexpr AUTO_REFREF get_alt(V &&v, in_place_index_t<I>)
-          AUTO_REFREF_RETURN(get_alt_impl<I>{}(lib::forward<V>(v)))
-#endif
-      };
 
       struct base {
         template <std::size_t I, typename V>
-        inline static constexpr AUTO_REFREF get_alt(V &&v)
-#ifdef _MSC_VER
-          AUTO_REFREF_RETURN(recursive_union::get_alt(
-              lib::forward<V>(v).data_, in_place_index_t<I>{}))
-#else
-          AUTO_REFREF_RETURN(recursive_union::get_alt(
-              data(lib::forward<V>(v)), in_place_index_t<I>{}))
-#endif
+        inline static constexpr decltype(auto) get_alt(V &&v) {
+          return as_base(lib::forward<V>(v)).template get_alt<I>();
+        }
       };
 
       struct variant {
@@ -1222,18 +1099,6 @@ namespace mpark {
           template <std::size_t B, typename F, typename... Vs>
           MPARK_ALWAYS_INLINE static constexpr R dispatch(
               F &&, typename ITs::type &&..., Vs &&...) {
-            MPARK_BUILTIN_UNREACHABLE;
-          }
-
-          template <std::size_t I, typename F, typename... Vs>
-          MPARK_ALWAYS_INLINE static constexpr R dispatch_case(F &&, Vs &&...) {
-            MPARK_BUILTIN_UNREACHABLE;
-          }
-
-          template <std::size_t B, typename F, typename... Vs>
-          MPARK_ALWAYS_INLINE static constexpr R dispatch_at(std::size_t,
-                                                             F &&,
-                                                             Vs &&...) {
             MPARK_BUILTIN_UNREACHABLE;
           }
         };
@@ -1312,74 +1177,6 @@ namespace mpark {
 
 #undef MPARK_DEFAULT
 #undef MPARK_DISPATCH
-          }
-
-          template <std::size_t I, typename F, typename... Vs>
-          MPARK_ALWAYS_INLINE static constexpr R dispatch_case(F &&f,
-                                                               Vs &&... vs) {
-            using Expected = R;
-            using Actual = decltype(
-                lib::invoke(lib::forward<F>(f),
-                            access::base::get_alt<I>(lib::forward<Vs>(vs))...));
-            return visit_return_type_check<Expected, Actual>::invoke(
-                lib::forward<F>(f),
-                access::base::get_alt<I>(lib::forward<Vs>(vs))...);
-          }
-
-          template <std::size_t B, typename F, typename V, typename... Vs>
-          MPARK_ALWAYS_INLINE static constexpr R dispatch_at(std::size_t index,
-                                                             F &&f,
-                                                             V &&v,
-                                                             Vs &&... vs) {
-            static_assert(lib::all<(lib::decay_t<V>::size() ==
-                                    lib::decay_t<Vs>::size())...>::value,
-                          "all of the variants must be the same size.");
-#define MPARK_DISPATCH_AT(I)                                               \
-  dispatcher<(I < lib::decay_t<V>::size()), R>::template dispatch_case<I>( \
-      lib::forward<F>(f), lib::forward<V>(v), lib::forward<Vs>(vs)...)
-
-#define MPARK_DEFAULT(I)                                                 \
-  dispatcher<(I < lib::decay_t<V>::size()), R>::template dispatch_at<I>( \
-      index, lib::forward<F>(f), lib::forward<V>(v), lib::forward<Vs>(vs)...)
-
-            switch (index) {
-              case B + 0: return MPARK_DISPATCH_AT(B + 0);
-              case B + 1: return MPARK_DISPATCH_AT(B + 1);
-              case B + 2: return MPARK_DISPATCH_AT(B + 2);
-              case B + 3: return MPARK_DISPATCH_AT(B + 3);
-              case B + 4: return MPARK_DISPATCH_AT(B + 4);
-              case B + 5: return MPARK_DISPATCH_AT(B + 5);
-              case B + 6: return MPARK_DISPATCH_AT(B + 6);
-              case B + 7: return MPARK_DISPATCH_AT(B + 7);
-              case B + 8: return MPARK_DISPATCH_AT(B + 8);
-              case B + 9: return MPARK_DISPATCH_AT(B + 9);
-              case B + 10: return MPARK_DISPATCH_AT(B + 10);
-              case B + 11: return MPARK_DISPATCH_AT(B + 11);
-              case B + 12: return MPARK_DISPATCH_AT(B + 12);
-              case B + 13: return MPARK_DISPATCH_AT(B + 13);
-              case B + 14: return MPARK_DISPATCH_AT(B + 14);
-              case B + 15: return MPARK_DISPATCH_AT(B + 15);
-              case B + 16: return MPARK_DISPATCH_AT(B + 16);
-              case B + 17: return MPARK_DISPATCH_AT(B + 17);
-              case B + 18: return MPARK_DISPATCH_AT(B + 18);
-              case B + 19: return MPARK_DISPATCH_AT(B + 19);
-              case B + 20: return MPARK_DISPATCH_AT(B + 20);
-              case B + 21: return MPARK_DISPATCH_AT(B + 21);
-              case B + 22: return MPARK_DISPATCH_AT(B + 22);
-              case B + 23: return MPARK_DISPATCH_AT(B + 23);
-              case B + 24: return MPARK_DISPATCH_AT(B + 24);
-              case B + 25: return MPARK_DISPATCH_AT(B + 25);
-              case B + 26: return MPARK_DISPATCH_AT(B + 26);
-              case B + 27: return MPARK_DISPATCH_AT(B + 27);
-              case B + 28: return MPARK_DISPATCH_AT(B + 28);
-              case B + 29: return MPARK_DISPATCH_AT(B + 29);
-              case B + 30: return MPARK_DISPATCH_AT(B + 30);
-              case B + 31: return MPARK_DISPATCH_AT(B + 31);
-              default: return MPARK_DEFAULT(B + 32);
-            }
-
-#undef MPARK_DEFAULT
-#undef MPARK_DISPATCH_AT
           }
         };
 #else
@@ -1461,36 +1258,6 @@ namespace mpark {
                   lib::index_sequence<>,
                   lib::make_index_sequence<lib::decay_t<Vs>::size()>...>{}())
 #endif
-
-        template <typename F, typename... Vs>
-        struct make_fdiagonal_impl {
-          template <std::size_t I>
-          inline static constexpr dispatch_result_t<F, Vs...> dispatch(
-              F &&f, Vs &&... vs) {
-            using Expected = dispatch_result_t<F, Vs...>;
-            using Actual = decltype(
-                lib::invoke(lib::forward<F>(f),
-                            access::base::get_alt<I>(lib::forward<Vs>(vs))...));
-            return visit_return_type_check<Expected, Actual>::invoke(
-                lib::forward<F>(f),
-                access::base::get_alt<I>(lib::forward<Vs>(vs))...);
-          }
-
-          template <std::size_t... Is>
-          inline static constexpr AUTO impl(lib::index_sequence<Is...>)
-            AUTO_RETURN(make_farray(&dispatch<Is>...))
-        };
-
-        template <typename F, typename V, typename... Vs>
-        inline static constexpr auto make_fdiagonal()
-            -> decltype(make_fdiagonal_impl<F, V, Vs...>::impl(
-                lib::make_index_sequence<lib::decay_t<V>::size()>{})) {
-          static_assert(lib::all<(lib::decay_t<V>::size() ==
-                                  lib::decay_t<Vs>::size())...>::value,
-                        "all of the variants must be the same size.");
-          return make_fdiagonal_impl<F, V, Vs...>::impl(
-              lib::make_index_sequence<lib::decay_t<V>::size()>{});
-        }
 #endif
       };
 
@@ -1507,22 +1274,24 @@ namespace mpark {
 
       template <typename F, typename... Vs>
       constexpr fmatrix_t<F, Vs...> fmatrix<F, Vs...>::value;
-
-      template <typename F, typename... Vs>
-      using fdiagonal_t = decltype(base::make_fdiagonal<F, Vs...>());
-
-      template <typename F, typename... Vs>
-      struct fdiagonal {
-        static constexpr fdiagonal_t<F, Vs...> value =
-            base::make_fdiagonal<F, Vs...>();
-      };
-
-      template <typename F, typename... Vs>
-      constexpr fdiagonal_t<F, Vs...> fdiagonal<F, Vs...>::value;
 #endif
 
+      template <typename R>
+      inline constexpr bool can_fold_result_v = std::is_void_v<R>
+          || (!std::is_reference_v<R>
+              && std::is_default_constructible_v<R>
+              && std::is_move_assignable_v<R>);
+
       struct alt {
+        template <typename Visitor, typename V>
+          requires can_fold_result_v<base::dispatch_result_t<Visitor, V>>
+        inline static constexpr decltype(auto) visit_alt(Visitor &&visitor, V &&v) {
+          return visit_alt_at(v.index(), lib::forward<Visitor>(visitor), lib::forward<V>(v));
+        }
+
         template <typename Visitor, typename... Vs>
+          requires (sizeof...(Vs) != 1
+                    || !can_fold_result_v<base::dispatch_result_t<Visitor, Vs...>>)
         inline static constexpr DECLTYPE_AUTO visit_alt(Visitor &&visitor,
                                                         Vs &&... vs)
 #ifdef MPARK_VARIANT_SWITCH_VISIT
@@ -1549,32 +1318,86 @@ namespace mpark {
 #endif
 
         template <typename Visitor, typename... Vs>
-        inline static constexpr DECLTYPE_AUTO visit_alt_at(std::size_t index,
-                                                           Visitor &&visitor,
-                                                           Vs &&... vs)
-#ifdef MPARK_VARIANT_SWITCH_VISIT
-          DECLTYPE_AUTO_RETURN(
-              base::dispatcher<
-                  true,
-                  base::dispatch_result_t<Visitor,
-                                          decltype(as_base(
-                                              lib::forward<Vs>(vs)))...>>::
-                  template dispatch_at<0>(index,
-                                          lib::forward<Visitor>(visitor),
-                                          as_base(lib::forward<Vs>(vs))...))
-#elif !defined(_MSC_VER) || _MSC_VER >= 1910
-          DECLTYPE_AUTO_RETURN(base::at(
-              fdiagonal<Visitor &&,
-                        decltype(as_base(lib::forward<Vs>(vs)))...>::value,
-              index)(lib::forward<Visitor>(visitor),
-                     as_base(lib::forward<Vs>(vs))...))
+        inline static constexpr base::dispatch_result_t<Visitor, Vs...>
+        visit_alt_at(std::size_t index, Visitor &&visitor, Vs &&... vs) {
+#if defined(__GNUC__) && !defined(__clang__)
+          constexpr std::size_t N = lib::decay_t<
+              lib::type_pack_element_t<0, Vs...>>::size();
+          return switch_at<0, N>(index, lib::forward<Visitor>(visitor),
+                                 lib::forward<Vs>(vs)...);
 #else
-          DECLTYPE_AUTO_RETURN(base::at(
-              base::make_fdiagonal<Visitor &&,
-                        decltype(as_base(lib::forward<Vs>(vs)))...>(),
-              index)(lib::forward<Visitor>(visitor),
-                     as_base(lib::forward<Vs>(vs))...))
+          return fold_at(std::make_index_sequence<lib::decay_t<
+                             lib::type_pack_element_t<0, Vs...>>::size()>{},
+                         index, lib::forward<Visitor>(visitor),
+                         lib::forward<Vs>(vs)...);
 #endif
+        }
+
+      private:
+        template <std::size_t I, typename Visitor, typename... Vs>
+        inline static constexpr base::dispatch_result_t<Visitor, Vs...>
+        step_at(Visitor &&visitor, Vs &&... vs) {
+          return lib::invoke(lib::forward<Visitor>(visitor),
+                             access::base::get_alt<I>(as_base(lib::forward<Vs>(vs)))...);
+        }
+
+#if defined(__GNUC__) && !defined(__clang__)
+        // GCC does not reliably lower the comma-fold in fold_at() to a jump
+        // table and instead emits an O(N) cmp/branch cascade, which badly hurts
+        // visits over large variants such as DisplayList::Item (60+
+        // alternatives). This is target-dependent: GCC 14 recovers a jump table
+        // on x86_64 but not on aarch64, where even 14.2 emits the cascade, so
+        // gate on the compiler rather than a version. An explicit switch is
+        // lowered to a jump table everywhere. Clang recovers a jump table from
+        // fold_at() on its own, so it keeps the fold (and its compile-time
+        // benefit).
+        template <std::size_t Base, std::size_t N,
+                  typename Visitor, typename... Vs>
+        inline static constexpr base::dispatch_result_t<Visitor, Vs...>
+        switch_at(std::size_t index, Visitor &&visitor, Vs &&... vs) {
+#define MPARK_CASE(I)                                                          \
+          case Base + I:                                                       \
+            if constexpr (Base + I < N)                                        \
+              return step_at<(Base + I < N ? Base + I : 0)>(                   \
+                  lib::forward<Visitor>(visitor), lib::forward<Vs>(vs)...);    \
+            else                                                               \
+              MPARK_BUILTIN_UNREACHABLE;
+          switch (index) {
+            MPARK_CASE(0)  MPARK_CASE(1)  MPARK_CASE(2)  MPARK_CASE(3)
+            MPARK_CASE(4)  MPARK_CASE(5)  MPARK_CASE(6)  MPARK_CASE(7)
+            MPARK_CASE(8)  MPARK_CASE(9)  MPARK_CASE(10) MPARK_CASE(11)
+            MPARK_CASE(12) MPARK_CASE(13) MPARK_CASE(14) MPARK_CASE(15)
+            MPARK_CASE(16) MPARK_CASE(17) MPARK_CASE(18) MPARK_CASE(19)
+            MPARK_CASE(20) MPARK_CASE(21) MPARK_CASE(22) MPARK_CASE(23)
+            MPARK_CASE(24) MPARK_CASE(25) MPARK_CASE(26) MPARK_CASE(27)
+            MPARK_CASE(28) MPARK_CASE(29) MPARK_CASE(30) MPARK_CASE(31)
+            default:
+              if constexpr (Base + 32 < N)
+                return switch_at<Base + 32, N>(
+                    index, lib::forward<Visitor>(visitor),
+                    lib::forward<Vs>(vs)...);
+              else
+                MPARK_BUILTIN_UNREACHABLE;
+          }
+#undef MPARK_CASE
+        }
+#endif
+
+        template <std::size_t... Is, typename Visitor, typename... Vs>
+        inline static constexpr base::dispatch_result_t<Visitor, Vs...>
+        fold_at(std::index_sequence<Is...>, std::size_t index,
+                Visitor &&visitor, Vs &&... vs) {
+          using R = base::dispatch_result_t<Visitor, Vs...>;
+          if constexpr (std::is_void_v<R>)
+            ((index == Is ? step_at<Is>(lib::forward<Visitor>(visitor),
+                                        lib::forward<Vs>(vs)...) : void()), ...);
+          else {
+            R r{};
+            ((index == Is ? void(r = step_at<Is>(lib::forward<Visitor>(visitor),
+                                                 lib::forward<Vs>(vs)...)) : void()), ...);
+            return r;
+          }
+        }
       };
 
       struct variant {
@@ -1669,54 +1492,6 @@ namespace mpark {
       T value;
     };
 
-    template <Trait DestructibleTrait, std::size_t Index, typename... Ts>
-    union recursive_union;
-
-    template <Trait DestructibleTrait, std::size_t Index>
-    union recursive_union<DestructibleTrait, Index> {};
-
-#define MPARK_VARIANT_RECURSIVE_UNION(destructible_trait, destructor)      \
-  template <std::size_t Index, typename T, typename... Ts>                 \
-  union recursive_union<destructible_trait, Index, T, Ts...> {             \
-    public:                                                                \
-    inline explicit constexpr recursive_union(valueless_t) noexcept        \
-        : dummy_{} {}                                                      \
-                                                                           \
-    template <typename... Args>                                            \
-    inline explicit constexpr recursive_union(in_place_index_t<0>,         \
-                                              Args &&... args)             \
-        : head_(in_place_t{}, lib::forward<Args>(args)...) {}              \
-                                                                           \
-    template <std::size_t I, typename... Args>                             \
-    inline explicit constexpr recursive_union(in_place_index_t<I>,         \
-                                              Args &&... args)             \
-        : tail_(in_place_index_t<I - 1>{}, lib::forward<Args>(args)...) {} \
-                                                                           \
-    recursive_union(const recursive_union &) = default;                    \
-    recursive_union(recursive_union &&) = default;                         \
-                                                                           \
-    destructor                                                             \
-                                                                           \
-    recursive_union &operator=(const recursive_union &) = default;         \
-    recursive_union &operator=(recursive_union &&) = default;              \
-                                                                           \
-    private:                                                               \
-    char dummy_;                                                           \
-    alt<Index, T> head_;                                                   \
-    recursive_union<destructible_trait, Index + 1, Ts...> tail_;           \
-                                                                           \
-    friend struct access::recursive_union;                                 \
-  }
-
-    MPARK_VARIANT_RECURSIVE_UNION(Trait::TriviallyAvailable,
-                                  ~recursive_union() = default;);
-    MPARK_VARIANT_RECURSIVE_UNION(Trait::Available,
-                                  ~recursive_union() {});
-    MPARK_VARIANT_RECURSIVE_UNION(Trait::Unavailable,
-                                  ~recursive_union() = delete;);
-
-#undef MPARK_VARIANT_RECURSIVE_UNION
-
     template <typename... Ts>
     using index_t = typename std::conditional<
             sizeof...(Ts) < (std::numeric_limits<unsigned char>::max)(),
@@ -1727,17 +1502,29 @@ namespace mpark {
                 unsigned int>::type
             >::type;
 
-    template <Trait DestructibleTrait, typename... Ts>
+    template <typename... Ts>
     class base {
       public:
-      inline explicit constexpr base(valueless_t tag) noexcept
-          : data_(tag), index_(static_cast<index_t<Ts...>>(-1)) {}
+      template <std::size_t I>
+      using alt_at = alt<I, lib::type_pack_element_t<I, Ts...>>;
+
+      inline explicit constexpr base(valueless_t) noexcept
+          : index_(static_cast<index_t<Ts...>>(-1)) {}
 
       template <std::size_t I, typename... Args>
       inline explicit constexpr base(in_place_index_t<I>, Args &&... args)
-          : data_(in_place_index_t<I>{}, lib::forward<Args>(args)...),
-            index_(I) {}
+          : index_(I) {
+        using T = lib::type_pack_element_t<I, Ts...>;
+        if constexpr (!(std::is_empty_v<T> && __is_trivially_constructible(T, Args...)))
+          ::new (static_cast<void *>(data_.storage_))
+              alt_at<I>(in_place_t{}, lib::forward<Args>(args)...);
+      }
 
+// GCC 14 through 16 emit a bogus -Wuninitialized for index_ when these
+// accessors are inlined into HashTable bucket teardown (e.g.
+// HashMap<GenericHashKey<...>, ...>::remove()), even though index_ is set by
+// every base constructor. Clang and GCC <= 13 are unaffected.
+IGNORE_GCC_WARNINGS_BEGIN("uninitialized")
       inline constexpr bool valueless_by_exception() const noexcept {
         return index_ == static_cast<index_t<Ts...>>(-1);
       }
@@ -1745,21 +1532,116 @@ namespace mpark {
       inline constexpr std::size_t index() const noexcept {
         return valueless_by_exception() ? variant_npos : index_;
       }
+IGNORE_GCC_WARNINGS_END
+
+      template <std::size_t I> inline constexpr alt_at<I> &get_alt() & noexcept {
+        return *std::launder(reinterpret_cast<alt_at<I> *>(data_.storage_));
+      }
+      template <std::size_t I> inline constexpr const alt_at<I> &get_alt() const & noexcept {
+        return *std::launder(reinterpret_cast<const alt_at<I> *>(data_.storage_));
+      }
+      template <std::size_t I> inline constexpr alt_at<I> &&get_alt() && noexcept {
+        return lib::move(*std::launder(reinterpret_cast<alt_at<I> *>(data_.storage_)));
+      }
+      template <std::size_t I> inline constexpr const alt_at<I> &&get_alt() const && noexcept {
+        return lib::move(*std::launder(reinterpret_cast<const alt_at<I> *>(data_.storage_)));
+      }
+
+      inline static constexpr std::size_t size() { return sizeof...(Ts); }
+
+      inline void destroy() noexcept {
+        if constexpr (!(... && std::is_trivially_destructible_v<Ts>))
+          if (!valueless_by_exception())
+            visitation::alt::visit_alt_at(index_,
+                [](auto &a) noexcept { using A = lib::decay_t<decltype(a)>; a.~A(); }, *this);
+        index_ = static_cast<index_t<Ts...>>(-1);
+      }
+
+      template <std::size_t I, typename... Args>
+      inline static auto &construct_alt(base &self, Args &&... args) {
+        auto *result = ::new (static_cast<void *>(self.data_.storage_))
+            alt_at<I>(in_place_t{}, lib::forward<Args>(args)...);
+        return result->value;
+      }
+
+      template <typename Rhs>
+      inline static void generic_construct(base &lhs, Rhs &&rhs) {
+        lhs.destroy();
+        if (!rhs.valueless_by_exception()) {
+          visitation::alt::visit_alt_at(rhs.index_,
+              [&lhs](auto &&rhs_alt) {
+                using A = lib::decay_t<decltype(rhs_alt)>;
+                ::new (static_cast<void *>(lhs.data_.storage_))
+                    A(in_place_t{}, lib::forward<decltype(rhs_alt)>(rhs_alt).value);
+              },
+              lib::forward<Rhs>(rhs));
+          lhs.index_ = rhs.index_;
+        }
+      }
+
+      template <std::size_t I, typename... Args>
+      inline auto &emplace(Args &&... args) {
+        destroy();
+        auto &result = construct_alt<I>(*this, lib::forward<Args>(args)...);
+        index_ = I;
+        return result;
+      }
+
+      template <std::size_t I, typename T, typename Arg>
+      inline void assign_alt(alt<I, T> &a, Arg &&arg) {
+        if (index() == I)
+          a.value = lib::forward<Arg>(arg);
+        else if constexpr (std::is_nothrow_constructible_v<T, Arg> ||
+                           !std::is_nothrow_move_constructible_v<T>)
+          emplace<I>(lib::forward<Arg>(arg));
+        else
+          emplace<I>(T(lib::forward<Arg>(arg)));
+      }
+
+      template <typename That>
+      inline void generic_assign(That &&that) {
+        if (valueless_by_exception() && that.valueless_by_exception()) {
+          // do nothing.
+        } else if (that.valueless_by_exception()) {
+          destroy();
+        } else {
+          visitation::alt::visit_alt_at(that.index(),
+              [this](auto &this_alt, auto &&that_alt) {
+                this->assign_alt(this_alt, lib::forward<decltype(that_alt)>(that_alt).value);
+              },
+              *this, lib::forward<That>(that));
+        }
+      }
+
+      template <std::size_t I, typename Arg>
+      inline void assign(Arg &&arg) {
+        assign_alt(get_alt<I>(), lib::forward<Arg>(arg));
+      }
 
       protected:
-      using data_t = recursive_union<DestructibleTrait, 0, Ts...>;
+      struct data_t {
+        static constexpr std::size_t size_ = []{
+          std::size_t s = 1;
+          ((s = sizeof(Ts) > s ? sizeof(Ts) : s), ...);
+          return s;
+        }();
+        static constexpr std::size_t align_ = []{
+          std::size_t a = 1;
+          ((a = alignof(Ts) > a ? alignof(Ts) : a), ...);
+          return a;
+        }();
+        constexpr data_t() noexcept {
+          if consteval {
+            for (auto& b : storage_) b = 0;
+          }
+        }
+        alignas(align_) unsigned char storage_[size_];
+      };
 
       friend inline constexpr base &as_base(base &b) { return b; }
       friend inline constexpr const base &as_base(const base &b) { return b; }
       friend inline constexpr base &&as_base(base &&b) { return lib::move(b); }
       friend inline constexpr const base &&as_base(const base &&b) { return lib::move(b); }
-
-      friend inline constexpr data_t &data(base &b) { return b.data_; }
-      friend inline constexpr const data_t &data(const base &b) { return b.data_; }
-      friend inline constexpr data_t &&data(base &&b) { return lib::move(b).data_; }
-      friend inline constexpr const data_t &&data(const base &&b) { return lib::move(b).data_; }
-
-      inline static constexpr std::size_t size() { return sizeof...(Ts); }
 
       data_t data_;
       index_t<Ts...> index_;
@@ -1768,411 +1650,93 @@ namespace mpark {
       friend struct visitation::base;
     };
 
-    struct dtor {
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4100)
-#endif
-      template <typename Alt>
-      inline void operator()(Alt &alt) const noexcept { alt.~Alt(); }
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
-    };
+    template <typename... Ts>
+    inline constexpr bool variant_is_trivial_v =
+           (... && std::is_trivially_destructible_v<Ts>)
+        && (... && std::is_trivially_copy_constructible_v<Ts>)
+        && (... && std::is_trivially_move_constructible_v<Ts>)
+        && (... && std::is_trivially_copy_assignable_v<Ts>)
+        && (... && std::is_trivially_move_assignable_v<Ts>);
 
-#if !defined(_MSC_VER) || _MSC_VER >= 1910
-#define MPARK_INHERITING_CTOR(type, base) using base::base;
-#else
-#define MPARK_INHERITING_CTOR(type, base)         \
-  template <typename... Args>                     \
-  inline explicit constexpr type(Args &&... args) \
-      : base(lib::forward<Args>(args)...) {}
-#endif
-
-    template <typename Traits, Trait = Traits::destructible_trait>
-    class destructor;
-
-#define MPARK_VARIANT_DESTRUCTOR(destructible_trait, definition, destroy) \
-  template <typename... Ts>                                               \
-  class destructor<traits<Ts...>, destructible_trait>                     \
-      : public base<destructible_trait, Ts...> {                          \
-    using super = base<destructible_trait, Ts...>;                        \
-                                                                          \
-    public:                                                               \
-    MPARK_INHERITING_CTOR(destructor, super)                              \
-    using super::operator=;                                               \
-                                                                          \
-    destructor(const destructor &) = default;                             \
-    destructor(destructor &&) = default;                                  \
-    definition                                                            \
-    destructor &operator=(const destructor &) = default;                  \
-    destructor &operator=(destructor &&) = default;                       \
-                                                                          \
-    protected:                                                            \
-    destroy                                                               \
-  }
-
-    MPARK_VARIANT_DESTRUCTOR(
-        Trait::TriviallyAvailable,
-        ~destructor() = default;,
-        inline void destroy() noexcept {
-          this->index_ = static_cast<index_t<Ts...>>(-1);
-        });
-
-    MPARK_VARIANT_DESTRUCTOR(
-        Trait::Available,
-        ~destructor() { destroy(); },
-        inline void destroy() noexcept {
-          if (!this->valueless_by_exception()) {
-            visitation::alt::visit_alt(dtor{}, *this);
-          }
-          this->index_ = static_cast<index_t<Ts...>>(-1);
-        });
-
-    MPARK_VARIANT_DESTRUCTOR(
-        Trait::Unavailable,
-        ~destructor() = delete;,
-        inline void destroy() noexcept = delete;);
-
-#undef MPARK_VARIANT_DESTRUCTOR
-
-    template <typename Traits>
-    class constructor : public destructor<Traits> {
-      using super = destructor<Traits>;
-
-      public:
-      MPARK_INHERITING_CTOR(constructor, super)
-      using super::operator=;
-
-      protected:
-#ifndef MPARK_GENERIC_LAMBDAS
-      struct ctor {
-        template <typename LhsAlt, typename RhsAlt>
-        inline void operator()(LhsAlt &lhs_alt, RhsAlt &&rhs_alt) const {
-          constructor::construct_alt(lhs_alt,
-                                     lib::forward<RhsAlt>(rhs_alt).value);
-        }
-      };
-#endif
-
-      template <std::size_t I, typename T, typename... Args>
-      inline static T &construct_alt(alt<I, T> &a, Args &&... args) {
-        auto *result = ::new (static_cast<void *>(lib::addressof(a)))
-            alt<I, T>(in_place_t{}, lib::forward<Args>(args)...);
-        return result->value;
-      }
-
-      template <typename Rhs>
-      inline static void generic_construct(constructor &lhs, Rhs &&rhs) {
-        lhs.destroy();
-        if (!rhs.valueless_by_exception()) {
-          visitation::alt::visit_alt_at(
-              rhs.index(),
-#ifdef MPARK_GENERIC_LAMBDAS
-              [](auto &lhs_alt, auto &&rhs_alt) {
-                constructor::construct_alt(
-                    lhs_alt, lib::forward<decltype(rhs_alt)>(rhs_alt).value);
-              }
-#else
-              ctor{}
-#endif
-              ,
-              lhs,
-              lib::forward<Rhs>(rhs));
-          lhs.index_ = rhs.index_;
-        }
-      }
-    };
-
-    template <typename Traits, Trait = Traits::move_constructible_trait>
-    class move_constructor;
-
-#define MPARK_VARIANT_MOVE_CONSTRUCTOR(move_constructible_trait, definition) \
-  template <typename... Ts>                                                  \
-  class move_constructor<traits<Ts...>, move_constructible_trait>            \
-      : public constructor<traits<Ts...>> {                                  \
-    using super = constructor<traits<Ts...>>;                                \
-                                                                             \
-    public:                                                                  \
-    MPARK_INHERITING_CTOR(move_constructor, super)                           \
-    using super::operator=;                                                  \
-                                                                             \
-    move_constructor(const move_constructor &) = default;                    \
-    definition                                                               \
-    ~move_constructor() = default;                                           \
-    move_constructor &operator=(const move_constructor &) = default;         \
-    move_constructor &operator=(move_constructor &&) = default;              \
-  }
-
-    MPARK_VARIANT_MOVE_CONSTRUCTOR(
-        Trait::TriviallyAvailable,
-        move_constructor(move_constructor &&that) = default;);
-
-    MPARK_VARIANT_MOVE_CONSTRUCTOR(
-        Trait::Available,
-        move_constructor(move_constructor &&that) noexcept(
-            lib::all<std::is_nothrow_move_constructible<Ts>::value...>::value)
-            : move_constructor(valueless_t{}) {
-          this->generic_construct(*this, lib::move(that));
-        });
-
-    MPARK_VARIANT_MOVE_CONSTRUCTOR(
-        Trait::Unavailable,
-        move_constructor(move_constructor &&) = delete;);
-
-#undef MPARK_VARIANT_MOVE_CONSTRUCTOR
-
-    template <typename Traits, Trait = Traits::copy_constructible_trait>
-    class copy_constructor;
-
-#define MPARK_VARIANT_COPY_CONSTRUCTOR(copy_constructible_trait, definition) \
-  template <typename... Ts>                                                  \
-  class copy_constructor<traits<Ts...>, copy_constructible_trait>            \
-      : public move_constructor<traits<Ts...>> {                             \
-    using super = move_constructor<traits<Ts...>>;                           \
-                                                                             \
-    public:                                                                  \
-    MPARK_INHERITING_CTOR(copy_constructor, super)                           \
-    using super::operator=;                                                  \
-                                                                             \
-    definition                                                               \
-    copy_constructor(copy_constructor &&) = default;                         \
-    ~copy_constructor() = default;                                           \
-    copy_constructor &operator=(const copy_constructor &) = default;         \
-    copy_constructor &operator=(copy_constructor &&) = default;              \
-  }
-
-    MPARK_VARIANT_COPY_CONSTRUCTOR(
-        Trait::TriviallyAvailable,
-        copy_constructor(const copy_constructor &that) = default;);
-
-    MPARK_VARIANT_COPY_CONSTRUCTOR(
-        Trait::Available,
-        copy_constructor(const copy_constructor &that)
-            : copy_constructor(valueless_t{}) {
-          this->generic_construct(*this, that);
-        });
-
-    MPARK_VARIANT_COPY_CONSTRUCTOR(
-        Trait::Unavailable,
-        copy_constructor(const copy_constructor &) = delete;);
-
-#undef MPARK_VARIANT_COPY_CONSTRUCTOR
-
-    template <typename Traits>
-    class assignment : public copy_constructor<Traits> {
-      using super = copy_constructor<Traits>;
-
-      public:
-      MPARK_INHERITING_CTOR(assignment, super)
-      using super::operator=;
-
-      template <std::size_t I, typename... Args>
-      inline /* auto & */ auto emplace(Args &&... args)
-          -> decltype(this->construct_alt(access::base::get_alt<I>(*this),
-                                          lib::forward<Args>(args)...)) {
-        this->destroy();
-        auto &result = this->construct_alt(access::base::get_alt<I>(*this),
-                                           lib::forward<Args>(args)...);
-        this->index_ = I;
-        return result;
-      }
-
-      protected:
-#ifndef MPARK_GENERIC_LAMBDAS
-      template <typename That>
-      struct assigner {
-        template <typename ThisAlt, typename ThatAlt>
-        inline void operator()(ThisAlt &this_alt, ThatAlt &&that_alt) const {
-          self->assign_alt(this_alt, lib::forward<ThatAlt>(that_alt).value);
-        }
-        assignment *self;
-      };
-#endif
-
-      template <std::size_t I, typename T, typename Arg>
-      inline void assign_alt(alt<I, T> &a, Arg &&arg) {
-        if (this->index() == I) {
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4244)
-#endif
-          a.value = lib::forward<Arg>(arg);
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
-        } else {
-          struct {
-            void operator()(std::true_type) const {
-              this_->emplace<I>(lib::forward<Arg>(arg_));
-            }
-            void operator()(std::false_type) const {
-              this_->emplace<I>(T(lib::forward<Arg>(arg_)));
-            }
-            assignment *this_;
-            Arg &&arg_;
-          } impl{this, lib::forward<Arg>(arg)};
-          impl(lib::bool_constant<
-                   std::is_nothrow_constructible<T, Arg>::value ||
-                   !std::is_nothrow_move_constructible<T>::value>{});
-        }
-      }
-
-      template <typename That>
-      inline void generic_assign(That &&that) {
-        if (this->valueless_by_exception() && that.valueless_by_exception()) {
-          // do nothing.
-        } else if (that.valueless_by_exception()) {
-          this->destroy();
-        } else {
-          visitation::alt::visit_alt_at(
-              that.index(),
-#ifdef MPARK_GENERIC_LAMBDAS
-              [this](auto &this_alt, auto &&that_alt) {
-                this->assign_alt(
-                    this_alt, lib::forward<decltype(that_alt)>(that_alt).value);
-              }
-#else
-              assigner<That>{this}
-#endif
-              ,
-              *this,
-              lib::forward<That>(that));
-        }
-      }
-    };
-
-    template <typename Traits, Trait = Traits::move_assignable_trait>
-    class move_assignment;
-
-#define MPARK_VARIANT_MOVE_ASSIGNMENT(move_assignable_trait, definition) \
-  template <typename... Ts>                                              \
-  class move_assignment<traits<Ts...>, move_assignable_trait>            \
-      : public assignment<traits<Ts...>> {                               \
-    using super = assignment<traits<Ts...>>;                             \
-                                                                         \
-    public:                                                              \
-    MPARK_INHERITING_CTOR(move_assignment, super)                        \
-    using super::operator=;                                              \
-                                                                         \
-    move_assignment(const move_assignment &) = default;                  \
-    move_assignment(move_assignment &&) = default;                       \
-    ~move_assignment() = default;                                        \
-    move_assignment &operator=(const move_assignment &) = default;       \
-    definition                                                           \
-  }
-
-    MPARK_VARIANT_MOVE_ASSIGNMENT(
-        Trait::TriviallyAvailable,
-        move_assignment &operator=(move_assignment &&that) = default;);
-
-    MPARK_VARIANT_MOVE_ASSIGNMENT(
-        Trait::Available,
-        move_assignment &
-        operator=(move_assignment &&that) noexcept(
-            lib::all<(std::is_nothrow_move_constructible<Ts>::value &&
-                      std::is_nothrow_move_assignable<Ts>::value)...>::value) {
-          this->generic_assign(lib::move(that));
-          return *this;
-        });
-
-    MPARK_VARIANT_MOVE_ASSIGNMENT(
-        Trait::Unavailable,
-        move_assignment &operator=(move_assignment &&) = delete;);
-
-#undef MPARK_VARIANT_MOVE_ASSIGNMENT
-
-    template <typename Traits, Trait = Traits::copy_assignable_trait>
-    class copy_assignment;
-
-#define MPARK_VARIANT_COPY_ASSIGNMENT(copy_assignable_trait, definition) \
-  template <typename... Ts>                                              \
-  class copy_assignment<traits<Ts...>, copy_assignable_trait>            \
-      : public move_assignment<traits<Ts...>> {                          \
-    using super = move_assignment<traits<Ts...>>;                        \
-                                                                         \
-    public:                                                              \
-    MPARK_INHERITING_CTOR(copy_assignment, super)                        \
-    using super::operator=;                                              \
-                                                                         \
-    copy_assignment(const copy_assignment &) = default;                  \
-    copy_assignment(copy_assignment &&) = default;                       \
-    ~copy_assignment() = default;                                        \
-    definition                                                           \
-    copy_assignment &operator=(copy_assignment &&) = default;            \
-  }
-
-    MPARK_VARIANT_COPY_ASSIGNMENT(
-        Trait::TriviallyAvailable,
-        copy_assignment &operator=(const copy_assignment &that) = default;);
-
-    MPARK_VARIANT_COPY_ASSIGNMENT(
-        Trait::Available,
-        copy_assignment &operator=(const copy_assignment &that) {
-          this->generic_assign(that);
-          return *this;
-        });
-
-    MPARK_VARIANT_COPY_ASSIGNMENT(
-        Trait::Unavailable,
-        copy_assignment &operator=(const copy_assignment &) = delete;);
-
-#undef MPARK_VARIANT_COPY_ASSIGNMENT
+    template <bool Trivial, typename... Ts>
+    class impl_smf;
 
     template <typename... Ts>
-    class impl : public copy_assignment<traits<Ts...>> {
-      using super = copy_assignment<traits<Ts...>>;
+    class impl_smf<true, Ts...> : public base<Ts...> {
+      public:
+      using base<Ts...>::base;
+
+      inline void swap(impl_smf &that) noexcept { std::swap(*this, that); }
+    };
+
+    template <typename... Ts>
+    class impl_smf<false, Ts...> : public base<Ts...> {
+      static_assert((... && std::is_destructible_v<Ts>),
+                    "Variant<Ts...>: every alternative must be destructible");
 
       public:
-      MPARK_INHERITING_CTOR(impl, super)
-      using super::operator=;
+      using base<Ts...>::base;
 
-      impl(const impl&) = default;
-      impl(impl&&) = default;
-      ~impl() = default;
-      impl &operator=(const impl &) = default;
-      impl &operator=(impl &&) = default;
+      ~impl_smf() { this->destroy(); }
 
-      template <std::size_t I, typename Arg>
-      inline void assign(Arg &&arg) {
-        this->assign_alt(access::base::get_alt<I>(*this),
-                         lib::forward<Arg>(arg));
+      impl_smf(impl_smf &&that) noexcept((... && std::is_nothrow_move_constructible_v<Ts>))
+          requires (... && std::is_move_constructible_v<Ts>)
+          : base<Ts...>(valueless_t{}) {
+        this->generic_construct(*this, lib::move(that));
       }
 
-      inline void swap(impl &that) {
+      impl_smf(const impl_smf &that)
+          requires (... && std::is_copy_constructible_v<Ts>)
+          : base<Ts...>(valueless_t{}) {
+        this->generic_construct(*this, that);
+      }
+
+      impl_smf &operator=(impl_smf &&that)
+          noexcept((... && std::is_nothrow_move_constructible_v<Ts>) &&
+                   (... && std::is_nothrow_move_assignable_v<Ts>))
+          requires (... && std::is_move_constructible_v<Ts>) {
+        if constexpr ((... && std::is_move_assignable_v<Ts>))
+          this->generic_assign(lib::move(that));
+        else if (this != &that) {
+          this->destroy();
+          this->generic_construct(*this, lib::move(that));
+        }
+        return *this;
+      }
+
+      impl_smf &operator=(const impl_smf &that)
+          requires (... && std::is_copy_constructible_v<Ts>) {
+        if constexpr ((... && std::is_copy_assignable_v<Ts>))
+          this->generic_assign(that);
+        else if (this != &that) {
+          this->destroy();
+          this->generic_construct(*this, that);
+        }
+        return *this;
+      }
+
+      inline void swap(impl_smf &that) {
         if (this->valueless_by_exception() && that.valueless_by_exception()) {
           // do nothing.
         } else if (this->index() == that.index()) {
           visitation::alt::visit_alt_at(this->index(),
-#ifdef MPARK_GENERIC_LAMBDAS
-                                        [](auto &this_alt, auto &that_alt) {
-                                          using std::swap;
-                                          swap(this_alt.value,
-                                               that_alt.value);
-                                        }
-#else
-                                        swapper{}
-#endif
-                                        ,
-                                        *this,
-                                        that);
+              [](auto &this_alt, auto &that_alt) {
+                using std::swap;
+                swap(this_alt.value, that_alt.value);
+              },
+              *this, that);
         } else {
-          impl *lhs = this;
-          impl *rhs = lib::addressof(that);
-          if (lhs->move_nothrow() && !rhs->move_nothrow()) {
+          impl_smf *lhs = this;
+          impl_smf *rhs = lib::addressof(that);
+          if (lhs->move_nothrow() && !rhs->move_nothrow())
             std::swap(lhs, rhs);
-          }
-          impl tmp(lib::move(*rhs));
+          impl_smf tmp(lib::move(*rhs));
 #ifdef MPARK_EXCEPTIONS
-          // EXTENSION: When the move construction of `lhs` into `rhs` throws
-          // and `tmp` is nothrow move constructible then we move `tmp` back
-          // into `rhs` and provide the strong exception safety guarantee.
           try {
             this->generic_construct(*rhs, lib::move(*lhs));
           } catch (...) {
-            if (tmp.move_nothrow()) {
+            if (tmp.move_nothrow())
               this->generic_construct(*rhs, lib::move(tmp));
-            }
             throw;
           }
 #else
@@ -2183,16 +1747,6 @@ namespace mpark {
       }
 
       private:
-#ifndef MPARK_GENERIC_LAMBDAS
-      struct swapper {
-        template <typename ThisAlt, typename ThatAlt>
-        inline void operator()(ThisAlt &this_alt, ThatAlt &that_alt) const {
-          using std::swap;
-          swap(this_alt.value, that_alt.value);
-        }
-      };
-#endif
-
       inline constexpr bool move_nothrow() const {
         return this->valueless_by_exception() ||
                lib::array<bool, sizeof...(Ts)>{
@@ -2201,7 +1755,8 @@ namespace mpark {
       }
     };
 
-#undef MPARK_INHERITING_CTOR
+    template <typename... Ts>
+    using impl = impl_smf<variant_is_trivial_v<Ts...>, Ts...>;
 
     template <typename From, typename To>
     struct is_non_narrowing_convertible {

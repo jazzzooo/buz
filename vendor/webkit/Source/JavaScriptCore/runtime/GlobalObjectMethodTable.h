@@ -61,7 +61,7 @@ struct GlobalObjectMethodTable {
     RuntimeFlags (*javaScriptRuntimeFlags)(const JSGlobalObject*);
     bool (*shouldInterruptScriptBeforeTimeout)(const JSGlobalObject*);
 
-    JSPromise* (*moduleLoaderImportModule)(JSGlobalObject*, JSModuleLoader*, JSString*, RefPtr<ScriptFetchParameters>, const SourceOrigin&);
+    JSPromise* (*moduleLoaderImportModule)(JSGlobalObject*, JSModuleLoader*, JSString*, RefPtr<ScriptFetchParameters>, const SourceOrigin&, bool deferred);
     Identifier (*moduleLoaderResolve)(JSGlobalObject*, JSModuleLoader*, JSValue, JSValue, RefPtr<ScriptFetcher>, bool useImportMap);
     JSPromise* (*moduleLoaderFetch)(JSGlobalObject*, JSModuleLoader*, JSValue, RefPtr<ScriptFetchParameters>, RefPtr<ScriptFetcher>);
     JSObject* (*moduleLoaderCreateImportMetaProperties)(JSGlobalObject*, JSModuleLoader*, JSValue, JSModuleRecord*, RefPtr<ScriptFetcher>);
@@ -77,8 +77,8 @@ struct GlobalObjectMethodTable {
     void (*reportViolationForUnsafeEval)(JSGlobalObject*, const String&);
     String (*defaultLanguage)();
 #if ENABLE(WEBASSEMBLY)
-    JSPromise* (*compileStreaming)(JSGlobalObject*, JSValue, std::optional<WebAssemblyCompileOptions>&&);
-    JSPromise* (*instantiateStreaming)(JSGlobalObject*, JSValue, JSObject* importObject, std::optional<WebAssemblyCompileOptions>&&);
+    void (*compileStreaming)(JSGlobalObject*, JSPromise*, JSValue, std::optional<WebAssemblyCompileOptions>&&);
+    void (*instantiateStreaming)(JSGlobalObject*, JSPromise*, JSValue, JSObject* importObject, std::optional<WebAssemblyCompileOptions>&&);
 #else
     void* compileStreamingPlaceholder; // placeholders to make positional initializers consistent
     void* instantiateStreamingPlaceholder;

@@ -31,7 +31,6 @@
 #include "JSCInlines.h"
 #include "ObjectConstructor.h"
 #include <unicode/ucurr.h>
-#include <unicode/uloc.h>
 #include <wtf/unicode/icu/ICUHelpers.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN

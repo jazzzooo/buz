@@ -25,8 +25,8 @@
 
 #pragma once
 
+#include <wtf/CurrentThread.h>
 #include <wtf/Lock.h>
-#include <wtf/Threading.h>
 
 namespace WTF {
 
@@ -40,7 +40,7 @@ public:
     // which doesn't support analysis.
     void lock() WTF_IGNORES_THREAD_SAFETY_ANALYSIS
     {
-        auto currentThreadUID = Thread::currentSingleton().uid();
+        auto currentThreadUID = currentThreadID();
         if (currentThreadUID == m_ownerThreadUID) {
             m_recursionCount++;
             return;
@@ -69,7 +69,7 @@ public:
     // which doesn't support analysis.
     bool tryLock() WTF_IGNORES_THREAD_SAFETY_ANALYSIS
     {
-        auto currentThreadUID = Thread::currentSingleton().uid();
+        auto currentThreadUID = currentThreadID();
         if (currentThreadUID == m_ownerThreadUID) {
             m_recursionCount++;
             return true;
@@ -90,7 +90,7 @@ public:
         return m_lock.isLocked();
     }
 
-    bool isOwner() const { return m_ownerThreadUID == Thread::currentSingleton().uid(); }
+    bool isOwner() const { return m_ownerThreadUID == currentThreadID(); }
     
 private:
     uint32_t m_ownerThreadUID { 0 };

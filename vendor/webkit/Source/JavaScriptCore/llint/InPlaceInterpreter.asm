@@ -426,7 +426,7 @@ end
 # ---------------------------------------
 
 # Memory
-macro ipintReloadMemory()
+macro ipintReloadMemory(scratch)
     if ARM64 or ARM64E
         loadpairq constexpr (JSWebAssemblyInstance::offsetOfCachedMemoryBaseSizePair(0))[wasmInstance], memoryBase, boundsCheckingSize
     elsif X86_64
@@ -434,7 +434,7 @@ macro ipintReloadMemory()
         loadp constexpr (JSWebAssemblyInstance::offsetOfCachedMemoryBaseSizePair(0) + 8)[wasmInstance], boundsCheckingSize
     end
     if not ARMv7
-        cagedPrimitiveMayBeNull(memoryBase, t2)
+        cagedPrimitiveMayBeNull(memoryBase, scratch)
     end
 end
 
@@ -533,7 +533,7 @@ if WEBASSEMBLY_BBQJIT
     preserveWasmArgumentRegisters()
 
 if not ARMv7
-    ipintReloadMemory()
+    ipintReloadMemory(t2)
     push memoryBase, boundsCheckingSize
 end
 
@@ -1357,8 +1357,11 @@ end)
 
 if WEBASSEMBLY and (ARM64 or ARM64E or X86_64 or ARMv7)
 .ipint_entry_end_local:
+    loadp UnboxedWasmCalleeStackSlot[cfr], MC
+    loadp Wasm::IPIntCallee::m_localInitBytecode + VectorBufferOffset[MC], MC
+.ipint_entry_end_local_loop:
     argumINTInitializeDefaultLocals()
-    jmp .ipint_entry_end_local
+    jmp .ipint_entry_end_local_loop
 
 .ipint_entry_finish_zero:
     argumINTFinish()
@@ -1379,7 +1382,7 @@ end
     loadp Wasm::IPIntCallee::m_metadata + VectorBufferOffset[ws0], MC
 
     # Load memory
-    ipintReloadMemory()
+    ipintReloadMemory(t2)
 
     nextIPIntInstruction()
 
@@ -1450,7 +1453,7 @@ if WEBASSEMBLY and (ARM64 or ARM64E or X86_64)
     move sp, a2
     operationCall(macro() cCall3(_ipint_extern_retrieve_and_clear_exception) end)
 
-    ipintReloadMemory()
+    ipintReloadMemory(t2)
     advanceMC(4)
     nextIPIntInstruction()
 else
@@ -1466,7 +1469,7 @@ if WEBASSEMBLY and (ARM64 or ARM64E or X86_64)
     move 0, a2
     operationCall(macro() cCall3(_ipint_extern_retrieve_and_clear_exception) end)
 
-    ipintReloadMemory()
+    ipintReloadMemory(t2)
     advanceMC(4)
     nextIPIntInstruction()
 else
@@ -1484,7 +1487,7 @@ if WEBASSEMBLY and (ARM64 or ARM64E or X86_64 or ARMv7)
     move sp, a2
     operationCall(macro() cCall3(_ipint_extern_retrieve_and_clear_exception) end)
 
-    ipintReloadMemory()
+    ipintReloadMemory(t2)
     advanceMC(4)
     jmp _ipint_block
 else
@@ -1502,7 +1505,7 @@ if WEBASSEMBLY and (ARM64 or ARM64E or X86_64 or ARMv7)
     move sp, a2
     operationCall(macro() cCall3(_ipint_extern_retrieve_clear_and_push_exception_and_arguments) end)
 
-    ipintReloadMemory()
+    ipintReloadMemory(t2)
     advanceMC(4)
     jmp _ipint_block
 else
@@ -1520,7 +1523,7 @@ if WEBASSEMBLY and (ARM64 or ARM64E or X86_64 or ARMv7)
     move 0, a2
     operationCall(macro() cCall3(_ipint_extern_retrieve_and_clear_exception) end)
 
-    ipintReloadMemory()
+    ipintReloadMemory(t2)
     advanceMC(4)
     jmp _ipint_block
 else
@@ -1538,7 +1541,7 @@ if WEBASSEMBLY and (ARM64 or ARM64E or X86_64 or ARMv7)
     move sp, a2
     operationCall(macro() cCall3(_ipint_extern_retrieve_clear_and_push_exception) end)
 
-    ipintReloadMemory()
+    ipintReloadMemory(t2)
     advanceMC(4)
     jmp _ipint_block
 else
@@ -1712,14 +1715,31 @@ macro populateSentinelVMEntryRecord(context, vmTemp, temp)
     storep 0, VM::topCallFrame[vmTemp]
 end
 
-# Allocate space for the slices to implant and prepare the implant call args.
+# Copy into the VM the values saved in VM entry record and set stack overflow flag in the context.
+# a0 must point to PinballHandlerContext; cfr must point to the sentinel frame.
+macro restoreSentinelVMEntryRecordAndReturnWithStackOverflow()
+    vmEntryRecord(cfr, sp)
+    loadp VMEntryRecord::m_vm[sp], ws0
+    loadp VMEntryRecord::m_prevTopCallFrame[sp], ws1
+    storep ws1, VM::topCallFrame[ws0]
+    loadp VMEntryRecord::m_prevTopEntryFrame[sp], ws1
+    storep ws1, VM::topEntryFrame[ws0]
+    storep 1, PinballHandlerContext::stackOverflowDetected[a0]
+    move cfr, sp
+    functionEpilogue()
+    ret
+end
+
+# Allocate space for the slice to implant and prepare the implant call args.
 # a0 should point at the context and is preserved; temp is a scratch register.
+# On stack overflow jump to failLabel with sp same as before the call.
 #
-macro prepareImplantationCall(temp)
+macro prepareImplantationCall(temp, stackOverflowLabel)
     loadp PinballHandlerContext::sliceByteSize[a0], temp
     subp temp, sp # sliceByteSize is always stack-aligned by construction
     bpa sp, JSWebAssemblyInstance::m_stackMirror + StackManager::Mirror::m_softStackLimit[wasmInstance], .stackOK
-    break
+    addp temp, sp
+    jmp stackOverflowLabel
 .stackOK:
     move sp, a1 # a1 = implantation base
     move cfr, a2 # a2 = returnFP (the sentinel frame)
@@ -1802,7 +1822,7 @@ _enterWebAssemblySuspendingFunction:
     cCall3(_runWebAssemblySuspendingFunction)
     # A non-zero return value is the stack frame to teleport to, skipping the evacuated frames.
     # A zero return means we return normally, typically because an exception was thrown.
-    btiz r0, .normalReturn
+    btiz r0, .enterWebAssemblySuspendingFunction_normal_return
 
     # Teleport over the evacuated frames by returning from the frame in r0.
     # This is where we need the pushed pointer to the callee saves buffer in vm.topEntryFrame.
@@ -1819,7 +1839,7 @@ else
     ret
 end
 
-.normalReturn:
+.enterWebAssemblySuspendingFunction_normal_return:
     move cfr, sp
     functionEpilogue()
     ret
@@ -1847,20 +1867,32 @@ _pinballHandlerFulfillFunction:
     loadp PinballHandlerContext::evacuatedCalleeSaves[sp], ws0
     restoreCalleeSavesFromBuffer(ws0)
 
-.execute:
+.pinballHandlerFulfillFunction_execute:
     move sp, a0
-    call .execute_evacuated_slice #(context)
+    call .jspi_execute_evacuated_slice #(context)
     # Execution returns here from the sentinel frame after the slice has completed.
     # The sentinel has already spilled Wasm argument registers into the context.
+    loadp PinballHandlerContext::stackOverflowDetected[sp], ws0
+    btpnz ws0, .pinballHandlerFulfillFunction_stack_overflow
     # Finish this iteration and loop to the next slice or exit with the result.
     move sp, a0
     call _pinballHandlerFulfillFunctionContinue #(context) -> true if we should do another cycle
-    btinz r0, .execute
+    btinz r0, .pinballHandlerFulfillFunction_execute
 
     # Done. The first Wasm argument is the return value.
     leap PinballHandlerContext::handlerCalleeSaves[sp], ws0
     restoreCalleeSavesFromBuffer(ws0)
     loadp PinballHandlerContext::arguments[sp], r0
+    move cfr, sp
+    functionEpilogue()
+    ret
+
+.pinballHandlerFulfillFunction_stack_overflow:
+    move sp, a0
+    call _pinballHandlerRejectWithStackOverflow #(context)
+    leap PinballHandlerContext::handlerCalleeSaves[sp], ws0
+    restoreCalleeSavesFromBuffer(ws0)
+    move 0, r0
     move cfr, sp
     functionEpilogue()
     ret
@@ -1894,14 +1926,14 @@ _pinballHandlerFulfillFunction:
 # as a single slice, so Frame 0 is always a WasmToJS frame and Frame N is always a JSToWasmFrame.
 # This assumption for now simplifies exception handling.
 #
-.execute_evacuated_slice:
+.jspi_execute_evacuated_slice:
     # Construct the sentinel and make it a VM entry frame.
     # The sentinel must be right below the PinballHandlerContext allocated by the caller.
     functionPrologue()
     vmEntryRecord(cfr, sp)
     populateSentinelVMEntryRecord(a0, ws0, ws1)
 
-    prepareImplantationCall(ws0) # moves sp further down to allocate space for implanted frames, loads a1-a2
+    prepareImplantationCall(ws0, .jspi_execute_evacuated_slice_stack_overflow) # moves sp further down to allocate space for implanted frames, loads a1-a2
     # IMPORTANT: Preserve a0-a2 from here on until the _pinballHandlerImplantSlice call!
     checkStackPointerAlignment(ws0, 0xbad0fff1)
     # Preserve on the stack the arguments buffer ptr. Two copies to keep stack aligned
@@ -1932,6 +1964,9 @@ if ARM64E
 else
     ret
 end
+
+.jspi_execute_evacuated_slice_stack_overflow:
+    restoreSentinelVMEntryRecordAndReturnWithStackOverflow()
 
 
 # Returning into a sentinel frame executes this code
@@ -1976,9 +2011,11 @@ _pinballHandlerRejectFunction:
     restoreCalleeSavesFromBuffer(ws0)
 
     move sp, a0
-    call .unwind_current_slice
+    call .jspi_unwind_current_slice
     # Execution returns here from the sentinel frame if the exception was caught in Wasm.
     # Wasm argument registers were already spilled into the context by the sentinel.
+    loadp PinballHandlerContext::stackOverflowDetected[sp], ws0
+    btpnz ws0, .pinballHandlerRejectFunction_stack_overflow
     move sp, a0
     call _pinballHandlerFinishReject #(context)
 
@@ -1989,8 +2026,18 @@ _pinballHandlerRejectFunction:
     functionEpilogue()
     ret
 
+.pinballHandlerRejectFunction_stack_overflow:
+    move sp, a0
+    call _pinballHandlerRejectWithStackOverflow #(context)
+    leap PinballHandlerContext::handlerCalleeSaves[sp], ws1
+    restoreCalleeSavesFromBuffer(ws1)
+    move 0, r0
+    move cfr, sp
+    functionEpilogue()
+    ret
 
-# This is almost the same as .execute_evacuated_slice in how the stack is shaped
+
+# This is almost the same as .jspi_execute_evacuated_slice in how the stack is shaped
 # by the time we get to the end of this function. The differences are:
 #
 # - What used to be a return frame is shaped as a pretend throwing frame,
@@ -2000,12 +2047,12 @@ _pinballHandlerRejectFunction:
 #   into the VM and jump to the unwind logic. All together this works as if
 #   the exception was thrown from somewhere in our pretend throwing frame.
 #
-.unwind_current_slice:
+.jspi_unwind_current_slice:
     functionPrologue()
     vmEntryRecord(cfr, sp)
     populateSentinelVMEntryRecord(a0, ws0, ws1)
 
-    prepareImplantationCall(ws0) # moves sp further down to allocate space for implanted frames, loads a1-a2
+    prepareImplantationCall(ws0, .jspi_unwind_current_slice_stack_overflow) # moves sp further down to allocate space for implanted frames, loads a1-a2
     checkStackPointerAlignment(ws0, 0xbad0fff3)
 
     # Set up a pretend throwing frame with a zombie callee and a null codeblock.
@@ -2029,6 +2076,9 @@ _pinballHandlerRejectFunction:
     storep t2, VM::m_exception[t1]
 
     jmp _wasm_unwind_from_slow_path_trampoline
+
+.jspi_unwind_current_slice_stack_overflow:
+    restoreSentinelVMEntryRecordAndReturnWithStackOverflow()
 
 
 #################################

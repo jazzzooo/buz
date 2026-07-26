@@ -104,7 +104,9 @@ public:
     bool canOptimize() const { return !m_variants.isEmpty(); }
 
     bool NODELETE isClosureCall() const; // Returns true if any callee is a closure call.
-    
+
+    void makeClosureCall();
+
     unsigned maxArgumentCountIncludingThisForVarargs() const { return m_maxArgumentCountIncludingThisForVarargs; }
     
     bool finalize(VM&);
@@ -116,8 +118,7 @@ public:
     void dump(PrintStream&) const;
     
 private:
-    void makeClosureCall();
-    
+
 #if ENABLE(JIT)
     static CallLinkStatus computeFromCallLinkInfo(
         const ConcurrentJSLocker&, CallLinkInfo&);

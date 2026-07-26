@@ -38,7 +38,7 @@ ASCIILiteral errorMessage(ErrorCode error)
 {
 #define REGEXP_ERROR_PREFIX "Invalid regular expression: "
     // The order of this array must match the ErrorCode enum.
-    static constexpr auto errorMessages = std::to_array<ASCIILiteral>({
+    static constexpr auto errorMessages = WTF::toArray<ASCIILiteral>({
         { },                                                                          // NoError
 
         // The following are hard errors.
@@ -73,6 +73,8 @@ ASCIILiteral errorMessage(ErrorCode error)
         REGEXP_ERROR_PREFIX "negated class set may contain strings"_s,                // NegatedClassSetMayContainStrings
         REGEXP_ERROR_PREFIX "invalid class set character"_s,                          // InvalidClassSetCharacter
         REGEXP_ERROR_PREFIX "invalid regular expression modifier"_s,                  // InvalidRegularExpressionModifier
+        REGEXP_ERROR_PREFIX "too many captures"_s,                                    // TooManyCaptures
+        REGEXP_ERROR_PREFIX "too many frame slots for state"_s,                       // FrameTooLarge
 
         // The following are NOT hard errors.
         REGEXP_ERROR_PREFIX "too many nested disjunctions"_s,                         // TooManyDisjunctions
@@ -118,6 +120,8 @@ JSObject* errorToThrow(JSGlobalObject* globalObject, ErrorCode error)
     case ErrorCode::NegatedClassSetMayContainStrings:
     case ErrorCode::InvalidClassSetCharacter:
     case ErrorCode::InvalidRegularExpressionModifier:
+    case ErrorCode::TooManyCaptures:
+    case ErrorCode::FrameTooLarge:
         return createSyntaxError(globalObject, errorMessage(error));
     case ErrorCode::TooManyDisjunctions:
         return createOutOfMemoryError(globalObject, errorMessage(error));

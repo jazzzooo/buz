@@ -35,6 +35,11 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
 namespace JSC {
 
+inline void SlotVisitor::didRace(JSCell* cell, const char* reason)
+{
+    didRace(VisitRaceKey(cell, reason));
+}
+
 ALWAYS_INLINE void SlotVisitor::appendUnbarriered(JSValue* slot, size_t count)
 {
     for (size_t i = count; i--;)
@@ -173,7 +178,7 @@ inline void SlotVisitor::reportExtraMemoryVisited(size_t size)
 {
     if (m_isFirstVisit) {
         m_nonCellVisitCount += size;
-        // FIXME: Change this to use SaturatedArithmetic when available.
+        // FIXME: Change this to use SaturatingArithmetic when available.
         // https://bugs.webkit.org/show_bug.cgi?id=170411
         m_extraMemorySize += size;
     }

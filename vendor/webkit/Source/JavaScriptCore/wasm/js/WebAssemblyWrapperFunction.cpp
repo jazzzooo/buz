@@ -51,10 +51,11 @@ WebAssemblyWrapperFunction* WebAssemblyWrapperFunction::create(VM& vm, JSGlobalO
 
     String name = emptyString();
     NativeExecutable* executable = nullptr;
+    unsigned length = signature->argumentCount();
     if (signature->argumentsOrResultsIncludeV128() || signature->argumentsOrResultsIncludeExnref()) [[unlikely]]
-        executable = vm.getHostFunction(callWebAssemblyWrapperFunctionIncludingInvalidValues, ImplementationVisibility::Public, NoIntrinsic, callHostFunctionAsConstructor, nullptr, name);
+        executable = vm.getHostFunction(callWebAssemblyWrapperFunctionIncludingInvalidValues, ImplementationVisibility::Public, NoIntrinsic, callHostFunctionAsConstructor, nullptr, length, name);
     else
-        executable = vm.getHostFunction(callWebAssemblyWrapperFunction, ImplementationVisibility::Public, NoIntrinsic, callHostFunctionAsConstructor, nullptr, name);
+        executable = vm.getHostFunction(callWebAssemblyWrapperFunction, ImplementationVisibility::Public, NoIntrinsic, callHostFunctionAsConstructor, nullptr, length, name);
 
     RELEASE_ASSERT(JSValue(function).isCallable());
     WebAssemblyWrapperFunction* result = new (NotNull, allocateCell<WebAssemblyWrapperFunction>(vm)) WebAssemblyWrapperFunction(vm, executable, globalObject, structure, function,
@@ -72,7 +73,7 @@ WebAssemblyWrapperFunction* WebAssemblyWrapperFunction::create(VM& vm, JSGlobalO
         },
         instance->importFunctionInfo(importIndex));
     result->m_importableFunction.importFunction.set(vm, globalObject, function);
-    result->finishCreation(vm, executable, signature->argumentCount(), name);
+    result->finishCreation(vm);
     return result;
 }
 

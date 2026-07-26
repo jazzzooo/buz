@@ -30,6 +30,7 @@
 #include "JSArrayBuffer.h"
 #include "JSCJSValueInlines.h"
 #include "JSGlobalObject.h"
+#include "JSGlobalObjectInlines.h"
 
 namespace JSC {
 

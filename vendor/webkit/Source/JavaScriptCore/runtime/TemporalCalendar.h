@@ -26,58 +26,66 @@
 
 #pragma once
 
-#include "ISO8601.h"
-#include "IntlObject.h"
-#include "JSObject.h"
-#include "TemporalDuration.h"
-#include "TemporalObject.h"
+#include <JavaScriptCore/CalendarArithmetic.h>
+#include <JavaScriptCore/CalendarFields.h>
+#include <JavaScriptCore/ISO8601.h>
+#include <JavaScriptCore/ISOArithmetic.h>
+#include <JavaScriptCore/IntlObject.h>
+#include <JavaScriptCore/JSObject.h>
+#include <JavaScriptCore/TemporalDuration.h>
+#include <JavaScriptCore/TemporalObject.h>
 
 namespace JSC {
 
-class TemporalCalendar final : public JSNonFinalObject {
-public:
-    using Base = JSNonFinalObject;
+// Free helper functions (previously static methods of the removed TemporalCalendar JSObject class).
 
-    template<typename CellType, SubspaceAccess mode>
-    static GCClient::IsoSubspace* subspaceFor(VM& vm)
-    {
-        return vm.temporalCalendarSpace<mode>();
-    }
+JS_EXPORT_PRIVATE std::optional<CalendarID> isBuiltinCalendar(StringView);
 
-    static TemporalCalendar* create(VM&, Structure*, CalendarID);
-    static Structure* createStructure(VM&, JSGlobalObject*, JSValue);
+CalendarID getTemporalCalendarIdentifierWithISODefault(JSGlobalObject*, JSObject* item);
 
-    DECLARE_INFO;
+std::optional<ParsedMonthCode> parseMonthCode(JSGlobalObject*, JSValue argument);
 
-    static JSObject* toTemporalCalendarWithISODefault(JSGlobalObject*, JSValue);
-    static JSObject* getTemporalCalendarWithISODefault(JSGlobalObject*, JSValue);
-    static void calendarResolveFields(JSGlobalObject*, std::optional<int32_t>, unsigned, std::optional<ParsedMonthCode>, TemporalDateFormat);
-    static ISO8601::PlainDate isoDateFromFields(JSGlobalObject*, JSObject*, TemporalDateFormat, Variant<JSObject*, TemporalOverflow>, TemporalOverflow&);
-    static ISO8601::PlainDate isoDateFromFields(JSGlobalObject*, TemporalDateFormat, int32_t, unsigned, unsigned, std::optional<ParsedMonthCode>, TemporalOverflow);
-    static ISO8601::PlainDate monthDayFromFields(JSGlobalObject*, std::optional<int32_t>, unsigned, unsigned, std::optional<ParsedMonthCode>, TemporalOverflow);
-    static ISO8601::PlainDate yearMonthFromFields(JSGlobalObject*, int32_t, int32_t, std::optional<ParsedMonthCode>, TemporalOverflow);
-    template<DifferenceOperation>
-    static ISO8601::Duration differenceTemporalPlainYearMonth(JSGlobalObject*, const ISO8601::PlainYearMonth&, const ISO8601::PlainYearMonth&, unsigned, TemporalUnit, TemporalUnit, RoundingMode);
-    static ISO8601::PlainDate addDurationToDate(JSGlobalObject*, const ISO8601::PlainDate&, const ISO8601::Duration&, TemporalOverflow);
-    static ISO8601::PlainDate isoDateAdd(JSGlobalObject*, const ISO8601::PlainDate&, const ISO8601::Duration&, TemporalOverflow);
-    static ISO8601::PlainYearMonth balanceISOYearMonth(double, double);
-    static ISO8601::PlainDate balanceISODate(JSGlobalObject*, double, double, double);
-    static ISO8601::Duration calendarDateUntil(const ISO8601::PlainDate&, const ISO8601::PlainDate&, TemporalUnit);
-    static int32_t NODELETE isoDateCompare(const ISO8601::PlainDate&, const ISO8601::PlainDate&);
+ISO8601::PlainDate isoDateFromFields(JSGlobalObject*, TemporalDateFormat, int32_t, uint32_t, uint32_t, std::optional<ParsedMonthCode>, TemporalOverflow, CalendarID = iso8601CalendarID());
 
-    CalendarID identifier() const { return m_identifier; }
-    bool isISO8601() const { return m_identifier == iso8601CalendarID(); }
+ISO8601::PlainDateTime interpretTemporalDateTimeFields(JSGlobalObject*, CalendarID, const TemporalCore::CalendarFieldsIn&, const TemporalCore::TimeFieldsIn&, TemporalOverflow);
 
-    static std::optional<CalendarID> isBuiltinCalendar(StringView);
+ISO8601::PlainDate isoDateAdd(JSGlobalObject*, const ISO8601::PlainDate&, const ISO8601::Duration&, TemporalOverflow);
+ISO8601::PlainDate calendarDateAdd(JSGlobalObject*, CalendarID, const ISO8601::PlainDate&, const ISO8601::Duration&, TemporalOverflow);
+ISO8601::Duration calendarDateUntil(CalendarID, const ISO8601::PlainDate&, const ISO8601::PlainDate&, TemporalUnit);
 
-    static JSObject* from(JSGlobalObject*, JSValue);
+enum class FieldSetType { Date, YearMonth, MonthDay };
+template<FieldSetType type = FieldSetType::Date>
+TemporalCore::CalendarFieldsIn readCalendarFieldsFromObject(JSGlobalObject*, JSObject*, CalendarID);
 
-    bool equals(JSGlobalObject*, TemporalCalendar*);
-
-private:
-    TemporalCalendar(VM&, Structure*, CalendarID);
-
-    CalendarID m_identifier { 0 };
+// Fields read from a ZonedDateTime property bag (from() or with()).
+struct ZonedDateTimeFields {
+    // Calendar date fields (from PrepareCalendarFields).
+    TemporalCore::CalendarFieldsIn dateFields;
+    // Time fields — ZDT-specific, read in alphabetical order interleaved.
+    // Stored as optional so with() can distinguish "not provided" from "provided as 0".
+    std::optional<double> hour;
+    std::optional<double> minute;
+    std::optional<double> second;
+    std::optional<double> millisecond;
+    std::optional<double> microsecond;
+    std::optional<double> nanosecond;
+    // ZDT-specific fields — resolved in readZonedDateTimeFieldsFromObject per spec.
+    std::optional<int64_t> offsetNs; // parsed from the "offset" string property
+    TimeZone timeZone; // resolved TimeZone handle (Full mode only)
+    // Presence flags (needed for with() partial validation).
+    bool dayPresent { false };
+    bool monthPresent { false };
+    bool monthCodePresent { false };
+    bool yearPresent { false };
+    bool anyFieldSet { false }; // true if at least one field was present (for with())
 };
+
+enum class ZonedDateTimeFieldMode {
+    Full, // from(): timeZone is the only required field (spec requiredFieldNames = «time-zone»)
+    Partial, // with(): all fields optional, anyFieldSet is tracked (~partial~ mode)
+};
+
+template<ZonedDateTimeFieldMode mode = ZonedDateTimeFieldMode::Full>
+ZonedDateTimeFields readZonedDateTimeFieldsFromObject(JSGlobalObject*, JSObject*, CalendarID);
 
 } // namespace JSC

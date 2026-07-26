@@ -53,7 +53,6 @@
 #include "ThunkGenerators.h"
 #include "TypeProfilerLog.h"
 #include <wtf/BubbleSort.h>
-#include <wtf/GraphNodeWorklist.h>
 #include <wtf/SequesteredMalloc.h>
 #include <wtf/SimpleStats.h>
 #include <wtf/text/MakeString.h>
@@ -273,6 +272,7 @@ void JIT::privateCompileMainPass()
         DEFINE_SLOW_OP(create_generator)
         DEFINE_SLOW_OP(create_async_generator)
         DEFINE_SLOW_OP(new_generator)
+        DEFINE_SLOW_OP(new_async_function_generator)
 
         DEFINE_OP(op_add)
         DEFINE_OP(op_bitnot)
@@ -306,7 +306,6 @@ void JIT::privateCompileMainPass()
         DEFINE_OP(op_eq_null)
         DEFINE_OP(op_below)
         DEFINE_OP(op_beloweq)
-        DEFINE_OP(op_try_get_by_id)
         DEFINE_OP(op_in_by_id)
         DEFINE_OP(op_in_by_val)
         DEFINE_OP(op_has_private_name)
@@ -418,12 +417,14 @@ void JIT::privateCompileMainPass()
 
         DEFINE_OP(op_iterator_open)
         DEFINE_OP(op_iterator_next)
+        DEFINE_OP(op_async_iterator_next)
 
         DEFINE_OP(op_ret)
         DEFINE_OP(op_rshift)
         DEFINE_OP(op_unsigned)
         DEFINE_OP(op_urshift)
         DEFINE_OP(op_set_function_name)
+        DEFINE_OP(op_async_iterator_open)
         DEFINE_OP(op_stricteq)
         DEFINE_OP(op_sub)
         DEFINE_OP(op_switch_char)
@@ -521,7 +522,6 @@ void JIT::privateCompileSlowCases()
         DEFINE_SLOWCASE_OP(op_add)
         DEFINE_SLOWCASE_OP(op_call_direct_eval)
         DEFINE_SLOWCASE_OP(op_eq)
-        DEFINE_SLOWCASE_OP(op_try_get_by_id)
         DEFINE_SLOWCASE_OP(op_in_by_id)
         DEFINE_SLOWCASE_OP(op_in_by_val)
         DEFINE_SLOWCASE_OP(op_has_private_name)
@@ -576,6 +576,7 @@ void JIT::privateCompileSlowCases()
 
         DEFINE_SLOWCASE_OP(op_iterator_open)
         DEFINE_SLOWCASE_OP(op_iterator_next)
+        DEFINE_SLOWCASE_OP(op_async_iterator_open)
 
         DEFINE_SLOWCASE_SLOW_OP(unsigned)
         DEFINE_SLOWCASE_SLOW_OP(inc)

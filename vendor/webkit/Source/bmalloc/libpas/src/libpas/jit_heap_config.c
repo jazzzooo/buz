@@ -36,14 +36,11 @@
 #include "pas_bitfit_page_config_inlines.h"
 #include "pas_enumerable_page_malloc.h"
 #include "pas_heap_config_inlines.h"
+#include "pas_page_malloc.h"
 #include "pas_root.h"
 #include "pas_segregated_page_config_inlines.h"
 #include "pas_stream.h"
 #include "pas_zero_memory.h"
-
-#if defined(PAS_BMALLOC)
-#include "BPlatform.h"
-#endif
 
 PAS_BEGIN_EXTERN_C;
 
@@ -80,11 +77,15 @@ static void initialize_fresh_memory_config(pas_large_free_heap_config* config)
 static pas_allocation_result allocate_from_fresh(size_t size, pas_alignment alignment)
 {
     pas_large_free_heap_config config;
+    pas_allocation_result result;
 
     pas_heap_lock_assert_held();
 
     initialize_fresh_memory_config(&config);
-    return pas_simple_large_free_heap_try_allocate(&jit_fresh_memory_heap, size, alignment, &config);
+    result = pas_simple_large_free_heap_try_allocate(&jit_fresh_memory_heap, size, alignment, &config);
+    if (result.did_succeed)
+        pas_page_malloc_commit((void*)result.begin, size, jit_heap_config.page_flags);
+    return result;
 }
 
 static pas_allocation_result page_provider(
@@ -101,7 +102,9 @@ static pas_allocation_result page_provider(
 pas_large_heap_physical_page_sharing_cache jit_large_fresh_memory_heap = {
     .free_heap = PAS_SIMPLE_LARGE_FREE_HEAP_INITIALIZER,
     .provider = page_provider,
-    .provider_arg = NULL
+    .provider_arg = NULL,
+    /* page_provider commits each chunk before returning it. */
+    .provider_commit_mode = pas_committed
 };
 
 pas_page_header_table jit_small_page_header_table =

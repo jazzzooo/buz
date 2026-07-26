@@ -174,6 +174,7 @@ public:
             return false;
         return !m_rareData->m_classSource.isNull();
     }
+    bool isBuiltinDefaultClassConstructor() const { return m_isBuiltinDefaultClassConstructor; }
 
     RefPtr<TDZEnvironmentLink> parentScopeTDZVariables() const
     {

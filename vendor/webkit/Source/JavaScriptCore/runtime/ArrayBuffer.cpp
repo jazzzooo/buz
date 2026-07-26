@@ -27,6 +27,7 @@
 #include "ArrayBuffer.h"
 
 #include "JSArrayBufferView.h"
+#include "JSArrayBufferViewInlines.h"
 #include "JSCellInlines.h"
 #include "JSWebAssemblyInstance.h"
 #include "WaiterListManager.h"
@@ -35,7 +36,6 @@
 #include <wtf/MathExtras.h>
 #include <wtf/OSAllocator.h>
 #include <wtf/PageBlock.h>
-#include <wtf/SafeStrerror.h>
 
 #if ENABLE(WEBASSEMBLY)
 #include "WasmMemory.h"
@@ -433,27 +433,15 @@ RefPtr<ArrayBuffer> ArrayBuffer::sliceWithClampedIndex(size_t begin, size_t end)
 void ArrayBuffer::makeShared()
 {
     m_contents.makeShared();
-    m_locked = true;
+    pinAndLock();
     ASSERT(!isDetached());
 }
 
 void ArrayBuffer::makeWasmMemory()
 {
-    m_locked = true;
     m_isWasmMemory = true;
-}
-
-void ArrayBuffer::setAssociatedWasmMemory(Wasm::Memory* memory)
-{
-    // The pointer from a buffer to a memory is only required when the buffer is resizable non-shared,
-    // to direct a grow request to the memory (see ArrayBuffer::resize). In other scenarios
-    // the pointer is not necessary and we should not be setting it to anything but a nullptr.
-    ASSERT(isWasmMemory() && (isResizableNonShared() || !memory));
-#if ENABLE(WEBASSEMBLY)
-    m_associatedWasmMemory = memory;
-#else
-    UNUSED_PARAM(memory);
-#endif
+    pinAndLock();
+    ASSERT(!isDetachable());
 }
 
 void ArrayBuffer::refreshAfterWasmMemoryGrow(Wasm::Memory* memory)
@@ -552,10 +540,10 @@ Expected<int64_t, GrowFailReason> ArrayBuffer::grow(VM& vm, size_t newByteLength
     return result;
 }
 
-// Wasm JS API redefines the abstract operation HostResizeArrayBuffer as follows:
-// https://webassembly.github.io/threads/js-api/index.html#abstract-operation-hostresizearraybuffer
 Expected<int64_t, GrowFailReason> ArrayBuffer::resize(VM& vm, size_t newByteLength)
 {
+    RELEASE_ASSERT(!isWasmMemory());
+
     auto memoryHandle = m_contents.m_memoryHandle;
     if (!memoryHandle || m_contents.m_shared) [[unlikely]]
         return makeUnexpected(GrowFailReason::GrowSharedUnavailable);
@@ -569,12 +557,6 @@ Expected<int64_t, GrowFailReason> ArrayBuffer::resize(VM& vm, size_t newByteLeng
             return makeUnexpected(GrowFailReason::InvalidGrowSize);
 
         deltaByteLength = static_cast<int64_t>(newByteLength) - static_cast<int64_t>(m_contents.m_sizeInBytes);
-#if ENABLE(WEBASSEMBLY)
-        if (Options::useWasmMemoryToBufferAPIs()) {
-            if (isWasmMemory() && (deltaByteLength < 0 || deltaByteLength % PageCount::pageSize))
-                return makeUnexpected(GrowFailReason::InvalidGrowSize);
-        }
-#endif
         if (!deltaByteLength)
             return 0;
 
@@ -586,17 +568,6 @@ Expected<int64_t, GrowFailReason> ArrayBuffer::resize(VM& vm, size_t newByteLeng
         if (newPageCount != oldPageCount) {
             ASSERT(memoryHandle->maximum() >= newPageCount);
 
-#if ENABLE(WEBASSEMBLY)
-            if (Options::useWasmMemoryToBufferAPIs()) {
-                // If this is currently associated with a Wasm memory, let the memory do the growing.
-                // The memory will call back to our refreshAfterWasmMemoryGrow().
-                RefPtr<Wasm::Memory> memory = m_associatedWasmMemory.get();
-                if (memory) {
-                    std::ignore = memory->grow(vm, PageCount(newPageCount.pageCount() - oldPageCount.pageCount()));
-                    return deltaByteLength;
-                }
-            }
-#endif
             size_t desiredSize = newPageCount.bytes();
             RELEASE_ASSERT(desiredSize <= MAX_ARRAY_BUFFER_SIZE);
 
@@ -751,7 +722,7 @@ Expected<int64_t, GrowFailReason> SharedArrayBufferContents::grow(const Abstract
 
 ASCIILiteral errorMessageForTransfer(ArrayBuffer* buffer)
 {
-    ASSERT(buffer->isLocked());
+    ASSERT(!buffer->isDetachable());
     if (buffer->isShared())
         return "Cannot transfer a SharedArrayBuffer"_s;
     if (buffer->isWasmMemory())

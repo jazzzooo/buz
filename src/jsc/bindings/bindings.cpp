@@ -50,7 +50,7 @@
 #include "JavaScriptCore/JSFunction.h"
 #include "JavaScriptCore/ErrorInstanceInlines.h"
 #include "JavaScriptCore/BigIntObject.h"
-#include "JavaScriptCore/OrderedHashTableHelper.h"
+#include "JavaScriptCore/JSOrderedHashTableHelper.h"
 
 #include "JavaScriptCore/JSCallbackObject.h"
 #include "JavaScriptCore/JSClassRef.h"
@@ -140,6 +140,7 @@
 
 #include "AsyncContextFrame.h"
 #include "JavaScriptCore/InternalFieldTuple.h"
+#include "JavaScriptCore/JSAsyncFunctionGenerator.h"
 #include "JavaScriptCore/JSGenerator.h"
 #include "JavaScriptCore/JSPromiseReaction.h"
 #include "JavaScriptCore/FunctionExecutable.h"
@@ -2263,24 +2264,44 @@ static void collectAsyncStackFramesFromPromise(JSC::VM& vm, JSC::JSCell* owner, 
         return *out != nullptr;
     };
 
+    auto unwrapGeneratorFromContext = [&](JSC::JSValue context) -> JSC::JSAsyncFunctionGenerator* {
+        JSC::InternalFieldTuple* tuple = nullptr;
+        if (dynamicCastValue(context, &tuple))
+            context = tuple->getInternalField(0);
+        JSC::JSAsyncFunctionGenerator* generator = nullptr;
+        dynamicCastValue(context, &generator);
+        return generator;
+    };
+
     // Walk reaction->context → generator. If context is not a generator (e.g.
     // thenable-chain from `return promise` without await inside an async
     // function), follow reaction->promise() to the next promise in the chain.
     // Cap hops to avoid pathological chains.
-    auto getAwaitingGenerator = [&](JSC::JSPromise* p) -> JSC::JSGenerator* {
+    auto getAwaitingGenerator = [&](JSC::JSPromise* p) -> JSC::JSAsyncFunctionGenerator* {
         for (unsigned hops = 0; p && hops < 32; hops++) {
             if (p->status() != JSC::JSPromise::Status::Pending)
                 return nullptr;
-            JSC::JSValue reactionsValue = p->reactionsOrResult();
-            JSC::JSPromiseReaction* reaction = nullptr;
-            if (!dynamicCastValue(reactionsValue, &reaction))
+            switch (p->inlineReactionKind()) {
+            case JSC::JSPromise::InlineReactionKind::InternalMicrotask: {
+                if (auto* generator = unwrapGeneratorFromContext(p->inlineReactionContext()))
+                    return generator;
+                if (auto* next = dynamicDowncast<JSC::JSPromise>(p->payloadCell())) {
+                    p = next;
+                    continue;
+                }
                 return nullptr;
-            JSC::JSValue context = JSC::JSPromiseReaction::tryGetContext(reactionsValue);
-            JSC::InternalFieldTuple* tuple = nullptr;
-            if (dynamicCastValue(context, &tuple))
-                context = tuple->getInternalField(0);
-            JSC::JSGenerator* generator = nullptr;
-            if (dynamicCastValue(context, &generator))
+            }
+            case JSC::JSPromise::InlineReactionKind::FulfillHandler:
+            case JSC::JSPromise::InlineReactionKind::RejectHandler:
+                p = p->inlineHandlerResultPromise();
+                continue;
+            case JSC::JSPromise::InlineReactionKind::None:
+                break;
+            }
+            auto* reaction = dynamicDowncast<JSC::JSPromiseReaction>(p->payloadCell());
+            if (!reaction)
+                return nullptr;
+            if (auto* generator = unwrapGeneratorFromContext(JSC::JSPromiseReaction::tryGetContext(reaction)))
                 return generator;
             // No generator in context — follow the thenable chain to the
             // promise this reaction resolves/rejects.
@@ -2290,9 +2311,9 @@ static void collectAsyncStackFramesFromPromise(JSC::VM& vm, JSC::JSCell* owner, 
         return nullptr;
     };
 
-    auto computeBytecodeIndex = [&](JSC::CodeBlock* codeBlock, JSC::JSGenerator* generator) -> JSC::BytecodeIndex {
+    auto computeBytecodeIndex = [&](JSC::CodeBlock* codeBlock, JSC::JSAsyncFunctionGenerator* generator) -> JSC::BytecodeIndex {
         JSC::BytecodeIndex bytecodeIndex(0);
-        JSC::JSValue stateValue = generator->internalField(JSC::JSGenerator::Field::State).get();
+        JSC::JSValue stateValue = generator->internalField(JSC::JSAsyncFunctionGenerator::Field::State).get();
         if (stateValue.isInt32()) {
             int32_t state = stateValue.asInt32();
             size_t numberOfJumpTables = codeBlock->numberOfUnlinkedSwitchJumpTables();
@@ -2307,7 +2328,7 @@ static void collectAsyncStackFramesFromPromise(JSC::VM& vm, JSC::JSCell* owner, 
         return bytecodeIndex;
     };
 
-    auto appendFrame = [&](JSC::JSGenerator* generator) {
+    auto appendFrame = [&](JSC::JSAsyncFunctionGenerator* generator) {
         JSC::JSFunction* asyncFunction = nullptr;
         if (!dynamicCastValue(generator->next(), &asyncFunction))
             return;
@@ -2324,7 +2345,7 @@ static void collectAsyncStackFramesFromPromise(JSC::VM& vm, JSC::JSCell* owner, 
         }
     };
 
-    JSC::JSGenerator* gen = getAwaitingGenerator(promise);
+    JSC::JSAsyncFunctionGenerator* gen = getAwaitingGenerator(promise);
     while (gen && results.size() < maxStackSize) {
         appendFrame(gen);
         JSC::JSPromise* returnPromise = nullptr;
@@ -3066,7 +3087,7 @@ JSC::EncodedJSValue JSC__JSModuleLoader__evaluate(JSC::JSGlobalObject* globalObj
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     if (scope.exception()) [[unlikely]] {
-        promise->rejectWithCaughtException(globalObject, scope);
+        promise->rejectWithCaughtException(vm, scope);
     }
 
     auto status = promise->status();
@@ -3537,7 +3558,7 @@ void JSC__AnyPromise__wrap(JSC::JSGlobalObject* globalObject, EncodedJSValue enc
         (void)scope.tryClearException();
 
         if (auto* promise = dynamicDowncast<JSC::JSPromise>(promiseValue)) {
-            promise->reject(vm, globalObject, exception->value());
+            promise->reject(vm, exception->value());
             RETURN_IF_EXCEPTION(scope, );
             return;
         }
@@ -3547,7 +3568,7 @@ void JSC__AnyPromise__wrap(JSC::JSGlobalObject* globalObject, EncodedJSValue enc
 
     if (auto* errorInstance = dynamicDowncast<JSC::ErrorInstance>(result)) {
         if (auto* promise = dynamicDowncast<JSC::JSPromise>(promiseValue)) {
-            promise->reject(vm, globalObject, errorInstance);
+            promise->reject(vm, errorInstance);
             RETURN_IF_EXCEPTION(scope, );
             return;
         }
@@ -3609,7 +3630,7 @@ JSC::EncodedJSValue JSC__JSPromise__wrap(JSC::JSGlobalObject* globalObject, void
         exception = uncheckedDowncast<JSC::Exception>(value);
     }
 
-    arg0->reject(vm, globalObject, exception);
+    arg0->reject(vm, exception);
 }
 
 [[ZIG_EXPORT(check_slow)]] void JSC__JSPromise__rejectAsHandled(JSC::JSPromise* arg0, JSC::JSGlobalObject* arg1, JSC::EncodedJSValue JSValue2)
@@ -3618,7 +3639,7 @@ JSC::EncodedJSValue JSC__JSPromise__wrap(JSC::JSGlobalObject* globalObject, void
     ASSERT_WITH_MESSAGE(arg0->status() == JSC::JSPromise::Status::Pending, "Promise is already resolved or rejected");
 
     auto& vm = JSC::getVM(arg1);
-    arg0->rejectAsHandled(vm, arg1, JSC::JSValue::decode(JSValue2));
+    arg0->rejectAsHandled(vm, JSC::JSValue::decode(JSValue2));
 }
 
 JSC::JSPromise* JSC__JSPromise__rejectedPromise(JSC::JSGlobalObject* arg0, JSC::EncodedJSValue JSValue1)
@@ -3667,13 +3688,13 @@ void JSC__JSPromise__rejectOnNextTickWithHandled(JSC::JSPromise* promise, JSC::J
 
     auto& vm = JSC::getVM(lexicalGlobalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
-    uint32_t flags = promise->internalField(JSC::JSPromise::Field::Flags).get().asUInt32();
+    uint16_t flags = promise->flags();
     if (!(flags & JSC::JSPromise::isFirstResolvingFunctionCalledFlag)) {
         if (handled) {
             flags |= JSC::JSPromise::isHandledFlag;
         }
 
-        promise->internalField(JSC::JSPromise::Field::Flags).set(vm, promise, jsNumber(flags | JSC::JSPromise::isFirstResolvingFunctionCalledFlag));
+        promise->setFlags(static_cast<uint16_t>(flags | JSC::JSPromise::isFirstResolvingFunctionCalledFlag));
         auto* globalObject = uncheckedDowncast<Zig::GlobalObject>(promise->globalObject());
         auto rejectPromiseFunction = globalObject->rejectPromiseFunction();
 
@@ -3703,23 +3724,21 @@ JSC::JSPromise* JSC__JSPromise__resolvedPromise(JSC::JSGlobalObject* globalObjec
 {
     auto& vm = JSC::getVM(globalObject);
     JSC::JSPromise* promise = JSC::JSPromise::create(vm, globalObject->promiseStructure());
-    promise->internalField(JSC::JSPromise::Field::Flags).set(vm, promise, jsNumber(static_cast<unsigned>(JSC::JSPromise::Status::Fulfilled)));
-    promise->internalField(JSC::JSPromise::Field::ReactionsOrResult).set(vm, promise, JSC::JSValue::decode(JSValue1));
+    promise->setFlags(static_cast<uint16_t>(JSC::JSPromise::Status::Fulfilled));
+    promise->setSlot(vm, JSC::JSValue::decode(JSValue1));
     return promise;
 }
 
 [[ZIG_EXPORT(nothrow)]] JSC::EncodedJSValue JSC__JSPromise__result(JSC::JSPromise* promise, JSC::VM* arg1)
 {
-    auto& vm = *arg1;
+    UNUSED_PARAM(arg1);
 
     // if the promise is rejected we automatically mark it as handled so it
     // doesn't end up in the promise rejection tracker
     switch (promise->status()) {
     case JSC::JSPromise::Status::Rejected: {
-        uint32_t flags = promise->internalField(JSC::JSPromise::Field::Flags).get().asUInt32();
-        if (!(flags & JSC::JSPromise::isFirstResolvingFunctionCalledFlag)) {
-            promise->internalField(JSC::JSPromise::Field::Flags).set(vm, promise, jsNumber(flags | JSC::JSPromise::isHandledFlag));
-        }
+        if (!(promise->flags() & JSC::JSPromise::isFirstResolvingFunctionCalledFlag))
+            promise->markAsHandled();
     }
     // fallthrough intended
     case JSC::JSPromise::Status::Fulfilled: {
@@ -3772,20 +3791,20 @@ void JSC__JSInternalPromise__reject(JSC::JSPromise* arg0, JSC::JSGlobalObject* g
         exception = uncheckedDowncast<JSC::Exception>(value);
     }
 
-    arg0->reject(vm, globalObject, exception);
+    arg0->reject(vm, exception);
 }
 void JSC__JSInternalPromise__rejectAsHandled(JSC::JSPromise* arg0,
     JSC::JSGlobalObject* arg1, JSC::EncodedJSValue JSValue2)
 {
     auto& vm = JSC::getVM(arg1);
-    arg0->rejectAsHandled(vm, arg1, JSC::JSValue::decode(JSValue2));
+    arg0->rejectAsHandled(vm, JSC::JSValue::decode(JSValue2));
 }
 void JSC__JSInternalPromise__rejectAsHandledException(JSC::JSPromise* arg0,
     JSC::JSGlobalObject* arg1,
     JSC::Exception* arg2)
 {
     auto& vm = JSC::getVM(arg1);
-    arg0->rejectAsHandled(vm, arg1, arg2);
+    arg0->rejectAsHandled(vm, arg2);
 }
 
 JSC::JSPromise* JSC__JSInternalPromise__rejectedPromise(JSC::JSGlobalObject* arg0,
@@ -3829,9 +3848,8 @@ bool JSC__JSInternalPromise__isHandled(const JSC::JSPromise* arg0)
 }
 void JSC__JSInternalPromise__setHandled(JSC::JSPromise* promise, JSC::VM* arg1)
 {
-    auto& vm = *arg1;
-    auto flags = promise->internalField(JSC::JSPromise::Field::Flags).get().asUInt32();
-    promise->internalField(JSC::JSPromise::Field::Flags).set(vm, promise, jsNumber(flags | JSC::JSPromise::isHandledFlag));
+    UNUSED_PARAM(arg1);
+    promise->markAsHandled();
 }
 
 #pragma mark - JSC::JSGlobalObject
@@ -4463,9 +4481,9 @@ void JSC__JSValue__getSymbolDescription(JSC::EncodedJSValue symbolValue_, JSC::J
 
     JSC::Symbol* symbol = JSC::asSymbol(symbolValue);
 
-    auto result = symbol->description();
-    if (!result.isEmpty()) {
-        *arg2 = Zig::toZigString(result);
+    auto& uid = symbol->uid();
+    if (!uid.isNullSymbol() && !uid.isEmpty()) {
+        *arg2 = Zig::toZigString(static_cast<WTF::StringImpl&>(uid));
     } else {
         *arg2 = ZigStringEmpty;
     }
@@ -4940,8 +4958,8 @@ JSC::EncodedJSValue JSC__JSPromise__rejectedPromiseValue(JSC::JSGlobalObject* gl
 {
     auto& vm = JSC::getVM(globalObject);
     JSC::JSPromise* promise = JSC::JSPromise::create(vm, globalObject->promiseStructure());
-    promise->internalField(JSC::JSPromise::Field::Flags).set(vm, promise, jsNumber(static_cast<unsigned>(JSC::JSPromise::Status::Rejected)));
-    promise->internalField(JSC::JSPromise::Field::ReactionsOrResult).set(vm, promise, JSC::JSValue::decode(JSValue1));
+    promise->setFlags(static_cast<uint16_t>(JSC::JSPromise::Status::Rejected));
+    promise->setSlot(vm, JSC::JSValue::decode(JSValue1));
     JSC::ensureStillAliveHere(promise);
     JSC::ensureStillAliveHere(JSC::JSValue::decode(JSValue1));
     return JSC::JSValue::encode(promise);
@@ -4952,8 +4970,8 @@ JSC::EncodedJSValue JSC__JSPromise__resolvedPromiseValue(JSC::JSGlobalObject* gl
 {
     auto& vm = JSC::getVM(globalObject);
     JSC::JSPromise* promise = JSC::JSPromise::create(vm, globalObject->promiseStructure());
-    promise->internalField(JSC::JSPromise::Field::Flags).set(vm, promise, jsNumber(static_cast<unsigned>(JSC::JSPromise::Status::Fulfilled)));
-    promise->internalField(JSC::JSPromise::Field::ReactionsOrResult).set(vm, promise, JSC::JSValue::decode(JSValue1));
+    promise->setFlags(static_cast<uint16_t>(JSC::JSPromise::Status::Fulfilled));
+    promise->setSlot(vm, JSC::JSValue::decode(JSValue1));
     JSC::ensureStillAliveHere(promise);
     JSC::ensureStillAliveHere(JSC::JSValue::decode(JSValue1));
     return JSC::JSValue::encode(promise);

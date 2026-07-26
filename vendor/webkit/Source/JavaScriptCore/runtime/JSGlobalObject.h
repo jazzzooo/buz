@@ -237,7 +237,13 @@ private:
     Debugger* m_debugger { nullptr };
     QueuedTaskResult m_microtaskRunnability { QueuedTaskResult::Executed };
     bool m_associatedContextIsFullyActive { true };
+    bool m_canFastQueueMicrotask { true };
     Ref<MicrotaskQueue> m_microtaskQueue;
+
+    ALWAYS_INLINE void updateCanFastQueueMicrotask()
+    {
+        m_canFastQueueMicrotask = m_associatedContextIsFullyActive && !m_debugger;
+    }
 
 // Our hashtable code-generator tries to access these properties, so we make them public.
 // However, we'd like it better if they could be protected.
@@ -296,15 +302,14 @@ public:
     LazyClassStructure m_dateTimeFormatStructure;
     LazyClassStructure m_numberFormatStructure;
 
-    LazyProperty<JSGlobalObject, Structure> m_calendarStructure;
-    LazyProperty<JSGlobalObject, Structure> m_durationStructure;
-    LazyProperty<JSGlobalObject, Structure> m_instantStructure;
-    LazyProperty<JSGlobalObject, Structure> m_plainDateStructure;
-    LazyProperty<JSGlobalObject, Structure> m_plainDateTimeStructure;
-    LazyProperty<JSGlobalObject, Structure> m_plainMonthDayStructure;
-    LazyProperty<JSGlobalObject, Structure> m_plainTimeStructure;
-    LazyProperty<JSGlobalObject, Structure> m_plainYearMonthStructure;
-    LazyProperty<JSGlobalObject, Structure> m_timeZoneStructure;
+    LazyClassStructure m_durationStructure;
+    LazyClassStructure m_instantStructure;
+    LazyClassStructure m_plainDateStructure;
+    LazyClassStructure m_plainDateTimeStructure;
+    LazyClassStructure m_plainMonthDayStructure;
+    LazyClassStructure m_plainTimeStructure;
+    LazyClassStructure m_plainYearMonthStructure;
+    LazyClassStructure m_zonedDateTimeStructure;
 
     WriteBarrier<NullGetterFunction> m_nullGetterFunction;
     WriteBarrier<NullSetterFunction> m_nullSetterFunction;
@@ -318,7 +323,9 @@ public:
     LazyProperty<JSGlobalObject, JSFunction> m_arrayProtoValuesFunction;
     LazyProperty<JSGlobalObject, JSFunction> m_mapProtoEntriesFunction;
     LazyProperty<JSGlobalObject, JSFunction> m_setProtoValuesFunction;
+    LazyProperty<JSGlobalObject, JSFunction> m_stringProtoSymbolIteratorFunction;
     LazyProperty<JSGlobalObject, JSFunction> m_numberProtoToStringFunction;
+    LazyProperty<JSGlobalObject, JSFunction> m_iteratorProtoSymbolIteratorFunction;
     WriteBarrier<JSFunction> m_objectProtoValueOfFunction;
     WriteBarrier<JSFunction> m_functionProtoHasInstanceSymbolFunction;
     WriteBarrier<JSFunction> m_performProxyObjectHasFunction;
@@ -407,6 +414,7 @@ public:
     WriteBarrierStructureID m_asyncGeneratorFunctionStructure;
     WriteBarrierStructureID m_generatorFunctionStructure;
     WriteBarrierStructureID m_generatorStructure;
+    WriteBarrierStructureID m_asyncFunctionGeneratorStructure;
     WriteBarrierStructureID m_asyncGeneratorStructure;
     WriteBarrierStructureID m_functionWithFieldsStructure;
     WriteBarrierStructureID m_iteratorStructure;
@@ -510,6 +518,7 @@ public:
     const Ref<WatchpointSet> m_varInjectionWatchpointSet;
     const Ref<WatchpointSet> m_varReadOnlyWatchpointSet;
     const Ref<WatchpointSet> m_regExpRecompiledWatchpointSet;
+    const Ref<WatchpointSet> m_regExpLastIndexWritableWatchpointSet;
     const Ref<WatchpointSet> m_arrayBufferDetachWatchpointSet;
 
     struct RareData;
@@ -524,7 +533,11 @@ public:
     InlineWatchpointSet m_mapIteratorProtocolWatchpointSet { IsWatched };
     InlineWatchpointSet m_setIteratorProtocolWatchpointSet { IsWatched };
     InlineWatchpointSet m_stringIteratorProtocolWatchpointSet { IsWatched };
+    InlineWatchpointSet m_stringSymbolMatchWatchpointSet { IsWatched };
+    InlineWatchpointSet m_stringSymbolSearchWatchpointSet { IsWatched };
+    InlineWatchpointSet m_stringSymbolMatchAllWatchpointSet { IsWatched };
     InlineWatchpointSet m_stringSymbolReplaceWatchpointSet { IsWatched };
+    InlineWatchpointSet m_stringSymbolSplitWatchpointSet { IsWatched };
     InlineWatchpointSet m_stringSymbolToPrimitiveWatchpointSet { IsWatched };
     InlineWatchpointSet m_arraySymbolToPrimitiveWatchpointSet { IsWatched };
     InlineWatchpointSet m_regExpPrimordialPropertiesWatchpointSet { IsWatched };
@@ -535,6 +548,7 @@ public:
     InlineWatchpointSet m_promiseSpeciesWatchpointSet { ClearWatchpoint };
     InlineWatchpointSet m_setPrimordialPropertiesWatchpointSet { IsWatched };
     InlineWatchpointSet m_arraySpeciesWatchpointSet { ClearWatchpoint };
+    InlineWatchpointSet m_regExpSpeciesWatchpointSet { ClearWatchpoint };
     InlineWatchpointSet m_arrayJoinWatchpointSet { IsWatched };
     InlineWatchpointSet m_arrayToStringWatchpointSet { IsWatched };
     InlineWatchpointSet m_arrayNegativeOneWatchpointSet { IsWatched };
@@ -546,6 +560,8 @@ public:
     InlineWatchpointSet m_numberToStringWatchpointSet { IsWatched };
     InlineWatchpointSet m_stringToStringWatchpointSet { IsWatched };
     InlineWatchpointSet m_stringValueOfWatchpointSet { IsWatched };
+    InlineWatchpointSet m_objectPrototypeValueOfWatchpointSet { IsWatched };
+    InlineWatchpointSet m_arrayPrototypeValueOfWatchpointSet { IsWatched };
     InlineWatchpointSet m_structureCacheClearedWatchpointSet { IsWatched };
     InlineWatchpointSet m_arrayBufferSpeciesWatchpointSet { ClearWatchpoint };
     InlineWatchpointSet m_sharedArrayBufferSpeciesWatchpointSet { ClearWatchpoint };
@@ -560,6 +576,8 @@ public:
 
     std::unique_ptr<ObjectPropertyChangeAdaptiveWatchpoint<InlineWatchpointSet>> m_arrayConstructorSpeciesWatchpoint;
     std::unique_ptr<ObjectPropertyChangeAdaptiveWatchpoint<InlineWatchpointSet>> m_arrayPrototypeConstructorWatchpoint;
+    std::unique_ptr<ObjectPropertyChangeAdaptiveWatchpoint<InlineWatchpointSet>> m_regExpConstructorSpeciesWatchpoint;
+    std::unique_ptr<ObjectPropertyChangeAdaptiveWatchpoint<InlineWatchpointSet>> m_regExpPrototypeConstructorWatchpoint;
     std::unique_ptr<ObjectPropertyChangeAdaptiveWatchpoint<InlineWatchpointSet>> m_promiseConstructorSpeciesWatchpoint;
     std::unique_ptr<ObjectPropertyChangeAdaptiveWatchpoint<InlineWatchpointSet>> m_promisePrototypeConstructorWatchpoint;
     std::unique_ptr<ObjectPropertyChangeAdaptiveWatchpoint<InlineWatchpointSet>> m_arrayBufferConstructorSpeciesWatchpoints[2];
@@ -584,9 +602,9 @@ public:
     inline std::unique_ptr<ObjectAdaptiveStructureWatchpoint>& NODELETE typedArrayPrototypeSymbolIteratorAbsenceWatchpoint(TypedArrayType);
     inline std::unique_ptr<ObjectPropertyChangeAdaptiveWatchpoint<InlineWatchpointSet>>& NODELETE typedArrayPrototypeConstructorWatchpoint(TypedArrayType);
 
-    void addWeakTicket(DeferredWorkTimer::Ticket);
+    void addWeakTicket(DeferredWorkTimer::Ticket&);
     void clearWeakTickets();
-    std::unique_ptr<ThreadSafeWeakHashSet<DeferredWorkTimer::TicketData>> m_weakTickets;
+    std::unique_ptr<ThreadSafeWeakHashSet<DeferredWorkTimer::Ticket>> m_weakTickets;
 
 public:
     JSCallee* zombieFrameCallee() const LIFETIME_BOUND { return m_zombieFrameCallee.get(); }
@@ -595,11 +613,17 @@ public:
     InlineWatchpointSet& mapIteratorProtocolWatchpointSet() LIFETIME_BOUND { return m_mapIteratorProtocolWatchpointSet; }
     InlineWatchpointSet& setIteratorProtocolWatchpointSet() LIFETIME_BOUND { return m_setIteratorProtocolWatchpointSet; }
     InlineWatchpointSet& stringIteratorProtocolWatchpointSet() LIFETIME_BOUND { return m_stringIteratorProtocolWatchpointSet; }
+    InlineWatchpointSet& stringSymbolMatchWatchpointSet() LIFETIME_BOUND { return m_stringSymbolMatchWatchpointSet; }
+    InlineWatchpointSet& stringSymbolSearchWatchpointSet() LIFETIME_BOUND { return m_stringSymbolSearchWatchpointSet; }
+    InlineWatchpointSet& stringSymbolMatchAllWatchpointSet() LIFETIME_BOUND { return m_stringSymbolMatchAllWatchpointSet; }
     InlineWatchpointSet& stringSymbolReplaceWatchpointSet() LIFETIME_BOUND { return m_stringSymbolReplaceWatchpointSet; }
+    InlineWatchpointSet& stringSymbolSplitWatchpointSet() LIFETIME_BOUND { return m_stringSymbolSplitWatchpointSet; }
     InlineWatchpointSet& stringSymbolToPrimitiveWatchpointSet() LIFETIME_BOUND { return m_stringSymbolToPrimitiveWatchpointSet; }
     InlineWatchpointSet& arraySymbolToPrimitiveWatchpointSet() LIFETIME_BOUND { return m_arraySymbolToPrimitiveWatchpointSet; }
     InlineWatchpointSet& stringToStringWatchpointSet() LIFETIME_BOUND { return m_stringToStringWatchpointSet; }
     InlineWatchpointSet& stringValueOfWatchpointSet() LIFETIME_BOUND { return m_stringValueOfWatchpointSet; }
+    InlineWatchpointSet& objectPrototypeValueOfWatchpointSet() LIFETIME_BOUND { return m_objectPrototypeValueOfWatchpointSet; }
+    InlineWatchpointSet& arrayPrototypeValueOfWatchpointSet() LIFETIME_BOUND { return m_arrayPrototypeValueOfWatchpointSet; }
     InlineWatchpointSet& regExpPrimordialPropertiesWatchpointSet() LIFETIME_BOUND { return m_regExpPrimordialPropertiesWatchpointSet; }
     InlineWatchpointSet& mapSetWatchpointSet() LIFETIME_BOUND { return m_mapSetWatchpointSet; }
     InlineWatchpointSet& setAddWatchpointSet() LIFETIME_BOUND { return m_setAddWatchpointSet; }
@@ -607,6 +631,7 @@ public:
     InlineWatchpointSet& promiseThenWatchpointSet() LIFETIME_BOUND { return m_promiseThenWatchpointSet; }
     InlineWatchpointSet& promiseResolveWatchpointSet() LIFETIME_BOUND { return m_promiseResolveWatchpointSet; }
     InlineWatchpointSet& arraySpeciesWatchpointSet() LIFETIME_BOUND { return m_arraySpeciesWatchpointSet; }
+    InlineWatchpointSet& regExpSpeciesWatchpointSet() LIFETIME_BOUND { return m_regExpSpeciesWatchpointSet; }
     InlineWatchpointSet& promiseSpeciesWatchpointSet() LIFETIME_BOUND { return m_promiseSpeciesWatchpointSet; }
     InlineWatchpointSet& arrayPrototypeChainIsSaneWatchpointSet() LIFETIME_BOUND { return m_arrayPrototypeChainIsSaneWatchpointSet; }
     InlineWatchpointSet& objectPrototypeChainIsSaneWatchpointSet() LIFETIME_BOUND { return m_objectPrototypeChainIsSaneWatchpointSet; }
@@ -657,14 +682,19 @@ public:
     std::optional<unsigned> m_stackTraceLimit;
     Weak<FunctionExecutable> m_executableForCachedFunctionExecutableForFunctionConstructor;
     
-    // Added for "bun test"
-    double overridenDateNow { -1 };
+    // Added for "bun test". NaN (the default) means no override is active.
+    // Using NaN as the sentinel keeps jsDateNow() non-NaN by construction,
+    // which the DFG relies on (DateNow is proven SpecDoubleReal), and allows
+    // pre-epoch (negative) timestamps to be overridden.
+    double overridenDateNow { PNaN };
 
-    double jsDateNow() const {
-        if (overridenDateNow > -1)
-            return overridenDateNow;
-        
-        return WTF::jsCurrentTime();
+    // Every reader of the current JS time, in every tier, must go through
+    // this helper: Date.now() (dateNow / operationDateNow), new Date()
+    // (constructDate), Date() (callDate), and Intl (dateNowImpl).
+    double jsDateNow() const
+    {
+        double ms = overridenDateNow;
+        return std::isnan(ms) ? WTF::jsCurrentTime() : ms;
     }
 
     TrustedTypesEnforcement m_trustedTypesEnforcement { TrustedTypesEnforcement::None };
@@ -693,6 +723,8 @@ public:
     WeakGCSetJSCustomSetterFunction& customSetterFunctionSet() { return m_customSetterFunctionSet; }
 
     const Ref<ImportMap> m_importMap;
+
+    Ref<SymbolImpl> m_intlLegacyConstructedSymbol;
 
     UncheckedKeyHashMap<String, JSCJSGlobalObjectSignpostIdentifier> m_signposts;
 
@@ -723,6 +755,7 @@ public:
 #if USE(BUN_JSC_ADDITIONS)
     bool isAsyncContextTrackingEnabled() const { return m_isAsyncContextTrackingEnabled; }
     void setAsyncContextTrackingEnabled(bool isEnabled) { m_isAsyncContextTrackingEnabled = isEnabled; }
+    static constexpr ptrdiff_t offsetOfAsyncContextData() { return OBJECT_OFFSETOF(JSGlobalObject, m_asyncContextData); }
 #endif
 
     bool hasDebugger() const { return m_debugger; }
@@ -814,6 +847,10 @@ public:
     JSFunction* mapProtoEntriesFunctionConcurrently() const LIFETIME_BOUND { return m_mapProtoEntriesFunction.getConcurrently(); }
     JSFunction* setProtoValuesFunction() const LIFETIME_BOUND { return m_setProtoValuesFunction.get(this); }
     JSFunction* setProtoValuesFunctionConcurrently() const LIFETIME_BOUND { return m_setProtoValuesFunction.getConcurrently(); }
+    JSFunction* stringProtoSymbolIteratorFunction() const LIFETIME_BOUND { return m_stringProtoSymbolIteratorFunction.get(this); }
+    JSFunction* stringProtoSymbolIteratorFunctionConcurrently() const LIFETIME_BOUND { return m_stringProtoSymbolIteratorFunction.getConcurrently(); }
+    JSFunction* iteratorProtoSymbolIteratorFunction() const LIFETIME_BOUND { return m_iteratorProtoSymbolIteratorFunction.get(this); }
+    JSFunction* iteratorProtoSymbolIteratorFunctionConcurrently() const LIFETIME_BOUND { return m_iteratorProtoSymbolIteratorFunction.getConcurrently(); }
     JSFunction* iteratorProtocolFunction() const;
     JSFunction* promiseProtoThenFunction() const;
 #if USE(BUN_JSC_ADDITIONS)
@@ -858,15 +895,15 @@ public:
     ObjectPrototype* objectPrototype() const LIFETIME_BOUND { return m_objectPrototype.get(); }
     FunctionPrototype* functionPrototype() const LIFETIME_BOUND { return m_functionPrototype.get(); }
     ArrayPrototype* arrayPrototype() const LIFETIME_BOUND { return m_arrayPrototype.get(); }
-    JSObject* booleanPrototype() const LIFETIME_BOUND { return m_booleanObjectStructure.prototypeInitializedOnMainThread(this); }
+    JSObject* booleanPrototype() const LIFETIME_BOUND;
     StringPrototype* stringPrototype() const LIFETIME_BOUND { return m_stringPrototype.get(); }
-    JSObject* numberPrototype() const LIFETIME_BOUND { return m_numberObjectStructure.prototypeInitializedOnMainThread(this); }
+    JSObject* numberPrototype() const LIFETIME_BOUND;
     BigIntPrototype* bigIntPrototype() const LIFETIME_BOUND { return m_bigIntPrototype.get(); }
-    JSObject* datePrototype() const LIFETIME_BOUND { return m_dateStructure.prototype(this); }
+    JSObject* datePrototype() const LIFETIME_BOUND;
     SymbolPrototype* symbolPrototype() const LIFETIME_BOUND { return m_symbolPrototype.get(); }
     ShadowRealmPrototype* shadowRealmPrototype() const LIFETIME_BOUND { return m_shadowRealmPrototype.get(); }
     RegExpPrototype* regExpPrototype() const LIFETIME_BOUND { return m_regExpPrototype.get(); }
-    JSObject* errorPrototype() const LIFETIME_BOUND { return m_errorStructure.prototype(this); }
+    JSObject* errorPrototype() const LIFETIME_BOUND;
     JSIteratorPrototype* iteratorPrototype() const LIFETIME_BOUND { return m_iteratorPrototype.get(); }
     JSIteratorHelperPrototype* iteratorHelperPrototype() const LIFETIME_BOUND { return m_iteratorHelperPrototype.get(); }
     AsyncIteratorPrototype* asyncIteratorPrototype() const LIFETIME_BOUND { return m_asyncIteratorPrototype.get(); }
@@ -876,13 +913,14 @@ public:
     ArrayIteratorPrototype* arrayIteratorPrototype() const LIFETIME_BOUND { return m_arrayIteratorPrototype.get(); }
     MapIteratorPrototype* mapIteratorPrototype() const LIFETIME_BOUND { return m_mapIteratorPrototype.get(); }
     SetIteratorPrototype* setIteratorPrototype() const LIFETIME_BOUND { return m_setIteratorPrototype.get(); }
-    JSObject* mapPrototype() const LIFETIME_BOUND { return m_mapStructure.prototype(this); }
+    JSObject* mapPrototype() const LIFETIME_BOUND;
     // Workaround for the name conflict between JSCell::setPrototype.
-    JSObject* jsSetPrototype() const LIFETIME_BOUND { return m_setStructure.prototype(this); }
+    JSObject* jsSetPrototype() const LIFETIME_BOUND;
     JSPromisePrototype* promisePrototype() const LIFETIME_BOUND { return m_promisePrototype.get(); }
     AsyncGeneratorPrototype* asyncGeneratorPrototype() const LIFETIME_BOUND { return m_asyncGeneratorPrototype.get(); }
     AsyncGeneratorFunctionPrototype* asyncGeneratorFunctionPrototype() const LIFETIME_BOUND { return m_asyncGeneratorFunctionPrototype.get(); }
     JSValue nullPrototype() const { return jsNull(); }
+    SymbolImpl* intlLegacyConstructedSymbol() const { return m_intlLegacyConstructedSymbol.ptr(); }
 
     Structure* debuggerScopeStructure() const { return m_debuggerScopeStructure.get(this); }
     Structure* withScopeStructure() const { return m_withScopeStructure.get(this); }
@@ -973,6 +1011,7 @@ public:
     Structure* regExpStructure() const { return m_regExpStructure.get(); }
     Structure* shadowRealmStructure() const { return m_shadowRealmObjectStructure.get(); }
     Structure* generatorStructure() const { return m_generatorStructure.get(); }
+    Structure* asyncFunctionGeneratorStructure() const { return m_asyncFunctionGeneratorStructure.get(); }
     Structure* asyncFromSyncIteratorStructure() const { return m_asyncFromSyncIteratorStructure.get(); }
     Structure* asyncGeneratorStructure() const { return m_asyncGeneratorStructure.get(); }
     Structure* functionWithFieldsStructure() const { return m_functionWithFieldsStructure.get(); }
@@ -988,6 +1027,7 @@ public:
     Structure* stringObjectStructure() const { return m_stringObjectStructure.get(); }
     Structure* symbolObjectStructure() const { return m_symbolObjectStructure.get(); }
     Structure* iteratorResultObjectStructure() const { return m_iteratorResultObjectStructure.get(this); }
+    Structure* iteratorResultObjectStructureConcurrently() const { return m_iteratorResultObjectStructure.getConcurrently(); }
     Structure* dataPropertyDescriptorObjectStructure() const { return m_dataPropertyDescriptorObjectStructure.get(this); }
     Structure* accessorPropertyDescriptorObjectStructure() const { return m_accessorPropertyDescriptorObjectStructure.get(this); }
     Structure* promiseCapabilityObjectStructure() const { return m_promiseCapabilityObjectStructure.get(this); }
@@ -1035,11 +1075,10 @@ public:
     Structure* trustedScriptStructure() { return m_trustedScriptStructure.get(); }
 
     JSObject* dateTimeFormatConstructor() LIFETIME_BOUND { return m_dateTimeFormatStructure.constructor(this); }
-    JSObject* dateTimeFormatPrototype() LIFETIME_BOUND { return m_dateTimeFormatStructure.prototype(this); }
+    JSObject* dateTimeFormatPrototype() LIFETIME_BOUND;
     JSObject* numberFormatConstructor() LIFETIME_BOUND { return m_numberFormatStructure.constructor(this); }
-    JSObject* numberFormatPrototype() LIFETIME_BOUND { return m_numberFormatStructure.prototype(this); }
+    JSObject* numberFormatPrototype() LIFETIME_BOUND;
 
-    Structure* calendarStructure() { return m_calendarStructure.get(this); }
     Structure* durationStructure() { return m_durationStructure.get(this); }
     Structure* instantStructure() { return m_instantStructure.get(this); }
     Structure* plainDateStructure() { return m_plainDateStructure.get(this); }
@@ -1047,7 +1086,16 @@ public:
     Structure* plainMonthDayStructure() { return m_plainMonthDayStructure.get(this); }
     Structure* plainTimeStructure() { return m_plainTimeStructure.get(this); }
     Structure* plainYearMonthStructure() { return m_plainYearMonthStructure.get(this); }
-    Structure* timeZoneStructure() { return m_timeZoneStructure.get(this); }
+    Structure* zonedDateTimeStructure() { return m_zonedDateTimeStructure.get(this); }
+
+    JSObject* durationConstructor() { return m_durationStructure.constructor(this); }
+    JSObject* instantConstructor() { return m_instantStructure.constructor(this); }
+    JSObject* plainDateConstructor() { return m_plainDateStructure.constructor(this); }
+    JSObject* plainDateTimeConstructor() { return m_plainDateTimeStructure.constructor(this); }
+    JSObject* plainMonthDayConstructor() { return m_plainMonthDayStructure.constructor(this); }
+    JSObject* plainTimeConstructor() { return m_plainTimeStructure.constructor(this); }
+    JSObject* plainYearMonthConstructor() { return m_plainYearMonthStructure.constructor(this); }
+    JSObject* zonedDateTimeConstructor() { return m_zonedDateTimeStructure.constructor(this); }
 
 #if USE(BUN_JSC_ADDITIONS)
     Structure* internalFieldTupleStructure() const { return m_internalFieldTupleStructure.get(); }
@@ -1149,16 +1197,21 @@ public:
     template<TypedArrayType type> Structure* resizableOrGrowableSharedTypedArrayStructureWithTypedArrayType() const { return typedArrayStructure(type, /* isResizableOrGrowableShared */ true); }
 
     inline JSObject* typedArrayConstructor(TypedArrayType) const;
+    inline JSObject* typedArrayConstructorConcurrently(TypedArrayType) const;
     inline JSObject* typedArrayPrototype(TypedArrayType) const;
 
     inline JSCell* linkTimeConstant(LinkTimeConstant) const;
     template<typename Type> inline Type linkTimeConstantConcurrently(LinkTimeConstant) const;
+
+    inline JSObject* asyncGeneratorPrototypeNextFunction() const;
+    inline JSObject* asyncIteratorPrototypeSymbolAsyncIteratorFunction() const;
 
     WatchpointSet& masqueradesAsUndefinedWatchpointSet() { return m_masqueradesAsUndefinedWatchpointSet.get(); }
     WatchpointSet& havingABadTimeWatchpointSet() { return m_havingABadTimeWatchpointSet.get(); }
     WatchpointSet& varInjectionWatchpointSet() { return m_varInjectionWatchpointSet.get(); }
     WatchpointSet& varReadOnlyWatchpointSet() { return m_varReadOnlyWatchpointSet.get(); }
     WatchpointSet& regExpRecompiledWatchpointSet() { return m_regExpRecompiledWatchpointSet.get(); }
+    WatchpointSet& regExpLastIndexWritableWatchpointSet() { return m_regExpLastIndexWritableWatchpointSet.get(); }
     WatchpointSet& arrayBufferDetachWatchpointSet() { return m_arrayBufferDetachWatchpointSet.get(); }
 
     bool isHavingABadTime() const
@@ -1168,12 +1221,7 @@ public:
         
     void haveABadTime(VM&);
 
-    void notifyArrayBufferDetaching()
-    {
-        if (!m_arrayBufferDetachWatchpointSet->isStillValid())
-            return;
-        notifyArrayBufferDetachingSlow();
-    }
+    void notifyArrayBufferDetaching();
 
     void clearStructureCache(VM&);
         
@@ -1237,6 +1285,7 @@ public:
 #if USE(BUN_JSC_ADDITIONS)
     void queueMicrotask(VM&, InternalMicrotask, uint8_t, JSValue, JSValue, JSValue, JSValue);
 #endif
+    void queueMicrotaskSlow(VM&, QueuedTask&&);
 
 #if ASSERT_ENABLED
     const JSGlobalObject* globalObjectAtDebuggerEntry() const { return m_globalObjectAtDebuggerEntry; }
@@ -1295,7 +1344,11 @@ public:
     QueuedTaskResult microtaskRunnability() const { return m_microtaskRunnability; }
     void setMicrotaskRunnability(QueuedTaskResult runnability) { m_microtaskRunnability = runnability; }
 
-    void setAssociatedContextIsFullyActive(bool value) { m_associatedContextIsFullyActive = value; }
+    void setAssociatedContextIsFullyActive(bool value)
+    {
+        m_associatedContextIsFullyActive = value;
+        updateCanFastQueueMicrotask();
+    }
 
     MicrotaskQueue& microtaskQueue() const;
     JS_EXPORT_PRIVATE void setMicrotaskQueue(Ref<MicrotaskQueue>&&);

@@ -28,7 +28,7 @@
 
 #if ENABLE(DFG_JIT)
 
-#include "DFGBlockMapInlines.h"
+#include <wtf/IndexMap.h>
 #include "DFGGraph.h"
 #include "DFGPhase.h"
 #include "JSCJSValueInlines.h"
@@ -46,7 +46,7 @@ class BackwardsPropagationPhase : public Phase {
 public:
     BackwardsPropagationPhase(Graph& graph)
         : Phase(graph, "backwards propagation"_s, !graph.afterFixup())
-        , m_flagsAtHead(graph)
+        , m_flagsAtHead(graph.numBlocks())
     {
     }
 
@@ -368,8 +368,23 @@ private:
             break;
         }
 
+        case StringSplit: {
+            node->child1()->mergeFlags(NodeBytecodeUsesAsValue);
+            node->child2()->mergeFlags(NodeBytecodeUsesAsValue);
+            node->child3()->mergeFlags(NodeBytecodeUsesAsValue);
+            break;
+        }
+
+        case StringMatch:
+        case StringSearch: {
+            node->child1()->mergeFlags(NodeBytecodeUsesAsValue);
+            node->child2()->mergeFlags(NodeBytecodeUsesAsValue);
+            break;
+        }
+
         case StringSlice:
-        case StringSubstring: {
+        case StringSubstring:
+        case StringSubstr: {
             node->child1()->mergeFlags(NodeBytecodeUsesAsValue);
             node->child2()->mergeFlags(NodeBytecodeUsesAsArrayIndex);
             if (node->child3())
@@ -393,7 +408,19 @@ private:
             break;
         }
 
-            
+        case ArrayConcatArray:
+        case ArrayConcatAppendOne: {
+            node->child1()->mergeFlags(NodeBytecodeUsesAsValue);
+            node->child2()->mergeFlags(NodeBytecodeUsesAsValue);
+            break;
+        }
+
+        case ArrayJoin: {
+            m_graph.varArgChild(node, 0)->mergeFlags(NodeBytecodeUsesAsValue);
+            m_graph.varArgChild(node, 1)->mergeFlags(NodeBytecodeUsesAsValue);
+            break;
+        }
+
         case UInt32ToNumber: {
             node->child1()->mergeFlags(flags);
             break;
@@ -693,7 +720,7 @@ private:
     
     bool m_allowNestedOverflowingAdditions;
 
-    BlockMap<Operands<NodeFlags>> m_flagsAtHead;
+    IndexMap<BasicBlock*, Operands<NodeFlags>> m_flagsAtHead;
     Operands<NodeFlags> m_currentFlags;
 };
 

@@ -29,7 +29,6 @@
 #include "ExecutableAllocator.h"
 #include "FastJITPermissions.h"
 #include "SecureARM64EHashPinsInlines.h"
-#include <wtf/Condition.h>
 #include <wtf/Lock.h>
 
 namespace JSC {

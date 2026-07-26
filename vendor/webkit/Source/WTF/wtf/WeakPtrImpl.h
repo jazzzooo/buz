@@ -30,7 +30,6 @@
 #include <wtf/SingleThreadIntegralWrapper.h>
 #include <wtf/ThreadAssertions.h>
 #include <wtf/ThreadSafeRefCounted.h>
-#include <wtf/Threading.h>
 #include <wtf/TypeCasts.h>
 
 namespace WTF {

@@ -54,13 +54,11 @@ void AbstractValue::set(Graph& graph, const FrozenValue& value, StructureClobber
 {
     if (!!value && value.value().isCell()) {
         Structure* structure = value.structure();
-        StructureRegistrationResult result;
-        RegisteredStructure registeredStructure = graph.registerStructure(structure, result);
-        if (result == StructureRegisteredAndWatched) {
-            m_structure = registeredStructure;
+        if (graph.tryWatch(structure)) {
+            m_structure = graph.registerStructure(structure);
             if (clobberState == StructuresAreClobbered) {
                 m_arrayModes = ALL_ARRAY_MODES;
-                m_structure.clobber();
+                m_structure.clobber(graph);
             } else
                 m_arrayModes = arrayModesFromStructure(structure);
         } else {
@@ -317,11 +315,11 @@ FiltrationResult AbstractValue::filterSlow(SpeculatedType type)
     return normalizeClarity();
 }
 
-FiltrationResult AbstractValue::fastForwardToAndFilterSlow(AbstractValueClobberEpoch newEpoch, SpeculatedType type)
+FiltrationResult AbstractValue::fastForwardToAndFilterSlow(Graph& graph, AbstractValueClobberEpoch newEpoch, SpeculatedType type)
 {
     if (newEpoch != m_effectEpoch)
-        fastForwardToSlow(newEpoch);
-    
+        fastForwardToSlow(graph, newEpoch);
+
     return filterSlow(type);
 }
 
@@ -537,12 +535,12 @@ void AbstractValue::ensureCanInitializeWithZeros()
 }
 #endif
 
-void AbstractValue::fastForwardToSlow(AbstractValueClobberEpoch newEpoch)
+void AbstractValue::fastForwardToSlow(Graph& graph, AbstractValueClobberEpoch newEpoch)
 {
     ASSERT(newEpoch != m_effectEpoch);
     
     if (newEpoch.clobberEpoch() != m_effectEpoch.clobberEpoch())
-        clobberStructures();
+        clobberStructures(graph);
     if (newEpoch.structureClobberState() == StructuresAreWatched)
         m_structure.observeInvalidationPoint();
     

@@ -61,7 +61,7 @@ public:
     };
 
     static ModuleLoadingContext* create(VM&, Step, const JSModuleLoader::ModuleReferrer&, const AbstractModuleRecord::ModuleRequest&, JSCell* payload, ModuleRegistryEntry*, RefPtr<ScriptFetcher>);
-    static ModuleLoadingContext* create(VM&, const AbstractModuleRecord::ModuleRequest&, RefPtr<ScriptFetcher>, bool evaluate, bool dynamic, bool useImportMap);
+    static ModuleLoadingContext* create(VM&, const AbstractModuleRecord::ModuleRequest&, RefPtr<ScriptFetcher>, OptionSet<ModuleLoadFlag>, int64_t referrerAsyncOrder = -1);
 
     Step step() const { return m_step; }
     void setStep(Step s) { m_step = s; }
@@ -74,13 +74,17 @@ public:
     AbstractModuleRecord* module() const { return m_module.get(); }
     void module(VM& vm, AbstractModuleRecord* mod) { m_module.set(vm, this, mod); }
 
-    bool evaluate() const { return m_evaluate; }
-    bool dynamic() const { return m_dynamic; }
-    bool useImportMap() const { return m_useImportMap; }
+    bool evaluate() const { return m_flags.contains(ModuleLoadFlag::Evaluate); }
+    bool dynamic() const { return m_flags.contains(ModuleLoadFlag::Dynamic); }
+    bool useImportMap() const { return m_flags.contains(ModuleLoadFlag::UseImportMap); }
+    bool deferred() const { return m_flags.contains(ModuleLoadFlag::Deferred); }
+#if USE(BUN_JSC_ADDITIONS)
+    int64_t referrerAsyncOrder() const { return m_referrerAsyncOrder; }
+#endif
 
 private:
     ModuleLoadingContext(VM&, Structure*, Step, const JSModuleLoader::ModuleReferrer&, AbstractModuleRecord::ModuleRequest&&, JSCell* payload, ModuleRegistryEntry*, RefPtr<ScriptFetcher>);
-    ModuleLoadingContext(VM&, Structure*, AbstractModuleRecord::ModuleRequest&&, RefPtr<ScriptFetcher>, bool evaluate, bool dynamic, bool useImportMap);
+    ModuleLoadingContext(VM&, Structure*, AbstractModuleRecord::ModuleRequest&&, RefPtr<ScriptFetcher>, OptionSet<ModuleLoadFlag>, int64_t referrerAsyncOrder);
 
     Step m_step { Step::Main };
     AbstractModuleRecord::ModuleRequest m_moduleRequest;
@@ -89,9 +93,10 @@ private:
     WriteBarrier<ModuleRegistryEntry> m_entry;
     WriteBarrier<Unknown> m_referrer;
     WriteBarrier<AbstractModuleRecord> m_module;
-    bool m_evaluate { false };
-    bool m_dynamic { false };
-    bool m_useImportMap { false };
+#if USE(BUN_JSC_ADDITIONS)
+    int64_t m_referrerAsyncOrder { -1 };
+#endif
+    OptionSet<ModuleLoadFlag> m_flags;
 };
 
 } // namespace JSC

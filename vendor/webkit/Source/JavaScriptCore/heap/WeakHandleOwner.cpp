@@ -28,4 +28,22 @@
 
 namespace JSC {
 
+class SlotVisitor;
+template<typename T> class Handle;
+
+WeakHandleOwner::WeakHandleOwner(ClangVTableWorkaroundTag)
+{
+}
+
+WeakHandleOwner::~WeakHandleOwner() = default;
+
+bool WeakHandleOwner::isReachableFromOpaqueRoots(Handle<Unknown>, void*, AbstractSlotVisitor&, ASCIILiteral*)
+{
+    return false;
+}
+
+void WeakHandleOwner::finalize(Handle<Unknown>, void*)
+{
+}
+
 } // namespace JSC

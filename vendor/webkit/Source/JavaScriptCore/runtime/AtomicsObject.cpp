@@ -32,7 +32,6 @@
 #include "ReleaseHeapAccessScope.h"
 #include "TypedArrayController.h"
 #include "WaiterListManager.h"
-#include <wtf/SIMDHelpers.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 

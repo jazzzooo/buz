@@ -26,6 +26,7 @@
 #include "config.h"
 #include "EvalExecutable.h"
 
+#include "JSArray.h"
 #include "JSCJSValueInlines.h"
 
 namespace JSC {

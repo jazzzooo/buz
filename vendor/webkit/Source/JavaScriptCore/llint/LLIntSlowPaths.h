@@ -71,7 +71,6 @@ LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_create_lexical_environment);
 LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_create_direct_arguments);
 LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_create_scoped_arguments);
 LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_create_cloned_arguments);
-LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_try_get_by_id);
 LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_get_by_id_direct);
 LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_get_by_id);
 LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_get_length);
@@ -133,6 +132,8 @@ LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_new_async_generator_func_exp);
 LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_new_async_func);
 LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_new_async_func_exp);
 LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_set_function_name);
+LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_async_iterator_open_get_next);
+LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_async_iterator_next_with_driver);
 LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_size_frame_for_varargs);
 LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_call_varargs);
 LLINT_SLOW_PATH_HIDDEN_DECL(slow_path_tail_call_varargs);
@@ -162,6 +163,7 @@ extern "C" UGPRPair SYSV_ABI llint_check_stack_and_vm_traps(CallFrame*, const JS
 extern "C" UGPRPair SYSV_ABI llint_throw_stack_overflow_error(VM*, ProtoCallFrame*) REFERENCED_FROM_ASM WTF_INTERNAL;
 extern "C" UGPRPair SYSV_ABI llint_slow_path_checkpoint_osr_exit(CallFrame*, EncodedJSValue unused) REFERENCED_FROM_ASM WTF_INTERNAL;
 extern "C" UGPRPair SYSV_ABI llint_slow_path_checkpoint_osr_exit_from_inlined_call(CallFrame*, EncodedJSValue callResult) REFERENCED_FROM_ASM WTF_INTERNAL;
+extern "C" UGPRPair SYSV_ABI llint_slow_path_array_sort_comparator_return(CallFrame*, EncodedJSValue callResult) REFERENCED_FROM_ASM WTF_INTERNAL;
 #if ENABLE(C_LOOP)
 extern "C" UGPRPair SYSV_ABI llint_stack_check_at_vm_entry(VM*, Register*) REFERENCED_FROM_ASM WTF_INTERNAL;
 #endif

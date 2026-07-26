@@ -32,6 +32,8 @@
 #include "JSObject.h"
 #include "JSString.h"
 #include "VMTrapsInlines.h"
+#include <wtf/Int128.h>
+#include <wtf/MathExtras.h>
 
 namespace JSC {
 
@@ -61,7 +63,7 @@ ALWAYS_INLINE JSValue normalizeMapKey(JSValue key)
     if (std::isnan(d))
         return jsNaN();
 
-    int i = static_cast<int>(d);
+    int32_t i = truncateDoubleToInt32(d);
     if (i == d) {
         // When a key is -0, we convert it to positive zero.
         // When a key is the double representation for an integer, we convert it to an integer.
@@ -71,17 +73,9 @@ ALWAYS_INLINE JSValue normalizeMapKey(JSValue key)
     return key;
 }
 
-ALWAYS_INLINE uint32_t wangsInt64Hash(uint64_t key)
+ALWAYS_INLINE uint32_t rapidHashMix64(uint64_t key)
 {
-    key += ~(key << 32);
-    key ^= (key >> 22);
-    key += ~(key << 13);
-    key ^= (key >> 8);
-    key += (key << 3);
-    key ^= (key >> 15);
-    key += ~(key << 27);
-    key ^= (key >> 31);
-    return static_cast<unsigned>(key);
+    return intHash(key);
 }
 
 ALWAYS_INLINE uint32_t jsMapHash(JSBigInt* bigInt)
@@ -107,7 +101,7 @@ ALWAYS_INLINE uint32_t jsMapHashImpl(JSGlobalObject* globalObject, VM& vm, JSVal
     if (value.isHeapBigInt())
         return jsMapHash(value.asHeapBigInt());
 
-    return wangsInt64Hash(JSValue::encode(value));
+    return rapidHashMix64(JSValue::encode(value));
 }
 
 ALWAYS_INLINE uint32_t jsMapHash(JSGlobalObject* globalObject, VM& vm, JSValue value)
@@ -137,7 +131,7 @@ ALWAYS_INLINE std::optional<uint32_t> concurrentJSMapHash(JSValue key)
         return key.asHeapBigInt()->concurrentHash();
 
     uint64_t rawValue = JSValue::encode(key);
-    return wangsInt64Hash(rawValue);
+    return rapidHashMix64(rawValue);
 }
 
 static constexpr uint32_t hashMapInitialCapacity = 4;

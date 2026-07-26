@@ -36,7 +36,6 @@
 #include <wtf/text/CString.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/text/StringBuilder.h>
-#include <wtf/text/StringHash.h>
 
 namespace JSC {
 
@@ -292,7 +291,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
     
     int result = fclose(file);
     if (result)
-        dataLogF("Failed to close file %s: %s\n", fileName, safeStrerror(errno).data());
+        dataLogLn("Failed to close file ", fileName, ": ", safeStrerror(errno).data());
 }
     
 } // namespace JSC

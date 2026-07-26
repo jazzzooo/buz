@@ -28,6 +28,10 @@
 
 #pragma once
 
+#include <wtf/Platform.h>
+
+#if USE(CF)
+
 #include <wtf/HashSet.h>
 #include <wtf/Hasher.h>
 #include <wtf/Ref.h>
@@ -104,3 +108,5 @@ using SchedulePairHashSet = HashSet<Ref<SchedulePair>, SchedulePairHash>;
 
 using WTF::SchedulePair;
 using WTF::SchedulePairHashSet;
+
+#endif // USE(CF)

@@ -26,6 +26,7 @@
 #include "RegExpKey.h"
 #include "Structure.h"
 #include "Yarr.h"
+#include <JavaScriptCore/YarrErrorCode.h>
 #include <wtf/Forward.h>
 #include <wtf/text/WTFString.h>
 
@@ -52,6 +53,7 @@ public:
     JS_EXPORT_PRIVATE static RegExp* create(VM&, const String& pattern, OptionSet<Yarr::Flags>);
     static void destroy(JSCell*);
     static size_t estimatedSize(JSCell*, VM&);
+    DECLARE_VISIT_CHILDREN;
     JS_EXPORT_PRIVATE static void dumpToStream(const JSCell*, PrintStream&);
     void dumpSimpleName(PrintStream&) const;
 
@@ -106,13 +108,20 @@ public:
         return m_rareData && !m_rareData->m_captureGroupNames.isEmpty();
     }
 
-    String getCaptureGroupNameForSubpatternId(unsigned i) const
+    bool hasDuplicateNamedCaptureGroups() const
+    {
+        return m_rareData && m_rareData->m_numDuplicateNamedCaptureGroups;
+    }
+
+    const AtomString& getCaptureGroupNameForSubpatternId(unsigned i) const
     {
         if (!i || !m_rareData || m_rareData->m_captureGroupNames.isEmpty())
-            return String();
+            return nullAtom();
         ASSERT(m_rareData);
         return m_rareData->m_captureGroupNames[i];
     }
+
+    Structure* ensureGroupsStructure(VM&, JSGlobalObject*);
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
     template <typename Offsets>
@@ -208,12 +217,13 @@ private:
     struct RareData {
         WTF_DEPRECATED_MAKE_STRUCT_FAST_ALLOCATED(RareData);
         unsigned m_numDuplicateNamedCaptureGroups;
-        Vector<String> m_captureGroupNames;
+        Vector<AtomString> m_captureGroupNames;
 
         // This first element of the RHS vector is the subpatternId in the non-duplicate case.
         // For the duplicate case, the first element is the namedCaptureGroupId.
         // The remaining elements are the subpatternIds for each of the duplicate groups.
         UncheckedKeyHashMap<String, Vector<unsigned>> m_namedGroupToParenIndices;
+        WriteBarrierStructureID m_cachedGroupsStructureID;
     };
 
     String m_patternString;

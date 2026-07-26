@@ -27,6 +27,8 @@
 #include <wtf/MemoryPressureHandler.h>
 
 #include <psapi.h>
+#include <wtf/FastMalloc.h>
+#include <wtf/MainThread.h>
 #include <wtf/NeverDestroyed.h>
 
 namespace WTF {
@@ -36,13 +38,45 @@ void MemoryPressureHandler::platformInitialize()
     m_lowMemoryHandle = Win32Handle::adopt(::CreateMemoryResourceNotification(LowMemoryResourceNotification));
 }
 
+VOID CALLBACK lowMemoryNotificationCallback(PVOID context, BOOLEAN)
+{
+    callOnMainThread([handler = static_cast<MemoryPressureHandler*>(context)] {
+        handler->windowsLowMemoryNotificationFired();
+    });
+}
+
+void MemoryPressureHandler::beginWaitingForLowMemoryNotification()
+{
+    if (m_lowMemoryWaitHandle)
+        return;
+
+    if (!::RegisterWaitForSingleObject(&m_lowMemoryWaitHandle, m_lowMemoryHandle.get(), lowMemoryNotificationCallback, this, INFINITE, WT_EXECUTEONLYONCE))
+        m_lowMemoryWaitHandle = nullptr;
+}
+
+void MemoryPressureHandler::windowsLowMemoryNotificationFired()
+{
+    m_lowMemoryWaitHandle = nullptr;
+
+    if (!m_installed || !m_lowMemoryHandle)
+        return;
+
+    BOOL memoryLow;
+
+    if (QueryMemoryResourceNotification(m_lowMemoryHandle.get(), &memoryLow) && memoryLow) {
+        setMemoryPressureStatus(SystemMemoryPressureStatus::Critical);
+        releaseMemory(Critical::Yes);
+    }
+    beginWaitingForLowMemoryNotification();
+}
+
 void MemoryPressureHandler::windowsMeasurementTimerFired()
 {
     setMemoryPressureStatus(SystemMemoryPressureStatus::Normal);
 
     BOOL memoryLow;
 
-    if (QueryMemoryResourceNotification(m_lowMemoryHandle.get(), &memoryLow) && memoryLow) {
+    if (m_lowMemoryHandle && QueryMemoryResourceNotification(m_lowMemoryHandle.get(), &memoryLow) && memoryLow) {
         setMemoryPressureStatus(SystemMemoryPressureStatus::Critical);
         releaseMemory(Critical::Yes);
         return;
@@ -68,11 +102,14 @@ void MemoryPressureHandler::windowsMeasurementTimerFired()
 
 void MemoryPressureHandler::platformReleaseMemory(Critical)
 {
+    WTF::releaseFastMallocFreeMemory();
 }
 
 void MemoryPressureHandler::install()
 {
+    platformInitialize();
     m_installed = true;
+    beginWaitingForLowMemoryNotification();
     m_windowsMeasurementTimer.startRepeating(60_s);
 }
 
@@ -82,6 +119,10 @@ void MemoryPressureHandler::uninstall()
         return;
 
     m_windowsMeasurementTimer.stop();
+    if (m_lowMemoryWaitHandle) {
+        ::UnregisterWaitEx(m_lowMemoryWaitHandle, INVALID_HANDLE_VALUE);
+        m_lowMemoryWaitHandle = nullptr;
+    }
     m_installed = false;
 }
 

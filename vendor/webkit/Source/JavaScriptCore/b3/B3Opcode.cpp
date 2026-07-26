@@ -28,8 +28,6 @@
 
 #if ENABLE(B3_JIT)
 
-#include <wtf/PrintStream.h>
-
 #if !ASSERT_ENABLED
 IGNORE_RETURN_TYPE_WARNINGS_BEGIN
 #endif

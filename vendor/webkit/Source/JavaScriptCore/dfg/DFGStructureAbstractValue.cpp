@@ -46,12 +46,11 @@ void StructureAbstractValue::assertIsRegistered(Graph& graph) const
 }
 #endif // ASSERT_ENABLED
 
-void StructureAbstractValue::clobber()
+void StructureAbstractValue::clobber(Graph& graph)
 {
     // The premise of this approach to clobbering is that anytime we introduce
-    // a watchable structure into an abstract value, we watchpoint it. You can assert
-    // that this holds by calling assertIsWatched().
-        
+    // a watchable structure into an abstract value, we watchpoint it.
+
     if (isTop())
         return;
 
@@ -60,22 +59,25 @@ void StructureAbstractValue::clobber()
     if (m_set.isThin()) {
         if (!m_set.singleEntry())
             return;
-        if (!m_set.singleEntry()->dfgShouldWatch())
+        if (!graph.tryWatch(m_set.singleEntry().get()))
             makeTopWhenThin();
         return;
     }
 
     for (auto& item : m_set.list()->lengthSpan() | std::views::reverse) {
-        if (!item->dfgShouldWatch()) {
+        if (!item->dfgMayWatch()) {
             makeTop();
             return;
         }
     }
+
+    for (auto& item : m_set.list()->lengthSpan())
+        graph.watch(item.get());
 }
 
 void StructureAbstractValue::observeTransition(RegisteredStructure from, RegisteredStructure to)
 {
-    ASSERT(!from->dfgShouldWatch());
+    ASSERT(!from->dfgMayWatch());
 
     if (isTop())
         return;
@@ -97,7 +99,7 @@ void StructureAbstractValue::observeTransitions(const TransitionVector& vector)
     
     RegisteredStructureSet newStructures;
     for (unsigned i = vector.size(); i--;) {
-        ASSERT(!vector[i].previous->dfgShouldWatch());
+        ASSERT(!vector[i].previous->dfgMayWatch());
 
         if (!m_set.contains(vector[i].previous))
             continue;

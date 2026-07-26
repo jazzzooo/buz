@@ -31,7 +31,8 @@
 #include "ModuleMap.h"
 #include "ScriptFetchParameters.h"
 #include "ScriptFetcher.h"
-#include <wtf/ListHashSet.h>
+#include <wtf/OrderedHashMap.h>
+#include <wtf/OrderedHashSet.h>
 #include <wtf/RefPtr.h>
 
 namespace JSC {
@@ -94,8 +95,10 @@ public:
         Identifier localName;
     };
 
+    enum class ModulePhase : uint8_t { Evaluation, Defer };
+
     enum class ImportEntryType {
-        Single, 
+        Single,
 #if USE(BUN_JSC_ADDITIONS)
         // If the corresponding export is not found, do not emit an error.
         SingleTypeScript,
@@ -104,18 +107,20 @@ public:
     };
     struct ImportEntry {
         ImportEntryType type;
+        ModulePhase phase { ModulePhase::Evaluation };
         Identifier moduleRequest;
         Identifier importName;
         Identifier localName;
     };
 
-    typedef WTF::ListHashSet<RefPtr<UniquedStringImpl>, IdentifierRepHash> OrderedIdentifierSet;
-    typedef UncheckedKeyHashMap<RefPtr<UniquedStringImpl>, ImportEntry, IdentifierRepHash, HashTraits<RefPtr<UniquedStringImpl>>> ImportEntries;
-    typedef UncheckedKeyHashMap<RefPtr<UniquedStringImpl>, ExportEntry, IdentifierRepHash, HashTraits<RefPtr<UniquedStringImpl>>> ExportEntries;
+    using OrderedIdentifierSet = OrderedHashSet<RefPtr<UniquedStringImpl>, IdentifierRepHash>;
+    using ImportEntries = OrderedHashMap<RefPtr<UniquedStringImpl>, ImportEntry, IdentifierRepHash, HashTraits<RefPtr<UniquedStringImpl>>>;
+    using ExportEntries = OrderedHashMap<RefPtr<UniquedStringImpl>, ExportEntry, IdentifierRepHash, HashTraits<RefPtr<UniquedStringImpl>>>;
 
     struct ModuleRequest {
         Identifier m_specifier;
         RefPtr<ScriptFetchParameters> m_attributes;
+        ModulePhase m_phase { ModulePhase::Evaluation };
 
         ScriptFetchParameters::Type type(ScriptFetchParameters::Type fallback = ScriptFetchParameters::Type::JavaScript) const;
         bool operator==(const ModuleRequest&) const;
@@ -129,13 +134,13 @@ public:
 
     DECLARE_EXPORT_INFO;
 
-    void appendRequestedModule(const Identifier&, RefPtr<ScriptFetchParameters>&&);
+    void appendRequestedModule(const Identifier&, RefPtr<ScriptFetchParameters>&&, ModulePhase = ModulePhase::Evaluation);
     void addStarExportEntry(const Identifier&);
     void addImportEntry(const ImportEntry&);
     void addExportEntry(const ExportEntry&);
 
-    std::optional<ImportEntry> NODELETE tryGetImportEntry(UniquedStringImpl* localName);
-    std::optional<ExportEntry> NODELETE tryGetExportEntry(UniquedStringImpl* exportName);
+    std::optional<ImportEntry> tryGetImportEntry(UniquedStringImpl* localName);
+    std::optional<ExportEntry> tryGetExportEntry(UniquedStringImpl* exportName);
 
     class AsyncEvaluationOrder {
     public:
@@ -205,7 +210,17 @@ public:
     AbstractModuleRecord* hostResolveImportedModule(JSGlobalObject*, const Identifier& moduleName);
     void setImportedModule(JSGlobalObject*, const ModuleRequest&, AbstractModuleRecord*);
 
-    JSModuleNamespaceObject* getModuleNamespace(JSGlobalObject*, bool shouldPreventExtensions = true);
+    JSModuleNamespaceObject* getModuleNamespace(JSGlobalObject*, ModulePhase = ModulePhase::Evaluation, bool shouldPreventExtensions = true);
+#if USE(BUN_JSC_ADDITIONS)
+    JSModuleNamespaceObject* getModuleNamespace(JSGlobalObject* globalObject, bool shouldPreventExtensions)
+    {
+        return getModuleNamespace(globalObject, ModulePhase::Evaluation, shouldPreventExtensions);
+    }
+#endif
+
+    void gatherAsynchronousTransitiveDependencies(OrderedHashSet<AbstractModuleRecord*>& result, UncheckedKeyHashSet<AbstractModuleRecord*>& seen);
+    bool readyForSyncExecution();
+    void evaluateSync(JSGlobalObject*);
 
     JSPromise* asyncCapability() const;
     void asyncCapability(VM&, JSPromise*);
@@ -228,7 +243,7 @@ public:
 
     void evaluateModuleSync(JSGlobalObject*);
 #if USE(BUN_JSC_ADDITIONS)
-    unsigned innerModuleEvaluation(JSGlobalObject*, Vector<AbstractModuleRecord*, 8>& stack, unsigned index, int64_t asyncOrderWatermark);
+    unsigned innerModuleEvaluation(JSGlobalObject*, Vector<AbstractModuleRecord*, 8>& stack, unsigned index, int64_t referrerAsyncOrder);
 #else
     unsigned innerModuleEvaluation(JSGlobalObject*, Vector<AbstractModuleRecord*, 8>& stack, unsigned index);
 #endif
@@ -236,7 +251,11 @@ public:
 
     DECLARE_VISIT_CHILDREN;
 
+#if USE(BUN_JSC_ADDITIONS)
+    JSPromise* evaluate(JSGlobalObject*, int64_t referrerAsyncOrder = -1);
+#else
     JSPromise* evaluate(JSGlobalObject*);
+#endif
 
 #if USE(BUN_JSC_ADDITIONS)
     bool m_isTypeScript = false;
@@ -257,19 +276,6 @@ private:
     // The loader resolves the given module name to the module key. The module key is the unique value to represent this module.
     Identifier m_moduleKey;
 
-    // Currently, we don't keep the occurrence order of the import / export entries.
-    // So, we does not guarantee the order of the errors.
-    // e.g. The import declaration that occurs later than another import declaration may
-    //      throw the error even if the former import declaration also has the invalid content.
-    //
-    //      import ... // (1) this has some invalid content.
-    //      import ... // (2) this also has some invalid content.
-    //
-    //      In the above case, (2) may throw the error earlier than (1)
-    //
-    // But, in all cases, we will throw the syntax error. So except for the content of the syntax error,
-    // there are no differences.
-
     // Map localName -> ImportEntry.
     ImportEntries m_importEntries;
 
@@ -284,6 +290,7 @@ private:
     Vector<ModuleRequest> m_requestedModules;
 
     WriteBarrier<JSModuleNamespaceObject> m_moduleNamespaceObject;
+    WriteBarrier<JSModuleNamespaceObject> m_deferredNamespaceObject;
 
     WriteBarrier<JSPromise> m_asyncCapability;
 

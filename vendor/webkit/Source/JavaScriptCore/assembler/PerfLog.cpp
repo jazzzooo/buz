@@ -32,19 +32,14 @@
 #include "Options.h"
 #include "ProfilerSupport.h"
 #include "SourceProvider.h"
-#include <array>
 #include <fcntl.h>
 #include <mutex>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <wtf/DataLog.h>
 #include <wtf/FileSystem.h>
-#include <wtf/MonotonicTime.h>
 #include <wtf/PageBlock.h>
 #include <wtf/ProcessID.h>
 #include <wtf/StringPrintStream.h>
 #include <wtf/text/MakeString.h>
-#include <wtf/text/StringConcatenate.h>
 #include <wtf/text/StringConcatenateNumbers.h>
 #include <wtf/TZoneMallocInlines.h>
 

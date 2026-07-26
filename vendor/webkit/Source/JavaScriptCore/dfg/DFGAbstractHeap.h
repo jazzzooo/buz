@@ -72,6 +72,7 @@ namespace JSC { namespace DFG {
     macro(HeapObjectCount) /* Used to reflect the fact that some allocations reveal object identity */\
     macro(RegExpState) \
     macro(MathDotRandomState) \
+    macro(WallClock) \
     macro(JSDateFields) \
     macro(JSGlobalProxy_target) \
     macro(JSMapFields) \
@@ -337,6 +338,7 @@ public:
         case HeapObjectCount:
         case RegExpState:
         case MathDotRandomState:
+        case WallClock:
         case JSDateFields:
         case JSGlobalProxy_target:
         case JSMapFields:

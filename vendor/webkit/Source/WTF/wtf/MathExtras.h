@@ -302,11 +302,6 @@ constexpr TargetType clampTo(SourceType value, TargetType min = defaultMinimumFo
     return static_cast<TargetType>(value);
 }
 
-constexpr int clampToInteger(double value)
-{
-    return clampTo<int>(value);
-}
-
 constexpr unsigned clampToUnsigned(double value)
 {
     return clampTo<unsigned>(value);
@@ -320,21 +315,6 @@ constexpr float clampToFloat(double value)
 constexpr int clampToPositiveInteger(double value)
 {
     return clampTo<int>(value, 0);
-}
-
-constexpr int clampToInteger(float value)
-{
-    return clampTo<int>(value);
-}
-
-template<std::integral T>
-constexpr int clampToInteger(T x)
-{
-    constexpr T intMax = static_cast<unsigned>(std::numeric_limits<int>::max());
-
-    if (x >= intMax)
-        return std::numeric_limits<int>::max();
-    return static_cast<int>(x);
 }
 
 // Explicitly accept 64bit result when clamping double value.
@@ -380,7 +360,9 @@ constexpr bool hasTwoOrMoreBitsSet(T value)
 template<typename T>
 constexpr T divideRoundedUp(T a, T b)
 {
-    return (a + b - 1) / b;
+    // Mathematically equivalent to (a + b - 1) / b, but does not overflow
+    // when a is close to the maximum representable value of T.
+    return a / b + !!(a % b);
 }
 
 template<typename T>

@@ -28,6 +28,7 @@
 
 #include "IntlObjectInlines.h"
 #include "JSCInlines.h"
+#include "TemporalCalendar.h"
 #include "TemporalPlainDate.h"
 #include "TemporalPlainDatePrototype.h"
 
@@ -77,46 +78,72 @@ void TemporalPlainDateConstructor::finishCreation(VM& vm, TemporalPlainDateProto
 {
     Base::finishCreation(vm, 3, "PlainDate"_s, PropertyAdditionMode::WithoutStructureTransition);
     putDirectWithoutTransition(vm, vm.propertyNames->prototype, plainDatePrototype, PropertyAttribute::DontEnum | PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly);
-    plainDatePrototype->putDirectWithoutTransition(vm, vm.propertyNames->constructor, this, static_cast<unsigned>(PropertyAttribute::DontEnum));
 }
 
+// https://tc39.es/proposal-temporal/#sec-temporal.plaindate
 JSC_DEFINE_HOST_FUNCTION(constructTemporalPlainDate, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
+    // Step 1: NewTarget check done by JSC engine.
     JSObject* newTarget = asObject(callFrame->newTarget());
     Structure* structure = JSC_GET_DERIVED_STRUCTURE(vm, plainDateStructure, newTarget, callFrame->jsCallee());
     RETURN_IF_EXCEPTION(scope, { });
 
+    // Steps 2-4: y/m/d = ? ToIntegerWithTruncation(isoYear/isoMonth/isoDay).
+    //   ToIntegerWithTruncation: NaN → 0, ±Infinity → throw RangeError.
+    //   When called with fewer than 3 args the missing arg is undefined → 0.
+    //   We skip the conversion entirely for missing args (Duration default is 0); the
+    //   downstream IsValidISODate check then rejects month=0, matching spec behavior.
     ISO8601::Duration duration { };
     auto argumentCount = callFrame->argumentCount();
 
     if (argumentCount > 0) {
         auto value = callFrame->uncheckedArgument(0).toIntegerWithTruncation(globalObject);
-        if (!std::isfinite(value))
-            return throwVMRangeError(globalObject, scope, "Temporal.PlainDate year property must be finite"_s);
-        duration.setYears(value);
         RETURN_IF_EXCEPTION(scope, { });
+        if (!std::isfinite(value)) [[unlikely]]
+            return throwVMRangeError(globalObject, scope, "Temporal.PlainDate year property must be finite"_s);
+        duration.setField(TemporalUnit::Year, value);
     }
 
     if (argumentCount > 1) {
         auto value = callFrame->uncheckedArgument(1).toIntegerWithTruncation(globalObject);
-        if (!std::isfinite(value))
-            return throwVMRangeError(globalObject, scope, "Temporal.PlainDate month property must be finite"_s);
-        duration.setMonths(value);
         RETURN_IF_EXCEPTION(scope, { });
+        if (!std::isfinite(value)) [[unlikely]]
+            return throwVMRangeError(globalObject, scope, "Temporal.PlainDate month property must be finite"_s);
+        duration.setField(TemporalUnit::Month, value);
     }
 
     if (argumentCount > 2) {
         auto value = callFrame->uncheckedArgument(2).toIntegerWithTruncation(globalObject);
-        if (!std::isfinite(value))
-            return throwVMRangeError(globalObject, scope, "Temporal.PlainDate day property must be finite"_s);
-        duration.setDays(value);
         RETURN_IF_EXCEPTION(scope, { });
+        if (!std::isfinite(value)) [[unlikely]]
+            return throwVMRangeError(globalObject, scope, "Temporal.PlainDate day property must be finite"_s);
+        duration.setField(TemporalUnit::Day, value);
     }
 
-    RELEASE_AND_RETURN(scope, JSValue::encode(TemporalPlainDate::tryCreateIfValid(globalObject, structure, WTF::move(duration))));
+    // Steps 5-7: if calendar undefined → "iso8601"; if not String → TypeError; CanonicalizeCalendar.
+    CalendarID calendarId = iso8601CalendarID();
+    if (argumentCount > 3) {
+        JSValue calendarArg = callFrame->uncheckedArgument(3);
+        if (!calendarArg.isUndefined()) {
+            if (!calendarArg.isString()) [[unlikely]]
+                return throwVMTypeError(globalObject, scope, "calendarId must be a string"_s);
+            auto rawCalendarId = asString(calendarArg)->value(globalObject);
+            RETURN_IF_EXCEPTION(scope, { });
+            auto canonicalized = isBuiltinCalendar(rawCalendarId);
+            if (!canonicalized) [[unlikely]]
+                return throwVMRangeError(globalObject, scope, "invalid calendar ID"_s);
+            calendarId = *canonicalized;
+        }
+    }
+
+    // Steps 8-9: IsValidISODate + CreateISODateRecord.
+    auto plainDate = TemporalPlainDate::validateAndCreateISODateRecord(globalObject, duration);
+    RETURN_IF_EXCEPTION(scope, { });
+    // Step 10: Return ? CreateTemporalDate(isoDate, calendar, NewTarget).
+    RELEASE_AND_RETURN(scope, JSValue::encode(TemporalPlainDate::tryCreateIfValid(globalObject, structure, WTF::move(plainDate), calendarId)));
 }
 
 JSC_DEFINE_HOST_FUNCTION(callTemporalPlainDate, (JSGlobalObject* globalObject, CallFrame*))
@@ -128,21 +155,27 @@ JSC_DEFINE_HOST_FUNCTION(callTemporalPlainDate, (JSGlobalObject* globalObject, C
 }
 
 // https://tc39.es/proposal-temporal/#sec-temporal.plaindate.from
+// Step 1: Return ToTemporalDate(item, options).
 JSC_DEFINE_HOST_FUNCTION(temporalPlainDateConstructorFuncFrom, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     JSValue itemValue = callFrame->argument(0);
+    JSValue optionsValue = callFrame->argument(1);
 
-    // Validate overflow
-    auto overflow = toTemporalOverflow(globalObject, callFrame->argument(1));
-    RETURN_IF_EXCEPTION(scope, { });
+    if (itemValue.inherits<TemporalPlainDate>()) {
+        // ToTemporalDate step 2.a: GetOptionsObject + GetTemporalOverflowOption (validate; result unused).
+        auto overflow = toTemporalOverflow(globalObject, optionsValue);
+        RETURN_IF_EXCEPTION(scope, { });
+        UNUSED_PARAM(overflow);
+        // Return CreateTemporalDate(item.[[ISODate]], item.[[Calendar]]) — new instance.
+        auto* src = uncheckedDowncast<TemporalPlainDate>(itemValue);
+        RELEASE_AND_RETURN(scope, JSValue::encode(TemporalPlainDate::create(vm, globalObject->plainDateStructure(), src->plainDate(), src->calendarID())));
+    }
 
-    if (itemValue.inherits<TemporalPlainDate>())
-        RELEASE_AND_RETURN(scope, JSValue::encode(TemporalPlainDate::create(vm, globalObject->plainDateStructure(), uncheckedDowncast<TemporalPlainDate>(itemValue)->plainDate())));
-
-    RELEASE_AND_RETURN(scope, JSValue::encode(TemporalPlainDate::from(globalObject, itemValue, overflow)));
+    // ToTemporalDate remaining steps: property bag or string path.
+    RELEASE_AND_RETURN(scope, JSValue::encode(TemporalPlainDate::from(globalObject, itemValue, optionsValue)));
 }
 
 // https://tc39.es/proposal-temporal/#sec-temporal.plaindate.compare
@@ -151,13 +184,16 @@ JSC_DEFINE_HOST_FUNCTION(temporalPlainDateConstructorFuncCompare, (JSGlobalObjec
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto* one = TemporalPlainDate::from(globalObject, callFrame->argument(0), TemporalOverflow::Constrain);
+    // Step 1: one = ToTemporalDate(one).
+    auto* one = TemporalPlainDate::from(globalObject, callFrame->argument(0), jsUndefined());
     RETURN_IF_EXCEPTION(scope, { });
 
-    auto* two = TemporalPlainDate::from(globalObject, callFrame->argument(1), TemporalOverflow::Constrain);
+    // Step 2: two = ToTemporalDate(two).
+    auto* two = TemporalPlainDate::from(globalObject, callFrame->argument(1), jsUndefined());
     RETURN_IF_EXCEPTION(scope, { });
 
-    return JSValue::encode(jsNumber(TemporalCalendar::isoDateCompare(one->plainDate(), two->plainDate())));
+    // Step 3: CompareISODate(one.[[ISODate]], two.[[ISODate]]).
+    return JSValue::encode(jsNumber(TemporalCore::isoDateCompare(one->plainDate(), two->plainDate())));
 }
 
 } // namespace JSC

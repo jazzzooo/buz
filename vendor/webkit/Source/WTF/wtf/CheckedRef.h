@@ -35,10 +35,6 @@
 #include <wtf/TypeTraits.h>
 #include <wtf/UniqueRef.h>
 
-#if ASSERT_ENABLED
-#include <wtf/Threading.h>
-#endif
-
 namespace WTF {
 
 #define USING_CAN_MAKE_CHECKEDPTR(BASE) \

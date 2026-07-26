@@ -24,11 +24,13 @@
 #include "JSArray.h"
 
 #include "ArrayPrototypeInlines.h"
+#include "GCDeferralContextInlines.h"
 #include "JSArrayInlines.h"
 #include "JSCInlines.h"
 #include "PropertyNameArray.h"
 #include "ResourceExhaustion.h"
 #include "ScopedArguments.h"
+#include "TopExceptionScope.h"
 #include "TypeError.h"
 #include <wtf/Assertions.h>
 
@@ -37,6 +39,63 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 namespace JSC {
 
 STATIC_ASSERT_IS_TRIVIALLY_DESTRUCTIBLE(JSArray);
+
+template<typename ElementType>
+static ALWAYS_INLINE bool tryGrowAndShiftButterflyRight(JSObject* object, VM& vm, Butterfly* butterfly, unsigned oldLength, unsigned newLength, unsigned startIndex, unsigned count)
+{
+    ASSERT(newLength > butterfly->vectorLength());
+    ASSERT(newLength <= MAX_STORAGE_VECTOR_LENGTH);
+
+    Structure* structure = object->structure();
+    unsigned propertyCapacity = structure->outOfLineCapacity();
+    unsigned oldVectorLength = butterfly->vectorLength();
+
+    unsigned availableOldLength = Butterfly::availableContiguousVectorLength(propertyCapacity, oldVectorLength);
+    if (availableOldLength >= newLength)
+        return false;
+
+    void* theBase = butterfly->base(0, propertyCapacity);
+    bool canReallocInPlace = !propertyCapacity && !vm.heap.mutatorShouldBeFenced() && std::bit_cast<HeapCell*>(theBase)->isPreciseAllocation();
+    if (canReallocInPlace)
+        return false;
+
+    unsigned newVectorLength = Butterfly::optimalContiguousVectorLength(propertyCapacity, std::min<size_t>(nextLength(newLength), MAX_STORAGE_VECTOR_LENGTH));
+
+    size_t newPayloadSize = newVectorLength * sizeof(ElementType);
+
+    GCDeferralContext deferralContext(vm);
+    AssertNoGC assertNoGC;
+    constexpr unsigned preCapacity = 0;
+    Butterfly* newButterfly = Butterfly::tryCreateUninitialized(vm, object, preCapacity, propertyCapacity, true, newPayloadSize, &deferralContext);
+    if (!newButterfly) [[unlikely]]
+        return false;
+
+    // Copy property storage + indexing header (the "prefix" that lives before the array data).
+    size_t prefixSize = propertyCapacity * sizeof(EncodedJSValue) + sizeof(IndexingHeader);
+    memcpy(newButterfly->base(0, propertyCapacity), theBase, prefixSize);
+
+    ElementType* oldData = butterfly->indexingPayload<ElementType>();
+    ElementType* newData = newButterfly->indexingPayload<ElementType>();
+
+    // This butterfly is not yet visible to GC markers, so a plain memcpy is safe.
+    if (startIndex)
+        memcpy(newData, oldData, startIndex * sizeof(ElementType));
+
+    for (unsigned i = startIndex; i < startIndex + count; ++i)
+        clearElement(newData[i]);
+
+    if (unsigned moveCount = oldLength - startIndex)
+        memcpy(newData + startIndex + count, oldData + startIndex, moveCount * sizeof(ElementType));
+
+    for (unsigned i = oldLength + count; i < newVectorLength; ++i)
+        clearElement(newData[i]);
+
+    newButterfly->setVectorLength(newVectorLength);
+    newButterfly->setPublicLength(newLength);
+
+    object->setButterfly(vm, newButterfly);
+    return true;
+}
 
 const ClassInfo JSArray::s_info = { "Array"_s, &JSNonFinalObject::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSArray) };
 
@@ -435,7 +494,7 @@ bool JSArray::setLengthWithArrayStorage(JSGlobalObject* globalObject, unsigned n
             keys.reserveInitialCapacity(std::min(map->size(), static_cast<size_t>(length - newLength)));
             SparseArrayValueMap::const_iterator end = map->end();
             for (SparseArrayValueMap::const_iterator it = map->begin(); it != end; ++it) {
-                unsigned index = static_cast<unsigned>(it->key);
+                unsigned index = it->index();
                 if (index < length && index >= newLength)
                     keys.append(index);
             }
@@ -450,7 +509,7 @@ bool JSArray::setLengthWithArrayStorage(JSGlobalObject* globalObject, unsigned n
                     unsigned index = keys[--i];
                     SparseArrayValueMap::iterator it = map->find(index);
                     ASSERT(it != map->notFound());
-                    if (it->value.attributes() & PropertyAttribute::DontDelete) {
+                    if (it->attributes() & PropertyAttribute::DontDelete) {
                         storage->setLength(index + 1);
                         return typeError(globalObject, scope, throwException, UnableToDeletePropertyError);
                     }
@@ -1799,7 +1858,7 @@ bool JSArray::unshiftCountWithAnyIndexingType(JSGlobalObject* globalObject, unsi
     case ArrayWithInt32:
     case ArrayWithContiguous: {
         unsigned oldLength = butterfly->publicLength();
-        
+
         // We may have to walk the entire array to do the unshift. We're willing to do so
         // only if it's not horribly slow.
         unsigned moveCount = oldLength - startIndex;
@@ -1816,40 +1875,43 @@ bool JSArray::unshiftCountWithAnyIndexingType(JSGlobalObject* globalObject, unsi
         if (newLength > MAX_STORAGE_VECTOR_LENGTH)
             return false;
 
-        // FIXME: If we create a new butterfly, we should move elements at the same time.
+        // We have to check for holes before we start moving things around so that we don't get halfway
+        // through shifting and then realize we should have been in ArrayStorage mode.
+        if (moveCount && holesMustForwardToPrototype()) [[unlikely]] {
+            auto* buffer = butterfly->contiguous().data() + startIndex;
+            if (containsHole(buffer, moveCount)) [[unlikely]]
+                RELEASE_AND_RETURN(scope, unshiftCountWithArrayStorage(globalObject, startIndex, count, ensureArrayStorage(vm)));
+        }
+
+        if (newLength > butterfly->vectorLength()) {
+            if (tryGrowAndShiftButterflyRight<WriteBarrier<Unknown>>(this, vm, butterfly, oldLength, newLength, startIndex, count))
+                return true;
+        }
+
         if (!ensureLength(vm, newLength)) {
             throwOutOfMemoryError(globalObject, scope);
             return true;
         }
         butterfly = this->butterfly();
 
-        // We have to check for holes before we start moving things around so that we don't get halfway 
-        // through shifting and then realize we should have been in ArrayStorage mode.
-        if (moveCount) {
-            if (holesMustForwardToPrototype()) [[unlikely]] {
-                auto* buffer = butterfly->contiguous().data() + startIndex;
-                if (containsHole(buffer, moveCount)) [[unlikely]]
-                    RELEASE_AND_RETURN(scope, unshiftCountWithArrayStorage(globalObject, startIndex, count, ensureArrayStorage(vm)));
-            }
-
+        if (moveCount)
             gcSafeMemmove(butterfly->contiguous().data() + startIndex + count, butterfly->contiguous().data() + startIndex, moveCount * sizeof(EncodedJSValue));
-        }
 
         // Our memmoving of values around in the array could have concealed some of them from
         // the collector. Let's make sure that the collector scans this object again.
         vm.writeBarrier(this);
-        
+
         // NOTE: we're leaving being garbage in the part of the array that we shifted out
         // of. This is fine because the caller is required to store over that area, and
         // in contiguous mode storing into a hole is guaranteed to behave exactly the same
         // as storing over an existing element.
-        
+
         return true;
     }
-        
+
     case ArrayWithDouble: {
         unsigned oldLength = butterfly->publicLength();
-        
+
         // We may have to walk the entire array to do the unshift. We're willing to do so
         // only if it's not horribly slow.
         unsigned moveCount = oldLength - startIndex;
@@ -1866,32 +1928,35 @@ bool JSArray::unshiftCountWithAnyIndexingType(JSGlobalObject* globalObject, unsi
         if (newLength > MAX_STORAGE_VECTOR_LENGTH)
             return false;
 
-        // FIXME: If we create a new butterfly, we should move elements at the same time.
+        // We have to check for holes before we start moving things around so that we don't get halfway
+        // through shifting and then realize we should have been in ArrayStorage mode.
+        if (moveCount && holesMustForwardToPrototype()) [[unlikely]] {
+            for (unsigned i = oldLength; i-- > startIndex;) {
+                double v = butterfly->contiguousDouble().at(this, i);
+                if (v != v) [[unlikely]]
+                    RELEASE_AND_RETURN(scope, unshiftCountWithArrayStorage(globalObject, startIndex, count, ensureArrayStorage(vm)));
+            }
+        }
+
+        if (newLength > butterfly->vectorLength()) {
+            if (tryGrowAndShiftButterflyRight<double>(this, vm, butterfly, oldLength, newLength, startIndex, count))
+                return true;
+        }
+
         if (!ensureLength(vm, newLength)) {
             throwOutOfMemoryError(globalObject, scope);
             return true;
         }
         butterfly = this->butterfly();
-        
-        // We have to check for holes before we start moving things around so that we don't get halfway 
-        // through shifting and then realize we should have been in ArrayStorage mode.
-        if (moveCount) {
-            if (holesMustForwardToPrototype()) [[unlikely]] {
-                for (unsigned i = oldLength; i-- > startIndex;) {
-                    double v = butterfly->contiguousDouble().at(this, i);
-                    if (v != v) [[unlikely]]
-                        RELEASE_AND_RETURN(scope, unshiftCountWithArrayStorage(globalObject, startIndex, count, ensureArrayStorage(vm)));
-                }
-            }
 
+        if (moveCount)
             gcSafeMemmove(butterfly->contiguousDouble().data() + startIndex + count, butterfly->contiguousDouble().data() + startIndex, moveCount * sizeof(double));
-        }
 
         // NOTE: we're leaving being garbage in the part of the array that we shifted out
         // of. This is fine because the caller is required to store over that area, and
         // in contiguous mode storing into a hole is guaranteed to behave exactly the same
         // as storing over an existing element.
-        
+
         return true;
     }
         
@@ -2078,6 +2143,10 @@ bool JSArray::isToPrimitiveFastAndNonObservable()
     if (!globalObject->arraySymbolToPrimitiveWatchpointSet().isStillValid()) [[unlikely]]
         return false;
     if (!globalObject->arrayJoinWatchpointSet().isStillValid()) [[unlikely]]
+        return false;
+    if (!globalObject->objectPrototypeValueOfWatchpointSet().isStillValid()) [[unlikely]]
+        return false;
+    if (!globalObject->arrayPrototypeValueOfWatchpointSet().isStillValid()) [[unlikely]]
         return false;
 
     Structure* structure = this->structure();
@@ -2324,6 +2393,8 @@ static uint64_t calculateFlattenedLength(JSGlobalObject* globalObject, JSArray* 
                 continue;
             if (depth > 0 && isJSArray(element)) {
                 JSArray* elementArray = uncheckedDowncast<JSArray>(element);
+                if (elementArray->holesMustForwardToPrototype()) [[unlikely]]
+                    return std::numeric_limits<uint64_t>::max();
                 uint64_t newDepth = (depth == std::numeric_limits<uint64_t>::max()) ? depth : depth - 1;
                 uint64_t flatLength = calculateFlattenedLength(globalObject, elementArray, elementArray->length(), newDepth);
                 RETURN_IF_EXCEPTION(scope, flatLength);
@@ -2410,6 +2481,8 @@ static uint64_t fastFlatIntoBuffer(JSGlobalObject* globalObject, T* resultBuffer
                 continue;
             if (depth > 0 && isJSArray(element)) {
                 JSArray* elementArray = uncheckedDowncast<JSArray>(element);
+                if (elementArray->holesMustForwardToPrototype()) [[unlikely]]
+                    return std::numeric_limits<uint64_t>::max();
                 uint64_t newDepth = (depth == std::numeric_limits<uint64_t>::max()) ? depth : depth - 1;
                 resultIndex = fastFlatIntoBuffer(globalObject, resultBuffer, resultIndex, elementArray, elementArray->length(), newDepth, vectorLength);
                 RETURN_IF_EXCEPTION(scope, resultIndex);
@@ -2469,6 +2542,8 @@ JSArray* JSArray::fastFlat(JSGlobalObject* globalObject, uint64_t depth, uint64_
         uint64_t flattenedLength = calculateFlattenedLength(globalObject, this, length, depth);
         RETURN_IF_EXCEPTION(scope, nullptr);
         if (flattenedLength == std::numeric_limits<uint64_t>::max()) [[unlikely]]
+            return nullptr;
+        if (flattenedLength > MAX_STORAGE_VECTOR_LENGTH) [[unlikely]]
             return nullptr;
 
         Structure* resultStructure = globalObject->arrayStructureForIndexingTypeDuringAllocation(sourceType);

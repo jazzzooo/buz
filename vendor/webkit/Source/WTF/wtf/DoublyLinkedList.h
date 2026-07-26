@@ -84,6 +84,7 @@ public:
 
     void push(T*);
     void append(T*);
+    void insertAfter(T* existingNode, T* newNode);
     void remove(T*);
     void append(DoublyLinkedList<T>&);
 
@@ -159,6 +160,19 @@ template<typename T> inline void DoublyLinkedList<T>::append(T* node)
     m_tail->setNext(node);
     node->setPrev(m_tail);
     m_tail = node;
+}
+
+template<typename T> inline void DoublyLinkedList<T>::insertAfter(T* existingNode, T* newNode)
+{
+    ASSERT(existingNode);
+    ASSERT(!newNode->prev() && !newNode->next());
+    newNode->setPrev(existingNode);
+    newNode->setNext(existingNode->next());
+    if (existingNode->next())
+        existingNode->next()->setPrev(newNode);
+    else
+        m_tail = newNode;
+    existingNode->setNext(newNode);
 }
 
 template<typename T> inline DoublyLinkedList<T> DoublyLinkedList<T>::splitAt(size_t toKeep)

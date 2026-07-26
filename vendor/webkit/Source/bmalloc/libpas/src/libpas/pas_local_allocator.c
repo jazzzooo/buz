@@ -29,7 +29,6 @@
 
 #include "pas_local_allocator.h"
 
-#include "pas_heap_for_config.h"
 #include "pas_local_allocator_inlines.h"
 #include "pas_race_test_hooks.h"
 #include "pas_segregated_page.h"

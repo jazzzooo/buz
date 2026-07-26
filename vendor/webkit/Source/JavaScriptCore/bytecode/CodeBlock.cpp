@@ -81,6 +81,7 @@
 #include "SlotVisitorInlines.h"
 #include "SourceProvider.h"
 #include "StackVisitor.h"
+#include "SymbolTableInlines.h"
 #include "TypeLocationCache.h"
 #include "TypeProfiler.h"
 #include "VMInlines.h"
@@ -513,7 +514,6 @@ bool CodeBlock::finishCreation(VM& vm, ScriptExecutable* ownerExecutable, Unlink
         LINK(OpGetByVal)
         LINK(OpGetPrivateName)
 
-        LINK(OpTryGetById)
         LINK(OpGetByIdDirect)
         LINK(OpGetByValWithThis)
         LINK(OpToThis)
@@ -558,6 +558,8 @@ bool CodeBlock::finishCreation(VM& vm, ScriptExecutable* ownerExecutable, Unlink
         LINK(OpSuperConstruct, callLinkInfo)
         LINK(OpIteratorOpen, callLinkInfo)
         LINK(OpIteratorNext, callLinkInfo)
+        LINK(OpAsyncIteratorOpen, callLinkInfo)
+        LINK(OpAsyncIteratorNext, callLinkInfo)
         LINK(OpCallVarargs, callLinkInfo)
         LINK(OpTailCallVarargs, callLinkInfo)
         LINK(OpConstructVarargs, callLinkInfo)
@@ -1090,7 +1092,12 @@ Vector<unsigned> CodeBlock::setConstantRegisters(const FixedVector<WriteBarrier<
                         // watchpoint intact and assume the value is still the original constant.
                         SymbolTable* clone = globalObject->symbolTableCache().get(symbolTable);
                         if (!clone) {
-                            clone = symbolTable->cloneScopePart(vm);
+                            // For non-builtin code, link the clone's singleton watchpoint to the master
+                            // SymbolTable held inside the UnlinkedCodeBlock so that all per-realm clones
+                            // share one InferredValue. This avoids re-firing the singleton watchpoint
+                            // independently in every realm (e.g. on navigation) for the same code.
+                            auto propagateCloneInvalidationToOriginal = m_unlinkedCode->isBuiltinFunction() ? SymbolTable::PropagateCloneInvalidationToOriginal::No : SymbolTable::PropagateCloneInvalidationToOriginal::Yes;
+                            clone = symbolTable->cloneScopePart(vm, propagateCloneInvalidationToOriginal);
                             globalObject->symbolTableCache().set(symbolTable, clone);
                         }
                         if (wasCompiledWithDebuggingOpcodes())
@@ -1516,6 +1523,10 @@ void CodeBlock::finalizeLLIntInlineCaches()
             clearIfNeeded(metadata.m_modeMetadata, "iterator open"_s);
         });
 
+        m_metadata->forEach<OpAsyncIteratorOpen>([&] (auto& metadata) {
+            clearIfNeeded(metadata.m_modeMetadata, "async iterator open"_s);
+        });
+
         m_metadata->forEach<OpIteratorNext>([&] (auto& metadata) {
             clearIfNeeded(metadata.m_doneModeMetadata, "iterator next"_s);
             clearIfNeeded(metadata.m_valueModeMetadata, "iterator next"_s);
@@ -1532,15 +1543,6 @@ void CodeBlock::finalizeLLIntInlineCaches()
 
         m_metadata->forEach<OpGetLength>([&] (auto& metadata) {
             clearIfNeeded(metadata.m_modeMetadata, "get length"_s);
-        });
-
-        m_metadata->forEach<OpTryGetById>([&] (auto& metadata) {
-            StructureID oldStructureID = metadata.m_structureID;
-            if (!oldStructureID || vm.heap.isMarked(oldStructureID.decode()))
-                return;
-            dataLogLnIf(Options::verboseOSR(), "Clearing try_get_by_id LLInt property access.");
-            metadata.m_structureID = StructureID();
-            metadata.m_offset = 0;
         });
 
         m_metadata->forEach<OpGetByIdDirect>([&] (auto& metadata) {
@@ -1712,6 +1714,11 @@ void CodeBlock::finalizeLLIntInlineCaches()
             case op_iterator_open: {
                 dataLogLnIf(Options::verboseOSR(), "Clearing LLInt iterator open property access.");
                 LLIntPrototypeLoadAdaptiveStructureWatchpoint::clearLLIntGetByIdCache(instruction->as<OpIteratorOpen>().metadata(this).m_modeMetadata);
+                break;
+            }
+            case op_async_iterator_open: {
+                dataLogLnIf(Options::verboseOSR(), "Clearing LLInt async iterator open property access.");
+                LLIntPrototypeLoadAdaptiveStructureWatchpoint::clearLLIntGetByIdCache(instruction->as<OpAsyncIteratorOpen>().metadata(this).m_modeMetadata);
                 break;
             }
             case op_iterator_next: {
@@ -2228,6 +2235,7 @@ void CodeBlock::linkIncomingCall(JSCell* caller, CallLinkInfoBase* incoming)
 
 void CodeBlock::unlinkOrUpgradeIncomingCalls(VM& vm, CodeBlock* newCodeBlock)
 {
+IGNORE_GCC_WARNINGS_BEGIN("dangling-pointer")
     SentinelLinkedList<CallLinkInfoBase, BasicRawSentinelNode<CallLinkInfoBase>> toBeRemoved;
     toBeRemoved.takeFrom(m_incomingCalls);
 
@@ -2236,6 +2244,7 @@ void CodeBlock::unlinkOrUpgradeIncomingCalls(VM& vm, CodeBlock* newCodeBlock)
     // be accumulated correctly.
     while (!toBeRemoved.isEmpty())
         toBeRemoved.begin()->unlinkOrUpgrade(vm, this, newCodeBlock);
+IGNORE_GCC_WARNINGS_END
 }
 
 CodeBlock* CodeBlock::newReplacement()
@@ -3023,29 +3032,21 @@ bool CodeBlock::hasIdentifier(UniquedStringImpl* uid)
 void CodeBlock::updateAllNonLazyValueProfilePredictionsAndCountLiveness(const ConcurrentJSLocker& locker, unsigned& numberOfLiveNonArgumentValueProfiles, unsigned& numberOfSamplesInProfiles)
 {
     numberOfLiveNonArgumentValueProfiles = 0;
-    numberOfSamplesInProfiles = 0; // If this divided by ValueProfile::numberOfBuckets equals numberOfValueProfiles() then value profiles are full.
+    numberOfSamplesInProfiles = 0;
 
     unsigned index = 0;
     UnlinkedCodeBlock* unlinkedCodeBlock = this->unlinkedCodeBlock();
     bool isBuiltinFunction = unlinkedCodeBlock->isBuiltinFunction();
     auto unlinkedValueProfiles = unlinkedCodeBlock->unlinkedValueProfiles().mutableSpan();
     forEachValueProfile([&](auto& profile, bool isArgument) {
-        unsigned numSamples = profile.totalNumberOfSamples();
         using Profile = std::remove_reference_t<decltype(profile)>;
         static_assert(Profile::numberOfBuckets == 1);
-        if (numSamples > Profile::numberOfBuckets)
-            numSamples = Profile::numberOfBuckets; // We don't want profiles that are extremely hot to be given more weight.
-        numberOfSamplesInProfiles += numSamples;
-        if (isArgument) {
-            profile.computeUpdatedPrediction(locker);
-            if (!isBuiltinFunction)
-                unlinkedValueProfiles[index].update(profile);
-            ++index;
-            return;
+        bool wasLive = profile.computeUpdatedPrediction(locker) != SpecNone;
+        if (wasLive) {
+            ++numberOfSamplesInProfiles;
+            if (!isArgument)
+                ++numberOfLiveNonArgumentValueProfiles;
         }
-        if (profile.numberOfSamples() || profile.isSampledBefore())
-            numberOfLiveNonArgumentValueProfiles++;
-        profile.computeUpdatedPrediction(locker);
         if (!isBuiltinFunction)
             unlinkedValueProfiles[index].update(profile);
         ++index;
@@ -3391,6 +3392,8 @@ ValueProfile* CodeBlock::tryGetValueProfileForBytecodeIndex(BytecodeIndex byteco
 
     case op_iterator_open:
         return &m_metadata->valueProfilesEnd()[-static_cast<ptrdiff_t>(valueProfileOffsetFor(instruction->as<OpIteratorOpen>(), bytecodeIndex.checkpoint()))];
+    case op_async_iterator_open:
+        return &m_metadata->valueProfilesEnd()[-static_cast<ptrdiff_t>(valueProfileOffsetFor(instruction->as<OpAsyncIteratorOpen>(), bytecodeIndex.checkpoint()))];
     case op_iterator_next:
         return &m_metadata->valueProfilesEnd()[-static_cast<ptrdiff_t>(valueProfileOffsetFor(instruction->as<OpIteratorNext>(), bytecodeIndex.checkpoint()))];
     case op_instanceof:

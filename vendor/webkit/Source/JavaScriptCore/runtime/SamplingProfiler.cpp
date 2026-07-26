@@ -46,7 +46,6 @@
 #include "VMTrapsInlines.h"
 #include "WasmCallee.h"
 #include "WasmCapabilities.h"
-#include <wtf/CommaPrinter.h>
 #include <wtf/FilePrintStream.h>
 #include <wtf/HashSet.h>
 #include <wtf/JSONValues.h>
@@ -1065,6 +1064,7 @@ static String tierName(SamplingProfiler::StackFrame& frame)
             case Wasm::CompilationMode::JSToWasmICMode:
             case Wasm::CompilationMode::WasmToJSMode:
             case Wasm::CompilationMode::WasmBuiltinMode:
+            case Wasm::CompilationMode::RestoreFrameMode:
                 // Just say "Wasm" for now.
                 break;
             case Wasm::CompilationMode::BBQMode:

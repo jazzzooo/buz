@@ -43,6 +43,7 @@
 #include "ScriptCallFrame.h"
 #include "ScriptExecutable.h"
 #include <span>
+#include "TopExceptionScope.h"
 #include <wtf/text/WTFString.h>
 
 namespace Inspector {

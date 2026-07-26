@@ -32,6 +32,7 @@
 #include "MarkedBlockInlines.h"
 #include "SweepingScope.h"
 #include "VMManager.h"
+#include "WeakSetInlines.h"
 #include <wtf/CommaPrinter.h>
 
 #if PLATFORM(COCOA)
@@ -50,7 +51,7 @@ NEVER_INLINE bool MarkedBlock::isMarked(HeapVersion markingVersion, const void* 
     Dependency dependency = Dependency::loadAndFence(&header().m_markingVersion, version);
     if (version != markingVersion) [[unlikely]]
         return false;
-    return header().m_marks.get(atomNumber(p), dependency);
+    return header().m_marks.concurrentGet(atomNumber(p), dependency);
 }
 
 // NEVER_INLINE to prevent LTO from inlining this function, which can break

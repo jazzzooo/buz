@@ -25,8 +25,6 @@
 
 #pragma once
 
-#include <wtf/Forward.h>
-
 namespace JSC {
 
 enum class MessageSource : uint8_t {

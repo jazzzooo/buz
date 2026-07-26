@@ -667,8 +667,10 @@ private:
     template<typename OperationType, unsigned numGPRArgs, unsigned numGPRSources, unsigned numFPRArgs, unsigned numFPRSources, unsigned numCrossSources, unsigned extraGPRArgs, unsigned nonArgGPRs, unsigned extraPoke, typename... Args>
     ALWAYS_INLINE void setupArgumentsEntryImpl(ArgCollection<numGPRArgs, numGPRSources, numFPRArgs, numFPRSources, numCrossSources, extraGPRArgs, nonArgGPRs, extraPoke> argSourceRegs, Args... args)
     {
-        using FirstArgumentType = typename FunctionTraits<OperationType>::template ArgumentType<0>;
-        if constexpr (std::same_as<FirstArgumentType, CallFrame*>) {
+        if constexpr (!FunctionTraits<OperationType>::arity) {
+            static_assert(!sizeof...(Args), "Basic sanity check");
+            setupArgumentsImpl<OperationType>(argSourceRegs);
+        } else if constexpr (std::same_as<typename FunctionTraits<OperationType>::template ArgumentType<0>, CallFrame*>) {
 #if USE(JSVALUE64)
             // This only really works for 64-bit since jsvalue regs mess things up for 32-bit...
             static_assert(FunctionTraits<OperationType>::cCallArity() == sizeof...(Args) + 1, "Basic sanity check; Did you explicitly pass callFrameRegister for the first argument?");

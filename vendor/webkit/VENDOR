@@ -1,11 +1,11 @@
 Vendored subtree of https://github.com/oven-sh/WebKit
-commit: 5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b (tag autobuild-5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b)
+commit: 549170099226f816a4b204ea1d8fa102fb79eefa (tag autobuild-549170099226f816a4b204ea1d8fa102fb79eefa)
 paths: Source/JavaScriptCore Source/WTF Source/bmalloc Source/cmake
 
-compile_commands.json and cmakeconfig.h are copied from the matching
-bun-webkit-linux-amd64-debug autobuild release tarball (the cmake+ninja
-build's manifest and generated config); regenerate both from the new
-commit's tarball when syncing.
+compile_commands.json is copied from the matching
+bun-webkit-linux-amd64-debug autobuild release tarball. The generated
+cmakeconfig.h is copied from both the debug and release tarballs into
+config/debug and config/release.
 
 To sync: fetch the new oven-sh commit, then three-way merge
 with `git merge-tree --merge-base=<this commit's subtree> <ours> <theirs>`

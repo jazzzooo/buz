@@ -26,8 +26,10 @@
 #include "config.h"
 #include "FunctionRareData.h"
 
+#include "BuiltinNames.h"
 #include "JSCInlines.h"
 #include "ObjectAllocationProfileInlines.h"
+#include "UnlinkedFunctionExecutable.h"
 
 namespace JSC {
 
@@ -86,6 +88,45 @@ FunctionRareData::~FunctionRareData() = default;
 void FunctionRareData::initializeObjectAllocationProfile(VM& vm, JSGlobalObject* globalObject, JSObject* prototype, size_t inlineCapacity, JSFunction* constructor)
 {
     initializeAllocationProfileWatchpointSet();
+    // For class constructors, we deploy a heuristics which counts private and public fields as a part of inlineCapacity.
+    // Right now, static-analyzer in the BytecodeGenerator cannot know these properties because they are separate CodeBlock
+    // from the normal constructors. This offers a bit better heuristics than just directly using inlineCapacity
+    if (constructor) {
+        size_t fieldCount = 0;
+        JSObject* current = constructor;
+        constexpr size_t maxSuperDepth = 32;
+        for (size_t depth = 0; current && depth < maxSuperDepth; ++depth) {
+            JSFunction* currentFunction = dynamicDowncast<JSFunction>(current);
+            if (!currentFunction)
+                break;
+
+            auto* executableBase = currentFunction->executable();
+            if (!executableBase)
+                break;
+
+            auto* executable = dynamicDowncast<FunctionExecutable>(executableBase);
+            if (!executable || !executable->isClassConstructorFunction())
+                break;
+
+            JSValue initializerValue = currentFunction->getDirect(vm, vm.propertyNames->builtinNames().instanceFieldInitializerPrivateName());
+            if (initializerValue) {
+                if (JSFunction* initializerFunction = dynamicDowncast<JSFunction>(initializerValue)) {
+                    if (FunctionExecutable* initializerExec = initializerFunction->jsExecutable()) {
+                        if (UnlinkedFunctionExecutable* unlinkedExec = initializerExec->unlinkedExecutable()) {
+                            if (const auto* defs = unlinkedExec->classElementDefinitions())
+                                fieldCount += defs->size();
+                        }
+                    }
+                }
+            }
+
+            JSValue prototype = currentFunction->getPrototypeDirect();
+            if (!prototype)
+                break;
+            current = dynamicDowncast<JSObject>(prototype);
+        }
+        inlineCapacity = std::max(fieldCount, inlineCapacity);
+    }
     m_objectAllocationProfile.initializeProfile(vm, globalObject, this, prototype, inlineCapacity, constructor, this);
 }
 

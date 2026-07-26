@@ -26,32 +26,17 @@
 
 #pragma once
 
-#include "ISO8601.h"
+#include <JavaScriptCore/DurationArithmetic.h>
+#include <JavaScriptCore/ISO8601.h>
+#include <JavaScriptCore/JSCTimeZone.h>
 
 namespace JSC {
-
-class NudgeResult final {
-    public:
-    ISO8601::InternalDuration m_duration;
-    Int128 m_nudgedEpochNs;
-    bool m_didExpandCalendarUnit;
-    NudgeResult() { }
-    NudgeResult(ISO8601::InternalDuration d, Int128 ns, bool expanded)
-        : m_duration(d), m_nudgedEpochNs(ns), m_didExpandCalendarUnit(expanded) { }
-};
-
-class Nudged final {
-    public:
-    NudgeResult m_nudgeResult;
-    double m_total;
-    Nudged() { }
-    Nudged(NudgeResult n, double t)
-        : m_nudgeResult(n), m_total(t) { }
-};
 
 class TemporalDuration final : public JSNonFinalObject {
 public:
     using Base = JSNonFinalObject;
+
+    static constexpr uint8_t numberOfLowerTierPreciseCells = 0;
 
     template<typename CellType, SubspaceAccess mode>
     static GCClient::IsoSubspace* subspaceFor(VM& vm)
@@ -65,47 +50,28 @@ public:
 
     DECLARE_INFO;
 
-    static TemporalDuration* toTemporalDuration(JSGlobalObject*, JSValue);
-    static ISO8601::Duration toLimitedDuration(JSGlobalObject*, JSValue, std::initializer_list<TemporalUnit> disallowedUnits);
+    static ISO8601::Duration toTemporalDurationRecord(JSGlobalObject*, JSValue);
     static TemporalDuration* from(JSGlobalObject*, JSValue);
-    static JSValue compare(JSGlobalObject*, JSValue, JSValue);
+    static JSValue compare(JSGlobalObject*, JSValue, JSValue, JSValue options);
 
 #define JSC_DEFINE_TEMPORAL_DURATION_FIELD(name, capitalizedName) \
-    double name##s() const { return m_duration.name##s(); } \
-    void set##capitalizedName##s(double value) { m_duration.set##capitalizedName##s(value); }
+    double name##s() const { return static_cast<double>(m_duration.name##s()); } \
+    void set##capitalizedName##s(double value) { m_duration.setField(TemporalUnit::capitalizedName, value); }
     JSC_TEMPORAL_UNITS(JSC_DEFINE_TEMPORAL_DURATION_FIELD);
 #undef JSC_DEFINE_TEMPORAL_DURATION_FIELD
 
-    int sign() const { return sign(m_duration); }
+    int sign() const { return TemporalCore::durationSign(m_duration); }
+    const ISO8601::Duration& duration() const { return m_duration; }
 
     ISO8601::Duration with(JSGlobalObject*, JSObject* durationLike) const;
-    ISO8601::Duration NODELETE negated() const;
-    ISO8601::Duration NODELETE abs() const;
-    ISO8601::Duration add(JSGlobalObject*, JSValue) const;
-    ISO8601::Duration subtract(JSGlobalObject*, JSValue) const;
+    template<AddOrSubtract op>
+    ISO8601::Duration addDurations(JSGlobalObject*, JSValue other) const;
     ISO8601::Duration round(JSGlobalObject*, JSValue options) const;
     double total(JSGlobalObject*, JSValue options) const;
     String toString(JSGlobalObject*, JSValue options) const;
     String toString(JSGlobalObject* globalObject, std::tuple<Precision, unsigned> precision = { Precision::Auto, 0 }) const { return toString(globalObject, m_duration, precision); }
 
-    static ISO8601::InternalDuration toInternalDuration(ISO8601::Duration);
-    static ISO8601::InternalDuration toInternalDurationRecordWith24HourDays(JSGlobalObject*, ISO8601::Duration);
-    ISO8601::Duration addDurations(JSGlobalObject*, AddOrSubtract, ISO8601::Duration, TemporalUnit) const;
-    static ISO8601::Duration temporalDurationFromInternal(ISO8601::InternalDuration, TemporalUnit);
-    static Int128 timeDurationFromComponents(double, double, double, double, double, double);
-
-    static ISO8601::Duration fromDurationLike(JSGlobalObject*, JSObject*);
-    static ISO8601::Duration toISO8601Duration(JSGlobalObject*, JSValue);
-
-    static int sign(const ISO8601::Duration&);
-    static ISO8601::InternalDuration round(JSGlobalObject*, ISO8601::InternalDuration, double increment, TemporalUnit, RoundingMode);
-    static void roundRelativeDuration(JSGlobalObject*, ISO8601::InternalDuration&, Int128, ISO8601::PlainDate, TemporalUnit, double, TemporalUnit, RoundingMode);
-    static std::tuple<ISO8601::PlainDate, ISO8601::PlainTime> combineISODateAndTimeRecord(ISO8601::PlainDate, ISO8601::PlainTime);
-    static std::optional<ISO8601::PlainDate> regulateISODate(double, double, double, TemporalOverflow);
     static ISO8601::Duration toDateDurationRecordWithoutTime(JSGlobalObject*, const ISO8601::Duration&);
-    static std::optional<double> balance(ISO8601::Duration&, TemporalUnit largestUnit);
-    static Nudged nudgeToCalendarUnit(JSGlobalObject*, int32_t, const ISO8601::InternalDuration&, Int128, ISO8601::PlainDate, double, TemporalUnit, RoundingMode);
-    static ISO8601::InternalDuration bubbleRelativeDuration(JSGlobalObject*, int32_t, ISO8601::InternalDuration, Int128, ISO8601::PlainDate, TemporalUnit, TemporalUnit);
 private:
     TemporalDuration(VM&, Structure*, ISO8601::Duration&&);
     DECLARE_DEFAULT_FINISH_CREATION;
@@ -115,9 +81,11 @@ private:
 
     static String toString(JSGlobalObject*, const ISO8601::Duration&, std::tuple<Precision, unsigned> precision);
 
+    static ISO8601::InternalDuration round(JSGlobalObject*, ISO8601::InternalDuration, double increment, TemporalUnit, RoundingMode);
+
+    static ISO8601::InternalDuration toInternalDurationRecordWith24HourDays(JSGlobalObject*, ISO8601::Duration);
+
     ISO8601::Duration m_duration;
 };
-
-Int128 getUTCEpochNanoseconds(std::tuple<ISO8601::PlainDate, ISO8601::PlainTime>);
 
 } // namespace JSC

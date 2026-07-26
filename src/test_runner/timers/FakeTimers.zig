@@ -43,7 +43,7 @@ pub var current_time: struct {
             defer this.offset_lock.unlock();
             this.offset_raw = min_timespec;
         }
-        bun.cpp.JSMock__setOverridenDateNow(globalObject, -1);
+        bun.cpp.JSMock__setOverridenDateNow(globalObject, std.math.nan(f64));
         vm.overridden_performance_now = null;
     }
 } = .{};

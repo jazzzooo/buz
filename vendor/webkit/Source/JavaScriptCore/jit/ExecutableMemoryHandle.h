@@ -37,7 +37,11 @@
 #include <wtf/MetaAllocatorHandle.h>
 #endif
 
-#if BENABLE(LIBPAS) && (OS(DARWIN) || OS(LINUX))
+// FIXME: ARM64 Windows hits a PAS_ASSERT inside jit_heap_try_allocate ->
+// pas_segregated_heap_ensure_allocator_index from DFG worker threads since
+// af63dbd0b5d enabled the libpas JIT heap on Windows. Keep it disabled there
+// until the assertion failure is understood.
+#if BENABLE(LIBPAS) && (OS(DARWIN) || OS(LINUX) || (OS(WINDOWS) && !CPU(ARM64)))
 #define ENABLE_LIBPAS_JIT_HEAP 1
 #endif
 

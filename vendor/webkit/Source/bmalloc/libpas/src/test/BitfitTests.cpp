@@ -38,6 +38,7 @@
 #include "pas_scavenger.h"
 #include "pas_versioned_field.h"
 #include <algorithm>
+#include <functional>
 #include <vector>
 
 using namespace std;
@@ -160,14 +161,25 @@ void testAllocateAlignedSmallerThanSizeClassAndSmallerThanLargestAvailable(
     assertSizeClasses(fillerObjectSize, firstSize);
 }
 
-pas_bitfit_directory* takeLastEmptyRaceDirectory;
+#if PAS_ENABLE_TESTING
+function<void(pas_race_test_hook_kind)> hookCallback;
 
-void takeLastEmptyRaceHook(pas_race_test_hook_kind kind)
+void hookCallbackAdapter(pas_race_test_hook_kind kind)
 {
-    if (kind != pas_race_test_hook_bitfit_directory_take_last_empty_after_loop)
-        return;
-    pas_bitfit_directory_view_did_become_empty_at_index(takeLastEmptyRaceDirectory, 0);
+    hookCallback(kind);
 }
+
+class InstallBitfitRaceHook : public TestScope {
+public:
+    InstallBitfitRaceHook()
+        : TestScope(
+            "install-bitfit-race-hook",
+            [] () {
+                pas_race_test_hook_callback_instance = hookCallbackAdapter;
+            })
+    {
+    }
+};
 
 void testTakeLastEmptyLastEmptyPlusOneWatchRace()
 {
@@ -193,8 +205,12 @@ void testTakeLastEmptyLastEmptyPlusOneWatchRace()
     pas_bitfit_directory_set_empty_bit_at_index(directory, 0, false);
     directory->last_empty_plus_one = pas_versioned_field_create(1, 0);
 
-    takeLastEmptyRaceDirectory = directory;
-    pas_race_test_hook_callback_instance = takeLastEmptyRaceHook;
+    hookCallback =
+        [directory] (pas_race_test_hook_kind kind) {
+            if (kind != pas_race_test_hook_bitfit_directory_take_last_empty_after_loop)
+                return;
+            pas_bitfit_directory_view_did_become_empty_at_index(directory, 0);
+        };
 
     pas_deferred_decommit_log log;
     pas_deferred_decommit_log_construct(&log, nullptr, 0, nullptr);
@@ -202,8 +218,7 @@ void testTakeLastEmptyLastEmptyPlusOneWatchRace()
         pas_bitfit_directory_take_last_empty(directory, &log, pas_lock_is_not_held);
     pas_deferred_decommit_log_destruct(&log, pas_lock_is_not_held);
 
-    pas_race_test_hook_callback_instance = nullptr;
-    takeLastEmptyRaceDirectory = nullptr;
+    hookCallback = nullptr;
 
     CHECK_EQUAL(result, pas_page_sharing_pool_take_none_available);
 
@@ -211,8 +226,9 @@ void testTakeLastEmptyLastEmptyPlusOneWatchRace()
     // If take_last_empty's read of last_empty_plus_one isn't watched, the hook's maximize()
     // is a no-op, the try_write succeeds, and the directory ends with last_empty_plus_one == 0
     // while empty_bits[0] is set: a permanently stranded page.
-    CHECK_GREATER_EQUAL(directory->last_empty_plus_one.value, static_cast<uintptr_t>(1));
+    CHECK_EQUAL(directory->last_empty_plus_one.value, static_cast<uintptr_t>(1));
 }
+#endif // PAS_ENABLE_TESTING
 
 } // anonymous namespace
 
@@ -225,6 +241,9 @@ void addBitfitTests()
 
     ADD_TEST(testAllocateAlignedSmallerThanSizeClassAndSmallerThanLargestAvailable(
                  1056, 100, 0, 16, 1024, 100));
+#if PAS_ENABLE_TESTING
+    InstallBitfitRaceHook installBitfitRaceHook;
     ADD_TEST(testTakeLastEmptyLastEmptyPlusOneWatchRace());
+#endif
 #endif // PAS_ENABLE_ISO
 }

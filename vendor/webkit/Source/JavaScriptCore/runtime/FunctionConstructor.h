@@ -30,6 +30,7 @@ class TextPosition;
 namespace JSC {
 
 class FunctionPrototype;
+class SourceOrigin;
 enum class SourceTaintedOrigin : uint8_t;
 
 class FunctionConstructor final : public InternalFunction {

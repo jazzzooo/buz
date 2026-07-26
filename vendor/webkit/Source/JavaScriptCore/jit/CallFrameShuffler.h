@@ -31,6 +31,7 @@
 #include "CallFrameShuffleData.h"
 #include "MacroAssembler.h"
 #include "RegisterSet.h"
+#include <wtf/Bag.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/Vector.h>
 

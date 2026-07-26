@@ -100,6 +100,7 @@
 #include <wtf/MainThread.h>
 #include <wtf/MemoryPressureHandler.h>
 #include <wtf/MonotonicTime.h>
+#include <wtf/ReducedResolutionSeconds.h>
 #include <wtf/SafeStrerror.h>
 #include <wtf/Scope.h>
 #include <wtf/StringPrintStream.h>
@@ -370,6 +371,7 @@ static JSC_DECLARE_HOST_FUNCTION(functionCallMasquerader);
 static JSC_DECLARE_HOST_FUNCTION(functionHasCustomProperties);
 static JSC_DECLARE_HOST_FUNCTION(functionDumpTypesForAllVariables);
 static JSC_DECLARE_HOST_FUNCTION(functionDrainMicrotasks);
+static JSC_DECLARE_HOST_FUNCTION(functionDumpBytecodeProfile);
 static JSC_DECLARE_HOST_FUNCTION(functionSetTimeout);
 static JSC_DECLARE_HOST_FUNCTION(functionReleaseWeakRefs);
 static JSC_DECLARE_HOST_FUNCTION(functionFinalizationRegistryLiveCount);
@@ -639,16 +641,27 @@ private:
         Base::finishCreation(vm);
         JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
 
-        // Set loop counts based on enabled engine tiers.
-        unsigned testLoopCount = 10000;
-        if (!Options::useDFGJIT())
-            testLoopCount = 1000;
-        if (!Options::useBaselineJIT())
-            testLoopCount = 100;
+#if USE(BUN_JSC_ADDITIONS) && !BUN_ENABLE_JSDOLLARVM
+        if (Options::useDollarVM()) [[unlikely]]
+            exposeDollarVM(vm);
+#endif
 
-        unsigned wasmTestLoopCount = 10000;
+        // Set loop counts based on enabled engine tiers. When concurrent JIT is off,
+        // clamp to a small multiple of the top tier's warm-up threshold so eager
+        // modes don't balloon stress-test runtime on the main thread.
+        auto clampLoopCount = [](uint32_t defaultCount, uint32_t noCJITCap) {
+            return Options::useConcurrentJIT() ? defaultCount : std::min(defaultCount, noCJITCap);
+        };
+
+        unsigned testLoopCount = clampLoopCount(10000, Options::thresholdForFTLOptimizeAfterWarmUp() * 3);
+        if (!Options::useDFGJIT())
+            testLoopCount = clampLoopCount(1000, Options::thresholdForOptimizeAfterWarmUp() * 3);
+        if (!Options::useBaselineJIT())
+            testLoopCount = clampLoopCount(100, Options::thresholdForJITAfterWarmUp() * 3);
+
+        unsigned wasmTestLoopCount = clampLoopCount(10000, Options::thresholdForOMGOptimizeAfterWarmUp() * 3);
         if (!Options::useOMGJIT())
-            wasmTestLoopCount = 1000;
+            wasmTestLoopCount = clampLoopCount(1000, Options::thresholdForBBQOptimizeAfterWarmUp() * 3);
         if (!Options::useBBQJIT())
             wasmTestLoopCount = 100;
 
@@ -735,6 +748,7 @@ private:
 
         addFunction(vm, "drainMicrotasks"_s, functionDrainMicrotasks, 0);
         addFunction(vm, "setTimeout"_s, functionSetTimeout, 2);
+        addFunction(vm, "dumpBytecodeProfile"_s, functionDumpBytecodeProfile, 1);
 
         addFunction(vm, "releaseWeakRefs"_s, functionReleaseWeakRefs, 0);
         addFunction(vm, "finalizationRegistryLiveCount"_s, functionFinalizationRegistryLiveCount, 0);
@@ -944,7 +958,7 @@ private:
         return Base::putDirectCustomAccessor(vm, propertyName, value, attributes);
     }
 
-    static JSPromise* moduleLoaderImportModule(JSGlobalObject*, JSModuleLoader*, JSString*, RefPtr<ScriptFetchParameters>, const SourceOrigin&);
+    static JSPromise* moduleLoaderImportModule(JSGlobalObject*, JSModuleLoader*, JSString*, RefPtr<ScriptFetchParameters>, const SourceOrigin&, bool deferred);
     static Identifier moduleLoaderResolve(JSGlobalObject*, JSModuleLoader*, JSValue, JSValue, RefPtr<ScriptFetcher>, bool useImportMap);
     static JSPromise* moduleLoaderFetch(JSGlobalObject*, JSModuleLoader*, JSValue, RefPtr<ScriptFetchParameters>, RefPtr<ScriptFetcher>);
     static JSObject* moduleLoaderCreateImportMetaProperties(JSGlobalObject*, JSModuleLoader*, JSValue, JSModuleRecord*, RefPtr<ScriptFetcher>);
@@ -1103,14 +1117,14 @@ static URL absoluteFileURL(const String& fileName)
     return URL(directoryName, fileName);
 }
 
-JSPromise* GlobalObject::moduleLoaderImportModule(JSGlobalObject* globalObject, JSModuleLoader*, JSString* moduleNameValue, RefPtr<ScriptFetchParameters> fetchParams, const SourceOrigin& sourceOrigin)
+JSPromise* GlobalObject::moduleLoaderImportModule(JSGlobalObject* globalObject, JSModuleLoader*, JSString* moduleNameValue, RefPtr<ScriptFetchParameters> fetchParams, const SourceOrigin& sourceOrigin, bool deferred)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     auto rejectWithCaughtException = [&]() -> JSPromise* {
         auto* promise = JSPromise::create(vm, globalObject->promiseStructure());
-        return promise->rejectWithCaughtException(globalObject, scope);
+        return promise->rejectWithCaughtException(vm, scope);
     };
 
     auto& referrer = sourceOrigin.url();
@@ -1120,11 +1134,11 @@ JSPromise* GlobalObject::moduleLoaderImportModule(JSGlobalObject* globalObject, 
 
     if (!referrer.protocolIsFile()) [[unlikely]] {
         auto* promise = JSPromise::create(vm, globalObject->promiseStructure());
-        promise->reject(vm, globalObject, createError(globalObject, makeString("Could not resolve the referrer's path '"_s, referrer.string(), "', while trying to resolve module '"_s, specifier.data, "'."_s)));
+        promise->reject(vm, createError(globalObject, makeString("Could not resolve the referrer's path '"_s, referrer.string(), "', while trying to resolve module '"_s, specifier.data, "'."_s)));
         return promise;
     }
 
-    auto* result = JSC::importModule(globalObject, Identifier::fromString(vm, specifier), Identifier::fromString(vm, referrer.string()), WTF::move(fetchParams), nullptr);
+    auto* result = JSC::importModule(globalObject, Identifier::fromString(vm, specifier), Identifier::fromString(vm, referrer.string()), WTF::move(fetchParams), nullptr, deferred);
     if (scope.exception()) [[unlikely]]
         return rejectWithCaughtException();
 
@@ -1473,12 +1487,12 @@ JSPromise* GlobalObject::moduleLoaderFetch(JSGlobalObject* globalObject, JSModul
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     auto rejectWithError = [&](JSValue error) {
-        promise->reject(vm, globalObject, error);
+        promise->reject(vm, error);
         return promise;
     };
 
     String moduleKey = key.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, promise->rejectWithCaughtException(globalObject, scope));
+    RETURN_IF_EXCEPTION(scope, promise->rejectWithCaughtException(vm, scope));
 
     URL moduleURL({ }, moduleKey);
     ASSERT(moduleURL.protocolIsFile());
@@ -2987,6 +3001,25 @@ JSC_DEFINE_HOST_FUNCTION(functionDrainMicrotasks, (JSGlobalObject* globalObject,
     return JSValue::encode(jsUndefined());
 }
 
+JSC_DEFINE_HOST_FUNCTION(functionDumpBytecodeProfile, (JSGlobalObject* globalObject, CallFrame* callFrame))
+{
+    VM& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    if (!vm.m_perBytecodeProfiler)
+        return JSValue::encode(jsBoolean(false));
+
+    if (!callFrame->argumentCount())
+        return JSValue::encode(throwException(globalObject, scope, createError(globalObject, "dumpBytecodeProfile requires a path argument."_s)));
+
+    String path = callFrame->argument(0).toWTFString(globalObject);
+    RETURN_IF_EXCEPTION(scope, { });
+
+    auto pathUtf8 = path.utf8();
+    bool ok = vm.m_perBytecodeProfiler->save(pathUtf8.data());
+    return JSValue::encode(jsBoolean(ok));
+}
+
 JSC_DEFINE_HOST_FUNCTION(functionSetTimeout, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
     VM& vm = globalObject->vm();
@@ -2997,9 +3030,10 @@ JSC_DEFINE_HOST_FUNCTION(functionSetTimeout, (JSGlobalObject* globalObject, Call
     if (!callback)
         return throwVMTypeError(globalObject, scope, "First argument is not a JS function"_s);
 
-    auto ticket = vm.deferredWorkTimer->addPendingWork(DeferredWorkTimer::WorkType::AtSomePoint, vm, callback, { });
-    auto dispatch = [callback, ticket] {
-        callback->vm().deferredWorkTimer->scheduleWorkSoon(ticket, [callback](DeferredWorkTimer::Ticket) {
+    auto weakTicket = vm.deferredWorkTimer->addPendingWork(DeferredWorkTimer::WorkType::AtSomePoint, vm, callback, { });
+    auto dispatch = [weakTicket = WTF::move(weakTicket), vmPtr = &vm] {
+        vmPtr->deferredWorkTimer->scheduleWorkSoonIfActive(weakTicket, [](DeferredWorkTimer::Ticket& ticket) {
+            auto* callback = uncheckedDowncast<JSFunction>(ticket.target());
             JSGlobalObject* globalObject = callback->realm();
             MarkedArgumentBuffer args;
             call(globalObject, callback, jsUndefined(), args, "You shouldn't see this..."_s);
@@ -3425,7 +3459,7 @@ JSC_DEFINE_HOST_FUNCTION(functionDropAllLocks, (JSGlobalObject* globalObject, Ca
 JSC_DEFINE_HOST_FUNCTION(functionPerformanceNow, (JSGlobalObject*, CallFrame*))
 {
     static const MonotonicTime timeOrigin = MonotonicTime::now();
-    return JSValue::encode(jsNumber((MonotonicTime::now() - timeOrigin).reduceTimeResolution(Seconds::highTimePrecision()).milliseconds()));
+    return JSValue::encode(jsNumber(ReducedResolutionSeconds::reduce(MonotonicTime::now() - timeOrigin, Seconds::highTimePrecision()).milliseconds()));
 }
 
 static String asSignpostString(JSGlobalObject* globalObject, JSValue v)
@@ -3969,6 +4003,12 @@ static void runInteractive(GlobalObject* globalObject)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+
+    bool didAllowRedeclaringSymbols = vm.allowRedeclaringSymbols();
+    vm.setAllowRedeclaringSymbols(true);
+    auto resetAllowRedeclaringSymbols = makeScopeExit([&] {
+        vm.setAllowRedeclaringSymbols(didAllowRedeclaringSymbols);
+    });
 
     URL directoryName = currentWorkingDirectory();
     if (!directoryName.isValid())

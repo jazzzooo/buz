@@ -31,7 +31,6 @@
 
 #include <pthread.h>
 #include <pthread/tsd_private.h>
-#include <wtf/Platform.h>
 
 namespace WTF {
 

@@ -77,7 +77,12 @@ String tryMakeStringFromAdapters(StringTypeAdapters&&... adapters)
         builder.appendFromAdapters(std::forward<StringTypeAdapters>(adapters)...);
         return builder.toString();
     } else {
-        auto sum = checkedSum<int32_t>(adapters.length()...);
+        CheckedInt32 sum;
+        if constexpr (sizeof...(adapters) >= 2)
+            sum = checkedSum<int32_t>(adapters.length()...);
+        else
+            sum = std::get<0>(std::tie(adapters...)).length();
+
         if (sum.hasOverflowed())
             return String();
 
@@ -111,7 +116,12 @@ AtomString tryMakeAtomStringFromAdapters(StringTypeAdapters ...adapters)
         builder.appendFromAdapters(adapters...);
         return builder.toAtomString();
     } else {
-        auto sum = checkedSum<int32_t>(adapters.length()...);
+        CheckedInt32 sum;
+        if constexpr (sizeof...(adapters) >= 2)
+            sum = checkedSum<int32_t>(adapters.length()...);
+        else
+            sum = std::get<0>(std::tie(adapters...)).length();
+
         if (sum.hasOverflowed())
             return AtomString();
 

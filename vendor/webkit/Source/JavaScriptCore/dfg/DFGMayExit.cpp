@@ -73,6 +73,7 @@ ExitMode mayExitImpl(Graph& graph, Node* node, StateType& state)
     case PhantomNewObject:
     case PhantomNewArrayWithButterfly:
     case PhantomNewInternalFieldObject:
+    case PhantomNewPromise:
     case PhantomNewButterflyWithSize:
     case PutStack:
     case KillStack:
@@ -130,6 +131,7 @@ ExitMode mayExitImpl(Graph& graph, Node* node, StateType& state)
     case LogShadowChickenPrologue:
     case LogShadowChickenTail:
     case PerformPromiseThen:
+    case PerformPromiseThenOneHandler:
         break;
 
     case Switch: {
@@ -201,16 +203,22 @@ ExitMode mayExitImpl(Graph& graph, Node* node, StateType& state)
     case NewBoundFunction:
     case NewStringObject:
     case NewInternalFieldObject:
+    case NewPromise:
     case NewRegExp:
     case NewMap:
     case NewSet:
+    case NewWeakMap:
+    case NewWeakSet:
     case NewArray:
     case NewArrayWithButterfly:
     case NewButterflyWithSize:
+    case GetCellButterflySlot:
+    case PutCellButterflySlot:
     case ToNumber:
     case ToNumeric:
     case ToObject:
     case RegExpExecNonGlobalOrSticky:
+    case RegExpExecSticky:
     case RegExpMatchFastGlobal:
     case CallWasm:
     case TailCallInlinedCallerWasm:
@@ -269,6 +277,8 @@ ExitMode mayExitImpl(Graph& graph, Node* node, StateType& state)
 
     case ArithAdd:
     case ArithSub:
+    case ArithDiv:
+    case ArithMod:
         if (node->arithMode() == Arith::Mode::Unchecked) {
             if (node->isBinaryInt32UseKind())
                 break;
@@ -290,12 +300,6 @@ ExitMode mayExitImpl(Graph& graph, Node* node, StateType& state)
         if (node->arithMode() == Arith::Mode::Unchecked && isInt32(node->child1().useKind()))
             break;
         if (node->child1().useKind() == DoubleRepUse)
-            break;
-        return Exits;
-
-    case ArithDiv:
-    case ArithMod:
-        if (node->isBinaryUseKind(DoubleRepUse))
             break;
         return Exits;
 

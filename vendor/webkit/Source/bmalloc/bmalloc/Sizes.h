@@ -29,12 +29,7 @@
 
 #include "Algorithm.h"
 #include "BPlatform.h"
-#include <algorithm>
-#include <cstdint>
 #include <cstddef>
-#include <limits>
-#include <type_traits>
-#include <chrono>
 
 namespace bmalloc {
 

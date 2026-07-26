@@ -26,6 +26,7 @@
 #pragma once
 
 #include <wtf/ObjectIdentifier.h>
+#include <wtf/Platform.h>
 
 namespace JSC {
 
@@ -58,7 +59,8 @@ enum class InternalMicrotask : uint8_t {
     AsyncGeneratorYieldAwaited,
     AsyncGeneratorBodyCallNormal,
     AsyncGeneratorBodyCallReturn,
-    AsyncGeneratorResumeNext,
+    AsyncGeneratorAwaitReturn,
+    AsyncGeneratorDriverResume,
 
     InvokeFunctionJob,
     AsyncModuleExecutionResume,
@@ -78,7 +80,13 @@ enum class InternalMicrotask : uint8_t {
     ModuleLoadStoreError,
     DynamicImportLoadSettled,
     DynamicImportEvaluateSettled,
+    DynamicImportDeferLoadSettled,
+    DynamicImportDeferDependencySettled,
     ImportModuleNamespace,
+#if ENABLE(WEBASSEMBLY)
+    WebAssemblyCompileStreaming,
+    WebAssemblyInstantiateStreaming,
+#endif
     Opaque, // Dispatch must handle everything.
 #if USE(BUN_JSC_ADDITIONS)
     BunPerformMicrotaskJob, // Bun's performMicrotask function with async context
@@ -106,6 +114,15 @@ constexpr bool isModuleLoaderInternalMicrotask(InternalMicrotask task)
 #else
 constexpr unsigned maxMicrotaskArguments = 3;
 #endif
+
+// True for Promise.all/allSettled/any element jobs, whose reaction packs
+// (globalContext cell, element index) instead of a single context cell.
+constexpr bool promiseReactionPacksGlobalContextAndIndex(InternalMicrotask task)
+{
+    static_assert(static_cast<uint8_t>(InternalMicrotask::PromiseAllSettledResolveJob) == static_cast<uint8_t>(InternalMicrotask::PromiseAllResolveJob) + 1);
+    static_assert(static_cast<uint8_t>(InternalMicrotask::PromiseAnyResolveJob) == static_cast<uint8_t>(InternalMicrotask::PromiseAllSettledResolveJob) + 1);
+    return task >= InternalMicrotask::PromiseAllResolveJob && task <= InternalMicrotask::PromiseAnyResolveJob;
+}
 
 enum class QueuedTaskResult : uint8_t {
     Executed,

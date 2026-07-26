@@ -153,6 +153,7 @@
 #define PAS_OS_WINDOWS 1
 #endif
 
+/* Bun: keep the CMake guard upstream dropped in WebKit 279137d4b8; see BPlatform.h. */
 #if PAS_OS(DARWIN) && !defined(BUILDING_WITH_CMAKE)
 #if TARGET_OS_IOS
 #define PAS_OS_IOS 1

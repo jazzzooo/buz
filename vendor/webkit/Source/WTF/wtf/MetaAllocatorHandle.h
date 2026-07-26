@@ -30,7 +30,6 @@
 
 #include <wtf/Assertions.h>
 #include <wtf/CodePtr.h>
-#include <wtf/DebugHeap.h>
 #include <wtf/RedBlackTree.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/ThreadSafeRefCounted.h>
@@ -39,8 +38,6 @@ namespace WTF {
 
 class MetaAllocator;
 class PrintStream;
-
-DECLARE_COMPACT_ALLOCATOR_WITH_HEAP_IDENTIFIER(MetaAllocatorHandle);
 
 class MetaAllocatorHandle final : public ThreadSafeRefCounted<MetaAllocatorHandle>, public RedBlackTree<MetaAllocatorHandle, void*>::ThreadSafeNode {
     WTF_MAKE_COMPACT_TZONE_ALLOCATED(MetaAllocatorHandle);

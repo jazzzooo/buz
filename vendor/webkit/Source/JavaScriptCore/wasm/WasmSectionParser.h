@@ -71,6 +71,7 @@ private:
     [[nodiscard]] PartialResult parseResizableLimits(uint64_t& initial, std::optional<uint64_t>& maximum, bool& isShared, bool& is64bit);
     [[nodiscard]] PartialResult parseInitExpr(uint8_t&, bool&, uint64_t&, v128_t&, Type, Type& initExprType);
     [[nodiscard]] PartialResult parseI32InitExpr(std::optional<I32InitExpr>&, ASCIILiteral failMessage);
+    [[nodiscard]] PartialResult parseI64InitExpr(std::optional<I64InitExpr>&, ASCIILiteral failMessage);
 
     [[nodiscard]] PartialResult parseFunctionType(uint32_t position, ParsedDef&);
     [[nodiscard]] PartialResult parsePackedType(PackedType&);
@@ -88,6 +89,7 @@ private:
     [[nodiscard]] PartialResult parseElementSegmentVectorOfIndexes(Vector<Element::InitializationType>&, Vector<uint64_t>&, const unsigned, const unsigned);
 
     [[nodiscard]] PartialResult parseI32InitExprForDataSection(std::optional<I32InitExpr>&);
+    [[nodiscard]] PartialResult parseI64InitExprForDataSection(std::optional<I64InitExpr>&);
 
     static bool checkStructuralSubtype(const RTT& subRTT, const RTT& expandedRTT);
     [[nodiscard]] PartialResult checkSubtypeValidity(const Subtype&, const RTT& canonicalRTT);

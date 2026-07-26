@@ -28,7 +28,6 @@
 #include "WeakGCHashTable.h"
 #include "WeakInlines.h"
 #include <wtf/HashSet.h>
-#include <wtf/TZoneMalloc.h>
 
 namespace JSC {
 

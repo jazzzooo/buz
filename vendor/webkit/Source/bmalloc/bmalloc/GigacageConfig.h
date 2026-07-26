@@ -30,7 +30,6 @@
 #include "Algorithm.h"
 #include "GigacageKind.h"
 #include <bit>
-#include <inttypes.h>
 
 BALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 

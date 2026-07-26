@@ -71,4 +71,13 @@ const Logger& emptyLogger()
     return emptyLogger->get();
 }
 
+#if USE(OS_LOG)
+void Logger::osLog(WTFLogChannel& channel, const CString& message)
+{
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
+    SUPPRESS_UNRETAINED_LOCAL os_log(channel.osLogChannel, "%{public}s", message.data());
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
+}
+#endif // USE(OS_LOG)
+
 } // namespace WTF

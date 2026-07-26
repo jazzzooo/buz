@@ -77,27 +77,39 @@ void TemporalPlainTimeConstructor::finishCreation(VM& vm, TemporalPlainTimeProto
 {
     Base::finishCreation(vm, 0, "PlainTime"_s, PropertyAdditionMode::WithoutStructureTransition);
     putDirectWithoutTransition(vm, vm.propertyNames->prototype, plainTimePrototype, PropertyAttribute::DontEnum | PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly);
-    plainTimePrototype->putDirectWithoutTransition(vm, vm.propertyNames->constructor, this, static_cast<unsigned>(PropertyAttribute::DontEnum));
 }
 
+// https://tc39.es/proposal-temporal/#sec-temporal.plaintime
+// Temporal.PlainTime ( [ hour [ , minute [ , second [ , millisecond [ , microsecond [ , nanosecond ] ] ] ] ] ] )
 JSC_DEFINE_HOST_FUNCTION(constructTemporalPlainTime, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
+    // Step 1: NewTarget undefined -> TypeError (handled by JSC dispatch).
     JSObject* newTarget = asObject(callFrame->newTarget());
     Structure* structure = JSC_GET_DERIVED_STRUCTURE(vm, plainTimeStructure, newTarget, callFrame->jsCallee());
     RETURN_IF_EXCEPTION(scope, { });
 
+    // Steps 2-7: If each arg is undefined set to 0; else ?ToIntegerWithTruncation(arg).
     ISO8601::Duration duration { };
     auto count = std::min<size_t>(callFrame->argumentCount(), numberOfTemporalPlainTimeUnits);
     for (unsigned i = 0; i < count; i++) {
         unsigned durationIndex = i + static_cast<unsigned>(TemporalUnit::Hour);
-        duration[durationIndex] = callFrame->uncheckedArgument(i).toIntegerOrInfinity(globalObject);
+        JSValue arg = callFrame->uncheckedArgument(i);
+        if (arg.isUndefined()) {
+            duration.setField(durationIndex, 0);
+            continue;
+        }
+        double v = arg.toNumber(globalObject);
         RETURN_IF_EXCEPTION(scope, { });
-        if (!std::isfinite(duration[durationIndex]))
+        if (std::isnan(v)) [[unlikely]]
+            return throwVMRangeError(globalObject, scope, "Temporal.PlainTime argument must not be NaN"_s);
+        if (!std::isfinite(v)) [[unlikely]]
             return throwVMRangeError(globalObject, scope, "Temporal.PlainTime properties must be finite"_s);
+        duration.setField(durationIndex, std::trunc(v));
     }
+    // Steps 8-10: IsValidTime -> CreateTimeRecord -> CreateTemporalTime.
     RELEASE_AND_RETURN(scope, JSValue::encode(TemporalPlainTime::tryCreateIfValid(globalObject, structure, WTF::move(duration))));
 }
 
@@ -115,21 +127,10 @@ JSC_DEFINE_HOST_FUNCTION(temporalPlainTimeConstructorFuncFrom, (JSGlobalObject* 
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSObject* options = intlGetOptionsObject(globalObject, callFrame->argument(1));
-    RETURN_IF_EXCEPTION(scope, { });
-
+    // Step 1: Return ? ToTemporalTime(item, options).
     JSValue itemValue = callFrame->argument(0);
-
-    if (itemValue.inherits<TemporalPlainTime>()) {
-        // Validate overflow -- see step 2(a)(ii) of ToTemporalTime
-        if (options)
-            toTemporalOverflow(globalObject, options);
-        RETURN_IF_EXCEPTION(scope, { });
-        return JSValue::encode(TemporalPlainTime::create(vm, globalObject->plainTimeStructure(),
-            uncheckedDowncast<TemporalPlainTime>(itemValue)->plainTime()));
-    }
-
-    RELEASE_AND_RETURN(scope, JSValue::encode(TemporalPlainTime::from(globalObject, itemValue, options)));
+    JSValue optionsValue = callFrame->argument(1);
+    RELEASE_AND_RETURN(scope, JSValue::encode(TemporalPlainTime::from(globalObject, itemValue, optionsValue)));
 }
 
 // https://tc39.es/proposal-temporal/#sec-temporal.plaintime.compare
@@ -138,12 +139,15 @@ JSC_DEFINE_HOST_FUNCTION(temporalPlainTimeConstructorFuncCompare, (JSGlobalObjec
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto* one = TemporalPlainTime::from(globalObject, callFrame->argument(0), nullptr);
+    // Step 1: Set one to ? ToTemporalTime(one).
+    auto* one = TemporalPlainTime::from(globalObject, callFrame->argument(0), jsUndefined());
     RETURN_IF_EXCEPTION(scope, { });
 
-    auto* two = TemporalPlainTime::from(globalObject, callFrame->argument(1), nullptr);
+    // Step 2: Set two to ? ToTemporalTime(two).
+    auto* two = TemporalPlainTime::from(globalObject, callFrame->argument(1), jsUndefined());
     RETURN_IF_EXCEPTION(scope, { });
 
+    // Step 3: Return CompareTimeRecord(one.[[Time]], two.[[Time]]).
     return JSValue::encode(jsNumber(TemporalPlainTime::compare(one->plainTime(), two->plainTime())));
 }
 

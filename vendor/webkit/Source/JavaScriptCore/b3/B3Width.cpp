@@ -28,8 +28,6 @@
 
 #if ENABLE(B3_JIT)
 
-#include <wtf/PrintStream.h>
-
 namespace JSC { namespace B3 {
 
 Type bestType(Bank bank, Width width)

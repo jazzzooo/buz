@@ -32,8 +32,6 @@
 #include "pas_bitfit_allocator_inlines.h"
 #include "pas_bitfit_directory.h"
 #include "pas_bitfit_size_class.h"
-#include "pas_bitfit_view_inlines.h"
-#include "pas_epoch.h"
 #include "pas_physical_memory_transaction.h"
 
 void pas_bitfit_allocator_construct(pas_bitfit_allocator* allocator,
@@ -189,7 +187,7 @@ bool pas_bitfit_allocator_commit_view(pas_bitfit_view* view,
         PAS_ASSERT(!view->is_owned);
 
         pas_page_malloc_commit(
-            view->page_boundary, config->base.page_size, config->base.heap_config_ptr->mmap_capability);
+            view->page_boundary, config->base.page_size, config->base.heap_config_ptr->page_flags);
         config->base.create_page_header(
             view->page_boundary,
             pas_page_kind_for_bitfit_variant(config->variant),

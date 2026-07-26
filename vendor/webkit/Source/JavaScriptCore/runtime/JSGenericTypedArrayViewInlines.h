@@ -36,6 +36,7 @@
 #include "ToNativeFromValue.h"
 #include "TypeError.h"
 #include "TypedArrays.h"
+#include <JavaScriptCore/JSGenericTypedArrayViewConstructor.h>
 #include <wtf/CheckedArithmetic.h>
 #include <wtf/text/MakeString.h>
 
@@ -116,7 +117,7 @@ JSGenericTypedArrayView<Adaptor>* JSGenericTypedArrayView<Adaptor>::create(JSGlo
     ASSERT(length || buffer->isResizableOrGrowableShared());
 
     if (!ArrayBufferView::verifySubRangeLength(buffer->byteLength(), byteOffset, length.value_or(0), elementSize)) {
-        throwException(globalObject, scope, createRangeError(globalObject, "Length out of range of buffer"_s));
+        throwException(globalObject, scope, createRangeError(globalObject, arrayBufferViewErrorMessageOutOfRangeOfBuffer));
         return nullptr;
     }
 

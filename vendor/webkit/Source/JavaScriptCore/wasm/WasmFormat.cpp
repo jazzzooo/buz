@@ -33,7 +33,6 @@
 #include "JSWebAssemblyArray.h"
 #include "JSWebAssemblyStruct.h"
 #include "WasmCallee.h"
-#include <wtf/CheckedArithmetic.h>
 #include <wtf/FastMalloc.h>
 #include <wtf/text/MakeString.h>
 

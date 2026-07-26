@@ -17,12 +17,19 @@ if (NOT "$ENV{WK_USE_CCACHE}" STREQUAL "NO" AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
             # worktrees of the same checkout (-fdebug-prefix-map handles the
             # debug-info side; CCACHE_BASEDIR handles the command-line side).
             set(_ccache_launcher "${CMAKE_BINARY_DIR}/ccache-launcher")
-            file(WRITE "${_ccache_launcher}"
-                "#!/bin/sh\n"
-                "export CCACHE_BASEDIR='${CMAKE_SOURCE_DIR}'\n"
-                "export CCACHE_NOHASHDIR=true\n"
-                "export CCACHE_SLOPPINESS='pch_defines,time_macros,include_file_mtime,include_file_ctime'\n"
-                "exec '${CCACHE_FOUND}' \"$@\"\n")
+            file(CONFIGURE OUTPUT "${_ccache_launcher}" CONTENT
+"#!/bin/sh
+export CCACHE_BASEDIR='${CMAKE_SOURCE_DIR}'
+export CCACHE_NOHASHDIR=true
+export CCACHE_PCH_EXTSUM=true
+export CCACHE_SLOPPINESS='pch_defines,time_macros,include_file_mtime,include_file_ctime'
+for arg; do
+    if [ \"$arg\" = \"-emit-pch\" ]; then
+        exec \"$@\"
+    fi
+done
+exec '${CCACHE_FOUND}' \"$@\"
+")
             file(CHMOD "${_ccache_launcher}" PERMISSIONS
                 OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
             message(STATUS "Enabling ccache: Setting ccache prefix via ${_ccache_launcher} (CCACHE_BASEDIR=${CMAKE_SOURCE_DIR}).")
@@ -52,4 +59,10 @@ if (("$ENV{WEBKIT_USE_SCCACHE}" STREQUAL "1") OR DEFINED ENV{SCCACHE_REDIS} OR D
         set(CMAKE_C_COMPILER_LAUNCHER ${SCCACHE_FOUND})
         set(CMAKE_CXX_COMPILER_LAUNCHER ${SCCACHE_FOUND})
     endif ()
+endif ()
+
+if (APPLE AND CMAKE_GENERATOR STREQUAL "Ninja")
+    set(_clang_wrapper "${CMAKE_SOURCE_DIR}/Source/cmake/clang-wrapper")
+    list(INSERT CMAKE_CXX_COMPILER_LAUNCHER 0 "${_clang_wrapper}")
+    list(INSERT CMAKE_OBJCXX_COMPILER_LAUNCHER 0 "${_clang_wrapper}")
 endif ()

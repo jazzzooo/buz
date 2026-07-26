@@ -34,11 +34,21 @@
 #endif
 #include "JSCJSValue.h"
 #include "MacroAssembler.h"
+#include "MarkedBlock.h"
 #include "VirtualRegister.h"
 
 namespace JSC {
 
-static constexpr EncodedJSValue poisonedDeadOSRExitValue = 0xbad0beef;
+// A poison value stored into dead variables on OSR exit. This deliberately differs from
+// SCRIBBLE_WORD (0xbadbeef0), which is used to scribble over dead cells in zombie mode.
+static constexpr EncodedJSValue poisonedDeadOSRExitValue = 0xdeadbee0;
+#if USE(JSVALUE64)
+// Must look like a JSCell pointer so that property accesses on a dead variable dereference it and crash.
+static_assert(!(poisonedDeadOSRExitValue & JSValue::NotCellMask), "poisonedDeadOSRExitValue must be classified as a cell pointer");
+// Must not collide with the special empty/deleted sentinels, and must be cell-aligned.
+static_assert(poisonedDeadOSRExitValue != JSValue::ValueEmpty && poisonedDeadOSRExitValue != JSValue::ValueDeleted);
+static_assert(MarkedBlock::isAtomAligned(poisonedDeadOSRExitValue), "poisonedDeadOSRExitValue must be cell-aligned");
+#endif
 
 struct DumpContext;
 struct InlineCallFrame;

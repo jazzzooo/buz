@@ -26,6 +26,7 @@
 #include "config.h"
 #include "LazyValueProfile.h"
 
+#include "CodeBlock.h"
 #include "JSCJSValueInlines.h"
 #include <wtf/TZoneMallocInlines.h>
 

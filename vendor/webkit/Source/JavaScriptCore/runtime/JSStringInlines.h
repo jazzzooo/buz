@@ -31,6 +31,7 @@
 #include "JSString.h"
 #include "KeyAtomStringCacheInlines.h"
 #include "MarkedBlockInlines.h"
+#include <JavaScriptCore/ExceptionHelpers.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/text/ParsingUtilities.h>
 

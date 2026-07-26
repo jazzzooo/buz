@@ -93,6 +93,7 @@ void AbstractModuleRecord::visitChildrenImpl(JSCell* cell, Visitor& visitor)
     Base::visitChildren(thisObject, visitor);
     visitor.append(thisObject->m_moduleEnvironment);
     visitor.append(thisObject->m_moduleNamespaceObject);
+    visitor.append(thisObject->m_deferredNamespaceObject);
     visitor.append(thisObject->m_cycleRoot);
     visitor.append(thisObject->m_topLevelCapability);
     visitor.append(thisObject->m_asyncCapability);
@@ -112,8 +113,9 @@ size_t AbstractModuleRecord::estimatedSize(JSCell* cell, VM& vm)
     auto* thisObject = uncheckedDowncast<AbstractModuleRecord>(cell);
     size += thisObject->m_starExportEntries.capacity() * sizeof(ExportEntry);
     size += thisObject->m_requestedModules.capacity() * sizeof(ModuleRequest);
-    size += thisObject->m_exportEntries.byteSize();
-    size += thisObject->m_importEntries.byteSize();
+    // OrderedHashMap does not expose byteSize(); approximate with capacity * entry size.
+    size += thisObject->m_exportEntries.capacity() * (sizeof(RefPtr<UniquedStringImpl>) + sizeof(ExportEntry));
+    size += thisObject->m_importEntries.capacity() * (sizeof(RefPtr<UniquedStringImpl>) + sizeof(ImportEntry));
     return size;
 }
 
@@ -147,9 +149,9 @@ bool AbstractModuleRecord::ModuleRequest::operator==(const ModuleRequest& other)
     return true;
 }
 
-void AbstractModuleRecord::appendRequestedModule(const Identifier& moduleName, RefPtr<ScriptFetchParameters>&& attributes)
+void AbstractModuleRecord::appendRequestedModule(const Identifier& moduleName, RefPtr<ScriptFetchParameters>&& attributes, ModulePhase phase)
 {
-    m_requestedModules.append({ moduleName, WTF::move(attributes) });
+    m_requestedModules.append({ moduleName, WTF::move(attributes), phase });
 }
 
 void AbstractModuleRecord::addStarExportEntry(const Identifier& moduleName)
@@ -827,7 +829,7 @@ auto AbstractModuleRecord::resolveExport(JSGlobalObject* globalObject, const Ide
     RELEASE_AND_RETURN(scope, resolveExportImpl(globalObject, ResolveQuery(this, exportName.impl())));
 }
 
-JSModuleNamespaceObject* AbstractModuleRecord::getModuleNamespace(JSGlobalObject* globalObject, bool shouldPreventExtensions)
+JSModuleNamespaceObject* AbstractModuleRecord::getModuleNamespace(JSGlobalObject* globalObject, ModulePhase phase, bool shouldPreventExtensions)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -838,7 +840,10 @@ JSModuleNamespaceObject* AbstractModuleRecord::getModuleNamespace(JSGlobalObject
 #endif
 
     // https://tc39.es/ecma262/#sec-getmodulenamespace
-    if (m_moduleNamespaceObject)
+    if (phase == ModulePhase::Defer) {
+        if (m_deferredNamespaceObject)
+            return m_deferredNamespaceObject.get();
+    } else if (m_moduleNamespaceObject)
         return m_moduleNamespaceObject.get();
 
     // Spec performs GetExportedNames() then per-name ResolveExport(), which walks the
@@ -954,9 +959,14 @@ JSModuleNamespaceObject* AbstractModuleRecord::getModuleNamespace(JSGlobalObject
         }
     }
 
-    JSModuleNamespaceObject* moduleNamespaceObject = JSModuleNamespaceObject::create(globalObject, globalObject->moduleNamespaceObjectStructure(), this, WTF::move(resolutions), shouldPreventExtensions);
+    auto* moduleNamespaceObject = JSModuleNamespaceObject::create(globalObject, globalObject->moduleNamespaceObjectStructure(), this, WTF::move(resolutions), shouldPreventExtensions, phase == ModulePhase::Defer);
     RETURN_IF_EXCEPTION(scope, nullptr);
- 
+
+    if (phase == ModulePhase::Defer) {
+        m_deferredNamespaceObject.set(vm, this, moduleNamespaceObject);
+        return moduleNamespaceObject;
+    }
+
     // Materialize *namespace* slot with module namespace object unless the module environment is not yet materialized, in which case we'll do it in setModuleEnvironment
     if (m_moduleEnvironment) {
         bool putResult = false;
@@ -968,6 +978,108 @@ JSModuleNamespaceObject* AbstractModuleRecord::getModuleNamespace(JSGlobalObject
     m_moduleNamespaceObject.set(vm, this, moduleNamespaceObject);
 
     return moduleNamespaceObject;
+}
+
+// https://tc39.es/proposal-defer-import-eval/#sec-GatherAsynchronousTransitiveDependencies
+void AbstractModuleRecord::gatherAsynchronousTransitiveDependencies(OrderedHashSet<AbstractModuleRecord*>& result, UncheckedKeyHashSet<AbstractModuleRecord*>& seen)
+{
+    // The spec text is recursive; we use an explicit work list to avoid native stack overflow on
+    // deep graphs. Children are pushed in reverse to preserve the spec's pre-order discovery order.
+    Vector<AbstractModuleRecord*, 8> stack;
+    stack.append(this);
+    while (!stack.isEmpty()) {
+        AbstractModuleRecord* module = stack.takeLast();
+        // 3. If seen contains module, return result.
+        // 4. Append module to seen.
+        if (!seen.add(module).isNewEntry)
+            continue;
+        // 5. If module is not a Cyclic Module Record, return result.
+        auto* cyclic = dynamicDowncast<CyclicModuleRecord>(module);
+        if (!cyclic)
+            continue;
+        // 6. If module.[[Status]] is either EVALUATING or EVALUATED, return result.
+        if (cyclic->status() == CyclicModuleRecord::Status::Evaluating || cyclic->status() == CyclicModuleRecord::Status::Evaluated)
+            continue;
+        // 7. If module.[[HasTLA]] is true, then
+        if (cyclic->hasTLA()) {
+            // 7.a. Append module to result.
+            result.add(module);
+            // 7.b. Return result.
+            continue;
+        }
+        // 8. For each ModuleRequest Record request of module.[[RequestedModules]], do
+        //   8.a. Let requiredModule be GetImportedModule(module, request).
+        //   8.b. Let additionalModules be GatherAsynchronousTransitiveDependencies(requiredModule, seen).
+        //   8.c. For each Module Record m of additionalModules, do
+        //     8.c.i. If result does not contain m, then append m to result.
+        for (auto& request : cyclic->requestedModules() | std::views::reverse)
+            stack.append(JSModuleLoader::getImportedModule(cyclic, request));
+    }
+    // 9. Return result.
+}
+
+// https://tc39.es/proposal-defer-import-eval/#sec-ReadyForSyncExecution
+bool AbstractModuleRecord::readyForSyncExecution()
+{
+    // The spec text is recursive; we use an explicit work list to avoid native stack overflow on deep graphs.
+    UncheckedKeyHashSet<AbstractModuleRecord*> seen;
+    Vector<AbstractModuleRecord*, 8> stack;
+    stack.append(this);
+    while (!stack.isEmpty()) {
+        AbstractModuleRecord* module = stack.takeLast();
+        // 1. If module is not a Cyclic Module Record, return true.
+        auto* cyclic = dynamicDowncast<CyclicModuleRecord>(module);
+        if (!cyclic)
+            continue;
+        // 3. If seen contains module, return true.
+        // 4. Append module to seen.
+        if (!seen.add(module).isNewEntry)
+            continue;
+        // 5. If module.[[Status]] is EVALUATED, return true.
+        if (cyclic->status() == CyclicModuleRecord::Status::Evaluated)
+            continue;
+        // 6. If module.[[Status]] is either EVALUATING or EVALUATING-ASYNC, return false.
+        if (cyclic->status() == CyclicModuleRecord::Status::Evaluating || cyclic->status() == CyclicModuleRecord::Status::EvaluatingAsync)
+            return false;
+        // 7. Assert: module.[[Status]] is LINKED.
+        ASSERT(cyclic->status() == CyclicModuleRecord::Status::Linked);
+        // 8. If module.[[HasTLA]] is true, return false.
+        if (cyclic->hasTLA())
+            return false;
+        // 9. For each ModuleRequest Record request of module.[[RequestedModules]], do
+        //   9.a. Let requiredModule be GetImportedModule(module, request).
+        //   9.b. If ReadyForSyncExecution(requiredModule, seen) is false, return false.
+        for (const ModuleRequest& request : cyclic->requestedModules())
+            stack.append(JSModuleLoader::getImportedModule(cyclic, request));
+    }
+    // 10. Return true.
+    return true;
+}
+
+// https://tc39.es/proposal-defer-import-eval/#sec-EvaluateModuleSync
+void AbstractModuleRecord::evaluateSync(JSGlobalObject* globalObject)
+{
+    VM& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    // 1. If ReadyForSyncExecution(module) is false, throw a TypeError exception.
+    if (!readyForSyncExecution()) {
+        throwTypeError(globalObject, scope, "Unable to synchronously evaluate deferred module"_s);
+        return;
+    }
+    // 2. Let promise be ! module.Evaluate().
+    JSPromise* promise = evaluate(globalObject);
+    RETURN_IF_EXCEPTION(scope, void());
+    // 3. Assert: promise.[[PromiseState]] is either FULFILLED or REJECTED.
+    ASSERT(promise->status() != JSPromise::Status::Pending);
+    // 4. If promise.[[PromiseState]] is REJECTED, then
+    if (promise->status() == JSPromise::Status::Rejected) {
+        // 4.a. If promise.[[PromiseIsHandled]] is false, perform HostPromiseRejectionTracker(promise, "handle").
+        // 4.b. Set promise.[[PromiseIsHandled]] to true.
+        promise->markAsHandled();
+        // 4.c. Return ThrowCompletion(promise.[[PromiseResult]]).
+        throwException(globalObject, scope, promise->result());
+    }
+    // 5. Return UNUSED.
 }
 
 JSPromise* AbstractModuleRecord::asyncCapability() const
@@ -1032,7 +1144,11 @@ JS_EXPORT_PRIVATE JSValue AbstractModuleRecord::evaluate(JSGlobalObject* globalO
     return jsUndefined();
 }
 
+#if USE(BUN_JSC_ADDITIONS)
+JSPromise* AbstractModuleRecord::evaluate(JSGlobalObject* globalObject, int64_t referrerAsyncOrder)
+#else
 JSPromise* AbstractModuleRecord::evaluate(JSGlobalObject* globalObject)
+#endif
 {
     VM& vm = globalObject->vm();
 
@@ -1047,7 +1163,11 @@ JSPromise* AbstractModuleRecord::evaluate(JSGlobalObject* globalObject)
     };
 
     if (auto* cyclicRecord = dynamicDowncast<CyclicModuleRecord>(this))
+#if USE(BUN_JSC_ADDITIONS)
+        return wrap(cyclicRecord->evaluate(globalObject, referrerAsyncOrder));
+#else
         return wrap(cyclicRecord->evaluate(globalObject));
+#endif
     if (auto* syntheticRecord = dynamicDowncast<SyntheticModuleRecord>(this))
         return wrap(syntheticRecord->evaluate(globalObject));
     RELEASE_ASSERT_NOT_REACHED();
@@ -1076,7 +1196,7 @@ static void checkSafeToRecurse(JSGlobalObject* globalObject, ThrowScope& scope)
 }
 
 #if USE(BUN_JSC_ADDITIONS)
-unsigned AbstractModuleRecord::innerModuleEvaluation(JSGlobalObject* globalObject, Vector<AbstractModuleRecord*, 8>& stack, unsigned index, int64_t asyncOrderWatermark)
+unsigned AbstractModuleRecord::innerModuleEvaluation(JSGlobalObject* globalObject, Vector<AbstractModuleRecord*, 8>& stack, unsigned index, int64_t referrerAsyncOrder)
 #else
 unsigned AbstractModuleRecord::innerModuleEvaluation(JSGlobalObject* globalObject, Vector<AbstractModuleRecord*, 8>& stack, unsigned index)
 #endif
@@ -1126,57 +1246,48 @@ unsigned AbstractModuleRecord::innerModuleEvaluation(JSGlobalObject* globalObjec
     ++index;
     // 10. Append module to stack.
     stack.append(module);
+    // https://tc39.es/proposal-defer-import-eval/#sec-innermoduleevaluation
+    // 10. Let evaluationList be a new empty List.
+    OrderedHashSet<AbstractModuleRecord*> evaluationList;
     // 11. For each ModuleRequest Record request of module.[[RequestedModules]], do
     for (const ModuleRequest& request : module->requestedModules()) {
         // 11.a. Let requiredModule be GetImportedModule(module, request).
         AbstractModuleRecord* requiredModule = JSModuleLoader::getImportedModule(module, request);
+        // 11.b. If request.[[Phase]] is defer, then
+        if (request.m_phase == ModulePhase::Defer) [[unlikely]] {
+            // 11.b.i. Let additionalModules be GatherAsynchronousTransitiveDependencies(requiredModule).
+            // 11.b.ii. For each Module Record additionalModule of additionalModules, do
+            //   11.b.ii.1. If evaluationList does not contain additionalModule, then append additionalModule to evaluationList.
+            UncheckedKeyHashSet<AbstractModuleRecord*> seen;
+            requiredModule->gatherAsynchronousTransitiveDependencies(evaluationList, seen);
+        } else {
+            // 11.c. Else if evaluationList does not contain requiredModule, then
+            //   11.c.i. Append requiredModule to evaluationList.
+            evaluationList.add(requiredModule);
+        }
+    }
+    // 12. For each Module Record requiredModule of evaluationList, do
+    for (AbstractModuleRecord* requiredModule : evaluationList) {
         checkSafeToRecurse(globalObject, scope);
         RETURN_IF_EXCEPTION(scope, invalid);
+        // 12.a. Set index to ? InnerModuleEvaluation(requiredModule, stack, index).
 #if USE(BUN_JSC_ADDITIONS)
-        // Record whether this dep was already mid-TLA before our recursive
-        // visit. The spec (11.c.v) makes us wait on it, which is a guaranteed
-        // deadlock when we're running inside that very dep's TLA continuation
-        // (e.g. Nitro: index.mjs top-level `await fetch()` -> handler ->
-        // `import("./chunk")` -> chunk statically imports index.mjs). The
-        // pre-rewrite JS loader did not track async parents across dynamic
-        // imports, so it evaluated the chunk immediately with the parent's
-        // already-initialised bindings. Preserve that for back-compat.
-        //
-        // "Already EvaluatingAsync" alone is too broad: it also matches a
-        // sibling static import in the *same* Evaluate() pass that popped an
-        // SCC to EvaluatingAsync earlier in the walk. In that case the dep's
-        // body has not run yet (its bindings are TDZ) and skipping the wait
-        // executes the importer too early. We narrow at 11.c.v below: only
-        // skip when the cycle root's pendingAsyncDependencies is 0, i.e. its
-        // ExecuteModule/ExecuteAsyncModule has already been called and the
-        // bindings before its first await are initialised. For an SCC still
-        // queued behind an async dep the root's count is > 0. That alone is
-        // still insufficient: a TLA dep with no async deps of its own has
-        // count 0 yet may have only run to its first await within this same
-        // DFS, leaving post-await bindings TDZ (#30259). We additionally
-        // require asyncEvaluationOrder() < asyncOrderWatermark, i.e. the
-        // dep entered EvaluatingAsync in a *prior* Evaluate() call.
-        bool depWasAlreadyEvaluatingAsync = false;
-        if (auto* depCyclic = dynamicDowncast<CyclicModuleRecord>(requiredModule))
-            depWasAlreadyEvaluatingAsync = depCyclic->status() == Status::EvaluatingAsync;
-        // 11.b. Set index to ? InnerModuleEvaluation(requiredModule, stack, index).
-        unsigned result = requiredModule->innerModuleEvaluation(globalObject, stack, index, asyncOrderWatermark);
+        unsigned result = requiredModule->innerModuleEvaluation(globalObject, stack, index, referrerAsyncOrder);
 #else
-        // 11.b. Set index to ? InnerModuleEvaluation(requiredModule, stack, index).
         unsigned result = requiredModule->innerModuleEvaluation(globalObject, stack, index);
 #endif
         RETURN_IF_EXCEPTION(scope, invalid);
         index = result;
-        // 11.c. If requiredModule is a Cyclic Module Record, then
+        // 12.b. If requiredModule is a Cyclic Module Record, then
         if (auto* cyclic = dynamicDowncast<CyclicModuleRecord>(requiredModule)) {
 #if USE(BUN_JSC_ADDITIONS)
             // Bun extension: require(esm) can re-enter innerModuleEvaluation
             // while an outer DFS is already evaluating one of our transitive
             // deps. That outer module is Evaluating but lives on the OUTER
-            // stack vector, not the local one. Spec invariant 11.c.ii
+            // stack vector, not the local one. Spec invariant 12.b.ii
             // ("on stack iff Evaluating") assumes a single DFS and doesn't
             // hold for nested evaluation. Detect the case and skip
-            // 11.c.iii/iv/v entirely: the outer module's bindings are
+            // 12.b.iii/iv/v entirely: the outer module's bindings are
             // populated up to its current suspension point, its cycleRoot
             // isn't set yet (so the else branch would crash), and merging
             // its DFSAncestorIndex into our inner SCC would taint the SCC
@@ -1185,45 +1296,44 @@ unsigned AbstractModuleRecord::innerModuleEvaluation(JSGlobalObject* globalObjec
             bool depInOuterSCC = cyclic->status() == Status::Evaluating && !stack.contains(requiredModule);
             if (!depInOuterSCC) {
 #endif
-            // 11.c.i. Assert: requiredModule.[[Status]] is one of EVALUATING, EVALUATING-ASYNC, or EVALUATED.
+            // 12.b.i. Assert: requiredModule.[[Status]] is one of EVALUATING, EVALUATING-ASYNC, or EVALUATED.
             ASSERT(cyclic->status() == Status::Evaluating || cyclic->status() == Status::EvaluatingAsync || cyclic->status() == Status::Evaluated);
-            // 11.c.ii. Assert: requiredModule.[[Status]] is EVALUATING if and only if stack contains requiredModule.
+            // 12.b.ii. Assert: requiredModule.[[Status]] is EVALUATING if and only if stack contains requiredModule.
             ASSERT(stack.contains(requiredModule) == (cyclic->status() == Status::Evaluating));
-            // 11.c.iii. If requiredModule.[[Status]] is EVALUATING, then
+            // 12.b.iii. If requiredModule.[[Status]] is EVALUATING, then
             if (cyclic->status() == Status::Evaluating) {
-                // 11.c.iii.1. Set module.[[DFSAncestorIndex]] to min(module.[[DFSAncestorIndex]], requiredModule.[[DFSAncestorIndex]]).
+                // 12.b.iii.1. Set module.[[DFSAncestorIndex]] to min(module.[[DFSAncestorIndex]], requiredModule.[[DFSAncestorIndex]]).
                 module->setDFSAncestorIndex(std::min(module->dfsAncestorIndex(), cyclic->dfsAncestorIndex()));
-            // 11.c.iv. Else,
+            // 12.b.iv. Else,
             } else {
-                // 11.c.iv.1. Set requiredModule to requiredModule.[[CycleRoot]].
+                // 12.b.iv.1. Set requiredModule to requiredModule.[[CycleRoot]].
                 cyclic = requiredModule->cycleRoot();
                 requiredModule = cyclic;
-                // 11.c.iv.2. Assert: requiredModule.[[Status]] is either EVALUATING-ASYNC or EVALUATED.
+                // 12.b.iv.2. Assert: requiredModule.[[Status]] is either EVALUATING-ASYNC or EVALUATED.
                 ASSERT(cyclic->status() == Status::EvaluatingAsync || cyclic->status() == Status::Evaluated);
-                // 11.c.iv.3. If requiredModule.[[EvaluationError]] is not empty, return ? requiredModule.[[EvaluationError]].
+                // 12.b.iv.3. If requiredModule.[[EvaluationError]] is not empty, return ? requiredModule.[[EvaluationError]].
                 if (JSValue error = cyclic->evaluationError()) {
                     scope.throwException(globalObject, error);
                     return invalid;
                 }
             }
-            // 11.c.v. If requiredModule.[[AsyncEvaluationOrder]] is an integer, then
+            // 12.b.v. If requiredModule.[[AsyncEvaluationOrder]] is an integer, then
             if (cyclic->asyncEvaluationOrder().hasOrder()) {
 #if USE(BUN_JSC_ADDITIONS)
-                // See note above the recursive call: skip the spec-mandated
-                // wait to avoid self-deadlock and match old-loader behaviour.
-                // Only skip when the cycle root entered EvaluatingAsync in a
-                // *prior* Evaluate() (order < asyncOrderWatermark) — a dep
-                // that became EvaluatingAsync earlier in *this* DFS is a
-                // sibling whose post-await bindings are still TDZ (#30259) —
-                // and its body has already been entered
-                // (pendingAsyncDependencies == 0).
-                if (!depWasAlreadyEvaluatingAsync
-                    || cyclic->asyncEvaluationOrder().order() >= asyncOrderWatermark
-                    || cyclic->pendingAsyncDependencies().value_or(1)) {
+                // Spec says wait on this dep. That's a guaranteed deadlock when
+                // the dep is the very module whose TLA continuation called the
+                // dynamic import() that started this Evaluate(): the dep can
+                // only finish after the import() promise settles, which is
+                // waiting on us. referrerAsyncOrder is that module's
+                // asyncEvaluationOrder(), captured at the import() call site
+                // (-1 when the referrer was not EvaluatingAsync). It is a
+                // VM-unique identity, so equality is exact — siblings that
+                // happen to be EvaluatingAsync (#30259, #30634) never match.
+                if (cyclic->asyncEvaluationOrder().order() != referrerAsyncOrder) {
 #endif
-                // 11.c.v.1. Set module.[[PendingAsyncDependencies]] to module.[[PendingAsyncDependencies]] + 1.
+                // 12.b.v.1. Set module.[[PendingAsyncDependencies]] to module.[[PendingAsyncDependencies]] + 1.
                 module->setPendingAsyncDependencies(module->pendingAsyncDependencies().value() + 1);
-                // 11.c.v.2. Append module to requiredModule.[[AsyncParentModules]].
+                // 12.b.v.2. Append module to requiredModule.[[AsyncParentModules]].
                 cyclic->appendAsyncParentModule(vm, module);
 #if USE(BUN_JSC_ADDITIONS)
                 }

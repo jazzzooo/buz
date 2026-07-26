@@ -33,6 +33,7 @@
 #include "IntegrityInlines.h"
 #include "JSAPIGlobalObject.h"
 #include "JSAPIWrapperObject.h"
+#include "JSCJSValueInlines.h"
 #include "JSCallbackObject.h"
 #include "JSClassRef.h"
 #include "JSObjectInlines.h"

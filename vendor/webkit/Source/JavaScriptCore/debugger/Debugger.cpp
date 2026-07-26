@@ -26,8 +26,8 @@
 #include "DebuggerCallFrame.h"
 #include "DebuggerScope.h"
 #include "HeapIterationScope.h"
+#include "JSAsyncFunctionGenerator.h"
 #include "JSCInlines.h"
-#include "JSGenerator.h"
 #include "MarkedSpaceInlines.h"
 #include "Microtask.h"
 #include "VMEntryScopeInlines.h"
@@ -287,6 +287,20 @@ void Debugger::willCallNativeExecutable(CallFrame* callFrame)
 {
     dispatchFunctionToObservers([&] (Observer& observer) {
         observer.willCallNativeExecutable(callFrame);
+    });
+}
+
+void Debugger::didCreateInternalFunction(InternalFunction& internalFunction)
+{
+    dispatchFunctionToObservers([&] (Observer& observer) {
+        observer.didCreateInternalFunction(internalFunction);
+    });
+}
+
+void Debugger::willCallInternalFunction(InternalFunction& internalFunction)
+{
+    dispatchFunctionToObservers([&] (Observer& observer) {
+        observer.willCallInternalFunction(internalFunction);
     });
 }
 
@@ -1252,7 +1266,7 @@ void Debugger::willAwait(CallFrame* callFrame, JSValue generatorValue)
     if (!m_pauseOnCallFrame || m_pauseOnCallFrame != callFrame)
         return;
 
-    m_pauseForAwaitInGenerator = dynamicDowncast<JSGenerator>(generatorValue);
+    m_pauseForAwaitInGenerator = dynamicDowncast<JSAsyncFunctionGenerator>(generatorValue);
     ASSERT(m_pauseForAwaitInGenerator);
     if (!m_pauseForAwaitInGenerator)
         return;
@@ -1276,7 +1290,7 @@ void Debugger::didAwait(CallFrame*, JSValue generatorValue)
     if (!m_pauseForAwaitInGenerator)
         return;
 
-    JSGenerator* generator = dynamicDowncast<JSGenerator>(generatorValue);
+    JSAsyncFunctionGenerator* generator = dynamicDowncast<JSAsyncFunctionGenerator>(generatorValue);
     ASSERT(generator);
     if (m_pauseForAwaitInGenerator != generator)
         return;

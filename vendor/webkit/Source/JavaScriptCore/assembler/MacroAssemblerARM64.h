@@ -2406,6 +2406,11 @@ public:
         store64(dataTempRegister, address);
     }
 
+    void store64(TrustedImm32 imm, BaseIndex address)
+    {
+        store64(TrustedImm64(imm.m_value), address);
+    }
+
     void store64(TrustedImm64 imm, BaseIndex address)
     {
         if (!imm.m_value) {
@@ -2464,6 +2469,21 @@ public:
 
         load64(src, getCachedDataTempRegisterIDAndInvalidate());
         store64(getCachedDataTempRegisterIDAndInvalidate(), dest);
+    }
+
+    void transfer64(PostIndexAddress src, PostIndexAddress dest)
+    {
+        auto temp = getCachedDataTempRegisterIDAndInvalidate();
+        load64(src, temp);
+        store64(temp, dest);
+    }
+
+    void transferPair64(PostIndexAddress src, PostIndexAddress dest)
+    {
+        auto temp1 = getCachedDataTempRegisterIDAndInvalidate();
+        auto temp2 = getCachedMemoryTempRegisterIDAndInvalidate();
+        loadPair64(src, temp1, temp2);
+        storePair64(temp1, temp2, dest);
     }
 
     void transferPtr(auto src, auto dest) { transfer64(src, dest); }
@@ -5002,9 +5022,9 @@ public:
         move(TrustedImmPtr(reinterpret_cast<void*>(address.offset)), getCachedMemoryTempRegisterIDAndInvalidate());
 
         if (MacroAssemblerHelpers::isUnsigned<MacroAssemblerARM64>(cond))
-            m_assembler.ldrb(memoryTempRegister, address.base, memoryTempRegister);
+            m_assembler.ldrb(memoryTempRegister, memoryTempRegister, address.base);
         else
-            m_assembler.ldrsb<32>(memoryTempRegister, address.base, memoryTempRegister);
+            m_assembler.ldrsb<32>(memoryTempRegister, memoryTempRegister, address.base);
 
         return branchTest32(cond, memoryTempRegister, mask8);
     }
@@ -5036,9 +5056,9 @@ public:
         move(TrustedImmPtr(reinterpret_cast<void*>(address.offset)), getCachedMemoryTempRegisterIDAndInvalidate());
 
         if (MacroAssemblerHelpers::isUnsigned<MacroAssemblerARM64>(cond))
-            m_assembler.ldrh(memoryTempRegister, address.base, memoryTempRegister);
+            m_assembler.ldrh(memoryTempRegister, memoryTempRegister, address.base);
         else
-            m_assembler.ldrsh<32>(memoryTempRegister, address.base, memoryTempRegister);
+            m_assembler.ldrsh<32>(memoryTempRegister, memoryTempRegister, address.base);
 
         return branchTest32(cond, memoryTempRegister, mask16);
     }
@@ -6629,6 +6649,26 @@ public:
             m_assembler.smullv(dest, left, right, narrowedLane(simdInfo.lane));
         else
             m_assembler.umullv(dest, left, right, narrowedLane(simdInfo.lane));
+    }
+
+    void vectorMulAddLow(SIMDInfo simdInfo, FPRegisterID left, FPRegisterID right, FPRegisterID srcDest)
+    {
+        ASSERT(!scalarTypeIsFloatingPoint(simdInfo.lane));
+        ASSERT(simdInfo.signMode != SIMDSignMode::None);
+        if (simdInfo.signMode == SIMDSignMode::Signed)
+            m_assembler.smlalv(srcDest, left, right, narrowedLane(simdInfo.lane));
+        else
+            m_assembler.umlalv(srcDest, left, right, narrowedLane(simdInfo.lane));
+    }
+
+    void vectorMulAddHigh(SIMDInfo simdInfo, FPRegisterID left, FPRegisterID right, FPRegisterID srcDest)
+    {
+        ASSERT(!scalarTypeIsFloatingPoint(simdInfo.lane));
+        ASSERT(simdInfo.signMode != SIMDSignMode::None);
+        if (simdInfo.signMode == SIMDSignMode::Signed)
+            m_assembler.smlal2v(srcDest, left, right, narrowedLane(simdInfo.lane));
+        else
+            m_assembler.umlal2v(srcDest, left, right, narrowedLane(simdInfo.lane));
     }
 
     void vectorFusedMulAdd(SIMDInfo simdInfo, FPRegisterID mul1, FPRegisterID mul2, FPRegisterID addend, FPRegisterID dest, FPRegisterID scratch)

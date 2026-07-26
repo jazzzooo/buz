@@ -34,7 +34,6 @@
 #include "MacroAssembler.h"
 #include "PropertyInlineCacheClearingWatchpoint.h"
 #include "ScratchRegisterAllocator.h"
-#include <wtf/FixedVector.h>
 #include <wtf/Vector.h>
 
 namespace JSC {
@@ -332,6 +331,7 @@ MacroAssemblerCodeRef<JITThunkPtrTag> getByIdMissHandler(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> getByIdCustomAccessorHandler(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> getByIdCustomValueHandler(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> getByIdGetterHandler(VM&);
+MacroAssemblerCodeRef<JITThunkPtrTag> getByIdMegamorphicGetterHandler(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> getByIdProxyObjectLoadHandler(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> getByIdModuleNamespaceLoadHandler(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> putByIdReplaceHandler(VM&);

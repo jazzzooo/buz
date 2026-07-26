@@ -139,14 +139,14 @@ namespace JSC {
     class ParserArenaRoot {
         WTF_DEPRECATED_MAKE_FAST_ALLOCATED_WITH_HEAP_IDENTIFIER(ParserArenaRoot, ParserArenaRoot);
     protected:
-        ParserArenaRoot(Ref<ParserArena>&&);
+        ParserArenaRoot(ParserArena&);
 
     public:
-        ParserArena& parserArena() LIFETIME_BOUND { return m_arena.get(); }
+        ParserArena& parserArena() LIFETIME_BOUND { return m_arena; }
         virtual ~ParserArenaRoot() { }
 
     protected:
-        Ref<ParserArena> m_arena;
+        ParserArena m_arena;
     };
 
     class Node : public ParserArenaFreeable {
@@ -634,7 +634,7 @@ namespace JSC {
 
     class ImportNode final : public ExpressionNode, public ThrowableExpressionData {
     public:
-        ImportNode(const JSTokenLocation&, ExpressionNode*, ExpressionNode*);
+        ImportNode(const JSTokenLocation&, ExpressionNode*, ExpressionNode*, bool deferred);
 
     private:
         bool isImportNode() const final { return true; }
@@ -642,6 +642,7 @@ namespace JSC {
 
         ExpressionNode* m_expr;
         ExpressionNode* m_option;
+        bool m_deferred;
     };
 
     class MetaPropertyNode : public ExpressionNode {
@@ -1467,6 +1468,7 @@ namespace JSC {
 
     private:
         RegisterID* emitBytecode(BytecodeGenerator&, RegisterID* = nullptr) final;
+        void emitBytecodeInConditionContext(BytecodeGenerator&, Label& trueTarget, Label& falseTarget, FallThroughMode) final;
 
         ExpressionNode* m_expr1;
         ExpressionNode* m_expr2;
@@ -1952,8 +1954,8 @@ namespace JSC {
         // new for allocation.
         using ParserArenaRoot::operator new;
 
-        ScopeNode(Ref<ParserArena>&&, const JSTokenLocation& start, const JSTokenLocation& end, LexicallyScopedFeatures);
-        ScopeNode(Ref<ParserArena>&&, const JSTokenLocation& start, const JSTokenLocation& end, const SourceCode&, SourceElements*, VariableEnvironment&&, FunctionStack&&, VariableEnvironment&&, CodeFeatures, LexicallyScopedFeatures, InnerArrowFunctionCodeFeatures, int numConstants);
+        ScopeNode(ParserArena&, const JSTokenLocation& start, const JSTokenLocation& end, LexicallyScopedFeatures);
+        ScopeNode(ParserArena&, const JSTokenLocation& start, const JSTokenLocation& end, const SourceCode&, SourceElements*, VariableEnvironment&&, FunctionStack&&, VariableEnvironment&&, CodeFeatures, LexicallyScopedFeatures, InnerArrowFunctionCodeFeatures, int numConstants);
 
         const SourceCode& source() const LIFETIME_BOUND { return m_source; }
         SourceID sourceID() const { return m_source.providerID(); }
@@ -2032,7 +2034,7 @@ namespace JSC {
 
     class ProgramNode final : public ScopeNode {
     public:
-        ProgramNode(Ref<ParserArena>&&, const JSTokenLocation& start, const JSTokenLocation& end, unsigned startColumn, unsigned endColumn, SourceElements*, VariableEnvironment&&, FunctionStack&&, VariableEnvironment&&, FunctionParameters*, const SourceCode&, CodeFeatures, LexicallyScopedFeatures, InnerArrowFunctionCodeFeatures, int numConstants, RefPtr<ModuleScopeData>&&);
+        ProgramNode(ParserArena&, const JSTokenLocation& start, const JSTokenLocation& end, unsigned startColumn, unsigned endColumn, SourceElements*, VariableEnvironment&&, FunctionStack&&, VariableEnvironment&&, FunctionParameters*, const SourceCode&, CodeFeatures, LexicallyScopedFeatures, InnerArrowFunctionCodeFeatures, int numConstants, RefPtr<ModuleScopeData>&&);
 
         unsigned startColumn() const { return m_startColumn; }
         unsigned endColumn() const { return m_endColumn; }
@@ -2047,7 +2049,7 @@ namespace JSC {
 
     class EvalNode final : public ScopeNode {
     public:
-        EvalNode(Ref<ParserArena>&&, const JSTokenLocation& start, const JSTokenLocation& end, unsigned startColumn, unsigned endColumn, SourceElements*, VariableEnvironment&&, FunctionStack&&, VariableEnvironment&&, FunctionParameters*, const SourceCode&, CodeFeatures, LexicallyScopedFeatures, InnerArrowFunctionCodeFeatures, int numConstants, RefPtr<ModuleScopeData>&&);
+        EvalNode(ParserArena&, const JSTokenLocation& start, const JSTokenLocation& end, unsigned startColumn, unsigned endColumn, SourceElements*, VariableEnvironment&&, FunctionStack&&, VariableEnvironment&&, FunctionParameters*, const SourceCode&, CodeFeatures, LexicallyScopedFeatures, InnerArrowFunctionCodeFeatures, int numConstants, RefPtr<ModuleScopeData>&&);
 
         ALWAYS_INLINE unsigned startColumn() const { return 0; }
         unsigned endColumn() const { return m_endColumn; }
@@ -2062,7 +2064,7 @@ namespace JSC {
 
     class ModuleProgramNode final : public ScopeNode {
     public:
-        ModuleProgramNode(Ref<ParserArena>&&, const JSTokenLocation& start, const JSTokenLocation& end, unsigned startColumn, unsigned endColumn, SourceElements*, VariableEnvironment&&, FunctionStack&&, VariableEnvironment&&, FunctionParameters*, const SourceCode&, CodeFeatures, LexicallyScopedFeatures, InnerArrowFunctionCodeFeatures, int numConstants, RefPtr<ModuleScopeData>&&);
+        ModuleProgramNode(ParserArena&, const JSTokenLocation& start, const JSTokenLocation& end, unsigned startColumn, unsigned endColumn, SourceElements*, VariableEnvironment&&, FunctionStack&&, VariableEnvironment&&, FunctionParameters*, const SourceCode&, CodeFeatures, LexicallyScopedFeatures, InnerArrowFunctionCodeFeatures, int numConstants, RefPtr<ModuleScopeData>&&);
 
         unsigned startColumn() const { return m_startColumn; }
         unsigned endColumn() const { return m_endColumn; }
@@ -2358,7 +2360,7 @@ namespace JSC {
 
     class FunctionNode final : public ScopeNode {
     public:
-        FunctionNode(Ref<ParserArena>&&, const JSTokenLocation& start, const JSTokenLocation& end, unsigned startColumn, unsigned endColumn, SourceElements*, VariableEnvironment&&, FunctionStack&&, VariableEnvironment&&, FunctionParameters*, const SourceCode&, CodeFeatures, LexicallyScopedFeatures, InnerArrowFunctionCodeFeatures, int numConstants, RefPtr<ModuleScopeData>&&);
+        FunctionNode(ParserArena&, const JSTokenLocation& start, const JSTokenLocation& end, unsigned startColumn, unsigned endColumn, SourceElements*, VariableEnvironment&&, FunctionStack&&, VariableEnvironment&&, FunctionParameters*, const SourceCode&, CodeFeatures, LexicallyScopedFeatures, InnerArrowFunctionCodeFeatures, int numConstants, RefPtr<ModuleScopeData>&&);
 
         FunctionParameters* parameters() const { return m_parameters; }
 

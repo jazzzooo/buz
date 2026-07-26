@@ -30,20 +30,21 @@
 
 #if ENABLE(WEBASSEMBLY)
 
-#include "CCallHelpers.h"
-#include "CallLinkInfo.h"
-#include "CodeLocation.h"
-#include "Identifier.h"
-#include "JSString.h"
-#include "MacroAssemblerCodeRef.h"
-#include "MathCommon.h"
-#include "PageCount.h"
-#include "RegisterAtOffsetList.h"
-#include "WasmMemoryInformation.h"
-#include "WasmName.h"
-#include "WasmNameSection.h"
-#include "WasmOps.h"
-#include "WasmTypeDefinition.h"
+#include <JavaScriptCore/CCallHelpers.h>
+#include <JavaScriptCore/CallLinkInfo.h>
+#include <JavaScriptCore/CodeLocation.h>
+#include <JavaScriptCore/Identifier.h>
+#include <JavaScriptCore/JSString.h>
+#include <JavaScriptCore/MacroAssemblerCodeRef.h>
+#include <JavaScriptCore/MathCommon.h>
+#include <JavaScriptCore/PageCount.h>
+#include <JavaScriptCore/RegisterAtOffsetList.h>
+#include <JavaScriptCore/WasmAddressType.h>
+#include <JavaScriptCore/WasmMemoryInformation.h>
+#include <JavaScriptCore/WasmName.h>
+#include <JavaScriptCore/WasmNameSection.h>
+#include <JavaScriptCore/WasmOps.h>
+#include <JavaScriptCore/WasmTypeDefinition.h>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -147,6 +148,14 @@ public:
                 return type.isV128();
             }
         );
+    }
+
+    bool holdsRTT() const { return std::holds_alternative<const RTT*>(m_storage); }
+
+    const RTT& rtt() const
+    {
+        ASSERT(holdsRTT());
+        return *std::get<const RTT*>(m_storage);
     }
 
     void dump(PrintStream& out) const;
@@ -650,7 +659,7 @@ class I32InitExpr {
         ExtendedExpression
     };
 
-    I32InitExpr(Type type, uint32_t bits)
+    I32InitExpr(Type type, uint64_t bits)
         : m_bits(bits)
         , m_type(type)
     { }
@@ -658,33 +667,35 @@ class I32InitExpr {
 public:
     I32InitExpr() = delete;
 
-    static I32InitExpr globalImport(uint32_t globalImportNumber) { return I32InitExpr(Global, globalImportNumber); }
-    static I32InitExpr constValue(uint32_t constValue) { return I32InitExpr(Const, constValue); }
-    static I32InitExpr extendedExpression(uint32_t constantExpressionNumber) { return I32InitExpr(ExtendedExpression, constantExpressionNumber); }
+    static I32InitExpr globalImport(uint64_t globalImportNumber) { return I32InitExpr(Global, globalImportNumber); }
+    static I32InitExpr constValue(uint64_t constValue) { return I32InitExpr(Const, constValue); }
+    static I32InitExpr extendedExpression(uint64_t constantExpressionNumber) { return I32InitExpr(ExtendedExpression, constantExpressionNumber); }
 
     bool isConst() const { return m_type == Const; }
     bool isGlobalImport() const { return m_type == Global; }
     bool isExtendedExpression() const { return m_type == ExtendedExpression; }
-    uint32_t constValue() const
+    uint64_t constValue() const
     {
         RELEASE_ASSERT(isConst());
         return m_bits;
     }
-    uint32_t globalImportIndex() const
+    uint64_t globalImportIndex() const
     {
         RELEASE_ASSERT(isGlobalImport());
         return m_bits;
     }
-    uint32_t constantExpressionIndex() const
+    uint64_t constantExpressionIndex() const
     {
         RELEASE_ASSERT(isExtendedExpression());
         return m_bits;
     }
 
 private:
-    uint32_t m_bits;
+    uint64_t m_bits;
     Type m_type;
 };
+
+using I64InitExpr = I32InitExpr;
 
 class Segment final : public TrailingArray<Segment, uint8_t> {
     WTF_DEPRECATED_MAKE_FAST_ALLOCATED(Segment);
@@ -783,15 +794,16 @@ public:
         ASSERT(!*this);
     }
 
-    TableInformation(uint32_t initial, std::optional<uint32_t> maximum, bool isImport, TableElementType type, Type wasmType, InitializationType initType, uint64_t initialBitsOrImportNumber)
-        : m_initial(initial)
+    TableInformation(uint32_t initial, std::optional<uint32_t> maximum, bool isImport, TableElementType type, Type wasmType, InitializationType initType, uint64_t initialBitsOrImportNumber, bool isTable64)
+        : m_wasmType(wasmType)
         , m_maximum(maximum)
+        , m_initialBitsOrImportNumber(initialBitsOrImportNumber)
+        , m_initial(initial)
+        , m_type(type)
+        , m_addressType(isTable64)
+        , m_initType(initType)
         , m_isImport(isImport)
         , m_isValid(true)
-        , m_type(type)
-        , m_wasmType(wasmType)
-        , m_initType(initType)
-        , m_initialBitsOrImportNumber(initialBitsOrImportNumber)
     {
         ASSERT(*this);
     }
@@ -804,16 +816,18 @@ public:
     Type wasmType() const { return m_wasmType; }
     InitializationType initType() const { return m_initType; }
     uint64_t initialBitsOrImportNumber() const { return m_initialBitsOrImportNumber; }
+    Wasm::AddressType addressType() const { return m_addressType; }
 
 private:
-    uint32_t m_initial;
+    Type m_wasmType;
     std::optional<uint32_t> m_maximum;
+    uint64_t m_initialBitsOrImportNumber;
+    uint32_t m_initial;
+    TableElementType m_type;
+    Wasm::AddressType m_addressType;
+    InitializationType m_initType { Default };
     bool m_isImport { false };
     bool m_isValid { false };
-    TableElementType m_type;
-    Type m_wasmType;
-    InitializationType m_initType { Default };
-    uint64_t m_initialBitsOrImportNumber;
 };
     
 struct CustomSection {
@@ -951,6 +965,8 @@ struct alignas(8) WasmCallableFunction {
 struct WasmToWasmImportableFunction : public WasmCallableFunction {
     WTF_DEPRECATED_MAKE_STRUCT_FAST_ALLOCATED(WasmToWasmImportableFunction);
     static constexpr ptrdiff_t offsetOfRTT() { return OBJECT_OFFSETOF(WasmToWasmImportableFunction, rtt); }
+    bool isEmpty() const { return !rtt; }
+
     const RTT* rtt { nullptr };
 };
 using FunctionIndexSpace = Vector<WasmToWasmImportableFunction>;
@@ -965,8 +981,9 @@ struct WasmOrJSImportableFunction : public WasmToWasmImportableFunction {
 
 struct WasmOrJSImportableFunctionCallLinkInfo final : public WasmOrJSImportableFunction {
     WTF_DEPRECATED_MAKE_STRUCT_FAST_ALLOCATED(WasmOrJSImportableFunctionCallLinkInfo);
-    std::unique_ptr<DataOnlyCallLinkInfo> callLinkInfo { };
     static constexpr ptrdiff_t offsetOfCallLinkInfo() { return OBJECT_OFFSETOF(WasmOrJSImportableFunctionCallLinkInfo, callLinkInfo); }
+
+    std::unique_ptr<DataOnlyCallLinkInfo> callLinkInfo { };
 };
 
 #if ASSERT_ENABLED

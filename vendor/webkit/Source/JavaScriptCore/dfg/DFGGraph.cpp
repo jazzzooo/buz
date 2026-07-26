@@ -34,7 +34,6 @@
 #include "CodeBlockWithJITType.h"
 #include "DFGBackwardsCFG.h"
 #include "DFGBackwardsDominators.h"
-#include "DFGBlockWorklist.h"
 #include "DFGCFG.h"
 #include "DFGClobberSet.h"
 #include "DFGClobbersExitState.h"
@@ -60,6 +59,7 @@
 #include "StructureInlines.h"
 #include <array>
 #include <wtf/CommaPrinter.h>
+#include <wtf/GraphOrdering.h>
 #include <wtf/ListDump.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
@@ -69,7 +69,7 @@ namespace JSC { namespace DFG {
 static constexpr bool dumpOSRAvailabilityData = false;
 
 // Creates an array of stringized names.
-static constexpr auto dfgOpNames = std::to_array<ASCIILiteral>({
+static constexpr auto dfgOpNames = WTF::toArray<ASCIILiteral>({
 #define STRINGIZE_DFG_OP_ENUM(opcode, flags) #opcode ## _s ,
     FOR_EACH_DFG_OP(STRINGIZE_DFG_OP_ENUM)
 #undef STRINGIZE_DFG_OP_ENUM
@@ -241,7 +241,7 @@ void Graph::dump(PrintStream& out, const char* prefixStr, Node* node, DumpContex
         });
     }
 
-    if (toCString(NodeFlagsDump(node->flags())) != "<empty>")
+    if (toCString(NodeFlagsDump(node->flags())) != "<empty>"_s)
         out.print(comma, NodeFlagsDump(node->flags()));
     if (node->prediction())
         out.print(comma, SpeculationDump(node->prediction()));
@@ -536,7 +536,7 @@ void Graph::dumpBlockHeader(PrintStream& out, const char* prefixStr, BasicBlock*
             out.print(prefix, "  Loop header, contains:");
             Vector<BlockIndex> sortedBlockList;
             for (unsigned i = 0; i < loop->size(); ++i)
-                sortedBlockList.append(unboxLoopNode(loop->at(i))->index);
+                sortedBlockList.append(unboxLoopNode(loop->at(i))->index());
             std::ranges::sort(sortedBlockList);
             for (unsigned i = 0; i < sortedBlockList.size(); ++i)
                 out.print(" #", sortedBlockList[i]);
@@ -566,7 +566,7 @@ void Graph::dumpBlockHeader(PrintStream& out, const char* prefixStr, BasicBlock*
                 continue;
 
             out.print(" D@", phiNode->index(), "<", phiNode->operand(), ",", phiNode->refCount());
-            if (toCString(NodeFlagsDump(phiNode->flags())) != "<empty>")
+            if (toCString(NodeFlagsDump(phiNode->flags())) != "<empty>"_s)
                 out.print(", ", NodeFlagsDump(phiNode->flags()));
             out.print(">->(");
             if (phiNode->child1()) {
@@ -600,7 +600,7 @@ void Graph::dump(PrintStream& out, DumpContext* context)
     }
     else {
         for (const auto& pair : m_rootToArguments)
-            out.print(prefix, "  Arguments for block#", pair.key->index, ": ", listDump(pair.value), "\n");
+            out.print(prefix, "  Arguments for block#", pair.key->index(), ": ", listDump(pair.value), "\n");
     }
     out.print("\n");
     
@@ -609,7 +609,7 @@ void Graph::dump(PrintStream& out, DumpContext* context)
         BasicBlock* block = m_blocks[b].get();
         if (!block)
             continue;
-        prefix.blockIndex = block->index;
+        prefix.blockIndex = block->index();
         dumpBlockHeader(out, Prefix::noString, block, DumpAllPhis, context);
         out.print(prefix, "  States: ", block->cfaStructureClobberStateAtHead);
         if (!block->cfaHasVisited)
@@ -973,14 +973,8 @@ BlockList Graph::blocksInPreOrder()
 {
     BlockList result;
     result.reserveInitialCapacity(m_blocks.size());
-    BlockWorklist worklist;
-    for (BasicBlock* entrypoint : m_roots)
-        worklist.push(entrypoint);
-    while (BasicBlock* block = worklist.pop()) {
-        result.append(block);
-        for (unsigned i = block->numSuccessors(); i--;)
-            worklist.push(block->successor(i));
-    }
+    CFG cfg(*this);
+    appendNodesInOrder(cfg, m_roots, GraphOrder::PreOrder, result);
 
     if (validationEnabled()) {
         // When iterating over pre order, we should see dominators
@@ -1012,21 +1006,8 @@ BlockList Graph::blocksInPostOrder(bool isSafeToValidate)
 {
     BlockList result;
     result.reserveInitialCapacity(m_blocks.size());
-    PostOrderBlockWorklist worklist;
-    for (BasicBlock* entrypoint : m_roots)
-        worklist.push(entrypoint);
-    while (BlockWithOrder item = worklist.pop()) {
-        switch (item.order) {
-        case VisitOrder::Pre:
-            worklist.pushPost(item.node);
-            for (unsigned i = item.node->numSuccessors(); i--;)
-                worklist.push(item.node->successor(i));
-            break;
-        case VisitOrder::Post:
-            result.append(item.node);
-            break;
-        }
-    }
+    CFG cfg(*this);
+    appendNodesInOrder(cfg, m_roots, GraphOrder::PostOrder, result);
 
     if (isSafeToValidate && validationEnabled()) { // There are users of this where we haven't yet built the CFG enough to be able to run dominators.
         auto validateResults = [&] (auto& dominators) {
@@ -1153,7 +1134,7 @@ bool Graph::isSafeToLoad(JSObject* base, PropertyOffset offset)
 GetByOffsetMethod Graph::promoteToConstant(GetByOffsetMethod method)
 {
     if (method.kind() == GetByOffsetMethod::LoadFromPrototype
-        && method.prototype()->structure()->dfgShouldWatch()) {
+        && tryWatch(method.prototype()->structure())) {
         if (JSValue constant = tryGetConstantProperty(method.prototype()->value(), method.prototype()->structure(), method.offset()))
             return GetByOffsetMethod::constant(freeze(constant));
     }
@@ -1385,16 +1366,19 @@ JSValue Graph::tryGetConstantProperty(
 
     // If all structures are watched, we don't need to consider whether object transitions and changes the value.
     // If the object gets transition while compiling, then it invalidates the code.
-    bool allAreWatched = true;
+    bool allAreWatchable = true;
     for (unsigned i = structureSet.size(); i--;) {
         RegisteredStructure structure = structureSet[i];
-        if (!structure->dfgShouldWatch()) {
-            allAreWatched = false;
+        if (!structure->dfgMayWatch()) {
+            allAreWatchable = false;
             break;
         }
     }
-    if (allAreWatched)
+    if (allAreWatchable) {
+        for (unsigned i = structureSet.size(); i--;)
+            watch(structureSet[i].get());
         return result;
+    }
 
     // However, if structures transitions are not watched, then object can get to the one of the structures transitively while it is changing the value.
     // But we can still optimize it if StructureSet is only one: in that case, there is no way to fulfill Structure requirement while changing the property
@@ -1555,6 +1539,32 @@ ObjectPropertyConditionSet Graph::tryEnsureAbsence(JSGlobalObject* globalObject,
     if (!headStructure)
         return ObjectPropertyConditionSet::invalid();
 
+    auto isAbsenceCacheable = [&](Structure* structure) {
+        // Absences cannot be cached on any dictionaries, including CachedDictionaryKind, because
+        // new properties can be added without structure transitions.
+        if (structure->isDictionary())
+            return false;
+        if (structure->typeInfo().overridesGetOwnPropertySlot())
+            return false;
+        if (!structure->propertyAccessesAreCacheable())
+            return false;
+        if (!structure->propertyAccessesAreCacheableForAbsence())
+            return false;
+        if (structure->isDictionary())
+            return false;
+        unsigned attributes;
+        if (isValidOffset(structure->getConcurrently(identifier.uid(), attributes)))
+            return false;
+        if (structure->hasPolyProto())
+            return false;
+        return true;
+    };
+
+    // generateConditionsForPropertyMissConcurrently only walks the prototype chain, so validate
+    // headStructure first.
+    if (!isAbsenceCacheable(headStructure))
+        return ObjectPropertyConditionSet::invalid();
+
     auto result = generateConditionsForPropertyMissConcurrently(globalObject->vm(), globalObject, headStructure, identifier.uid());
     if (!result.isValid())
         return result;
@@ -1564,22 +1574,7 @@ ObjectPropertyConditionSet Graph::tryEnsureAbsence(JSGlobalObject* globalObject,
         if (!object)
             return ObjectPropertyConditionSet::invalid();
 
-        auto* structure = object->structure();
-        if (structure->typeInfo().overridesGetOwnPropertySlot())
-            return ObjectPropertyConditionSet::invalid();
-
-        if (!structure->propertyAccessesAreCacheable())
-            return ObjectPropertyConditionSet::invalid();
-
-        if (!structure->propertyAccessesAreCacheableForAbsence())
-            return ObjectPropertyConditionSet::invalid();
-
-        unsigned attributes;
-        PropertyOffset offset = structure->getConcurrently(identifier.uid(), attributes);
-        if (isValidOffset(offset))
-            return ObjectPropertyConditionSet::invalid();
-
-        if (structure->hasPolyProto())
+        if (!isAbsenceCacheable(object->structure()))
             return ObjectPropertyConditionSet::invalid();
     }
     return result;
@@ -1701,20 +1696,38 @@ FrozenValue* Graph::bottomValueMatchingSpeculation(SpeculatedType prediction)
     return freeze(JSValue());
 }
 
-RegisteredStructure Graph::registerStructure(Structure* structure, StructureRegistrationResult& result)
+RegisteredStructure Graph::registerStructure(Structure* structure)
 {
-    m_plan.weakReferences().addLazily(structure);
-    if (m_plan.watchpoints().consider(structure))
-        result = StructureRegisteredAndWatched;
-    else
-        result = StructureRegisteredNormally;
+    if (!isWatched(structure)) {
+        m_plan.weakReferences().addLazily(structure);
+        m_plan.watchpoints().addRegisteredNotWatched(structure);
+    }
     return RegisteredStructure::createPrivate(structure);
 }
 
-void Graph::registerAndWatchStructureTransition(Structure* structure)
+bool Graph::tryWatch(Structure* structure)
 {
+    if (!structure->dfgMayWatch())
+        return false;
+    watch(structure);
+    return true;
+}
+
+void Graph::watch(Structure* structure)
+{
+    if (Options::verboseDFGFailure() && !structure->dfgMayWatch()) [[unlikely]] {
+        dataLogLn("DFG: Graph::watch on a non-watchable structure ", RawPointer(structure),
+            "; could be caused by race in which mutator fired watchpoint after deciding to watch"
+            " or might indicate that we're incorrectly deciding to watch.");
+    }
     m_plan.weakReferences().addLazily(structure);
+    m_plan.watchpoints().takeRegisteredNotWatched(structure);
     m_plan.watchpoints().addLazily(structure->transitionWatchpointSet());
+}
+
+bool Graph::isWatched(Structure* structure)
+{
+    return m_plan.watchpoints().isWatched(structure->transitionWatchpointSet());
 }
 
 void Graph::assertIsRegistered(Structure* structure)
@@ -1725,11 +1738,13 @@ void Graph::assertIsRegistered(Structure* structure)
 
     DFG_ASSERT(*this, nullptr, m_plan.weakReferences().contains(structure));
 
-    if (!structure->dfgShouldWatch())
+    if (!structure->dfgMayWatch())
         return;
-    if (watchpoints().isWatched(structure->transitionWatchpointSet()))
+    if (isWatched(structure))
         return;
-    
+    if (m_plan.watchpoints().isRegisteredNotWatched(structure))
+        return;
+
     DFG_CRASH(*this, nullptr, toCString("Structure ", pointerDump(structure), " is watchable but isn't being watched.").data());
 }
 
@@ -2037,6 +2052,16 @@ bool Graph::canDoFastSpread(Node* node, const AbstractValue& value)
     return allGood;
 }
 
+bool Graph::canDoFastSpreadWithStructureCheck(Node* node)
+{
+    ASSERT(node->op() == Spread);
+
+    if (m_plan.isUnlinked())
+        return false;
+
+    return node->child1().useKind() == ArrayUse;
+}
+
 bool Graph::isNeverResizableOrGrowableSharedTypedArrayIncludingDataView(const AbstractValue& value)
 {
     auto& structureSet = value.m_structure;
@@ -2184,7 +2209,7 @@ void Graph::appendIonGraphPass(const String& passName)
                         auto* block = node->successor(i);
                         if (!block)
                             continue;
-                        stream.print(comma, "block "_s, block->index);
+                        stream.print(comma, "block "_s, block->index());
                     }
                 }
 
@@ -2201,13 +2226,13 @@ void Graph::appendIonGraphPass(const String& passName)
             }
 
             for (auto* predecessor : block->predecessors)
-                predecessors->pushInteger(predecessor->index);
+                predecessors->pushInteger(predecessor->index());
 
             for (auto* successor : block->successors())
-                successors->pushInteger(successor->index);
+                successors->pushInteger(successor->index());
 
-            ionBlock->setInteger("ptr"_s, block->index + 1);
-            ionBlock->setInteger("id"_s, block->index);
+            ionBlock->setInteger("ptr"_s, block->index() + 1);
+            ionBlock->setInteger("id"_s, block->index());
             ionBlock->setInteger("loopDepth"_s, 0);
             ionBlock->setArray("attributes"_s, WTF::move(attributes));
             ionBlock->setArray("predecessors"_s, WTF::move(predecessors));

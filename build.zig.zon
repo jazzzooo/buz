@@ -96,8 +96,8 @@
             .lazy = true,
         },
         .mimalloc = .{
-            .url = "https://github.com/oven-sh/mimalloc/archive/f15aecb94fc8096008bf87b90c53ed682026914a.tar.gz",
-            .hash = "N-V-__8AAEDOVwAWa_CsURc2b2DiaiUJox-0rGWpmoyhmg1v",
+            .url = "https://github.com/oven-sh/mimalloc/archive/acd9924a0af3ba7c341910b48815106f2944ffa0.tar.gz",
+            .hash = "N-V-__8AAGLBXQBnJ7vUxpnmtyqc-TWaIrOTTZkWzvdb08ld",
             .lazy = true,
         },
         .boringssl = .{

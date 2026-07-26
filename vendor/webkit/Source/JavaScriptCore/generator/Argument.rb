@@ -54,10 +54,6 @@ class Argument
         Fits::check size, @name, @type
     end
 
-    def fits_write(size)
-        Fits::write size, @name, @type
-    end
-
     def assert_fits(size)
         "ASSERT((#{fits_check size}));"
     end

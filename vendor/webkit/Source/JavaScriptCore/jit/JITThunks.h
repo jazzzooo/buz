@@ -81,6 +81,7 @@ class NativeExecutable;
     macro(GetByIdCustomAccessorHandler, getByIdCustomAccessorHandler) \
     macro(GetByIdCustomValueHandler, getByIdCustomValueHandler) \
     macro(GetByIdGetterHandler, getByIdGetterHandler) \
+    macro(GetByIdMegamorphicGetterHandler, getByIdMegamorphicGetterHandler) \
     macro(GetByIdProxyObjectLoadHandler, getByIdProxyObjectLoadHandler) \
     macro(GetByIdModuleNamespaceLoadHandler, getByIdModuleNamespaceLoadHandler) \
     macro(PutByIdReplaceHandler, putByIdReplaceHandler) \
@@ -203,9 +204,9 @@ public:
     MacroAssemblerCodeRef<JITThunkPtrTag> ctiStub(VM&, ThunkGenerator);
     MacroAssemblerCodeRef<JITThunkPtrTag> ctiSlowPathFunctionStub(VM&, SlowPathFunction);
 
-    NativeExecutable* hostFunctionStub(VM&, TaggedNativeFunction, TaggedNativeFunction constructor, ImplementationVisibility, const String& name);
-    NativeExecutable* hostFunctionStub(VM&, TaggedNativeFunction, TaggedNativeFunction constructor, ThunkGenerator, ImplementationVisibility, Intrinsic, const DOMJIT::Signature*, const String& name);
-    NativeExecutable* hostFunctionStub(VM&, TaggedNativeFunction, ThunkGenerator, ImplementationVisibility, Intrinsic, const String& name);
+    NativeExecutable* hostFunctionStub(VM&, TaggedNativeFunction, TaggedNativeFunction constructor, ImplementationVisibility, unsigned length, const String& name);
+    NativeExecutable* hostFunctionStub(VM&, TaggedNativeFunction, TaggedNativeFunction constructor, ThunkGenerator, ImplementationVisibility, Intrinsic, const DOMJIT::Signature*, unsigned length, const String& name);
+    NativeExecutable* hostFunctionStub(VM&, TaggedNativeFunction, ThunkGenerator, ImplementationVisibility, Intrinsic, unsigned length, const String& name);
 
     void initialize(VM&);
 
@@ -221,14 +222,14 @@ private:
     };
     using CTIStubMap = UncheckedKeyHashMap<ThunkGenerator, Entry>;
 
-    using HostFunctionKey = std::tuple<TaggedNativeFunction, TaggedNativeFunction, ImplementationVisibility, String>;
+    using HostFunctionKey = std::tuple<TaggedNativeFunction, TaggedNativeFunction, ImplementationVisibility, unsigned, String>;
 
     struct WeakNativeExecutableHash {
         static inline unsigned NODELETE hash(const Weak<NativeExecutable>&);
         static inline unsigned hash(const NativeExecutable*);
         static unsigned hash(const HostFunctionKey& key)
         {
-            return hash(std::get<0>(key), std::get<1>(key), std::get<2>(key), std::get<3>(key));
+            return hash(std::get<0>(key), std::get<1>(key), std::get<2>(key), std::get<3>(key), std::get<4>(key));
         }
 
         static inline bool NODELETE equal(const Weak<NativeExecutable>&, const Weak<NativeExecutable>&);
@@ -238,12 +239,13 @@ private:
         static constexpr bool safeToCompareToEmptyOrDeleted = false;
 
     private:
-        static unsigned hash(TaggedNativeFunction function, TaggedNativeFunction constructor, ImplementationVisibility implementationVisibility, const String& name)
+        static unsigned hash(TaggedNativeFunction function, TaggedNativeFunction constructor, ImplementationVisibility implementationVisibility, unsigned length, const String& name)
         {
             Hasher hasher;
             WTF::add(hasher, function);
             WTF::add(hasher, constructor);
             WTF::add(hasher, implementationVisibility);
+            WTF::add(hasher, length);
             if (!name.isNull())
                 WTF::add(hasher, name);
             return hasher.hash();

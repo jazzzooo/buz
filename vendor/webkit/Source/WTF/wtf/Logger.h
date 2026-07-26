@@ -365,6 +365,10 @@ private:
     {
     }
 
+#if USE(OS_LOG)
+    WTF_EXPORT_PRIVATE static void osLog(WTFLogChannel&, const CString& message);
+#endif
+
     template<typename... Argument>
     static inline void log(WTFLogChannel& channel, WTFLogLevel level, const Argument&... arguments)
     {
@@ -373,15 +377,15 @@ private:
 #if RELEASE_LOG_DISABLED
         WTFLog(&channel, "%s", logMessage.utf8().data());
 #elif USE(OS_LOG)
-WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
-        SUPPRESS_UNRETAINED_LOCAL os_log(channel.osLogChannel, "%{public}s", logMessage.utf8().data());
-WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
+        osLog(channel, logMessage.utf8());
 #elif OS(ANDROID)
         __android_log_print(ANDROID_LOG_VERBOSE, LOG_CHANNEL_WEBKIT_SUBSYSTEM, "[%s] %s", channel.name, logMessage.utf8().data());
 #elif ENABLE(JOURNALD_LOG)
         sd_journal_send("WEBKIT_SUBSYSTEM=" LOG_CHANNEL_WEBKIT_SUBSYSTEM, "WEBKIT_CHANNEL=%s", channel.name, "MESSAGE=%s", logMessage.utf8().data(), nullptr);
 #else
+        IGNORE_WARNINGS_BEGIN("unsafe-buffer-usage-in-libc-call")
         fprintf(stderr, "[" LOG_CHANNEL_WEBKIT_SUBSYSTEM ":%s:-] %s\n", channel.name, logMessage.utf8().data());
+        IGNORE_WARNINGS_END
 #endif
 
         sendMessageToObservers(channel, level, { }, arguments...);
@@ -409,9 +413,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 #if RELEASE_LOG_DISABLED
         WTFLogVerbose(file, line, function, &channel, "%s", logMessage.utf8().data());
 #elif USE(OS_LOG)
-WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
-        SUPPRESS_UNRETAINED_LOCAL os_log(channel.osLogChannel, "%{public}s", logMessage.utf8().data());
-WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
+        osLog(channel, logMessage.utf8());
         UNUSED_PARAM(file);
         UNUSED_PARAM(line);
         UNUSED_PARAM(function);

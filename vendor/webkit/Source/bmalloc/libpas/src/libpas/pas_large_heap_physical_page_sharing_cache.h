@@ -27,6 +27,7 @@
 #define PAS_LARGE_HEAP_PHYSICAL_PAGE_SHARING_CACHE_H
 
 #include "pas_bootstrap_heap_page_provider.h"
+#include "pas_commit_mode.h"
 #include "pas_enumerable_range_list.h"
 #include "pas_simple_large_free_heap.h"
 #include "pas_utils.h"
@@ -42,20 +43,30 @@ struct pas_large_heap_physical_page_sharing_cache {
     pas_simple_large_free_heap free_heap;
     pas_heap_page_provider provider;
     void* provider_arg;
+    /* Commit state of memory that the provider hands back. pas_committed means the provider
+       returns memory that is already physically committed (the common case — e.g. providers
+       backed by the standard page allocator). pas_decommitted means the provider returns
+       memory that is reserved but not yet physically committed (e.g. a provider that hands
+       out chunks of a client-supplied reserved region). The cache passes this through to
+       pas_large_sharing_pool_boot_free as the initial commit mode when registering a new
+       chunk. */
+    pas_commit_mode provider_commit_mode;
 };
 
 #define PAS_MEGAPAGE_LARGE_FREE_HEAP_PHYSICAL_PAGE_SHARING_CACHE_INITIALIZER \
     ((pas_large_heap_physical_page_sharing_cache){ \
          .free_heap = PAS_SIMPLE_LARGE_FREE_HEAP_INITIALIZER, \
          .provider = pas_small_medium_bootstrap_heap_page_provider, \
-         .provider_arg = NULL \
+         .provider_arg = NULL, \
+         .provider_commit_mode = pas_committed \
      })
 
 #define PAS_LARGE_FREE_HEAP_PHYSICAL_PAGE_SHARING_CACHE_INITIALIZER \
     ((pas_large_heap_physical_page_sharing_cache){ \
          .free_heap = PAS_SIMPLE_LARGE_FREE_HEAP_INITIALIZER, \
          .provider = pas_bootstrap_heap_page_provider, \
-         .provider_arg = NULL \
+         .provider_arg = NULL, \
+         .provider_commit_mode = pas_committed \
      })
 
 PAS_API extern pas_enumerable_range_list pas_large_heap_physical_page_sharing_cache_page_list;
@@ -64,7 +75,8 @@ PAS_API void
 pas_large_heap_physical_page_sharing_cache_construct(
     pas_large_heap_physical_page_sharing_cache* cache,
     pas_heap_page_provider provider,
-    void* provider_arg);
+    void* provider_arg,
+    pas_commit_mode provider_commit_mode);
 
 /* NOTE: should_zero should have a consistent value for all calls to try_allocate for a given
    cache. */

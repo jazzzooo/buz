@@ -30,6 +30,4 @@
 #include <wtf/cocoa/SoftLinking.h>
 #elif OS(WINDOWS)
 #include <wtf/win/SoftLinking.h>
-#else
-#error "SoftLinking not defined for platform"
 #endif

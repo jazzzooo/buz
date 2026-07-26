@@ -30,8 +30,6 @@
 #include "MathCommon.h"
 #include <array>
 #include <type_traits>
-#include <wtf/Ref.h>
-#include <wtf/RefCounted.h>
 #include <wtf/SegmentedVector.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
@@ -149,10 +147,20 @@ namespace JSC {
 
     DECLARE_ALLOCATOR_WITH_HEAP_IDENTIFIER(ParserArena);
 
-    class ParserArena : public RefCounted<ParserArena> {
+    class ParserArena {
+        WTF_MAKE_NONCOPYABLE(ParserArena);
     public:
-        static Ref<ParserArena> create() { return adoptRef(*new ParserArena); }
+        ParserArena();
         ~ParserArena();
+
+        void swap(ParserArena& otherArena)
+        {
+            std::swap(m_freeableMemory, otherArena.m_freeableMemory);
+            std::swap(m_freeablePoolEnd, otherArena.m_freeablePoolEnd);
+            m_identifierArena.swap(otherArena.m_identifierArena);
+            m_freeablePools.swap(otherArena.m_freeablePools);
+            m_deletableObjects.swap(otherArena.m_deletableObjects);
+        }
 
         void* allocateFreeable(size_t size)
         {
@@ -167,7 +175,7 @@ namespace JSC {
             return block;
         }
 
-        template<typename T, typename = std::enable_if_t<std::is_base_of<ParserArenaDeletable, T>::value>>
+        template<std::derived_from<ParserArenaDeletable> T>
         void* allocateDeletable(size_t size)
         {
             // T may extend ParserArenaDeletable via multiple inheritance, but not as T's first
@@ -188,8 +196,6 @@ namespace JSC {
         }
 
     private:
-        ParserArena();
-
         static const size_t freeablePoolSize = 8000;
 
         static size_t alignSize(size_t size)

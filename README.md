@@ -34,7 +34,7 @@ All accepted contributions must conform to the following:
 
 ### Bootstrap Zig
 
-You will need CMake >=3.15, LLVM + Clang + LLD at Zig's currently supported version (22.x as of writing), Git, Ruby, Python 3, and Perl.
+You will need CMake >=3.15, LLVM + Clang + LLD at Zig's currently supported version (22.x as of writing), Git, Ruby with ERB, Python 3, and Perl.
 
 ```sh
 git submodule update --init --recursive

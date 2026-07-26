@@ -34,6 +34,7 @@
 #include <string.h>
 #include <wtf/Assertions.h>
 #include <wtf/HexNumber.h>
+#include <wtf/MathExtras.h>
 #include <wtf/dtoa.h>
 #include <wtf/text/MakeString.h>
 
@@ -504,14 +505,14 @@ Lexer<T>::Lexer(VM& vm, JSParserBuiltinMode builtinMode, JSParserScriptMode scri
     : m_vm(vm)
     , m_parsingBuiltinFunction(builtinMode == JSParserBuiltinMode::Builtin || Options::exposePrivateIdentifiers())
     , m_positionBeforeLastNewline(0, 0, 0)
-    , m_scriptMode(scriptMode)
     , m_isReparsingFunction(false)
+    , m_scriptMode(scriptMode)
 {
 }
 
 static inline JSTokenType NODELETE tokenTypeForIntegerLikeToken(double doubleValue)
 {
-    if ((doubleValue || !std::signbit(doubleValue)) && static_cast<int64_t>(doubleValue) == doubleValue)
+    if ((doubleValue || !std::signbit(doubleValue)) && truncateDoubleToInt64(doubleValue) == doubleValue)
         return INTEGER;
     return DOUBLE;
 }

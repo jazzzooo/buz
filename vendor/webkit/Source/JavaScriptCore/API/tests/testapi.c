@@ -69,8 +69,13 @@
 #include "JSObjectGetProxyTargetTest.h"
 #include "MultithreadedMultiVMExecutionTest.h"
 #include "PingPongStackOverflowTest.h"
+#include "TemporalCoreTest.h"
 #include "TypedArrayCTest.h"
 #include "VMManagerStopTheWorldTest.h"
+
+#if defined(JSC_SUPPORTS_SWIFT) && JSC_SUPPORTS_SWIFT
+#include "SwiftTestingHarness.h"
+#endif
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
@@ -78,6 +83,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 void testObjectiveCAPI(const char*);
 #endif
 
+void initializeWTFForTesting(void);
 void configureJSCForTesting(void);
 int testLaunchJSCFromNonMainThread(const char* filter);
 int testCAPIViaCpp(const char* filter);
@@ -1598,6 +1604,7 @@ int main(int argc, char* argv[])
     SetErrorMode(0);
 #endif
 
+    initializeWTFForTesting();
     configureJSCForTesting();
 
 #if !OS(WINDOWS)
@@ -1618,6 +1625,10 @@ int main(int argc, char* argv[])
 
 #if JSC_OBJC_API_ENABLED
     testObjectiveCAPI(filter);
+#endif
+
+#if defined(JSC_SUPPORTS_SWIFT) && JSC_SUPPORTS_SWIFT
+    failed += testSwiftAPI(filter);
 #endif
 
     RELEASE_ASSERT(!testCAPIViaCpp(filter));
@@ -2334,6 +2345,7 @@ int main(int argc, char* argv[])
         JSGlobalContextRelease(context);
     }
     failed |= testTypedArrayCAPI();
+    failed |= testTemporalCore();
     failed |= testFunctionOverrides();
     failed |= testFunctionToString();
     failed |= testGlobalContextWithFinalizer();

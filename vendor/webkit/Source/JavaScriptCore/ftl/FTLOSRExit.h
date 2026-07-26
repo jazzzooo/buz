@@ -44,6 +44,7 @@
 #include "Reg.h"
 #include "ValueProfile.h"
 #include "VirtualRegister.h"
+#include <wtf/Bag.h>
 #include <wtf/FixedVector.h>
 
 namespace JSC {

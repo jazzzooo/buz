@@ -119,6 +119,14 @@
 #define ENABLE_ACCESSIBILITY_NON_BLINKING_CURSOR 0
 #endif
 
+#if !defined(ENABLE_ACCESSIBILITY_VIDEO_AUTOPLAY_CONTROL)
+#define ENABLE_ACCESSIBILITY_VIDEO_AUTOPLAY_CONTROL 0
+#endif
+
+#if !defined(ENABLE_ACCESSIBILITY_THREAD_DISPATCHING)
+#define ENABLE_ACCESSIBILITY_THREAD_DISPATCHING 0
+#endif
+
 #if !defined(ENABLE_ADVANCED_PRIVACY_PROTECTIONS)
 #define ENABLE_ADVANCED_PRIVACY_PROTECTIONS 0
 #endif
@@ -227,10 +235,6 @@
 #define ENABLE_FILE_REPLACEMENT 0
 #endif
 
-#if !defined(ENABLE_FTPDIR)
-#define ENABLE_FTPDIR 1
-#endif
-
 #if !defined(ENABLE_FULL_KEYBOARD_ACCESS)
 #define ENABLE_FULL_KEYBOARD_ACCESS 0
 #endif
@@ -267,16 +271,8 @@
 #define ENABLE_IMAGE_ANALYSIS 0
 #endif
 
-#if !defined(ENABLE_IMAGE_ANALYSIS_ENHANCEMENTS)
-#define ENABLE_IMAGE_ANALYSIS_ENHANCEMENTS 0
-#endif
-
 #if !defined(ENABLE_IMAGE_ANALYSIS_FOR_MACHINE_READABLE_CODES)
 #define ENABLE_IMAGE_ANALYSIS_FOR_MACHINE_READABLE_CODES 0
-#endif
-
-#if !defined(ENABLE_INLINE_PATH_DATA)
-#define ENABLE_INLINE_PATH_DATA 0
 #endif
 
 #if !defined(ENABLE_INPUT_TYPE_WEEK_PICKER)
@@ -618,6 +614,10 @@
 #define ENABLE_WEBXR 0
 #endif
 
+#if !defined(ENABLE_WEBXR_AR)
+#define ENABLE_WEBXR_AR 0
+#endif
+
 #if !defined(ENABLE_WEBXR_HANDS)
 #define ENABLE_WEBXR_HANDS 0
 #endif
@@ -750,6 +750,44 @@
 #define ENABLE_FTL_JIT 0
 #undef ENABLE_DFG_JIT
 #define ENABLE_DFG_JIT 0
+#endif
+
+/* The JIT disassembler is a debugging-only facility: it is reached solely by
+   diagnostic options such as dumpDisassembly, dumpDFGDisassembly,
+   dumpFTLDisassembly and logJIT. Its instruction tables are large - the
+   x86_64 Zydis tables and the ARM64 Binja tables each add well over 1MB of
+   code - so compile it out of release builds. ASSERT_ENABLED is on only in
+   debug builds, where the size cost does not matter. With the disassembler
+   off, tryToDisassemble() becomes a no-op and disassemble() prints the code
+   range instead, which is the configuration WebKit already supports on CPUs
+   that lack a disassembler backend. Define BUN_ENABLE_JIT_DISASSEMBLER=1 (via
+   a compiler flag) to force it on in an optimized build for JIT debugging. */
+#if !defined(BUN_ENABLE_JIT_DISASSEMBLER)
+#define BUN_ENABLE_JIT_DISASSEMBLER ASSERT_ENABLED
+#endif
+#if !BUN_ENABLE_JIT_DISASSEMBLER
+#if !defined(ENABLE_ZYDIS)
+#define ENABLE_ZYDIS 0
+#endif
+#if !defined(ENABLE_ARM64_DISASSEMBLER)
+#define ENABLE_ARM64_DISASSEMBLER 0
+#endif
+#if !defined(ENABLE_RISCV64_DISASSEMBLER)
+#define ENABLE_RISCV64_DISASSEMBLER 0
+#endif
+#if !defined(ENABLE_DISASSEMBLER)
+#define ENABLE_DISASSEMBLER 0
+#endif
+#endif
+
+/* JSDollarVM ($vm) is a debugging-only object reached via the restricted
+   JSC_useDollarVM option. It is large (~4600 lines that pull in many runtime
+   internals) and has no production use, so compile it out of release builds.
+   Like the disassembler above this defaults to ASSERT_ENABLED, and can be
+   forced on via a compiler flag. The jsc shell compiles it separately (see
+   tools/JSDollarVMShell.cpp) so $vm keeps working there regardless. */
+#if !defined(BUN_ENABLE_JSDOLLARVM)
+#define BUN_ENABLE_JSDOLLARVM ASSERT_ENABLED
 #endif
 
 /* If possible, try to enable a disassembler. This is optional. We proceed in two
@@ -1045,6 +1083,10 @@
 #error "ENABLE(PREDEFINED_COLOR_SPACE_DISPLAY_P3) requires ENABLE(DESTINATION_COLOR_SPACE_DISPLAY_P3)"
 #endif
 
+#if ENABLE(WEBXR_AR) && !ENABLE(WEBXR)
+#error "ENABLE(WEBXR_AR) requires ENABLE(WEBXR)"
+#endif
+
 #if ENABLE(WEBXR_HANDS) && !ENABLE(WEBXR)
 #error "ENABLE(WEBXR_HANDS) requires ENABLE(WEBXR)"
 #endif
@@ -1082,10 +1124,6 @@
 #define ENABLE_WRITING_SUGGESTIONS 1
 #endif
 
-#if !defined(ENABLE_COOKIE_STORE_API_BY_DEFAULT)
-#define ENABLE_COOKIE_STORE_API_BY_DEFAULT 0
-#endif
-
 #if !defined(ENABLE_ALL_LEGACY_REGISTERED_SPECIAL_URL_SCHEMES) && !PLATFORM(COCOA)
 #define ENABLE_ALL_LEGACY_REGISTERED_SPECIAL_URL_SCHEMES 1
 #endif
@@ -1105,10 +1143,20 @@
 #define ENABLE_TLS_1_2_DEFAULT_MINIMUM 1
 #endif
 
-#if !defined(ENABLE_IPC_TESTING_SWIFT)
-#define ENABLE_IPC_TESTING_SWIFT 0
+#if !defined(ENABLE_IPC_TESTING_SWIFT) \
+    && (PLATFORM(MAC) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260500)
+#define ENABLE_IPC_TESTING_SWIFT 1
 #endif
 
-#if !defined(ENABLE_BACK_FORWARD_LIST_SWIFT)
-#define ENABLE_BACK_FORWARD_LIST_SWIFT 0
+#if PLATFORM(MAC) && __MAC_OS_X_VERSION_MIN_REQUIRED >= 270000
+#define ENABLE_SCROLL_POCKET_IN_FULLSCREEN 1
+#endif
+
+#if !defined(ENABLE_BACK_FORWARD_LIST_SWIFT) \
+    && ((PLATFORM(MAC) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260500) \
+    || ((PLATFORM(IOS) || PLATFORM(MACCATALYST)) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 270000) \
+    || (PLATFORM(VISION) && __VISION_OS_VERSION_MAX_ALLOWED >= 270000) \
+    || (PLATFORM(WATCHOS) && __WATCH_OS_VERSION_MAX_ALLOWED >= 270000) \
+    || (PLATFORM(APPLETV) && __TV_OS_VERSION_MAX_ALLOWED >= 270000))
+#define ENABLE_BACK_FORWARD_LIST_SWIFT 1
 #endif

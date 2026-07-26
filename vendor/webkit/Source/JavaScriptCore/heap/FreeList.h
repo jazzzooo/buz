@@ -28,7 +28,6 @@
 #include "JSExportMacros.h"
 #include <wtf/Compiler.h>
 #include <wtf/MathExtras.h>
-#include <wtf/Noncopyable.h>
 #include <wtf/PrintStream.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN

@@ -31,7 +31,6 @@
 
 #include "pas_bitfit_directory.h"
 #include "pas_bitfit_page.h"
-#include "pas_bitfit_view_inlines.h"
 #include "pas_epoch.h"
 #include "pas_page_sharing_pool.h"
 

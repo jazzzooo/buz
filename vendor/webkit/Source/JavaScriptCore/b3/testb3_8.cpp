@@ -27,7 +27,6 @@
 #include "testb3.h"
 
 #include <wtf/Int128.h>
-#include <wtf/UniqueArray.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 

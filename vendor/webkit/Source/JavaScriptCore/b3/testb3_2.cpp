@@ -25,7 +25,6 @@
 
 #include "config.h"
 #include "testb3.h"
-#include <array>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
@@ -3696,10 +3695,10 @@ void testTernarySubInstructionSelection(B3::Opcode valueModifier, Type valueType
     unsigned numberOfSubInstructions = 0;
     for (auto instruction : *block) {
         if (instruction.kind.opcode == expectedOpcode) {
-            CHECK_EQ(instruction.args.size(), 3ul);
-            CHECK_EQ(instruction.args[0].kind(), Air::Arg::Tmp);
-            CHECK_EQ(instruction.args[1].kind(), Air::Arg::Tmp);
-            CHECK_EQ(instruction.args[2].kind(), Air::Arg::Tmp);
+            CHECK_EQ(instruction.args().size(), 3ul);
+            CHECK_EQ(instruction.args()[0].kind(), Air::Arg::Tmp);
+            CHECK_EQ(instruction.args()[1].kind(), Air::Arg::Tmp);
+            CHECK_EQ(instruction.args()[2].kind(), Air::Arg::Tmp);
             numberOfSubInstructions++;
         }
     }

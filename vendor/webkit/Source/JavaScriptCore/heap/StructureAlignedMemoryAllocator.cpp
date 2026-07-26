@@ -32,7 +32,11 @@
 #include "StructureID.h"
 #include <bmalloc/bmalloc.h>
 #include <wtf/BitVector.h>
+#include <wtf/RAMSize.h>
 
+#if OS(DARWIN)
+#include <wtf/cocoa/Entitlements.h>
+#endif
 #if CPU(ADDRESS64)
 #include <wtf/NeverDestroyed.h>
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
@@ -41,23 +45,20 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include <bmalloc/bmalloc_heap_config.h>
 #include <bmalloc/bmalloc_heap_inlines.h>
 #include <bmalloc/bmalloc_heap_ref.h>
-#include <bmalloc/pas_page_sharing_pool.h>
 #include <bmalloc/pas_primitive_heap_ref.h>
-#include <bmalloc/pas_probabilistic_guard_malloc_allocator.h>
-#include <bmalloc/pas_scavenger.h>
-#include <bmalloc/pas_thread_local_cache.h>
 #elif USE(MIMALLOC)
 #include <bmalloc/mimalloc.h>
-#include <mimalloc/types.h>
+#if OS(LINUX)
+#include <sys/mman.h>
+#include <errno.h>
+#elif OS(DARWIN)
+#include <mach/mach.h>
+#endif
 #endif
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 #endif
 
 #include <wtf/OSAllocator.h>
-
-#if OS(UNIX) && ASSERT_ENABLED
-#include <sys/mman.h>
-#endif
 
 namespace JSC {
 
@@ -103,9 +104,9 @@ class StructureMemoryManager {
 public:
     StructureMemoryManager()
     {
-        uintptr_t preferredStructureHeapSize = structureHeapAddressSize;
+        size_t preferredStructureHeapSize = computePreferredStructureHeapReservationSize();
         if (Options::structureHeapSizeInKB())
-            preferredStructureHeapSize = static_cast<uintptr_t>(Options::structureHeapSizeInKB()) * KB;
+            preferredStructureHeapSize = static_cast<size_t>(Options::structureHeapSizeInKB()) * KB;
         RELEASE_ASSERT(hasOneBitSet(preferredStructureHeapSize));
 
         uintptr_t mappedHeapSize = preferredStructureHeapSize;
@@ -130,7 +131,7 @@ public:
         m_useSystemHeap = !bmalloc::api::isEnabled();
 #if USE(LIBPAS)
         if (!m_useSystemHeap) [[likely]] {
-#if OS(WINDOWS) || PLATFORM(PLAYSTATION)
+#if PLATFORM(PLAYSTATION)
             // libpas isn't calling pas_page_malloc commit, so we've got to commit the region ourselves
             // https://bugs.webkit.org/show_bug.cgi?id=292771
             OSAllocator::commit((void *) g_jscConfig.startOfStructureHeap, MarkedBlock::blockSize, true, false);
@@ -140,10 +141,24 @@ public:
         }
         m_usedBlocks.set(0);
 #elif USE(MIMALLOC)
-        void* memory = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(g_jscConfig.startOfStructureHeap) + MarkedBlock::blockSize);
-        size_t size = g_jscConfig.sizeOfStructureHeap - MarkedBlock::blockSize;
-        RELEASE_ASSERT(mi_manage_os_memory_ex(memory, size, false, false, false, -1, true, &structureArena));
-        structureHeap = mi_heap_new_in_arena(structureArena);
+        if (!m_useSystemHeap) [[likely]] {
+            void* memory = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(g_jscConfig.startOfStructureHeap) + MarkedBlock::blockSize);
+            size_t size = g_jscConfig.sizeOfStructureHeap - MarkedBlock::blockSize;
+            RELEASE_ASSERT(mi_manage_os_memory_ex(memory, size, false, false, false, -1, true, &structureArena));
+            structureHeap = mi_heap_new_in_arena(structureArena);
+#if OS(LINUX) && defined(MADV_DOFORK)
+            // Undo tryReserveUncommittedAligned's MADV_DONTFORK: mimalloc stores
+            // mi_arena_t and theaps inside this region and registers them in
+            // process-wide lists that _mi_process_fork_child walks pre-exec.
+            while (madvise(reinterpret_cast<void*>(g_jscConfig.startOfStructureHeap), g_jscConfig.sizeOfStructureHeap, MADV_DOFORK) == -1 && errno == EAGAIN) { }
+#elif OS(DARWIN)
+            // Undo tryReserveUncommittedAligned's mach_vm_map(..., VM_INHERIT_NONE);
+            // same rationale as the Linux MADV_DOFORK branch above.
+            vm_inherit(mach_task_self(), static_cast<vm_address_t>(g_jscConfig.startOfStructureHeap), static_cast<vm_size_t>(g_jscConfig.sizeOfStructureHeap), VM_INHERIT_COPY);
+#endif
+            return;
+        }
+        m_usedBlocks.set(0);
 #else
         m_usedBlocks.set(0);
 #endif
@@ -155,7 +170,7 @@ public:
 #if USE(LIBPAS)
             void* result = bmalloc_try_allocate_auxiliary_with_alignment_inline(&structureHeap, MarkedBlock::blockSize, MarkedBlock::blockSize, pas_always_compact_allocation_mode);
 
-#if OS(WINDOWS) || PLATFORM(PLAYSTATION)
+#if PLATFORM(PLAYSTATION)
             // libpas isn't calling pas_page_malloc commit, so we've got to commit the region ourselves
             // https://bugs.webkit.org/show_bug.cgi?id=292771
             OSAllocator::commit(result, MarkedBlock::blockSize, true, false);
@@ -172,7 +187,7 @@ public:
             constexpr size_t startIndex = 0;
             freeIndex = m_usedBlocks.findBit(startIndex, 0);
             ASSERT(freeIndex <= m_usedBlocks.bitCount());
-            RELEASE_ASSERT(g_jscConfig.sizeOfStructureHeap <= structureHeapAddressSize);
+            RELEASE_ASSERT(g_jscConfig.sizeOfStructureHeap <= computePreferredStructureHeapReservationSize());
             if (freeIndex * MarkedBlock::blockSize >= g_jscConfig.sizeOfStructureHeap)
                 return nullptr;
             // If we can't find a free block then `freeIndex == m_usedBlocks.bitCount()` and this set will grow the bit vector.
@@ -231,6 +246,11 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
     }
 
 private:
+    static size_t computePreferredStructureHeapReservationSize();
+
+    // The actual preferred size will be the next power-of-two below this value
+    // This value results in a 512MiB reservation on 3GiB devices, 1GiB on 4GiB
+    static constexpr size_t maximumPercentageOfPhysicalMemoryToReserveWhenVAConstrained = 20;
     Lock m_lock;
     bool m_useSystemHeap { true };
     BitVector m_usedBlocks;
@@ -253,6 +273,51 @@ void StructureAlignedMemoryAllocator::freeAlignedMemory(void* block)
 void StructureAlignedMemoryAllocator::initializeStructureAddressSpace()
 {
     s_structureMemoryManager.construct();
+}
+
+size_t StructureMemoryManager::computePreferredStructureHeapReservationSize()
+{
+    static size_t cachedSize;
+    static std::once_flag onceKey;
+    std::call_once(onceKey, [] {
+        size_t baseSize { 0 };
+#if PLATFORM(PLAYSTATION) || OS(QNX)
+        baseSize = 128 * MB;
+#elif (PLATFORM(IOS_FAMILY) && !CPU(ARM64E)) || PLATFORM(WATCHOS) || PLATFORM(APPLETV)
+        baseSize = 512 * MB;
+#elif PLATFORM(IOS_FAMILY)
+        baseSize = 2 * GB;
+#else
+        baseSize = 4 * GB;
+#endif
+
+#if PLATFORM(IOS_FAMILY)
+        // For larger reservation sizes, its backing mapping can
+        // monopolize a significant fraction of all virtual memory.
+        // Preferably, we only want to do so when we have reason to expect that
+        // this reservation may actually be utilized. On systems with relatively
+        // little physical memory available vs. the size of the reservation, we
+        // should thus reserve less virtual memory to not waste it unnecessarily.
+
+        size_t physicalMemorySize = WTF::ramSizeDisregardingJetsamLimit();
+        RELEASE_ASSERT(physicalMemorySize);
+
+        bool isVaConstrained = !WTF::processHasEntitlement("com.apple.developer.kernel.extended-virtual-addressing");
+        if (isVaConstrained) {
+            size_t sizeBoundedByPhysicalMemory = std::min(baseSize, (physicalMemorySize * maximumPercentageOfPhysicalMemoryToReserveWhenVAConstrained) / 100);
+            RELEASE_ASSERT(sizeBoundedByPhysicalMemory);
+            cachedSize = std::bit_floor(sizeBoundedByPhysicalMemory);
+        } else
+            cachedSize = std::bit_floor(baseSize);
+#else
+        cachedSize = baseSize;
+#endif
+
+#if CPU(ADDRESS64)
+        RELEASE_ASSERT(cachedSize - 1 <= StructureID::structureIDMask, "StructureID relies on only the lower 32 bits of Structure addresses varying");
+#endif
+    });
+    return cachedSize;
 }
 
 #else // not CPU(ADDRESS64)

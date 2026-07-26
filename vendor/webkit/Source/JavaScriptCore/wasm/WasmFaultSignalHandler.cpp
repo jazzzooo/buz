@@ -41,7 +41,6 @@
 #include "WasmMemory.h"
 #include "WasmThunks.h"
 #include <wtf/CodePtr.h>
-#include <wtf/HashSet.h>
 #include <wtf/Lock.h>
 #include <wtf/threads/Signals.h>
 

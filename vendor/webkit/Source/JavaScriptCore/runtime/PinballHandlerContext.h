@@ -71,6 +71,8 @@ public:
     // The following fields are only used for handling rejections.
     JSCallee* zombieFrameCallee;
     Exception* exception;
+    // Set to non-zero by assembly when stack overflow is detected during slice implantation.
+    size_t stackOverflowDetected { 0 };
 };
 
 } // namespace JSC

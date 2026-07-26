@@ -54,7 +54,7 @@ public:
     virtual void dump(PrintStream&) const { }
 };
 
-class StringFireDetail final : public FireDetail {
+class JS_EXPORT_PRIVATE StringFireDetail final : public FireDetail {
 public:
     StringFireDetail(const char* string)
         : m_string(string)
@@ -64,6 +64,8 @@ public:
     void dump(PrintStream& out) const final;
 
 private:
+    explicit StringFireDetail(ClangVTableWorkaroundTag);
+
     const char* m_string;
 };
 

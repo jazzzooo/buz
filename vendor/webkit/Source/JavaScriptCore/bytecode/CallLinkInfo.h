@@ -36,7 +36,6 @@
 #include "PolymorphicCallStubRoutine.h"
 #include "WriteBarrier.h"
 #include <wtf/ScopedLambda.h>
-#include <wtf/SentinelLinkedList.h>
 
 namespace JSC {
 namespace DFG {
