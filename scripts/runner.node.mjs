@@ -70,6 +70,13 @@ const spawnBunTimeout = 20_000; // when running with ASAN/LSAN bun can take a bi
 const testTimeout = 3 * 60_000;
 const integrationTimeout = 5 * 60_000;
 
+const resolutionGatingFlags = new Set([
+  "--expose-internals",
+  "--experimental-quic",
+  "--experimental-stream-iter",
+  "--no-warnings",
+]);
+
 const nodeParallelTestTimeout = 60_000;
 
 process.on("SIGTRAP", () => {
@@ -684,17 +691,43 @@ async function runTests() {
       const title = relative(cwd, absoluteTestPath).replaceAll(sep, "/");
       if (isNodeTest(testPath)) {
         const testContent = readFileSync(absoluteTestPath, "utf-8");
+        // Only forward flags that affect whether the test can resolve the APIs
+        // it is exercising; Node-specific runtime flags are not generally valid.
+        const flagsMatch = /^\/\/ Flags:[^\S\r\n]+(--[^\r\n]*)$/m.exec(testContent);
+        const testFlags = flagsMatch
+          ? flagsMatch[1].split(/\s+/).filter(flag => resolutionGatingFlags.has(flag.split("=")[0]))
+          : [];
         let runWithBunTest = title.includes("needs-test") || testContent.includes("node:test");
         // don't wanna have a filter for includes("bun:test") but these need our mocks
         runWithBunTest ||= title === "test/js/node/test/parallel/test-fs-append-file-flush.js";
         runWithBunTest ||= title === "test/js/node/test/parallel/test-fs-write-file-flush.js";
         runWithBunTest ||= title === "test/js/node/test/parallel/test-fs-write-stream-flush.js";
+        // A file that only drives node:test run() must execute as a script;
+        // registrations guarded by NODE_TEST_CONTEXT belong to its children.
+        const importsRun =
+          /\brun\b[^\n]*=\s*require\(['"]node:test['"]\)/.test(testContent) ||
+          /import\s*{[^}]*\brun\b[^}]*}\s*from\s*['"]node:test['"]/.test(testContent);
+        const registersAtColumnZero = /^(?:test|it|describe|suite)\s*[.(]/m.test(testContent);
+        const registersTests = /(?:^|[^.\w])(?:test|it|describe|suite)\s*[.(]/m.test(testContent);
+        const guardsOnTestContext = testContent.includes("NODE_TEST_CONTEXT");
+        const isRunDriver = importsRun && !registersAtColumnZero && (!registersTests || guardsOnTestContext);
+        if (isRunDriver && !title.includes("needs-test")) runWithBunTest = false;
         const subcommand = runWithBunTest ? "test" : "run";
         const env = {
           FORCE_COLOR: "0",
           NO_COLOR: "1",
           BUN_DEBUG_QUIET_LOGS: "1",
+          // Node tests expect exit handlers and other queued work to drain.
+          BUN_TEST_DRAIN_EVENT_LOOP: "1",
         };
+        if (title.includes("test-util-styletext")) {
+          // These tests exercise color detection itself.
+          env.FORCE_COLOR = undefined;
+          env.NO_COLOR = undefined;
+          env.NODE_DISABLE_COLORS = undefined;
+          env.CI = undefined;
+          env.TERM = "xterm-256color";
+        }
         if (!isWindows && title.includes("/sequential/")) {
           // Sequential node tests share common.PORT (12346); a cluster worker
           // or child_process subprocess that outlives its test can keep that
@@ -720,7 +753,12 @@ async function runTests() {
           async index => {
             const { ok, error, stdout, crashes } = await spawnBun(execPath, {
               cwd: cwd,
-              args: [subcommand, "--config=" + join(import.meta.dirname, "../bunfig.node-test.toml"), absoluteTestPath],
+              args: [
+                subcommand,
+                "--config=" + join(import.meta.dirname, "../bunfig.node-test.toml"),
+                ...(subcommand === "run" ? testFlags : []),
+                absoluteTestPath,
+              ],
               timeout: nodeParallelTestTimeout,
               env: {
                 ...env,
@@ -1276,6 +1314,7 @@ async function spawnBun(execPath, { command, args, cwd, timeout, env, stdout, st
     TMPDIR: tmpdirPath,
     BUN_TMPDIR: tmpdirPath,
     USER: username,
+    USERNAME: isWindows ? username : undefined, // %USERNAME% for ported Windows tests
     HOME: homedir,
     SHELL: shellPath,
     FORCE_COLOR: "1",

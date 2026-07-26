@@ -197,6 +197,11 @@ export const bindgen = $zig("bindgen_test.zig", "getBindgenTestFunctions") as {
 
 export const noOpForTesting = $cpp("NoOpForTesting.cpp", "createNoOpForTesting");
 export const Dequeue = require("internal/fifo");
+export const linearFifoOrderedRemoveProbe: (scenario: 0 | 1) => number[] = $newZigFunction(
+  "runtime/linear_fifo_testing.zig",
+  "linearFifoOrderedRemoveProbe",
+  1,
+);
 
 export const fs = require("node:fs/promises").$data;
 
