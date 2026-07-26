@@ -800,7 +800,7 @@ pub const ShellSubprocess = struct {
             for (&spawn_args.stdio) |*s| s.deinit();
         };
 
-        const no_sigpipe = if (shellio.stdout) |iowriter| !iowriter.flags.is_socket else true;
+        const no_sigpipe = if (shellio.stdout) |iowriter| !iowriter.options.child_sigpipe else true;
 
         // Hoist asSpawnOption results so a later one failing doesn't strand an earlier
         // Windows *uv.Pipe in an unbound temporary inside the struct initializer.

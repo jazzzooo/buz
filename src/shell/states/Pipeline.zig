@@ -318,8 +318,7 @@ fn writePipe(pipes: []Pipe, proc_idx: usize, cmd_count: usize, io: *IO, evtloop:
     return .{
         .fd = .{
             .writer = IOWriter.init(pipes[proc_idx][1], .{
-                .pollable = true,
-                .is_socket = bun.Environment.isPosix,
+                .child_sigpipe = bun.Environment.isPosix,
             }, evtloop),
         },
     };

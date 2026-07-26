@@ -158,18 +158,12 @@ pub const Writable = union(enum) {
             }
         }
 
-        if (comptime Environment.isPosix) {
-            if (stdio.* == .pipe) {
-                _ = bun.sys.setNonblocking(result.?);
-            }
-        }
-
         switch (stdio.*) {
             .dup2 => @panic("TODO dup2 stdio"),
             .pipe, .readable_stream => {
-                const pipe = jsc.WebCore.FileSink.create(event_loop, result.?);
+                const pipe = jsc.WebCore.FileSink.create(event_loop);
 
-                switch (pipe.writer.start(pipe.fd, true)) {
+                switch (pipe.writer.start(result.?, .{})) {
                     .result => {},
                     .err => |err| {
                         _ = err; // autofix
@@ -181,8 +175,6 @@ pub const Writable = union(enum) {
                         return error.UnexpectedCreatingStdin;
                     },
                 }
-
-                pipe.writer.handle.poll.flags.insert(.socket);
 
                 subprocess.weak_file_sink_stdin_ptr = pipe;
                 subprocess.ref();

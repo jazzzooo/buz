@@ -1,5 +1,133 @@
 const log = bun.Output.scoped(.PipeWriter, .hidden);
 
+pub const WriterStartOptions = struct {
+    force_sync: bool = false,
+    tty_mode: TTYMode = .evented,
+    ofd_ownership: Ownership = .shared,
+
+    pub const TTYMode = enum {
+        evented,
+        blocking,
+        synchronous,
+    };
+
+    pub const Ownership = enum {
+        shared,
+        /// The caller guarantees that no descriptor alias can mutate this OFD's status flags.
+        exclusive,
+    };
+};
+
+const PosixDescriptor = struct {
+    const posix_min_pipe_buf = 512;
+
+    kind: Kind = .file,
+    known_nonblocking: bool = false,
+
+    const Kind = enum {
+        file,
+        fifo,
+        socket,
+        tty,
+    };
+
+    fn init(fd: bun.FD, options: WriterStartOptions) bun.sys.Maybe(PosixDescriptor) {
+        const stat = switch (bun.sys.fstat(fd)) {
+            .result => |stat| stat,
+            .err => |err| return .{ .err = err },
+        };
+        const mode: bun.Mode = @intCast(stat.mode);
+        const kind: Kind = if (bun.S.ISSOCK(mode))
+            .socket
+        else if (bun.S.ISFIFO(mode))
+            .fifo
+        else if (bun.S.ISCHR(mode) and bun.sys.isatty(fd))
+            .tty
+        else
+            .file;
+
+        const flags = switch (bun.sys.getFcntlFlags(fd)) {
+            .result => |flags| flags,
+            .err => |err| return .{ .err = err },
+        };
+        var nonblocking = (flags & @as(@TypeOf(flags), bun.O.NONBLOCK)) != 0;
+        const force_sync = options.force_sync or (kind == .tty and options.tty_mode == .synchronous);
+        const exclusive = options.ofd_ownership == .exclusive;
+
+        if (force_sync or (kind == .tty and options.tty_mode == .blocking)) {
+            if (nonblocking and bun.sys.updateNonblocking(fd, false) == .result) {
+                nonblocking = false;
+            }
+        } else if (exclusive and kind != .file and !nonblocking) {
+            if (bun.sys.setNonblocking(fd) == .result) {
+                nonblocking = true;
+            }
+        }
+
+        return .{ .result = .{
+            .kind = kind,
+            .known_nonblocking = exclusive and nonblocking,
+        } };
+    }
+
+    fn forceSync(this: PosixDescriptor, options: WriterStartOptions) bool {
+        return options.force_sync or (this.kind == .tty and options.tty_mode == .synchronous);
+    }
+
+    fn fileType(this: PosixDescriptor) FileType {
+        return switch (this.kind) {
+            // MSG_DONTWAIT can block on macOS when the socket's OFD is blocking.
+            .socket => if (!Environment.isMac or this.known_nonblocking) .socket else .pipe,
+            .fifo, .tty => if (this.known_nonblocking) .nonblocking_pipe else .pipe,
+            .file => .file,
+        };
+    }
+
+    fn write(this: PosixDescriptor, fd: bun.FD, force_sync: bool, buf: []const u8) bun.sys.Maybe(usize) {
+        if (force_sync) return bun.sys.write(fd, buf);
+
+        return switch (this.kind) {
+            .file => bun.sys.write(fd, buf),
+            .socket => if (!Environment.isMac or this.known_nonblocking)
+                bun.sys.sendNonBlock(fd, buf)
+            else
+                writeAfterPoll(fd, buf),
+            .fifo => if (this.known_nonblocking)
+                bun.sys.write(fd, buf)
+            else
+                writeAfterPoll(fd, buf[0..@min(buf.len, posix_min_pipe_buf)]),
+            .tty => if (this.known_nonblocking)
+                bun.sys.write(fd, buf)
+            else
+                writeAfterPoll(fd, buf),
+        };
+    }
+
+    fn writeAfterPoll(fd: bun.FD, buf: []const u8) bun.sys.Maybe(usize) {
+        return switch (bun.isWritable(fd)) {
+            .ready, .hup => bun.sys.write(fd, buf),
+            .not_ready => .{ .err = bun.sys.Error.retry },
+        };
+    }
+
+    fn isPollable(this: PosixDescriptor) bool {
+        return this.kind != .file;
+    }
+
+    fn requiresPoll(this: PosixDescriptor) bool {
+        return this.kind == .fifo or this.kind == .socket;
+    }
+
+    fn configurePoll(this: PosixDescriptor, poll: *Async.FilePoll) void {
+        if (this.known_nonblocking) poll.flags.insert(.nonblocking);
+        if (this.fileType() == .socket) {
+            poll.flags.insert(.socket);
+        } else if (this.isPollable()) {
+            poll.flags.insert(.fifo);
+        }
+    }
+};
+
 pub const WriteResult = union(enum) {
     done: usize,
     wrote: usize,
@@ -17,8 +145,8 @@ pub fn PosixPipeWriter(
     comptime This: type,
     // Originally this was the comptime vtable struct like the below
     // But that caused a Zig compiler segfault as of 0.12.0-dev.1604+caae40c21
-    comptime getFd: fn (*This) bun.FD,
     comptime getBuffer: fn (*This) []const u8,
+    comptime write: fn (*This, bool, []const u8) bun.sys.Maybe(usize),
     comptime onWrite: fn (*This, written: usize, status: WriteStatus) void,
     comptime registerPoll: ?fn (*This) void,
     comptime onError: fn (*This, bun.sys.Error) void,
@@ -26,19 +154,11 @@ pub fn PosixPipeWriter(
     comptime getFileType: *const fn (*This) FileType,
 ) type {
     return struct {
-        fn tryWrite(this: *This, force_sync: bool, buf_: []const u8) WriteResult {
-            return switch (if (!force_sync) getFileType(this) else .file) {
-                inline else => |ft| return tryWriteWithWriteFn(this, buf_, comptime writeToFileType(ft)),
-            };
-        }
-
-        fn tryWriteWithWriteFn(this: *This, buf: []const u8, comptime write_fn: *const fn (bun.FD, []const u8) bun.sys.Maybe(usize)) WriteResult {
-            const fd = getFd(this);
-
+        fn tryWrite(this: *This, force_sync: bool, buf: []const u8) WriteResult {
             var offset: usize = 0;
 
             while (offset < buf.len) {
-                switch (write_fn(fd, buf[offset..])) {
+                switch (write(this, force_sync, buf[offset..])) {
                     .err => |err| {
                         if (err.isRetry()) {
                             return .{ .pending = offset };
@@ -61,27 +181,6 @@ pub fn PosixPipeWriter(
             }
 
             return .{ .wrote = offset };
-        }
-
-        fn writeToFileType(comptime file_type: FileType) *const (fn (bun.FD, []const u8) bun.sys.Maybe(usize)) {
-            comptime return switch (file_type) {
-                .nonblocking_pipe, .file => &bun.sys.write,
-                .pipe => &writeToBlockingPipe,
-                .socket => &bun.sys.sendNonBlock,
-            };
-        }
-
-        fn writeToBlockingPipe(fd: bun.FD, buf: []const u8) bun.sys.Maybe(usize) {
-            if (comptime bun.Environment.isLinux) {
-                if (bun.linux.RWFFlagSupport.isMaybeSupported()) {
-                    return bun.sys.writeNonblocking(fd, buf);
-                }
-            }
-
-            switch (bun.isWritable(fd)) {
-                .ready, .hup => return bun.sys.write(fd, buf),
-                .not_ready => return bun.sys.Maybe(usize){ .err = bun.sys.Error.retry },
-            }
         }
 
         pub fn onPoll(parent: *This, size_hint: isize, received_hup: bool) void {
@@ -180,11 +279,12 @@ pub fn PosixBufferedWriter(Parent: type, function_table: anytype) type {
         handle: PollOrFd = .{ .closed = {} },
         parent: *Parent = undefined,
         is_done: bool = false,
-        pollable: bool = false,
+        descriptor: PosixDescriptor = .{},
+        force_sync: bool = false,
         closed_without_reporting: bool = false,
         close_fd: bool = true,
 
-        const internals = PosixPipeWriter(@This(), getFd, getBufferInternal, _onWrite, registerPoll, _onError, _onWritable, getFileType);
+        const internals = PosixPipeWriter(@This(), getBufferInternal, writeOnce, _onWrite, waitForWritableAsync, _onError, _onWritable, getFileType);
         pub const onPoll = internals.onPoll;
         pub const drainBufferedData = internals.drainBufferedData;
 
@@ -201,13 +301,15 @@ pub fn PosixBufferedWriter(Parent: type, function_table: anytype) type {
         }
 
         pub fn getFileType(this: *const @This()) FileType {
-            const poll = getPoll(this) orelse return FileType.file;
-
-            return poll.fileType();
+            return this.descriptor.fileType();
         }
 
         pub fn getFd(this: *const PosixWriter) bun.FD {
             return this.handle.getFd();
+        }
+
+        fn writeOnce(this: *PosixWriter, force_sync: bool, buf: []const u8) bun.sys.Maybe(usize) {
+            return this.descriptor.write(this.getFd(), force_sync, buf);
         }
 
         fn _onError(
@@ -221,8 +323,8 @@ pub fn PosixBufferedWriter(Parent: type, function_table: anytype) type {
             this.close();
         }
 
-        pub fn getForceSync(_: *const @This()) bool {
-            return false;
+        pub fn getForceSync(this: *const @This()) bool {
+            return this.force_sync;
         }
 
         fn _onWrite(
@@ -253,16 +355,18 @@ pub fn PosixBufferedWriter(Parent: type, function_table: anytype) type {
             }
         }
 
-        pub fn registerPoll(this: *PosixWriter) void {
-            var poll = this.getPoll() orelse return;
-            // Use the event loop from the parent, not the global one
-            const loop = this.parent.eventLoop().loop();
-            switch (poll.registerWithFd(loop, .writable, .dispatch, poll.fd)) {
-                .err => |err| {
-                    onError(this.parent, err);
-                },
-                .result => {},
+        pub fn waitForWritable(this: *PosixWriter) bun.sys.Maybe(void) {
+            if (this.handle == .fd) {
+                const fd = this.handle.fd;
+                this.handle = .{ .poll = this.createPoll(fd) };
+                this.descriptor.configurePoll(this.handle.poll);
             }
+            const poll = this.getPoll() orelse return .success;
+            return poll.registerWithFd(this.parent.eventLoop().loop(), .writable, .dispatch, poll.fd);
+        }
+
+        fn waitForWritableAsync(this: *PosixWriter) void {
+            if (this.waitForWritable().asErr()) |err| this._onError(err);
         }
 
         pub fn hasRef(this: *PosixWriter) bool {
@@ -329,24 +433,24 @@ pub fn PosixBufferedWriter(Parent: type, function_table: anytype) type {
         }
 
         pub fn watch(this: *PosixWriter) void {
-            if (this.pollable) {
-                if (this.handle == .fd) {
-                    this.handle = .{ .poll = this.createPoll(this.getFd()) };
-                }
-
-                this.registerPoll();
-            }
+            this.waitForWritableAsync();
         }
 
-        pub fn start(this: *PosixWriter, rawfd: anytype, pollable: bool) bun.sys.Maybe(void) {
+        pub fn start(this: *PosixWriter, rawfd: anytype, options: WriterStartOptions) bun.sys.Maybe(void) {
             const FDType = @TypeOf(rawfd);
             const fd = switch (FDType) {
                 bun.FD => rawfd,
                 *bun.MovableIfWindowsFd, bun.MovableIfWindowsFd => rawfd.getPosix(),
                 else => @compileError("Expected `bun.FD`, `*bun.MovableIfWindowsFd` or `bun.MovableIfWindowsFd` but got: " ++ @typeName(rawfd)),
             };
-            this.pollable = pollable;
-            if (!pollable) {
+            var effective_options = options;
+            effective_options.force_sync = effective_options.force_sync or this.force_sync;
+            this.descriptor = switch (PosixDescriptor.init(fd, effective_options)) {
+                .result => |descriptor| descriptor,
+                .err => |err| return .{ .err = err },
+            };
+            this.force_sync = this.descriptor.forceSync(effective_options);
+            if (!this.descriptor.isPollable()) {
                 bun.assert(this.handle != .poll);
                 this.handle = .{ .fd = fd };
                 return .success;
@@ -355,10 +459,16 @@ pub fn PosixBufferedWriter(Parent: type, function_table: anytype) type {
                 this.handle = .{ .poll = this.createPoll(fd) };
                 break :brk this.handle.poll;
             };
+            this.descriptor.configurePoll(poll);
             const loop = @as(*Parent, @ptrCast(this.parent)).eventLoop().loop();
 
             switch (poll.registerWithFd(loop, .writable, .dispatch, fd)) {
                 .err => |err| {
+                    this.handle.closeImpl(null, {}, false);
+                    if (!this.descriptor.requiresPoll()) {
+                        this.handle = .{ .fd = fd };
+                        return .success;
+                    }
                     return .initErr(err);
                 },
                 .result => {
@@ -387,13 +497,24 @@ pub fn PosixStreamingWriter(comptime Parent: type, comptime function_table: anyt
         is_done: bool = false,
         closed_without_reporting: bool = false,
         force_sync: bool = false,
+        descriptor: PosixDescriptor = .{},
 
-        const internals = PosixPipeWriter(@This(), getFd, getBuffer, _onWrite, registerPoll, _onError, _onWritable, getFileType);
+        const internals = PosixPipeWriter(@This(), getBuffer, writeOnce, _onWrite, waitForWritableAsync, _onError, _onWritable, getFileType);
         pub const onPoll = internals.onPoll;
         pub const drainBufferedData = internals.drainBufferedData;
 
         pub fn getForceSync(this: *const @This()) bool {
             return this.force_sync;
+        }
+
+        pub fn makeSynchronous(this: *PosixWriter) void {
+            this.force_sync = true;
+            const fd = this.getFd();
+            if (fd == bun.invalid_fd) return;
+            if (bun.sys.updateNonblocking(fd, false) == .result) {
+                this.descriptor.known_nonblocking = false;
+                if (this.getPoll()) |poll| poll.flags.remove(.nonblocking);
+            }
         }
 
         // TODO: configurable?
@@ -411,10 +532,12 @@ pub fn PosixStreamingWriter(comptime Parent: type, comptime function_table: anyt
             return this.handle.getFd();
         }
 
-        pub fn getFileType(this: *PosixWriter) FileType {
-            const poll = this.getPoll() orelse return FileType.file;
+        fn writeOnce(this: *PosixWriter, force_sync: bool, buf: []const u8) bun.sys.Maybe(usize) {
+            return this.descriptor.write(this.getFd(), force_sync, buf);
+        }
 
-            return poll.fileType();
+        pub fn getFileType(this: *PosixWriter) FileType {
+            return this.descriptor.fileType();
         }
 
         pub fn hasPendingData(this: *const PosixWriter) bool {
@@ -494,13 +617,21 @@ pub fn PosixStreamingWriter(comptime Parent: type, comptime function_table: anyt
 
         fn registerPoll(this: *PosixWriter) void {
             const poll = this.getPoll() orelse return;
-            switch (poll.registerWithFd(this.parent.loop(), .writable, .dispatch, poll.fd)) {
-                .err => |err| {
-                    onError(this.parent, err);
-                    this.close();
-                },
-                .result => {},
+            if (poll.registerWithFd(this.parent.loop(), .writable, .dispatch, poll.fd).asErr()) |err| this._onError(err);
+        }
+
+        fn waitForWritable(this: *PosixWriter) bun.sys.Maybe(void) {
+            if (this.handle == .fd) {
+                const fd = this.handle.fd;
+                this.handle = .{ .poll = Async.FilePoll.init(this.parent.eventLoop(), fd, .{}, PosixWriter, this) };
+                this.descriptor.configurePoll(this.handle.poll);
             }
+            const poll = this.getPoll() orelse return .success;
+            return poll.registerWithFd(this.parent.loop(), .writable, .dispatch, poll.fd);
+        }
+
+        fn waitForWritableAsync(this: *PosixWriter) void {
+            if (this.waitForWritable().asErr()) |err| this._onError(err);
         }
 
         pub fn writeUTF16(this: *PosixWriter, buf: []const u16) WriteResult {
@@ -566,7 +697,7 @@ pub fn PosixStreamingWriter(comptime Parent: type, comptime function_table: anyt
                     } else {
                         this.outgoing.wrote(amt);
                         onWrite(this.parent, amt, .pending);
-                        registerPoll(this);
+                        if (this.waitForWritable().asErr()) |err| return .{ .err = err };
                         return .{ .pending = amt };
                     }
                 },
@@ -577,7 +708,7 @@ pub fn PosixStreamingWriter(comptime Parent: type, comptime function_table: anyt
                 .pending => |amt| {
                     this.outgoing.wrote(amt);
                     onWrite(this.parent, amt, .pending);
-                    registerPoll(this);
+                    if (this.waitForWritable().asErr()) |err| return .{ .err = err };
                 },
 
                 else => |r| return r,
@@ -626,7 +757,7 @@ pub fn PosixStreamingWriter(comptime Parent: type, comptime function_table: anyt
                         return .{ .err = bun.sys.Error.oom };
                     };
                     onWrite(this.parent, amt, .pending);
-                    registerPoll(this);
+                    if (this.waitForWritable().asErr()) |err| return .{ .err = err };
                 },
                 .wrote => |amt| {
                     if (amt < buf.len) {
@@ -634,7 +765,7 @@ pub fn PosixStreamingWriter(comptime Parent: type, comptime function_table: anyt
                             return .{ .err = bun.sys.Error.oom };
                         };
                         onWrite(this.parent, amt, .pending);
-                        registerPoll(this);
+                        if (this.waitForWritable().asErr()) |err| return .{ .err = err };
                     } else {
                         this.outgoing.reset();
                         onWrite(this.parent, amt, .drained);
@@ -676,6 +807,7 @@ pub fn PosixStreamingWriter(comptime Parent: type, comptime function_table: anyt
                     if (this.outgoing.isEmpty()) {
                         this.outgoing.reset();
                     }
+                    if (this.waitForWritable().asErr()) |err| return .{ .err = err };
                 },
                 .wrote => |written| {
                     this.outgoing.wrote(written);
@@ -740,9 +872,16 @@ pub fn PosixStreamingWriter(comptime Parent: type, comptime function_table: anyt
             this.handle.close(this.parent, onClose);
         }
 
-        pub fn start(this: *PosixWriter, fd: bun.FD, is_pollable: bool) bun.sys.Maybe(void) {
-            if (!is_pollable) {
-                this.close();
+        pub fn start(this: *PosixWriter, fd: bun.FD, options: WriterStartOptions) bun.sys.Maybe(void) {
+            var effective_options = options;
+            effective_options.force_sync = effective_options.force_sync or this.force_sync;
+            this.descriptor = switch (PosixDescriptor.init(fd, effective_options)) {
+                .result => |descriptor| descriptor,
+                .err => |err| return .{ .err = err },
+            };
+            this.force_sync = this.descriptor.forceSync(effective_options);
+
+            if (!this.descriptor.isPollable()) {
                 this.handle = .{ .fd = fd };
                 return .success;
             }
@@ -752,9 +891,15 @@ pub fn PosixStreamingWriter(comptime Parent: type, comptime function_table: anyt
                 this.handle = .{ .poll = Async.FilePoll.init(loop, fd, .{}, PosixWriter, this) };
                 break :brk this.handle.poll;
             };
+            this.descriptor.configurePoll(poll);
 
             switch (poll.registerWithFd(loop.loop(), .writable, .dispatch, fd)) {
                 .err => |err| {
+                    this.handle.closeImpl(null, {}, false);
+                    if (!this.descriptor.requiresPoll()) {
+                        this.handle = .{ .fd = fd };
+                        return .success;
+                    }
                     return bun.sys.Maybe(void){ .err = err };
                 },
                 .result => {},
@@ -878,7 +1023,7 @@ fn BaseWindowsPipeWriter(
             return this.startWithCurrentPipe();
         }
 
-        pub fn startSync(this: *WindowsPipeWriter, fd: bun.FD, _: bool) bun.sys.Maybe(void) {
+        pub fn startSync(this: *WindowsPipeWriter, fd: bun.FD) bun.sys.Maybe(void) {
             bun.assert(this.source == null);
             const source = Source{
                 .sync_file = Source.openFile(fd),
@@ -898,7 +1043,7 @@ fn BaseWindowsPipeWriter(
             return this.startWithCurrentPipe();
         }
 
-        pub fn start(this: *WindowsPipeWriter, rawfd: anytype, _: bool) bun.sys.Maybe(void) {
+        pub fn start(this: *WindowsPipeWriter, rawfd: anytype, options: WriterStartOptions) bun.sys.Maybe(void) {
             const FDType = @TypeOf(rawfd);
             const fd = switch (FDType) {
                 bun.FD => rawfd,
@@ -906,12 +1051,16 @@ fn BaseWindowsPipeWriter(
                 else => @compileError("Expected `bun.FD` or `*bun.MovableIfWindowsFd` but got: " ++ @typeName(rawfd)),
             };
             bun.assert(this.source == null);
+            if (options.force_sync) return this.startSync(fd);
             // Use the event loop from the parent, not the global one
             // This is critical for spawnSync to use its isolated loop
             const loop = this.parent.loop();
             const source = switch (Source.open(loop, fd)) {
                 .result => |source| source,
-                .err => |err| return .{ .err = err },
+                .err => |err| {
+                    if (err.getErrno() == .BADF) return this.startWithFile(fd);
+                    return .{ .err = err };
+                },
             };
             // Creating a uv_pipe/uv_tty takes ownership of the file descriptor
             // TODO: Change the type of the parameter and update all places to
@@ -1243,6 +1392,7 @@ pub fn WindowsStreamingWriter(comptime Parent: type, function_table: anytype) ty
         owns_fd: bool = true,
         parent: *Parent = undefined,
         is_done: bool = false,
+        force_sync: bool = false,
         // we use only one write_req, any queued data in outgoing will be flushed after this ends
         write_req: uv.uv_write_t = std.mem.zeroes(uv.uv_write_t),
         write_buffer: uv.uv_buf_t = uv.uv_buf_t.init(""),
@@ -1266,11 +1416,33 @@ pub fn WindowsStreamingWriter(comptime Parent: type, function_table: anytype) ty
         pub const setParent = internals.setParent;
         pub const watch = internals.watch;
         pub const startWithPipe = internals.startWithPipe;
-        pub const startSync = internals.startSync;
         pub const startWithFile = internals.startWithFile;
-        pub const start = internals.start;
         pub const setPipe = internals.setPipe;
         pub const getStream = internals.getStream;
+
+        pub fn startSync(this: *WindowsWriter, fd: bun.FD) bun.sys.Maybe(void) {
+            this.force_sync = true;
+            return internals.startSync(this, fd);
+        }
+
+        pub fn start(this: *WindowsWriter, rawfd: anytype, options: WriterStartOptions) bun.sys.Maybe(void) {
+            var effective_options = options;
+            effective_options.force_sync = effective_options.force_sync or this.force_sync;
+            return internals.start(this, rawfd, effective_options);
+        }
+
+        pub fn makeSynchronous(this: *WindowsWriter) void {
+            this.force_sync = true;
+            const source = this.source orelse return;
+            switch (source) {
+                .pipe => |pipe| _ = uv.uv_stream_set_blocking(@ptrCast(pipe), 1),
+                .tty => |tty| _ = uv.uv_stream_set_blocking(@ptrCast(tty), 1),
+                .file => |file| {
+                    if (file.canStart()) this.source = .{ .sync_file = file };
+                },
+                .sync_file => {},
+            }
+        }
 
         pub fn memoryCost(this: *const WindowsWriter) usize {
             return @sizeOf(@This()) + this.current_payload.memoryCost() + this.outgoing.memoryCost();

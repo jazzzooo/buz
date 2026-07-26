@@ -473,7 +473,6 @@ pub const FilePoll = struct {
 
         // What is the type of file descriptor?
         fifo,
-        tty,
 
         one_shot,
         needs_rearm,

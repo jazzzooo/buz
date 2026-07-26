@@ -39,7 +39,8 @@ concurrent_task: jsc.EventLoopTask,
 is_writing: bool = false,
 async_deinit: AsyncDeinitWriter = .{},
 started: bool = false,
-flags: Flags = .{},
+options: Options = .{},
+broken_pipe: bool = false,
 
 const debug = bun.Output.scoped(.IOWriter, .hidden);
 
@@ -76,15 +77,13 @@ pub fn memoryCost(this: *const IOWriter) usize {
     return cost;
 }
 
-pub const Flags = packed struct(u8) {
-    pollable: bool = false,
-    nonblocking: bool = false,
-    is_socket: bool = false,
-    broken_pipe: bool = false,
-    __unused: u4 = 0,
+pub const Options = struct {
+    tty_mode: bun.io.WriterStartOptions.TTYMode = .evented,
+    ofd_ownership: bun.io.WriterStartOptions.Ownership = .shared,
+    child_sigpipe: bool = false,
 };
 
-pub fn init(fd: bun.FD, flags: Flags, evtloop: jsc.EventLoopHandle) *IOWriter {
+pub fn init(fd: bun.FD, options: Options, evtloop: jsc.EventLoopHandle) *IOWriter {
     const this = bun.new(IOWriter, .{
         .ref_count = .init(),
         .fd = MovableIfWindowsFd.init(fd),
@@ -93,9 +92,9 @@ pub fn init(fd: bun.FD, flags: Flags, evtloop: jsc.EventLoopHandle) *IOWriter {
     });
 
     this.writer.parent = this;
-    this.flags = flags;
+    this.options = options;
 
-    debug("IOWriter(0x{x}, fd={f}) init flags={any}", .{ @intFromPtr(this), fd, flags });
+    debug("IOWriter(0x{x}, fd={f}) init options={any}", .{ @intFromPtr(this), fd, options });
 
     return this;
 }
@@ -103,69 +102,10 @@ pub fn init(fd: bun.FD, flags: Flags, evtloop: jsc.EventLoopHandle) *IOWriter {
 pub fn __start(this: *IOWriter) Maybe(void) {
     bun.assert(this.fd.isOwned());
     debug("IOWriter(0x{x}, fd={f}) __start()", .{ @intFromPtr(this), this.fd });
-    if (this.writer.start(&this.fd, this.flags.pollable).asErr()) |e_| {
-        const e: bun.sys.Error = e_;
-        if (bun.Environment.isPosix) {
-            // We get this if we pass in a file descriptor that is not
-            // pollable, for example a special character device like
-            // /dev/null. If so, restart with polling disabled.
-            //
-            // It's also possible on Linux for EINVAL to be returned
-            // when registering multiple writable/readable polls for the
-            // same file descriptor. The shell code here makes sure to
-            // _not_ run into that case, but it is possible.
-            if (e.getErrno() == .INVAL) {
-                debug("IOWriter(0x{x}, fd={f}) got EINVAL", .{ @intFromPtr(this), this.fd });
-                this.flags.pollable = false;
-                this.flags.nonblocking = false;
-                this.flags.is_socket = false;
-                if (this.writer.handle == .poll) this.writer.handle.closeImpl(null, {}, false);
-                this.writer.handle = .{ .closed = {} };
-                return __start(this);
-            }
-
-            if (bun.Environment.isLinux) {
-                // On linux regular files are not pollable and return EPERM,
-                // so restart if that's the case with polling disabled.
-                if (e.getErrno() == .PERM) {
-                    this.flags.pollable = false;
-                    this.flags.nonblocking = false;
-                    this.flags.is_socket = false;
-                    if (this.writer.handle == .poll) this.writer.handle.closeImpl(null, {}, false);
-                    this.writer.handle = .{ .closed = {} };
-                    return __start(this);
-                }
-            }
-        }
-
-        if (bun.Environment.isWindows) {
-            // This might happen if the file descriptor points to NUL.
-            // On Windows GetFileType(NUL) returns FILE_TYPE_CHAR, so
-            // `this.writer.start()` will try to open it as a tty with
-            // uv_tty_init, but this returns EBADF. As a workaround,
-            // we'll try opening the file descriptor as a file.
-            if (e.getErrno() == .BADF) {
-                this.flags.pollable = false;
-                this.flags.nonblocking = false;
-                this.flags.is_socket = false;
-                return this.writer.startWithFile(this.fd.get().?);
-            }
-        }
-        return .{ .err = e };
-    }
-    if (comptime bun.Environment.isPosix) {
-        if (this.flags.nonblocking) {
-            this.writer.getPoll().?.flags.insert(.nonblocking);
-        }
-
-        const sendto_MSG_NOWAIT_blocks = bun.Environment.isMac;
-
-        if (this.flags.is_socket and (!sendto_MSG_NOWAIT_blocks or this.flags.nonblocking)) {
-            this.writer.getPoll().?.flags.insert(.socket);
-        } else if (this.flags.pollable) {
-            this.writer.getPoll().?.flags.insert(.fifo);
-        }
-    }
+    if (this.writer.start(&this.fd, .{
+        .tty_mode = this.options.tty_mode,
+        .ofd_ownership = this.options.ofd_ownership,
+    }).asErr()) |err| return .{ .err = err };
 
     if (comptime bun.Environment.isWindows) {
         log("IOWriter(0x{x}, {f}) starting with source={s}", .{ @intFromPtr(this), this.fd, if (this.writer.source) |src| @tagName(src) else "no source lol" });
@@ -192,9 +132,6 @@ fn write(this: *IOWriter) enum {
     failed,
     is_actually_file,
 } {
-    if (bun.Environment.isPosix)
-        bun.assert(this.flags.pollable);
-
     if (!this.started) {
         log("IOWriter(0x{x}, fd={f}) starting", .{ @intFromPtr(this), this.fd });
         // Set before onError: the callback chain may deref to 0 and asyncDeinit's
@@ -209,7 +146,6 @@ fn write(this: *IOWriter) enum {
             // support polling for writeability and we should just
             // write to it
             if (this.writer.handle == .fd) {
-                bun.assert(!this.flags.pollable);
                 return .is_actually_file;
             }
             return .suspended;
@@ -228,14 +164,12 @@ fn write(this: *IOWriter) enum {
         return .suspended;
     }
 
+    if (this.writer.handle == .fd) return .is_actually_file;
     bun.assert(this.writer.handle == .poll);
     if (this.writer.handle.poll.isWatching()) return .suspended;
-    switch (this.writer.start(this.fd, this.flags.pollable)) {
-        .result => {},
-        .err => |err| {
-            this.onError(err);
-            return .failed;
-        },
+    if (this.writer.waitForWritable().asErr()) |err| {
+        this.failWriter(err);
+        return .failed;
     }
     return .suspended;
 }
@@ -305,60 +239,63 @@ pub fn skipDead(this: *IOWriter) void {
 }
 
 pub fn doFileWrite(this: *IOWriter) Yield {
-    assert(bun.Environment.isPosix);
-    assert(!this.flags.pollable);
-    assert(this.writer_idx < this.writers.len());
+    if (comptime bun.Environment.isPosix) {
+        assert(this.writer_idx < this.writers.len());
 
-    defer this.setWriting(false);
-    this.skipDead();
+        defer this.setWriting(false);
+        this.skipDead();
 
-    const child = this.writers.get(this.writer_idx);
-    assert(!child.isDead());
+        const child = this.writers.get(this.writer_idx);
+        assert(!child.isDead());
 
-    const buf = this.getBuffer();
-    assert(buf.len > 0);
+        const buf = this.getBuffer();
+        assert(buf.len > 0);
 
-    var done = false;
-    const writeResult = drainBufferedData(this, buf, std.math.maxInt(u32), false);
-    const amt = switch (writeResult) {
-        .done => |amt| amt: {
-            done = true;
-            break :amt amt;
-        },
-        // .wrote can be returned if an error was encountered but there we wrote
-        // some data before it happened. In that case, onError will also be
-        // called so we should just return.
-        .wrote => |amt| amt: {
-            if (this.err != null) return .done;
-            break :amt amt;
-        },
-        // This is returned when we hit EAGAIN which should not be the case
-        // when writing to files unless we opened the file with non-blocking
-        // mode
-        .pending => bun.unreachablePanic("drainBufferedData returning .pending in IOWriter.doFileWrite should not happen", .{}),
-        .err => |e| {
-            this.onError(e);
-            return .done;
-        },
-    };
-    if (child.bytelist) |bl| {
-        const written_slice = this.buf.items[this.total_bytes_written .. this.total_bytes_written + amt];
-        bun.handleOom(bl.appendSlice(bun.default_allocator, written_slice));
+        var pending = false;
+        const writeResult = this.writer.drainBufferedData(buf, std.math.maxInt(u32), false);
+        const amt = switch (writeResult) {
+            .done => |amt| amt,
+            // .wrote can be returned if an error was encountered but there we wrote
+            // some data before it happened. In that case, onError will also be
+            // called so we should just return.
+            .wrote => |amt| amt: {
+                if (this.err != null) return .done;
+                break :amt amt;
+            },
+            .pending => |amt| amt: {
+                pending = true;
+                break :amt amt;
+            },
+            .err => |e| {
+                this.failWriter(e);
+                return .done;
+            },
+        };
+        if (child.bytelist) |bl| {
+            const written_slice = this.buf.items[this.total_bytes_written .. this.total_bytes_written + amt];
+            bun.handleOom(bl.appendSlice(bun.default_allocator, written_slice));
+        }
+        this.total_bytes_written += amt;
+        child.written += amt;
+        if (pending) {
+            if (this.writer.waitForWritable().asErr()) |err| {
+                this.failWriter(err);
+                return .done;
+            }
+            return .suspended;
+        }
+        if (!child.wroteEverything()) {
+            bun.assert(writeResult == .done);
+            // This should never happen if we are here. The only case where we get
+            // partial writes is when an error is encountered
+            bun.unreachablePanic("IOWriter.doFileWrite: child.wroteEverything() is false. This is unexpected behavior and indicates a bug in Bun. Please file a GitHub issue.", .{});
+        }
+        return this.bump(child);
     }
-    this.total_bytes_written += amt;
-    child.written += amt;
-    if (!child.wroteEverything()) {
-        bun.assert(writeResult == .done);
-        // This should never happen if we are here. The only case where we get
-        // partial writes is when an error is encountered
-        bun.unreachablePanic("IOWriter.doFileWrite: child.wroteEverything() is false. This is unexpected behavior and indicates a bug in Bun. Please file a GitHub issue.", .{});
-    }
-    return this.bump(child);
+    unreachable;
 }
 
 pub fn onWritePollable(this: *IOWriter, amount: usize, status: bun.io.WriteStatus) void {
-    if (bun.Environment.isPosix) bun.assert(this.flags.pollable);
-
     this.setWriting(false);
     debug("IOWriter(0x{x}, fd={f}) onWrite({d}, {})", .{ @intFromPtr(this), this.fd, amount, status });
     if (this.writer_idx >= this.writers.len()) return;
@@ -396,7 +333,7 @@ pub fn onWritePollable(this: *IOWriter, amount: usize, status: bun.io.WriteStatu
             //
             // So for a quick hack we're just going to have all writes return an error.
             bun.Output.debugWarn("IOWriter(0x{x}, fd={f}) received done without fully writing data", .{ @intFromPtr(this), this.fd });
-            this.flags.broken_pipe = true;
+            this.broken_pipe = true;
             this.brokenPipeForWriters();
             return;
         }
@@ -416,13 +353,13 @@ pub fn onWritePollable(this: *IOWriter, amount: usize, status: bun.io.WriteStatu
             this.writer.write();
         } else {
             bun.assert(this.writer.handle == .poll);
-            this.writer.registerPoll();
+            if (this.writer.waitForWritable().asErr()) |err| this.failWriter(err);
         }
     }
 }
 
 pub fn brokenPipeForWriters(this: *IOWriter) void {
-    bun.assert(this.flags.broken_pipe);
+    bun.assert(this.broken_pipe);
     var offset: usize = 0;
     const writers = this.writers.sliceMutable()[this.writer_idx..];
     for (writers) |*w| {
@@ -457,7 +394,7 @@ pub fn onError(this: *IOWriter, err__: bun.sys.Error) void {
     this.err = ee;
     // Track broken pipe state for future enqueue calls
     if (err__.getErrno() == .PIPE) {
-        this.flags.broken_pipe = true;
+        this.broken_pipe = true;
     }
     log("IOWriter(0x{x}, fd={f}) onError errno={s} errmsg={f} errsyscall={f}", .{ @intFromPtr(this), this.fd, @tagName(ee.getErrno()), ee.message, ee.syscall });
     var seen_alloc_buffer: [64]usize = undefined;
@@ -491,6 +428,11 @@ pub fn onError(this: *IOWriter, err__: bun.sys.Error) void {
     this.writer_idx = 0;
     this.buf.clearRetainingCapacity();
     this.writers.clearRetainingCapacity();
+}
+
+fn failWriter(this: *IOWriter, err: bun.sys.Error) void {
+    this.onError(err);
+    this.writer.close();
 }
 
 /// Returns the buffer of data that needs to be written
@@ -588,11 +530,6 @@ fn enqueueFile(this: *IOWriter) Yield {
     if (this.is_writing) {
         return .suspended;
     }
-    // The pollable path sets `started` in write(); the non-pollable file path bypasses
-    // write() entirely, so set it here. asyncDeinit's never-started fast-path must not
-    // fire for a writer that actually wrote — bump()'s onIOWriterChunk callback can deref
-    // us while doFileWrite is still on the stack.
-    this.started = true;
     this.setWriting(true);
 
     return this.doFileWrite();
@@ -602,8 +539,7 @@ fn enqueueFile(this: *IOWriter) Yield {
 ///
 /// You MUST have already added the data to `this.buf`!!
 pub fn enqueueInternal(this: *IOWriter) Yield {
-    bun.assert(!this.flags.broken_pipe);
-    if (!this.flags.pollable and bun.Environment.isPosix) return this.enqueueFile();
+    bun.assert(!this.broken_pipe);
     switch (this.write()) {
         .suspended => return .suspended,
         .is_actually_file => {
@@ -616,7 +552,7 @@ pub fn enqueueInternal(this: *IOWriter) Yield {
 }
 
 pub fn handleBrokenPipe(this: *IOWriter, ptr: ChildPtr) ?Yield {
-    if (this.flags.broken_pipe) {
+    if (this.broken_pipe) {
         const err: jsc.SystemError = bun.sys.Error.fromCode(.PIPE, .write).toSystemError();
         log("IOWriter(0x{x}, fd={f}) broken pipe {s}(0x{x})", .{ @intFromPtr(this), this.fd, @tagName(ptr.ptr.tag()), @intFromPtr(ptr.ptr.ptr()) });
         return .{ .on_io_writer_chunk = .{ .child = ptr.asAnyOpaque(), .written = 0, .err = err } };
@@ -789,70 +725,6 @@ pub const ChildPtrRaw = bun.TaggedPointerUnion(.{
     Interpreter.Builtin.Cp.ShellCpOutputTask,
     shell.subproc.PipeReader.CapturedWriter,
 });
-
-/// TODO: This function and `drainBufferedData` are copy pastes from
-/// `PipeWriter.zig`, it would be nice to not have to do that
-fn tryWriteWithWriteFn(fd: bun.FD, buf: []const u8, comptime write_fn: *const fn (bun.FD, []const u8) bun.sys.Maybe(usize)) bun.io.WriteResult {
-    var offset: usize = 0;
-
-    while (offset < buf.len) {
-        switch (write_fn(fd, buf[offset..])) {
-            .err => |err| {
-                if (err.isRetry()) {
-                    return .{ .pending = offset };
-                }
-
-                // Return EPIPE as an error so it propagates properly.
-                return .{ .err = err };
-            },
-
-            .result => |wrote| {
-                offset += wrote;
-                if (wrote == 0) {
-                    return .{ .done = offset };
-                }
-            },
-        }
-    }
-
-    return .{ .wrote = offset };
-}
-
-pub fn drainBufferedData(parent: *IOWriter, buf: []const u8, max_write_size: usize, received_hup: bool) bun.io.WriteResult {
-    bun.assert(bun.Environment.isPosix);
-    _ = received_hup;
-
-    const trimmed = if (max_write_size < buf.len and max_write_size > 0) buf[0..max_write_size] else buf;
-
-    var drained: usize = 0;
-
-    while (drained < trimmed.len) {
-        const attempt = tryWriteWithWriteFn(parent.fd.get().?, buf, bun.sys.write);
-        switch (attempt) {
-            .pending => |pending| {
-                drained += pending;
-                return .{ .pending = drained };
-            },
-            .wrote => |amt| {
-                drained += amt;
-            },
-            .err => |err| {
-                if (drained > 0) {
-                    onError(parent, err);
-                    return .{ .wrote = drained };
-                } else {
-                    return .{ .err = err };
-                }
-            },
-            .done => |amt| {
-                drained += amt;
-                return .{ .done = drained };
-            },
-        }
-    }
-
-    return .{ .wrote = drained };
-}
 
 /// TODO: Investigate what we need to do to remove this since we did most of the leg
 ///       work in removing recursion in the shell. That is what caused the need for

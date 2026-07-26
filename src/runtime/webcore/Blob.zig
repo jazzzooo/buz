@@ -2617,11 +2617,11 @@ pub fn pipeReadableStreamToBlob(this: *Blob, globalThis: *jsc.JSGlobalObject, re
                     else => false,
                 } else false;
             };
-            var sink = jsc.WebCore.FileSink.init(fd, this.globalThis.bunVM().eventLoop());
+            var sink = jsc.WebCore.FileSink.init(this.globalThis.bunVM().eventLoop());
             sink.writer.owns_fd = pathlike != .fd;
 
             if (is_stdout_or_stderr) {
-                switch (sink.writer.startSync(fd, false)) {
+                switch (sink.writer.startSync(fd)) {
                     .err => |err| {
                         sink.deref();
                         return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, try err.toJS(globalThis));
@@ -2629,7 +2629,7 @@ pub fn pipeReadableStreamToBlob(this: *Blob, globalThis: *jsc.JSGlobalObject, re
                     else => {},
                 }
             } else {
-                switch (sink.writer.start(fd, true)) {
+                switch (sink.writer.start(fd, .{})) {
                     .err => |err| {
                         sink.deref();
                         return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, try err.toJS(globalThis));
@@ -2641,7 +2641,7 @@ pub fn pipeReadableStreamToBlob(this: *Blob, globalThis: *jsc.JSGlobalObject, re
             break :brk_sink sink;
         }
 
-        var sink = jsc.WebCore.FileSink.init(bun.invalid_fd, this.globalThis.bunVM().eventLoop());
+        var sink = jsc.WebCore.FileSink.init(this.globalThis.bunVM().eventLoop());
 
         const input_path: jsc.WebCore.PathOrFileDescriptor = brk: {
             if (store.data.file.pathlike == .fd) {
@@ -2884,11 +2884,11 @@ pub fn getWriter(
                 else => false,
             } else false;
         };
-        var sink = jsc.WebCore.FileSink.init(fd, this.globalThis.bunVM().eventLoop());
+        var sink = jsc.WebCore.FileSink.init(this.globalThis.bunVM().eventLoop());
         sink.writer.owns_fd = pathlike != .fd;
 
         if (is_stdout_or_stderr) {
-            switch (sink.writer.startSync(fd, false)) {
+            switch (sink.writer.startSync(fd)) {
                 .err => |err| {
                     sink.deref();
                     return globalThis.throwValue(try err.toJS(globalThis));
@@ -2896,7 +2896,7 @@ pub fn getWriter(
                 else => {},
             }
         } else {
-            switch (sink.writer.start(fd, true)) {
+            switch (sink.writer.start(fd, .{})) {
                 .err => |err| {
                     sink.deref();
                     return globalThis.throwValue(try err.toJS(globalThis));
@@ -2908,7 +2908,7 @@ pub fn getWriter(
         return sink.toJS(globalThis);
     }
 
-    var sink = jsc.WebCore.FileSink.init(bun.invalid_fd, this.globalThis.bunVM().eventLoop());
+    var sink = jsc.WebCore.FileSink.init(this.globalThis.bunVM().eventLoop());
 
     const input_path: jsc.WebCore.PathOrFileDescriptor = brk: {
         if (store.data.file.pathlike == .fd) {

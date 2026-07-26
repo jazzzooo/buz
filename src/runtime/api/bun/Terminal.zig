@@ -212,22 +212,16 @@ fn initTerminal(
     terminal.writer.parent = terminal;
 
     // Start writer with the write fd - adds a ref
-    switch (terminal.writer.start(pty_result.write_fd, true)) {
+    switch (terminal.writer.start(pty_result.write_fd, .{ .ofd_ownership = .exclusive })) {
         .result => terminal.ref(),
         .err => {
-            // POSIX: writer.start() may have allocated a poll holding write_fd
-            // before registerWithFd failed; closeInternal → writer.close()
-            // frees the poll and closes write_fd. Windows: writer.start()
-            // failure leaves source==null so writer.close() is a no-op; close
-            // write_fd directly. Pre-set writer_done so onWriterClose's deref
-            // is skipped and the struct isn't freed mid-closeInternal.
+            // Pre-set writer_done so onWriterClose's deref is skipped and the
+            // struct isn't freed mid-closeInternal.
             terminal.flags.writer_done = true;
             terminal.read_fd.close();
             terminal.read_fd = bun.invalid_fd;
-            if (comptime Environment.isWindows) {
-                terminal.write_fd.close();
-                terminal.write_fd = bun.invalid_fd;
-            }
+            terminal.write_fd.close();
+            terminal.write_fd = bun.invalid_fd;
             terminal.closeInternal();
             terminal.deref();
             return error.WriterStartFailed;

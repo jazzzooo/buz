@@ -12,15 +12,6 @@ done: bool = false,
 started: bool = false,
 must_be_kept_alive_until_eof: bool = false,
 
-// TODO: these fields are duplicated on writer()
-// we should not duplicate these fields...
-pollable: bool = false,
-nonblocking: bool = false,
-force_sync: bool = false,
-
-is_socket: bool = false,
-fd: bun.FD = bun.invalid_fd,
-
 auto_flusher: webcore.AutoFlusher = .{},
 run_pending_later: FlushPendingTask = .{},
 
@@ -79,34 +70,7 @@ pub fn memoryCost(this: *const FileSink) usize {
 
 fn Bun__ForceFileSinkToBeSynchronousForProcessObjectStdio(_: *jsc.JSGlobalObject, jsvalue: jsc.JSValue) callconv(.c) void {
     var this: *FileSink = @ptrCast(@alignCast(JSSink.fromJS(jsvalue) orelse return));
-
-    if (comptime !Environment.isWindows) {
-        this.force_sync = true;
-        this.writer.force_sync = true;
-        if (this.fd != bun.invalid_fd) {
-            _ = bun.sys.updateNonblocking(this.fd, false);
-        }
-    } else {
-        if (this.writer.source) |*source| {
-            switch (source.*) {
-                .pipe => |pipe| {
-                    if (uv.uv_stream_set_blocking(@ptrCast(pipe), 1) == .zero) {
-                        return;
-                    }
-                },
-                .tty => |tty| {
-                    if (uv.uv_stream_set_blocking(@ptrCast(tty), 1) == .zero) {
-                        return;
-                    }
-                },
-
-                else => {},
-            }
-        }
-
-        // Fallback to WriteFile() if it fails.
-        this.force_sync = true;
-    }
+    this.writer.makeSynchronous();
 }
 
 comptime {
@@ -312,7 +276,6 @@ pub fn createWithPipe(
     var this = bun.new(FileSink, .{
         .ref_count = .init(),
         .event_loop_handle = jsc.EventLoopHandle.init(evtloop),
-        .fd = pipe.fd(),
     });
     _ = live_count.fetchAdd(1, .monotonic);
     this.writer.setPipe(pipe);
@@ -322,7 +285,6 @@ pub fn createWithPipe(
 
 pub fn create(
     event_loop_: anytype,
-    fd: bun.FD,
 ) *FileSink {
     const evtloop = switch (@TypeOf(event_loop_)) {
         jsc.EventLoopHandle => event_loop_,
@@ -331,7 +293,6 @@ pub fn create(
     var this = bun.new(FileSink, .{
         .ref_count = .init(),
         .event_loop_handle = jsc.EventLoopHandle.init(evtloop),
-        .fd = fd,
     });
     _ = live_count.fetchAdd(1, .monotonic);
     this.writer.setParent(this);
@@ -349,21 +310,6 @@ pub fn setup(this: *FileSink, options: *const FileSink.Options) bun.sys.Maybe(vo
         options.input_path,
         options.flags(),
         options.mode,
-        &this.pollable,
-        &this.is_socket,
-        this.force_sync,
-        &this.nonblocking,
-        *FileSink,
-        this,
-        struct {
-            fn onForceSyncOrIsaTTY(fs: *FileSink) void {
-                if (comptime bun.Environment.isPosix) {
-                    fs.force_sync = true;
-                    fs.writer.force_sync = true;
-                }
-            }
-        }.onForceSyncOrIsaTTY,
-        bun.sys.isPollable,
     );
 
     const fd = switch (result) {
@@ -372,28 +318,17 @@ pub fn setup(this: *FileSink, options: *const FileSink.Options) bun.sys.Maybe(vo
         },
         .result => |fd| fd,
     };
-
-    if (comptime Environment.isWindows) {
-        if (this.force_sync) {
-            switch (this.writer.startSync(
-                fd,
-                this.pollable,
-            )) {
-                .err => |err| {
-                    fd.close();
-                    return .{ .err = err };
-                },
-                .result => {
-                    this.writer.updateRef(this.eventLoop(), false);
-                },
-            }
-            return .success;
-        }
-    }
+    const ofd_ownership: bun.io.WriterStartOptions.Ownership = switch (options.input_path) {
+        .path => .exclusive,
+        .fd => .shared,
+    };
 
     switch (this.writer.start(
         fd,
-        this.pollable,
+        .{
+            .tty_mode = .synchronous,
+            .ofd_ownership = ofd_ownership,
+        },
     )) {
         .err => |err| {
             fd.close();
@@ -403,17 +338,6 @@ pub fn setup(this: *FileSink, options: *const FileSink.Options) bun.sys.Maybe(vo
             // Only keep the event loop ref'd while there's a pending write in progress.
             // If there's no pending write, no need to keep the event loop ref'd.
             this.writer.updateRef(this.eventLoop(), false);
-            if (comptime Environment.isPosix) {
-                if (this.nonblocking) {
-                    this.writer.getPoll().?.flags.insert(.nonblocking);
-                }
-
-                if (this.is_socket) {
-                    this.writer.getPoll().?.flags.insert(.socket);
-                } else if (this.pollable) {
-                    this.writer.getPoll().?.flags.insert(.fifo);
-                }
-            }
         },
     }
 
@@ -550,11 +474,10 @@ pub fn protectJSWrapper(this: *FileSink, globalThis: *jsc.JSGlobalObject, js_wra
     this.js_sink_ref.set(globalThis, js_wrapper);
 }
 
-pub fn init(fd: bun.FD, event_loop_handle: anytype) *FileSink {
+pub fn init(event_loop_handle: anytype) *FileSink {
     var this = bun.new(FileSink, .{
         .ref_count = .init(),
         .writer = .{},
-        .fd = fd,
         .event_loop_handle = jsc.EventLoopHandle.init(event_loop_handle),
     });
     _ = live_count.fetchAdd(1, .monotonic);
@@ -702,13 +625,14 @@ pub fn updateRef(this: *FileSink, value: bool) void {
 pub const JSSink = Sink.JSSink(@This(), "FileSink");
 
 fn getFd(this: *const @This()) i32 {
+    const fd = this.writer.getFd();
     if (Environment.isWindows) {
-        return switch (this.fd.decodeWindows()) {
+        return switch (fd.decodeWindows()) {
             .windows => -1, // TODO:
             .uv => |num| num,
         };
     }
-    return this.fd.cast();
+    return fd.cast();
 }
 
 fn toResult(this: *FileSink, write_result: bun.io.WriteResult) streams.Result.Writable {

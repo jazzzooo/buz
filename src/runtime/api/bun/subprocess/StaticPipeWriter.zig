@@ -66,18 +66,11 @@ pub fn NewStaticPipeWriter(comptime ProcessType: type) type {
             if (Environment.isWindows) {
                 return this.writer.startWithCurrentPipe();
             }
-            switch (this.writer.start(this.stdio_result.?, true)) {
+            switch (this.writer.start(this.stdio_result.?, .{})) {
                 .err => |err| {
                     return .{ .err = err };
                 },
-                .result => {
-                    if (comptime Environment.isPosix) {
-                        const poll = this.writer.handle.poll;
-                        poll.flags.insert(.socket);
-                    }
-
-                    return .success;
-                },
+                .result => return .success,
             }
         }
 

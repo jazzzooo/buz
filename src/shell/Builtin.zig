@@ -414,16 +414,9 @@ fn initRedirections(
                     return cmd.writeFailingError("bun: ambiguous redirect: at `{s}`\n", .{@tagName(kind)});
                 }
 
-                // Regular files are not pollable on linux and macos
-                const is_pollable: bool = if (bun.Environment.isPosix) false else true;
-
                 const path = cmd.redirection_file.items[0..cmd.redirection_file.items.len -| 1 :0];
                 log("EXPANDED REDIRECT: {s}\n", .{cmd.redirection_file.items[0..]});
                 const perm = 0o666;
-
-                var pollable = false;
-                var is_socket = false;
-                var is_nonblocking = false;
 
                 const redirfd = redirfd: {
                     if (node.redirect.stdin) {
@@ -442,16 +435,6 @@ fn initRedirections(
                         path,
                         node.redirect.toFlags(),
                         perm,
-                        &pollable,
-                        &is_socket,
-                        false,
-                        &is_nonblocking,
-                        void,
-                        {},
-                        struct {
-                            fn onForceSyncOrIsaTTY(_: void) void {}
-                        }.onForceSyncOrIsaTTY,
-                        shell.interpret.isPollableFromMode,
                         ShellSyscall.openat,
                     );
 
@@ -488,7 +471,10 @@ fn initRedirections(
 
                 const redirect_writer: *IOWriter = .init(
                     redirfd,
-                    .{ .pollable = is_pollable, .nonblocking = is_nonblocking, .is_socket = is_socket },
+                    .{
+                        .tty_mode = .blocking,
+                        .ofd_ownership = .exclusive,
+                    },
                     cmd.base.eventLoop(),
                 );
                 defer redirect_writer.deref();

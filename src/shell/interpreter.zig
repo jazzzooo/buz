@@ -1137,14 +1137,10 @@ pub const Interpreter = struct {
 
             const stdout_writer = IOWriter.init(
                 stdout_fd,
-                .{
-                    .pollable = isPollable(stdout_fd, event_loop.stdout().data.file.mode),
-                },
+                .{},
                 event_loop,
             );
-            const stderr_writer = IOWriter.init(stderr_fd, .{
-                .pollable = isPollable(stderr_fd, event_loop.stderr().data.file.mode),
-            }, event_loop);
+            const stderr_writer = IOWriter.init(stderr_fd, .{}, event_loop);
 
             this.root_io = .{
                 .stdin = this.root_io.stdin,
@@ -2028,26 +2024,6 @@ pub fn FlagParser(comptime Opts: type) type {
 
             return .continue_parsing;
         }
-    };
-}
-
-pub fn isPollable(fd: bun.FD, mode: bun.Mode) bool {
-    return switch (bun.Environment.os) {
-        .windows, .wasm => false,
-        .linux, .freebsd => posix.S.ISFIFO(mode) or posix.S.ISSOCK(mode) or bun.sys.isatty(fd),
-        // macos DOES allow regular files to be pollable, but we don't want that because
-        // our IOWriter code has a separate and better codepath for writing to files.
-        .mac => if (posix.S.ISREG(mode)) false else posix.S.ISFIFO(mode) or posix.S.ISSOCK(mode) or bun.sys.isatty(fd),
-    };
-}
-
-pub fn isPollableFromMode(mode: bun.Mode) bool {
-    return switch (bun.Environment.os) {
-        .windows, .wasm => false,
-        .linux, .freebsd => posix.S.ISFIFO(mode) or posix.S.ISSOCK(mode),
-        // macos DOES allow regular files to be pollable, but we don't want that because
-        // our IOWriter code has a separate and better codepath for writing to files.
-        .mac => if (posix.S.ISREG(mode)) false else posix.S.ISFIFO(mode) or posix.S.ISSOCK(mode),
     };
 }
 
