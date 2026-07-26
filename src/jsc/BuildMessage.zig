@@ -108,7 +108,7 @@ pub const BuildMessage = struct {
         object.putDirect(
             globalThis,
             ZigString.static("lineText"),
-            ZigString.init(location.line_text orelse "").toJS(globalThis),
+            ZigString.init(location.line_text orelse "").withEncoding().toJS(globalThis),
         );
         object.putDirect(
             globalThis,

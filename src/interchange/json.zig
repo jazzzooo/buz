@@ -320,7 +320,6 @@ pub const PackageJSONVersionChecker = struct {
     const Lexer = js_lexer.NewLexer(opts);
 
     lexer: Lexer,
-    source: *const logger.Source,
     log: *logger.Log,
     allocator: std.mem.Allocator,
     depth: usize = 0,
@@ -344,17 +343,20 @@ pub const PackageJSONVersionChecker = struct {
         .allow_comments = true,
     };
 
-    pub fn init(allocator: std.mem.Allocator, source: *const logger.Source, log: *logger.Log) !Parser {
+    pub fn init(allocator: std.mem.Allocator, source_: *const logger.Source, log: *logger.Log) !Parser {
         return Parser{
-            .lexer = try Lexer.init(log, source, allocator),
+            .lexer = try Lexer.init(log, source_, allocator),
             .allocator = allocator,
             .log = log,
-            .source = source,
             .stack_check = bun.StackCheck.init(),
         };
     }
 
     const Parser = @This();
+
+    pub inline fn source(p: *const Parser) *const logger.Source {
+        return &p.lexer.source;
+    }
 
     pub fn parseExpr(p: *Parser) anyerror!Expr {
         if (!p.stack_check.isSafeToRecurse()) {
@@ -746,7 +748,7 @@ pub fn parseUTF8Impl(
 
     const result = try parser.parseExpr(false, true);
     if (comptime check_len) {
-        if (parser.lexer.end >= source.contents.len) return result;
+        if (parser.lexer.end >= parser.source().contents.len) return result;
         try parser.lexer.unexpected();
         return error.ParserError;
     }

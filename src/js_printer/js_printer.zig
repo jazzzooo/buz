@@ -103,89 +103,66 @@ fn ws(comptime str: []const u8) Whitespacer {
     return .{ .normal = Static.with, .minify = Static.without };
 }
 
-pub fn estimateLengthForUTF8(input: []const u8, comptime ascii_only: bool, comptime quote_char: u8) usize {
-    var remaining = input;
+fn estimateLengthForUTF8(input: std.unicode.Wtf8View, comptime ascii_only: bool, comptime quote_char: u8) usize {
+    var remaining = input.bytes;
     var len: usize = 2; // for quotes
 
     while (strings.indexOfNeedsEscapeForJavaScriptString(remaining, quote_char)) |i| {
         len += i;
         remaining = remaining[i..];
-        const char_len = strings.wtf8ByteSequenceLengthWithInvalid(remaining[0]);
-        const c = strings.decodeWTF8RuneT(
-            &switch (char_len) {
-                // 0 is not returned by `wtf8ByteSequenceLengthWithInvalid`
-                1 => .{ remaining[0], 0, 0, 0 },
-                2 => remaining[0..2].* ++ .{ 0, 0 },
-                3 => remaining[0..3].* ++ .{0},
-                4 => remaining[0..4].*,
-                else => unreachable,
-            },
-            char_len,
-            i32,
-            0,
-        );
+        var iterator = std.unicode.Wtf8View.initUnchecked(remaining).iterator();
+        const c = iterator.nextCodepoint().?;
+        const char_len = iterator.i;
         if (canPrintWithoutEscape(i32, c, ascii_only)) {
-            len += @as(usize, char_len);
+            len += char_len;
         } else if (c <= 0xFFFF) {
             len += 6;
         } else {
             len += 12;
         }
         remaining = remaining[char_len..];
-    } else {
-        return remaining.len + 2;
     }
 
-    return len;
+    return len + remaining.len;
 }
 
-pub fn writePreQuotedString(text_in: []const u8, comptime Writer: type, writer: Writer, comptime quote_char: u8, comptime ascii_only: bool, comptime json: bool, comptime encoding: strings.Encoding) !void {
+fn writePreQuotedStringImpl(text_in: []const u8, comptime Writer: type, writer: Writer, comptime quote_char: u8, comptime ascii_only: bool, comptime json: bool, comptime encoding: strings.Encoding) !void {
     const text = if (comptime encoding == .utf16) @as([]const u16, @alignCast(std.mem.bytesAsSlice(u16, text_in))) else text_in;
     if (comptime json and quote_char != '"') @compileError("for json, quote_char must be '\"'");
+    if (comptime encoding == .utf8) bun.debugAssert(std.unicode.wtf8ValidateSlice(text_in));
     var i: usize = 0;
     const n: usize = text.len;
     while (i < n) {
-        const width = switch (comptime encoding) {
-            .latin1, .ascii => 1,
-            .utf8 => strings.wtf8ByteSequenceLengthWithInvalid(text[i]),
-            .utf16 => 1,
-        };
-        const clamped_width = @min(@as(usize, width), n -| i);
-        const c = switch (encoding) {
-            .utf8 => strings.decodeWTF8RuneT(
-                &switch (clamped_width) {
-                    // 0 is not returned by `wtf8ByteSequenceLengthWithInvalid`
-                    1 => .{ text[i], 0, 0, 0 },
-                    2 => text[i..][0..2].* ++ .{ 0, 0 },
-                    3 => text[i..][0..3].* ++ .{0},
-                    4 => text[i..][0..4].*,
-                    else => unreachable,
-                },
-                width,
-                i32,
-                0,
-            ),
+        const c: i32, const width: usize = switch (encoding) {
+            .utf8 => brk: {
+                var iterator = std.unicode.Wtf8Iterator{
+                    .bytes = text,
+                    .i = i,
+                };
+                const codepoint = iterator.nextCodepoint().?;
+                break :brk .{ @intCast(codepoint), iterator.i - i };
+            },
             .ascii => brk: {
                 std.debug.assert(text[i] <= 0x7F);
-                break :brk text[i];
+                break :brk .{ text[i], 1 };
             },
-            .latin1 => text[i],
+            .latin1 => .{ text[i], 1 },
             .utf16 => brk: {
                 // TODO: if this is a part of a surrogate pair, we could parse the whole codepoint in order
                 // to emit it as a single \u{result} rather than two paired \uLOW\uHIGH.
                 // eg: "\u{10334}" will convert to "\uD800\uDF34" without this.
-                break :brk @as(i32, text[i]);
+                break :brk .{ @as(i32, text[i]), 1 };
             },
         };
         if (canPrintWithoutEscape(i32, c, ascii_only)) {
-            const remain = text[i + clamped_width ..];
+            const remain = text[i + width ..];
 
             switch (encoding) {
                 .ascii, .utf8 => {
                     if (strings.indexOfNeedsEscapeForJavaScriptString(remain, quote_char)) |j| {
-                        const text_chunk = text[i .. i + clamped_width];
+                        const text_chunk = text[i .. i + width];
                         try writer.writeAll(text_chunk);
-                        i += clamped_width;
+                        i += width;
                         try writer.writeAll(remain[0..j]);
                         i += j;
                     } else {
@@ -198,7 +175,7 @@ pub fn writePreQuotedString(text_in: []const u8, comptime Writer: type, writer: 
                     var codepoint_bytes: [4]u8 = undefined;
                     const codepoint_len = strings.encodeWTF8Rune(codepoint_bytes[0..4], c);
                     try writer.writeAll(codepoint_bytes[0..codepoint_len]);
-                    i += clamped_width;
+                    i += width;
                 },
             }
             continue;
@@ -264,7 +241,7 @@ pub fn writePreQuotedString(text_in: []const u8, comptime Writer: type, writer: 
             },
             '$' => {
                 if (quote_char == '`') {
-                    const remain = text[i + clamped_width ..];
+                    const remain = text[i + width ..];
                     if (remain.len > 0 and remain[0] == '{') {
                         try writer.writeAll("\\$");
                     } else {
@@ -332,12 +309,31 @@ pub fn writePreQuotedString(text_in: []const u8, comptime Writer: type, writer: 
         }
     }
 }
+
+pub fn writePreQuotedString(text: []const u8, comptime Writer: type, writer: Writer, comptime quote_char: u8, comptime ascii_only: bool, comptime json: bool, comptime encoding: strings.Encoding) !void {
+    if (comptime encoding == .utf8) {
+        if (!std.unicode.wtf8ValidateSlice(text)) {
+            const repaired = std.fmt.allocPrint(bun.default_allocator, "{f}", .{strings.fmtWtf8(text)}) catch return error.WriteFailed;
+            defer bun.default_allocator.free(repaired);
+            return writePreQuotedStringImpl(repaired, Writer, writer, quote_char, ascii_only, json, encoding);
+        }
+    }
+    return writePreQuotedStringImpl(text, Writer, writer, quote_char, ascii_only, json, encoding);
+}
+
 pub fn quoteForJSON(text: []const u8, bytes: *MutableString, comptime ascii_only: bool) bun.OOM!void {
+    var repaired: ?[]u8 = null;
+    defer if (repaired) |owned| bytes.allocator.free(owned);
+    const view = std.unicode.Wtf8View.init(text) catch brk: {
+        const owned = try std.fmt.allocPrint(bytes.allocator, "{f}", .{strings.fmtWtf8(text)});
+        repaired = owned;
+        break :brk std.unicode.Wtf8View.init(owned) catch unreachable;
+    };
     const writer = bytes.writer();
 
-    try bytes.growIfNeeded(estimateLengthForUTF8(text, ascii_only, '"'));
+    try bytes.growIfNeeded(estimateLengthForUTF8(view, ascii_only, '"'));
     try bytes.appendChar('"');
-    writePreQuotedString(text, @TypeOf(writer), writer, '"', ascii_only, true, .utf8) catch return error.OutOfMemory;
+    writePreQuotedStringImpl(view.bytes, @TypeOf(writer), writer, '"', ascii_only, true, .utf8) catch return error.OutOfMemory;
     bytes.appendChar('"') catch unreachable;
 }
 
@@ -1547,9 +1543,9 @@ fn NewPrinter(
         pub fn printStringCharactersUTF8(e: *Printer, text: []const u8, quote: u8) void {
             const writer = e.writer.stdWriter();
             (switch (quote) {
-                '\'' => writePreQuotedString(text, @TypeOf(writer), writer, '\'', ascii_only, false, .utf8),
-                '"' => writePreQuotedString(text, @TypeOf(writer), writer, '"', ascii_only, false, .utf8),
-                '`' => writePreQuotedString(text, @TypeOf(writer), writer, '`', ascii_only, false, .utf8),
+                '\'' => writePreQuotedStringImpl(text, @TypeOf(writer), writer, '\'', ascii_only, false, .utf8),
+                '"' => writePreQuotedStringImpl(text, @TypeOf(writer), writer, '"', ascii_only, false, .utf8),
+                '`' => writePreQuotedStringImpl(text, @TypeOf(writer), writer, '`', ascii_only, false, .utf8),
                 else => unreachable,
             }) catch unreachable;
         }
@@ -1558,9 +1554,9 @@ fn NewPrinter(
 
             const writer = e.writer.stdWriter();
             (switch (quote) {
-                '\'' => writePreQuotedString(slice, @TypeOf(writer), writer, '\'', ascii_only, false, .utf16),
-                '"' => writePreQuotedString(slice, @TypeOf(writer), writer, '"', ascii_only, false, .utf16),
-                '`' => writePreQuotedString(slice, @TypeOf(writer), writer, '`', ascii_only, false, .utf16),
+                '\'' => writePreQuotedStringImpl(slice, @TypeOf(writer), writer, '\'', ascii_only, false, .utf16),
+                '"' => writePreQuotedStringImpl(slice, @TypeOf(writer), writer, '"', ascii_only, false, .utf16),
+                '`' => writePreQuotedStringImpl(slice, @TypeOf(writer), writer, '`', ascii_only, false, .utf16),
                 else => unreachable,
             }) catch unreachable;
         }
@@ -5721,7 +5717,7 @@ pub fn getSourceMapBuilder(
         .line_offset_tables = opts.line_offset_tables orelse brk: {
             if (generate_source_map == .lazy) break :brk SourceMap.LineOffsetTable.generate(
                 opts.source_map_allocator orelse opts.allocator,
-                source.contents,
+                source.wtf8View(),
                 @as(
                     i32,
                     @intCast(tree.approximate_newline_count),

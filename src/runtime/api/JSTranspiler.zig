@@ -1144,7 +1144,8 @@ pub fn scanImports(this: *JSTranspiler, globalThis: *jsc.JSGlobalObject, callfra
         arena.deinit();
     }
 
-    const source = logger.Source.initPathString(loader.stdinName(), code);
+    var source = logger.Source.initPathString(loader.stdinName(), code);
+    source.normalizeText(allocator) catch return globalThis.throwOutOfMemory();
     var transpiler = &this.transpiler;
     const jsx = if (this.config.tsconfig != null)
         this.config.tsconfig.?.mergeJSX(this.transpiler.options.jsx)

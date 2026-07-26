@@ -152,7 +152,7 @@ pub const LinkerContext = struct {
 
             line_offset_table.* = bun.SourceMap.LineOffsetTable.generate(
                 alloc,
-                source.contents,
+                source.wtf8View(),
 
                 // We don't support sourcemaps for source files with more than 2^31 lines
                 @as(i32, @intCast(@as(u31, @truncate(approximate_line_count)))),

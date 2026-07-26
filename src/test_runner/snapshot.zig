@@ -141,7 +141,9 @@ pub const Snapshots = struct {
         var snapshot_file_path_buf: bun.PathBuffer = undefined;
         const snapshot_file_path = try snapshotFilePath(test_file.source.path.text, &snapshot_file_path_buf);
 
-        const source = &logger.Source.initPathString(snapshot_file_path, this.file_buf.items);
+        var source_value = logger.Source.initPathString(snapshot_file_path, this.file_buf.items);
+        try source_value.normalizeText(this.allocator);
+        const source = &source_value;
 
         var parser = try js_parser.Parser.init(
             opts,
@@ -263,9 +265,11 @@ pub const Snapshots = struct {
             errdefer file.file.close(this.io);
 
             var file_reader = file.file.reader(this.io, &.{});
-            const file_text = try file_reader.interface.allocRemaining(arena, .unlimited);
-
-            const source = &bun.logger.Source.initPathString(test_filename, file_text);
+            const file_bytes = try file_reader.interface.allocRemaining(arena, .unlimited);
+            var source_value = bun.logger.Source.initPathString(test_filename, file_bytes);
+            try source_value.normalizeText(arena);
+            const source = &source_value;
+            const file_text = source.contents;
 
             var result_text = std.array_list.Managed(u8).init(arena);
 
@@ -306,13 +310,6 @@ pub const Snapshots = struct {
                 inline_snapshot_dbg("-> Found byte {}", .{next_start});
 
                 const final_start: i32, const final_end: i32, const needs_pre_comma: bool = blk: {
-                    if (file_text[next_start..].len > 0) switch (file_text[next_start]) {
-                        ' ', '.' => {
-                            // work around off-by-1 error in `expect("§").toMatchInlineSnapshot()`
-                            next_start += 1;
-                        },
-                        else => {},
-                    };
                     const fn_name = ils.kind;
                     if (!bun.strings.startsWith(file_text[next_start..], fn_name)) {
                         try log.addErrorFmt(source, .{ .start = @intCast(next_start) }, arena, "Failed to update inline snapshot: Could not find '{s}' here", .{fn_name});

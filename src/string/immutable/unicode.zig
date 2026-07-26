@@ -2,10 +2,6 @@ pub fn NewCodePointIterator(comptime CodePointType_: type, comptime zeroValue: c
     return struct {
         const Iterator = @This();
         bytes: []const u8,
-        i: usize,
-        next_width: usize = 0,
-        width: u3_fast = 0,
-        c: CodePointType = zeroValue,
 
         pub const CodePointType = CodePointType_;
 
@@ -18,80 +14,7 @@ pub fn NewCodePointIterator(comptime CodePointType_: type, comptime zeroValue: c
         };
 
         pub fn init(str: string) Iterator {
-            return Iterator{ .bytes = str, .i = 0, .c = zeroValue };
-        }
-
-        pub fn initOffset(str: string, i: usize) Iterator {
-            return Iterator{ .bytes = str, .i = i, .c = zeroValue };
-        }
-
-        const SkipResult = enum {
-            eof,
-            found,
-            not_found,
-        };
-
-        /// Advance forward until the scalar function returns true.
-        /// THe simd function is "best effort" and expected to sometimes return a result which `scalar` will return false for.
-        /// This is because we don't decode UTF-8 in the SIMD code path.
-        pub fn skip(it: *const Iterator, cursor: *Cursor, simd: *const fn (input: []const u8) ?usize, scalar: *const fn (CodePointType) bool) SkipResult {
-            while (true) {
-                // 1. Get current position. Check for EOF.
-                const current_byte_index = cursor.i;
-                if (current_byte_index >= it.bytes.len) {
-                    return .not_found; // Reached end without finding
-                }
-
-                // 2. Decode the *next* character using the standard iterator method.
-                if (!next(it, cursor)) {
-                    return .not_found; // Reached end or error during decode
-                }
-
-                // 3. Check if the character just decoded matches the scalar condition.
-                if (scalar(it.c)) {
-                    return .found; // Found it!
-                }
-
-                // 4. Optimization: Can we skip ahead using SIMD?
-                //    Scan starting from the byte *after* the character we just decoded.
-                const next_scan_start_index = cursor.i;
-                if (next_scan_start_index >= it.bytes.len) {
-                    // Just decoded the last character and it didn't match.
-                    return .not_found;
-                }
-                const remaining_slice = it.bytes[next_scan_start_index..];
-                if (remaining_slice.len == 0) {
-                    return .not_found;
-                }
-
-                // Ask SIMD for the next potential candidate.
-                if (simd(remaining_slice)) |pos| {
-                    // SIMD found a potential candidate `pos` bytes ahead.
-                    if (pos > 0) {
-                        // Jump the byte index to the start of the potential candidate.
-                        cursor.i = next_scan_start_index + @as(u32, @intCast(pos));
-                        // Reset width so next() decodes correctly from the jumped position.
-                        cursor.width = 0;
-                        // Loop will continue, starting the decode from the new cursor.i.
-                        continue;
-                    }
-                    // If pos == 0, SIMD suggests the *immediate next* character.
-                    // No jump needed, just let the loop iterate naturally.
-                    // Fallthrough to the end of the loop.
-                } else {
-                    // SIMD found no potential candidates in the rest of the string.
-                    // Since the SIMD search set is a superset of the scalar check set,
-                    // we can guarantee that no character satisfying `scalar` exists further.
-                    // Since the current character (decoded in step 2) also didn't match,
-                    // we can conclude the target character is not found.
-                    return .not_found;
-                }
-
-                // If we reach here, it means SIMD returned pos=0.
-                // Loop continues to the next iteration, processing the immediate next char.
-            } // End while true
-
-            unreachable;
+            return Iterator{ .bytes = str };
         }
 
         pub inline fn next(noalias it: *const Iterator, noalias cursor: *Cursor) bool {
@@ -109,21 +32,11 @@ pub fn NewCodePointIterator(comptime CodePointType_: type, comptime zeroValue: c
                     0 => return false,
                     1 => it.bytes[pos],
                     else => blk: {
-                        // Copy into a zero-padded stack buffer so we never read past
-                        // the end of `it.bytes` when a multi-byte lead appears near
-                        // EOF without enough continuation bytes. The zero padding is
-                        // rejected by decodeWTF8RuneTMultibyte (0x00 is not a valid
-                        // continuation byte), so truncated sequences become U+FFFD.
                         const remaining = it.bytes[pos..];
-                        const cp_bytes: [4]u8 = switch (@min(remaining.len, 4)) {
-                            inline 1, 2, 3, 4 => |n| .{
-                                remaining[0],
-                                if (comptime n > 1) remaining[1] else 0,
-                                if (comptime n > 2) remaining[2] else 0,
-                                if (comptime n > 3) remaining[3] else 0,
-                            },
-                            else => unreachable,
-                        };
+                        const copy_len = @min(remaining.len, 4);
+                        // Zero padding makes truncated sequences decode as U+FFFD without reading past EOF.
+                        var cp_bytes: [4]u8 = @splat(0);
+                        @memcpy(cp_bytes[0..copy_len], remaining[0..copy_len]);
                         break :blk decodeWTF8RuneTMultibyte(&cp_bytes, cp_len, CodePointType, error_char);
                     },
                 },
@@ -140,70 +53,37 @@ pub fn NewCodePointIterator(comptime CodePointType_: type, comptime zeroValue: c
 
             return true;
         }
-
-        fn nextCodepointSlice(it: *Iterator) callconv(bun.callconv_inline) []const u8 {
-            const bytes = it.bytes;
-            const prev = it.i;
-            const next_ = prev + it.next_width;
-            if (bytes.len <= next_) return "";
-
-            const cp_len = utf8ByteSequenceLength(bytes[next_]);
-            it.next_width = cp_len;
-            it.i = @min(next_, bytes.len);
-
-            const slice = bytes[prev..][0..@min(@as(usize, cp_len), bytes.len - prev)];
-            it.width = @as(u3_fast, @intCast(slice.len));
-            return slice;
-        }
-
-        pub fn needsUTF8Decoding(slice: string) bool {
-            var it = Iterator{ .bytes = slice, .i = 0 };
-
-            while (true) {
-                const part = it.nextCodepointSlice();
-                @setRuntimeSafety(false);
-                switch (part.len) {
-                    0 => return false,
-                    1 => continue,
-                    else => return true,
-                }
-            }
-        }
-
-        pub fn nextCodepoint(it: *Iterator) CodePointType {
-            const slice = it.nextCodepointSlice();
-
-            it.c = switch (slice.len) {
-                0 => zeroValue,
-                1 => @as(CodePointType, @intCast(slice[0])),
-                2 => @as(CodePointType, @intCast(std.unicode.utf8Decode2(slice) catch unreachable)),
-                3 => @as(CodePointType, @intCast(std.unicode.utf8Decode3(slice) catch unreachable)),
-                4 => @as(CodePointType, @intCast(std.unicode.utf8Decode4(slice) catch unreachable)),
-                else => unreachable,
-            };
-
-            return it.c;
-        }
-
-        /// Look ahead at the next n codepoints without advancing the iterator.
-        /// If fewer than n codepoints are available, then return the remainder of the string.
-        pub fn peek(it: *Iterator, n: usize) []const u8 {
-            const original_i = it.i;
-            defer it.i = original_i;
-
-            var end_ix = original_i;
-            for (0..n) |_| {
-                const next_codepoint = it.nextCodepointSlice() orelse return it.bytes[original_i..];
-                end_ix += next_codepoint.len;
-            }
-
-            return it.bytes[original_i..end_ix];
-        }
     };
 }
 
 pub const CodepointIterator = NewCodePointIterator(CodePoint, -1);
 pub const UnsignedCodepointIterator = NewCodePointIterator(u32, 0);
+
+fn formatWtf8(input: []const u8, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    var segment_start: usize = 0;
+    var search_start: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, input, search_start, 0xED)) |surrogate_start| {
+        search_start = surrogate_start + 1;
+        const remaining = input[surrogate_start..];
+        if (remaining.len < 3 or
+            remaining[1] < 0xA0 or remaining[1] > 0xBF or
+            remaining[2] < 0x80 or remaining[2] > 0xBF)
+        {
+            continue;
+        }
+
+        // fmtUtf8 rejects surrogate code points, which are valid in WTF-8.
+        try writer.print("{f}", .{std.unicode.fmtUtf8(input[segment_start..surrogate_start])});
+        try writer.writeAll(remaining[0..3]);
+        search_start = surrogate_start + 3;
+        segment_start = search_start;
+    }
+    try writer.print("{f}", .{std.unicode.fmtUtf8(input[segment_start..])});
+}
+
+pub fn fmtWtf8(input: []const u8) std.fmt.Alt([]const u8, formatWtf8) {
+    return .{ .data = input };
+}
 
 pub fn containsNonBmpCodePoint(text: string) bool {
     var iter = CodepointIterator.init(text);
@@ -1931,21 +1811,6 @@ pub fn wtf8Sequence(code_point: u32) [4]u8 {
 }
 
 pub inline fn wtf8ByteSequenceLength(first_byte: u8) u8 {
-    return switch (first_byte) {
-        0...0x80 - 1 => 1,
-        else => if ((first_byte & 0xE0) == 0xC0)
-            2
-        else if ((first_byte & 0xF0) == 0xE0)
-            3
-        else if ((first_byte & 0xF8) == 0xF0)
-            4
-        else
-            1,
-    };
-}
-
-/// 0 == invalid
-pub inline fn wtf8ByteSequenceLengthWithInvalid(first_byte: u8) u8 {
     return switch (first_byte) {
         0...0x80 - 1 => 1,
         else => if ((first_byte & 0xE0) == 0xC0)

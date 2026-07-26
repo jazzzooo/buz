@@ -800,7 +800,7 @@ pub const Transpiler = struct {
 
         var input_fd: ?FD = null;
 
-        const source: *const logger.Source = &brk: {
+        var source_value: logger.Source = brk: {
             if (this_parse.virtual_source) |virtual_source| {
                 break :brk virtual_source.*;
             }
@@ -849,6 +849,10 @@ pub const Transpiler = struct {
             }
             break :brk logger.Source.initRecycledFile(.{ .path = path, .contents = entry.contents }, transpiler.allocator) catch return null;
         };
+        if (!(loader.isJavaScriptLike() and source_value.isWebAssembly()) and loader.usesTextSource()) {
+            source_value.normalizeText(allocator) catch return null;
+        }
+        const source = &source_value;
 
         if (comptime return_file_only) {
             return ParseResult{ .source = source.*, .input_fd = input_fd, .loader = loader, .empty = true, .ast = js_ast.Ast.empty };

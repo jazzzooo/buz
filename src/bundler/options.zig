@@ -544,13 +544,6 @@ pub const Loader = enum(u8) {
         return this == .css;
     }
 
-    pub fn isJSLike(this: Loader) bool {
-        return switch (this) {
-            .jsx, .js, .ts, .tsx => true,
-            else => false,
-        };
-    }
-
     pub fn shouldCopyForBundling(this: Loader) bool {
         return switch (this) {
             .file,
@@ -796,6 +789,34 @@ pub const Loader = enum(u8) {
         };
     }
 
+    pub fn usesTextSource(loader: Loader) bool {
+        return switch (loader) {
+            .jsx,
+            .js,
+            .ts,
+            .tsx,
+            .css,
+            .json,
+            .jsonc,
+            .toml,
+            .text,
+            .bunsh,
+            .html,
+            .yaml,
+            .json5,
+            .md,
+            => true,
+            .file,
+            .wasm,
+            .napi,
+            .base64,
+            .dataurl,
+            .sqlite,
+            .sqlite_embedded,
+            => false,
+        };
+    }
+
     pub fn sideEffects(this: Loader) bun.resolver.SideEffects {
         return switch (this) {
             .text, .json, .jsonc, .toml, .yaml, .json5, .file, .md => bun.resolver.SideEffects.no_side_effects__pure_data,
@@ -934,7 +955,7 @@ pub fn getLoaderAndVirtualSource(
     const dir = std.fs.path.dirname(path.text);
     // NOTE: we cannot trust `path.isFile()` since it's not always correct
     // NOTE: assume we may need a package.json when no loader is specified
-    const is_js_like = if (loader) |l| l.isJSLike() else true;
+    const is_js_like = if (loader) |l| l.isJavaScriptLike() else true;
     const package_json: ?*const PackageJSON = if (is_js_like and dir != null and std.fs.path.isAbsolute(dir.?))
         if (jsc_vm.transpiler.resolver.readDirInfo(dir.?) catch null) |dir_info|
             dir_info.package_json orelse dir_info.enclosing_package_json

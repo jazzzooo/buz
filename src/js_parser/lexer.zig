@@ -291,7 +291,7 @@ fn NewLexer_(
             defer buf_.* = buf;
             if (comptime is_json) lexer.is_ascii_only = false;
 
-            const iterator = strings.CodepointIterator{ .bytes = text, .i = 0 };
+            const iterator = strings.CodepointIterator.init(text);
             var iter = strings.CodepointIterator.Cursor{};
             while (iterator.next(&iter)) {
                 const width = iter.width;
@@ -781,8 +781,11 @@ fn NewLexer_(
             if (it.current >= it.source.contents.len) {
                 return "";
             }
-            const cp_len = strings.wtf8ByteSequenceLengthWithInvalid(it.source.contents.ptr[it.current]);
-            return if (!(cp_len + it.current > it.source.contents.len)) it.source.contents[it.current .. cp_len + it.current] else "";
+            var iterator = std.unicode.Wtf8Iterator{
+                .bytes = it.source.contents,
+                .i = it.current,
+            };
+            return iterator.nextCodepointSlice().?;
         }
 
         fn remaining(noalias it: *const LexerType) []const u8 {
@@ -794,23 +797,15 @@ fn NewLexer_(
                 it.end = it.source.contents.len;
                 return -1;
             }
-            const cp_len = strings.wtf8ByteSequenceLengthWithInvalid(it.source.contents.ptr[it.current]);
-            const slice = if (!(cp_len + it.current > it.source.contents.len)) it.source.contents[it.current .. cp_len + it.current] else "";
-
-            const code_point = switch (slice.len) {
-                0 => -1,
-                1 => @as(CodePoint, slice[0]),
-                else => strings.decodeWTF8RuneTMultibyte(slice.ptr[0..4], @as(u3, @intCast(slice.len)), CodePoint, strings.unicode_replacement),
-            };
 
             it.end = it.current;
-
-            it.current += if (code_point != strings.unicode_replacement)
-                cp_len
-            else
-                1;
-
-            return code_point;
+            var iterator = std.unicode.Wtf8Iterator{
+                .bytes = it.source.contents,
+                .i = it.current,
+            };
+            const code_point = iterator.nextCodepoint().?;
+            it.current = iterator.i;
+            return @intCast(code_point);
         }
 
         pub fn step(noalias lexer: *LexerType) void {
@@ -2027,15 +2022,8 @@ fn NewLexer_(
         }
 
         pub fn initJSON(log: *logger.Log, source: *const logger.Source, allocator: std.mem.Allocator) !LexerType {
-            var lex = LexerType{
-                .log = log,
-                .source = source.*,
-                .temp_buffer_u16 = std.array_list.Managed(u16).init(allocator),
-                .prev_error_loc = logger.Loc.Empty,
-                .allocator = allocator,
-                .comments_to_preserve_before = std.array_list.Managed(js_ast.G.Comment).init(allocator),
-                .all_comments = std.array_list.Managed(logger.Range).init(allocator),
-            };
+            var lex = initWithoutReading(log, source, allocator);
+            try lex.source.normalizeText(allocator);
             lex.step();
             try lex.next();
 
@@ -2056,6 +2044,7 @@ fn NewLexer_(
 
         pub fn init(log: *logger.Log, source: *const logger.Source, allocator: std.mem.Allocator) !LexerType {
             var lex = initWithoutReading(log, source, allocator);
+            try lex.source.normalizeText(allocator);
             lex.step();
             try lex.next();
 
@@ -3054,7 +3043,7 @@ pub fn isIdentifier(text: string) bool {
         return false;
     }
 
-    const iter = strings.CodepointIterator{ .bytes = text, .i = 0 };
+    const iter = strings.CodepointIterator.init(text);
     var cursor = strings.CodepointIterator.Cursor{};
     if (!iter.next(&cursor)) return false;
 

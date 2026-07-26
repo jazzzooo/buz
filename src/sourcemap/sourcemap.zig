@@ -561,30 +561,23 @@ pub const LineColumnOffset = struct {
         var this = this_ptr.*;
         defer this_ptr.* = this;
 
+        bun.debugAssert(std.unicode.wtf8ValidateSlice(input));
         var offset: u32 = 0;
         while (strings.indexOfNewlineOrNonASCII(input, offset)) |i| {
             assert(i >= offset);
             assert(i < input.len);
 
-            var iter = strings.CodepointIterator.initOffset(input, i);
-            var cursor = strings.CodepointIterator.Cursor{ .i = @as(u32, @truncate(iter.i)) };
-            _ = iter.next(&cursor);
+            var iterator = std.unicode.Wtf8Iterator{
+                .bytes = input,
+                .i = i,
+            };
+            const codepoint = iterator.nextCodepoint().?;
+            offset = @intCast(iterator.i);
 
-            // Given a null byte, cursor.width becomes 0
-            // This can lead to integer overflow, crashes, or hangs.
-            // https://github.com/oven-sh/bun/issues/10624
-            if (cursor.width == 0) {
-                this.columns = this.columns.addScalar(1);
-                offset = i + 1;
-                continue;
-            }
-
-            offset = i + cursor.width;
-
-            switch (cursor.c) {
+            switch (codepoint) {
                 '\r', '\n', 0x2028, 0x2029 => {
                     // Handle Windows-specific "\r\n" newlines
-                    if (cursor.c == '\r' and input.len > i + 1 and input[i + 1] == '\n') {
+                    if (codepoint == '\r' and input.len > i + 1 and input[i + 1] == '\n') {
                         this.columns = this.columns.addScalar(1);
                         continue;
                     }

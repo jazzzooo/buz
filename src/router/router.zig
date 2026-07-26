@@ -1043,7 +1043,7 @@ const Pattern = struct {
     /// `null` means invalid. Error messages are logged.
     /// That way, we can provide a list of all invalid routes rather than failing the first time.
     pub fn validate(input: string, allocator: std.mem.Allocator, log: *Logger.Log) ?ValidationResult {
-        if (CodepointIterator.needsUTF8Decoding(input)) {
+        if (!strings.isAllASCII(input)) {
             const source = Logger.Source.initEmptyFile(input);
             log.addErrorFmt(
                 &source,
@@ -1767,8 +1767,6 @@ const default_allocator = bun.default_allocator;
 const api = bun.schema.api;
 
 const strings = bun.strings;
-const CodepointIterator = bun.strings.CodepointIterator;
-
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;

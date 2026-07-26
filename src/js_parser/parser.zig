@@ -915,7 +915,6 @@ pub fn newLazyExportASTImpl(
         .allocator = allocator,
         .lexer = js_lexer.Lexer.initWithoutReading(log, source, allocator),
         .define = define,
-        .source = source,
         .log = log,
     };
     var result = parser.toLazyExportAST(

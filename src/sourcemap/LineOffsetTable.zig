@@ -6,10 +6,8 @@ const LineOffsetTable = @This();
 /// those too for compatibility.
 ///
 /// We keep mapping tables around to accelerate conversion from byte offsets
-/// to UTF-16 code unit counts. However, this mapping takes up a lot of memory
-/// and takes up a lot of memory. Since most JavaScript is ASCII and the
-/// mapping for ASCII is 1:1, we avoid creating a table for ASCII-only lines
-/// as an optimization.
+/// to UTF-16 code unit counts. Since most JavaScript is ASCII and the mapping
+/// for ASCII is 1:1, we avoid creating a table for ASCII-only lines.
 ///
 columns_for_non_ascii: BabyList(i32) = .{},
 byte_offset_to_first_non_ascii: u32 = 0,
@@ -72,13 +70,13 @@ pub fn findIndex(byte_offsets_to_start_of_line: []const u32, loc: Logger.Loc) ?u
     return null;
 }
 
-pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_line_count: i32) List {
+pub fn generate(allocator: std.mem.Allocator, contents: std.unicode.Wtf8View, approximate_line_count: i32) List {
+    const bytes = contents.bytes;
     var list = List{};
     // Preallocate the top-level table using the approximate line count from the lexer
     list.ensureUnusedCapacity(allocator, @as(usize, @intCast(@max(approximate_line_count, 1)))) catch unreachable;
     var column: i32 = 0;
     var byte_offset_to_first_non_ascii: u32 = 0;
-    var column_byte_offset: u32 = 0;
     var line_byte_offset: u32 = 0;
 
     // the idea here is:
@@ -90,60 +88,37 @@ pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_
     const reset_end_index = stack_fallback.fixed_buffer_allocator.end_index;
     const initial_columns_for_non_ascii = columns_for_non_ascii;
 
-    var remaining = contents;
-    while (remaining.len > 0) {
-        const len_ = strings.wtf8ByteSequenceLengthWithInvalid(remaining[0]);
-        const c = strings.decodeWTF8RuneT(remaining.ptr[0..4], len_, i32, 0);
-        const cp_len = @as(usize, len_);
+    var iterator = contents.iterator();
+    while (iterator.i < bytes.len) {
+        const codepoint_byte_offset = iterator.i;
+        const c = iterator.nextCodepoint().?;
+        const cp_len = iterator.i - codepoint_byte_offset;
 
         if (column == 0) {
-            line_byte_offset = @as(
-                u32,
-                @truncate(@intFromPtr(remaining.ptr) - @intFromPtr(contents.ptr)),
-            );
+            line_byte_offset = @truncate(codepoint_byte_offset);
         }
 
         if (c > 0x7F and columns_for_non_ascii.items.len == 0) {
-            assert(@intFromPtr(
-                remaining.ptr,
-            ) >= @intFromPtr(
-                contents.ptr,
-            ));
             // we have a non-ASCII character, so we need to keep track of the
             // mapping from byte offsets to UTF-16 code unit counts
-            columns_for_non_ascii.appendAssumeCapacity(column);
-            column_byte_offset = @as(
-                u32,
-                @intCast((@intFromPtr(
-                    remaining.ptr,
-                ) - @intFromPtr(
-                    contents.ptr,
-                )) - line_byte_offset),
-            );
-            byte_offset_to_first_non_ascii = column_byte_offset;
+            byte_offset_to_first_non_ascii = @intCast(codepoint_byte_offset - line_byte_offset);
         }
 
         // Update the per-byte column offsets
-        if (columns_for_non_ascii.items.len > 0) {
-            const line_bytes_so_far = @as(u32, @intCast(@as(
-                u32,
-                @truncate(@intFromPtr(remaining.ptr) - @intFromPtr(contents.ptr)),
-            ))) - line_byte_offset;
-            columns_for_non_ascii.ensureUnusedCapacity((line_bytes_so_far - column_byte_offset) + 1) catch unreachable;
-            while (column_byte_offset <= line_bytes_so_far) : (column_byte_offset += 1) {
-                columns_for_non_ascii.appendAssumeCapacity(column);
-            }
+        if (columns_for_non_ascii.items.len > 0 or c > 0x7F) {
+            columns_for_non_ascii.appendNTimes(column, cp_len) catch unreachable;
         } else {
             switch (c) {
                 (@max('\r', '\n') + 1)...127 => {
                     // skip ahead to the next newline or non-ascii character
-                    if (strings.indexOfNewlineOrNonASCIICheckStart(remaining, @as(u32, len_), false)) |j| {
+                    const remaining = bytes[codepoint_byte_offset..];
+                    if (strings.indexOfNewlineOrNonASCIICheckStart(remaining, @intCast(cp_len), false)) |j| {
                         column += @as(i32, @intCast(j));
-                        remaining = remaining[j..];
+                        iterator.i = codepoint_byte_offset + j;
                     } else {
                         // if there are no more lines, we are done!
                         column += @as(i32, @intCast(remaining.len));
-                        remaining = remaining[remaining.len..];
+                        iterator.i = bytes.len;
                     }
 
                     continue;
@@ -155,9 +130,8 @@ pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_
         switch (c) {
             '\r', '\n', 0x2028, 0x2029 => {
                 // windows newline
-                if (c == '\r' and remaining.len > 1 and remaining[1] == '\n') {
+                if (c == '\r' and iterator.i < bytes.len and bytes[iterator.i] == '\n') {
                     column += 1;
-                    remaining = remaining[1..];
                     continue;
                 }
 
@@ -177,7 +151,6 @@ pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_
 
                 column = 0;
                 byte_offset_to_first_non_ascii = 0;
-                column_byte_offset = 0;
                 line_byte_offset = 0;
 
                 // reset the list to use the stack-allocated memory
@@ -190,21 +163,15 @@ pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_
                 column += @as(i32, @intFromBool(c > 0xFFFF)) + 1;
             },
         }
-
-        remaining = remaining[cp_len..];
     }
 
     // Mark the start of the next line
     if (column == 0) {
-        line_byte_offset = @as(u32, @intCast(contents.len));
+        line_byte_offset = @as(u32, @intCast(bytes.len));
     }
 
     if (columns_for_non_ascii.items.len > 0) {
-        const line_bytes_so_far = @as(u32, @intCast(contents.len)) - line_byte_offset;
-        columns_for_non_ascii.ensureUnusedCapacity((line_bytes_so_far - column_byte_offset) + 1) catch unreachable;
-        while (column_byte_offset <= line_bytes_so_far) : (column_byte_offset += 1) {
-            columns_for_non_ascii.appendAssumeCapacity(column);
-        }
+        columns_for_non_ascii.append(column) catch unreachable;
     }
     {
         var owned = columns_for_non_ascii.toOwnedSlice() catch unreachable;

@@ -832,7 +832,7 @@ pub const visible = struct {
             const this_chunk = bytes[i..];
             const byte = this_chunk[0];
 
-            const skip = bun.strings.wtf8ByteSequenceLengthWithInvalid(byte);
+            const skip = bun.strings.wtf8ByteSequenceLength(byte);
             const cp_bytes: [4]u8 = switch (@min(@as(usize, skip), this_chunk.len)) {
                 inline 1, 2, 3, 4 => |cp_len| .{
                     byte,
@@ -1339,7 +1339,7 @@ pub const visible = struct {
             }
             const this_chunk = bytes[i..];
             const byte = this_chunk[0];
-            const skip = bun.strings.wtf8ByteSequenceLengthWithInvalid(byte);
+            const skip = bun.strings.wtf8ByteSequenceLength(byte);
             const cp_bytes: [4]u8 = switch (@min(@as(usize, skip), this_chunk.len)) {
                 inline 1, 2, 3, 4 => |cp_len| .{
                     byte,

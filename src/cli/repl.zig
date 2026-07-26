@@ -1519,7 +1519,8 @@ fn transformForRepl(self: *Repl, code: []const u8) ?[]const u8 {
     defer log.deinit();
 
     // Create source
-    const source = logger.Source.initPathString("[repl]", processed_code);
+    var source = logger.Source.initPathString("[repl]", processed_code);
+    source.normalizeText(allocator) catch return null;
 
     // Parse with REPL transforms
     var parser = js_parser.Parser.init(

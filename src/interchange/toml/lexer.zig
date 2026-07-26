@@ -144,8 +144,11 @@ pub const Lexer = struct {
         if (it.current >= it.source.contents.len) {
             return "";
         }
-        const cp_len = strings.wtf8ByteSequenceLengthWithInvalid(it.source.contents.ptr[it.current]);
-        return if (!(cp_len + it.current > it.source.contents.len)) it.source.contents[it.current .. cp_len + it.current] else "";
+        var iterator = std.unicode.Wtf8Iterator{
+            .bytes = it.source.contents,
+            .i = it.current,
+        };
+        return iterator.nextCodepointSlice().?;
     }
 
     inline fn nextCodepoint(it: *Lexer) CodePoint {
@@ -153,23 +156,15 @@ pub const Lexer = struct {
             it.end = it.source.contents.len;
             return -1;
         }
-        const cp_len = strings.wtf8ByteSequenceLengthWithInvalid(it.source.contents.ptr[it.current]);
-        const slice = if (!(cp_len + it.current > it.source.contents.len)) it.source.contents[it.current .. cp_len + it.current] else "";
-
-        const code_point = switch (slice.len) {
-            0 => -1,
-            1 => @as(CodePoint, slice[0]),
-            else => strings.decodeWTF8RuneTMultibyte(slice.ptr[0..4], @as(u3, @intCast(slice.len)), CodePoint, strings.unicode_replacement),
-        };
 
         it.end = it.current;
-
-        it.current += if (code_point != strings.unicode_replacement)
-            cp_len
-        else
-            1;
-
-        return code_point;
+        var iterator = std.unicode.Wtf8Iterator{
+            .bytes = it.source.contents,
+            .i = it.current,
+        };
+        const code_point = iterator.nextCodepoint().?;
+        it.current = iterator.i;
+        return @intCast(code_point);
     }
 
     inline fn step(lexer: *Lexer) void {
@@ -813,7 +808,7 @@ pub const Lexer = struct {
         var buf = buf_.*;
         defer buf_.* = buf;
 
-        const iterator = strings.CodepointIterator{ .bytes = text, .i = 0 };
+        const iterator = strings.CodepointIterator.init(text);
         var iter = strings.CodepointIterator.Cursor{};
         while (iterator.next(&iter)) {
             const width = iter.width;
@@ -1164,6 +1159,7 @@ pub const Lexer = struct {
             .allocator = allocator,
             .should_redact_logs = redact_logs,
         };
+        try lex.source.normalizeText(allocator);
         lex.step();
         try lex.next();
 

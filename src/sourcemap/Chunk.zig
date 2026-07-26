@@ -238,33 +238,27 @@ pub fn NewBuilder(comptime SourceMapFormatType: type) type {
             const slice = output[b.last_generated_update..];
             var needs_mapping = b.cover_lines_without_mappings and !b.line_starts_with_mapping and b.has_prev_state;
 
-            var i: usize = 0;
-            const n = @as(usize, @intCast(slice.len));
-            var c: i32 = 0;
-            while (i < n) {
-                const len = strings.wtf8ByteSequenceLengthWithInvalid(slice[i]);
-                c = strings.decodeWTF8RuneT(slice[i..].ptr[0..4], len, i32, strings.unicode_replacement);
-                i += @as(usize, len);
+            bun.debugAssert(std.unicode.wtf8ValidateSlice(slice));
+            var iterator = std.unicode.Wtf8View.initUnchecked(slice).iterator();
+            while (iterator.i < slice.len) {
+                const c = iterator.nextCodepoint().?;
 
                 switch (c) {
                     14...127 => {
-                        if (strings.indexOfNewlineOrNonASCII(slice, @as(u32, @intCast(i)))) |j| {
-                            b.generated_column += @as(i32, @intCast((@as(usize, j) - i) + 1));
-                            i = j;
+                        if (strings.indexOfNewlineOrNonASCII(slice, @intCast(iterator.i))) |j| {
+                            b.generated_column += @intCast((@as(usize, j) - iterator.i) + 1);
+                            iterator.i = j;
                             continue;
                         } else {
-                            b.generated_column += @as(i32, @intCast(slice[i..].len)) + 1;
-                            i = n;
+                            b.generated_column += @as(i32, @intCast(slice[iterator.i..].len)) + 1;
+                            iterator.i = slice.len;
                             break;
                         }
                     },
                     '\r', '\n', 0x2028, 0x2029 => {
                         // windows newline
-                        if (c == '\r') {
-                            const newline_check = b.last_generated_update + i + 1;
-                            if (newline_check < output.len and output[newline_check] == '\n') {
-                                continue;
-                            }
+                        if (c == '\r' and iterator.i < slice.len and slice[iterator.i] == '\n') {
+                            continue;
                         }
 
                         // If we're about to move to the next line and the previous line didn't have

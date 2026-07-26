@@ -1403,7 +1403,7 @@ pub fn indexOfLineRanges(text: []const u8, target_line: u32, comptime line_range
         return ranges;
     };
 
-    var iter = CodepointIterator.initOffset(text, 0);
+    var iter = CodepointIterator.init(text);
     var cursor = CodepointIterator.Cursor{
         .i = first_newline_or_nonascii_i,
     };
@@ -1941,7 +1941,7 @@ pub fn percentEncodeWrite(
     while (indexOfNeedsURLEncode(remaining)) |j| {
         const safe = remaining[0..j];
         remaining = remaining[j..];
-        const code_point_len: usize = wtf8ByteSequenceLengthWithInvalid(remaining[0]);
+        const code_point_len: usize = wtf8ByteSequenceLength(remaining[0]);
         if (remaining.len < code_point_len) {
             @branchHint(.unlikely);
             return error.IncompleteUTF8;
@@ -2009,6 +2009,7 @@ pub const encodeUTF8Comptime = unicode.encodeUTF8Comptime;
 pub const encodeWTF8Rune = unicode.encodeWTF8Rune;
 pub const encodeWTF8RuneT = unicode.encodeWTF8RuneT;
 pub const eqlUtf16 = unicode.eqlUtf16;
+pub const fmtWtf8 = unicode.fmtWtf8;
 pub const isAllASCII = unicode.isAllASCII;
 pub const isValidUTF8 = unicode.isValidUTF8;
 pub const isValidUTF8WithoutSIMD = unicode.isValidUTF8WithoutSIMD;
@@ -2043,7 +2044,6 @@ pub const utf8ByteSequenceLengthUnsafe = unicode.utf8ByteSequenceLengthUnsafe;
 pub const w = unicode.w;
 pub const withoutUTF8BOM = unicode.withoutUTF8BOM;
 pub const wtf8ByteSequenceLength = unicode.wtf8ByteSequenceLength;
-pub const wtf8ByteSequenceLengthWithInvalid = unicode.wtf8ByteSequenceLengthWithInvalid;
 pub const wtf8Sequence = unicode.wtf8Sequence;
 
 pub const isAmgiguousCodepointType = visible_.isAmgiguousCodepointType;

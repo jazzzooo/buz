@@ -1167,10 +1167,21 @@ fn runWithSourceCode(
     }
     step.* = .parse;
 
-    const is_empty = strings.isAllWhitespace(entry.contents);
+    var source_value = Logger.Source{
+        .path = file_path.*,
+        .index = task.source_index,
+        .contents = entry.contents,
+        .contents_is_recycled = false,
+    };
+    if (loader.usesTextSource()) {
+        try source_value.normalizeText(allocator);
+    }
+    const source = &source_value;
+
+    const is_empty = strings.isAllWhitespace(source.contents);
 
     const use_directive: UseDirective = if (!is_empty and transpiler.options.server_components)
-        if (UseDirective.parse(entry.contents)) |use|
+        if (UseDirective.parse(source.contents)) |use|
             use
         else
             .none
@@ -1190,14 +1201,7 @@ fn runWithSourceCode(
         transpiler = this.transpilerForTarget(.browser);
     }
 
-    const source = &Logger.Source{
-        .path = file_path.*,
-        .index = task.source_index,
-        .contents = entry.contents,
-        .contents_is_recycled = false,
-    };
-
-    const target = (if (task.source_index.get() == 1) targetFromHashbang(entry.contents) else null) orelse
+    const target = (if (task.source_index.get() == 1) targetFromHashbang(source.contents) else null) orelse
         if (task.known_target == .bake_server_components_ssr and transpiler.options.framework.?.server_components.?.separate_ssr_graph)
             .bake_server_components_ssr
         else

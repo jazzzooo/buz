@@ -2,7 +2,6 @@ pub const Parser = struct {
     options: Options,
     lexer: js_lexer.Lexer,
     log: *logger.Log,
-    source: *const logger.Source,
     define: *Define,
     allocator: Allocator,
 
@@ -105,7 +104,7 @@ pub const Parser = struct {
     fn _scanImports(self: *Parser, comptime ParserType: type, scan_pass: *ScanPassResult) anyerror!void {
         var p: ParserType = undefined;
 
-        try ParserType.init(self.allocator, self.log, self.source, self.define, self.lexer, self.options, &p);
+        try ParserType.init(self.allocator, self.log, &self.lexer.source, self.define, self.lexer, self.options, &p);
         p.import_records = &scan_pass.import_records;
         p.named_imports = &scan_pass.named_imports;
 
@@ -180,7 +179,7 @@ pub const Parser = struct {
 
     pub fn toLazyExportAST(this: *Parser, expr: Expr, comptime runtime_api_call: []const u8, symbols: Symbol.List) !js_ast.Result {
         var p: JavaScriptParser = undefined;
-        try JavaScriptParser.init(this.allocator, this.log, this.source, this.define, this.lexer, this.options, &p);
+        try JavaScriptParser.init(this.allocator, this.log, &this.lexer.source, this.define, this.lexer, this.options, &p);
         defer p.lexer.deinit();
 
         p.lexer.track_comments = this.options.features.minify_identifiers;
@@ -234,7 +233,7 @@ pub const Parser = struct {
 
         const exports_kind: js_ast.ExportsKind = brk: {
             if (expr.data == .e_undefined) {
-                const extension = std.fs.path.extension(this.source.path.text);
+                const extension = std.fs.path.extension(this.lexer.source.path.text);
                 if (strings.eqlComptime(extension, ".cjs")) break :brk .cjs;
                 if (strings.eqlComptime(extension, ".mjs")) break :brk .esm;
             }
@@ -263,7 +262,7 @@ pub const Parser = struct {
 
     pub fn analyze(self: *Parser, context: *anyopaque, callback: *const fn (*anyopaque, *TSXParser, []js_ast.Part) anyerror!void) anyerror!void {
         var p: TSXParser = undefined;
-        try TSXParser.init(self.allocator, self.log, self.source, self.define, self.lexer, self.options, &p);
+        try TSXParser.init(self.allocator, self.log, &self.lexer.source, self.define, self.lexer, self.options, &p);
 
         defer p.lexer.deinit();
 
@@ -320,11 +319,11 @@ pub const Parser = struct {
     fn _parse(noalias self: *Parser, comptime ParserType: type) !js_ast.Result {
         const prev_action = bun.crash_handler.current_action;
         defer bun.crash_handler.current_action = prev_action;
-        bun.crash_handler.current_action = .{ .parse = self.source.path.text };
+        bun.crash_handler.current_action = .{ .parse = self.lexer.source.path.text };
 
         var p: ParserType = undefined;
         const orig_error_count = self.log.errors;
-        try ParserType.init(self.allocator, self.log, self.source, self.define, self.lexer, self.options, &p);
+        try ParserType.init(self.allocator, self.log, &self.lexer.source, self.define, self.lexer, self.options, &p);
 
         if (p.options.features.hot_module_reloading) {
             bun.assert(!p.options.tree_shaking);
@@ -430,7 +429,7 @@ pub const Parser = struct {
             return error.SyntaxError;
         }
 
-        bun.crash_handler.current_action = .{ .visit = self.source.path.text };
+        bun.crash_handler.current_action = .{ .visit = self.lexer.source.path.text };
 
         const visit_tracer = bun.perf.trace("JSParser.visit");
         try p.prepareForVisitPass();
@@ -1488,7 +1487,6 @@ pub const Parser = struct {
             .allocator = allocator,
             .lexer = try js_lexer.Lexer.init(log, source, allocator),
             .define = define,
-            .source = source,
             .log = log,
         };
     }

@@ -710,7 +710,11 @@ pub const ByteRangeMapping = struct {
 
     pub fn compute(source_contents: []const u8, source_id: i32, source_url: bun.jsc.ZigString.Slice) ByteRangeMapping {
         return ByteRangeMapping{
-            .line_offset_table = LineOffsetTable.generate(bun.jsc.VirtualMachine.get().allocator, source_contents, 0),
+            .line_offset_table = LineOffsetTable.generate(
+                bun.jsc.VirtualMachine.get().allocator,
+                std.unicode.Wtf8View.init(source_contents) catch unreachable,
+                0,
+            ),
             .source_id = source_id,
             .source_url = source_url,
         };

@@ -746,7 +746,7 @@ pub const AnsiRenderer = struct {
                         continue;
                     }
                     var cut = visibleIndexAt(rest, r);
-                    if (cut == 0) cut = @min(rest.len, @as(usize, bun.strings.wtf8ByteSequenceLengthWithInvalid(rest[0])));
+                    if (cut == 0) cut = @min(rest.len, @as(usize, bun.strings.wtf8ByteSequenceLength(rest[0])));
                     self.writeRaw(rest[0..cut]);
                     self.col += @intCast(visibleWidth(rest[0..cut]));
                     self.last_was_newline = false;
@@ -915,7 +915,7 @@ pub const AnsiRenderer = struct {
                     // Even a fresh line can't hold one codepoint —
                     // emit one codepoint to make progress.
                     const adv = visibleIndexAt(rest, 2);
-                    const one = if (adv == 0) @min(rest.len, @as(usize, bun.strings.wtf8ByteSequenceLengthWithInvalid(rest[0]))) else adv;
+                    const one = if (adv == 0) @min(rest.len, @as(usize, bun.strings.wtf8ByteSequenceLength(rest[0]))) else adv;
                     self.emitInline(rest[0..one]);
                     self.col += @intCast(visibleWidth(rest[0..one]));
                     self.last_was_newline = false;
@@ -1640,7 +1640,7 @@ pub const AnsiRenderer = struct {
                         if (sp > 0) cut = sp;
                     }
                 }
-                if (cut == 0) cut = @min(rest.len, @as(usize, bun.strings.wtf8ByteSequenceLengthWithInvalid(rest[0])));
+                if (cut == 0) cut = @min(rest.len, @as(usize, bun.strings.wtf8ByteSequenceLength(rest[0])));
                 state_at[i].append(self.allocator, state) catch {
                     self.out.oom = true;
                     return;

@@ -175,8 +175,24 @@ pub const Location = struct {
             }
             const data = source.initErrorPosition(r.loc);
             var full_line = source.contents[data.line_start..data.line_end];
-            if (full_line.len > 80 + data.column_count) {
-                full_line = full_line[@max(data.column_count, 40) - 40 .. @min(data.column_count + 40, full_line.len - 40) + 40];
+            if (full_line.len > 80 + data.column_byte_offset) {
+                var window_start = @max(data.column_byte_offset, 40) - 40;
+                var window_end = @min(data.column_byte_offset + 40, full_line.len - 40) + 40;
+                while (window_start < full_line.len) {
+                    _ = std.unicode.utf8ByteSequenceLength(full_line[window_start]) catch {
+                        window_start += 1;
+                        continue;
+                    };
+                    break;
+                }
+                while (window_end > window_start and window_end < full_line.len) {
+                    _ = std.unicode.utf8ByteSequenceLength(full_line[window_end]) catch {
+                        window_end -= 1;
+                        continue;
+                    };
+                    break;
+                }
+                full_line = full_line[window_start..window_end];
             }
 
             return Location{
@@ -1201,6 +1217,7 @@ pub const Source = struct {
 
     contents: string,
     contents_is_recycled: bool = false,
+    contents_is_valid_wtf8: bool = false,
 
     index: Index = Index.source(0),
 
@@ -1223,19 +1240,21 @@ pub const Source = struct {
     pub const ErrorPosition = struct {
         line_start: usize,
         line_end: usize,
+        column_byte_offset: usize,
         column_count: usize,
         line_count: usize,
     };
 
     pub fn initEmptyFile(filepath: string) Source {
         const path = fs.Path.init(filepath);
-        return Source{ .path = path, .contents = "" };
+        return Source{ .path = path, .contents = "", .contents_is_valid_wtf8 = true };
     }
 
     pub fn initFile(file: fs.PathContentsPair, _: std.mem.Allocator) !Source {
         var source = Source{
             .path = file.path,
             .contents = file.contents,
+            .contents_is_valid_wtf8 = file.contents.len == 0,
         };
         source.path.namespace = "file";
         return source;
@@ -1246,6 +1265,7 @@ pub const Source = struct {
             .path = file.path,
             .contents = file.contents,
             .contents_is_recycled = true,
+            .contents_is_valid_wtf8 = file.contents.len == 0,
         };
         source.path.namespace = "file";
 
@@ -1254,7 +1274,23 @@ pub const Source = struct {
 
     pub fn initPathString(pathString: string, contents: string) Source {
         const path = fs.Path.init(pathString);
-        return Source{ .path = path, .contents = contents };
+        return Source{ .path = path, .contents = contents, .contents_is_valid_wtf8 = contents.len == 0 };
+    }
+
+    pub fn normalizeText(self: *Source, allocator: std.mem.Allocator) OOM!void {
+        if (self.contents_is_valid_wtf8) return;
+        if (std.unicode.wtf8ValidateSlice(self.contents)) {
+            self.contents_is_valid_wtf8 = true;
+            return;
+        }
+        self.contents = try std.fmt.allocPrint(allocator, "{f}", .{strings.fmtWtf8(self.contents)});
+        self.contents_is_recycled = false;
+        self.contents_is_valid_wtf8 = true;
+    }
+
+    pub fn wtf8View(self: *const Source) std.unicode.Wtf8View {
+        bun.debugAssert(std.unicode.wtf8ValidateSlice(self.contents));
+        return std.unicode.Wtf8View.initUnchecked(self.contents);
     }
 
     pub fn textForRange(self: *const Source, r: Range) string {
@@ -1304,90 +1340,77 @@ pub const Source = struct {
 
     pub fn initErrorPosition(self: *const Source, offset_loc: Loc) ErrorPosition {
         bun.assert(!offset_loc.isEmpty());
-        var prev_code_point: i32 = 0;
-        const offset: usize = @min(@as(usize, @intCast(offset_loc.start)), @max(self.contents.len, 1) - 1);
-
         const contents = self.contents;
-
-        var iter_ = strings.CodepointIterator{
-            .bytes = self.contents[0..offset],
-            .i = 0,
-        };
-        var iter = strings.CodepointIterator.Cursor{};
-
+        const offset: usize = @min(@as(usize, @intCast(offset_loc.start)), contents.len);
+        var codepoints = strings.CodepointIterator.init(contents);
+        var cursor = strings.CodepointIterator.Cursor{};
+        var position_offset: usize = 0;
         var line_start: usize = 0;
         var line_count: usize = 1;
         var column_number: usize = 1;
 
-        while (iter_.next(&iter)) {
-            switch (iter.c) {
+        while (codepoints.next(&cursor)) {
+            var codepoint_end = @as(usize, cursor.i) + cursor.width;
+            if (codepoint_end > offset) break;
+
+            switch (cursor.c) {
                 '\n' => {
                     column_number = 1;
-                    line_start = iter.width + iter.i;
-                    if (prev_code_point != '\r') {
-                        line_count += 1;
-                    }
-                },
-
-                '\r' => {
-                    column_number = 0;
-                    line_start = iter.width + iter.i;
+                    line_start = codepoint_end;
                     line_count += 1;
                 },
-
+                '\r' => {
+                    if (codepoint_end < offset and contents[codepoint_end] == '\n') {
+                        _ = codepoints.next(&cursor);
+                        codepoint_end += 1;
+                    }
+                    column_number = 1;
+                    line_start = codepoint_end;
+                    line_count += 1;
+                },
                 0x2028, 0x2029 => {
-                    line_start = iter.width + iter.i; // These take three bytes to encode in UTF-8
+                    line_start = codepoint_end;
                     line_count += 1;
                     column_number = 1;
                 },
                 else => {
-                    column_number += 1;
+                    column_number += 1 + @as(usize, @intFromBool(cursor.c > 0xFFFF));
                 },
             }
-
-            prev_code_point = iter.c;
+            position_offset = codepoint_end;
         }
 
-        iter_ = strings.CodepointIterator{
-            .bytes = self.contents[offset..],
-            .i = 0,
-        };
-
-        iter = strings.CodepointIterator.Cursor{};
-        // Scan to the end of the line (or end of file if this is the last line)
-        var line_end: usize = contents.len;
-
-        loop: while (iter_.next(&iter)) {
-            switch (iter.c) {
+        var line_codepoints = strings.CodepointIterator.init(contents[position_offset..]);
+        cursor = .{};
+        var line_end = contents.len;
+        while (line_codepoints.next(&cursor)) {
+            switch (cursor.c) {
                 '\r', '\n', 0x2028, 0x2029 => {
-                    line_end = offset + iter.i;
-                    break :loop;
+                    line_end = position_offset + cursor.i;
+                    break;
                 },
                 else => {},
             }
         }
 
         return ErrorPosition{
-            .line_start = if (line_start > 0) line_start - 1 else line_start,
+            .line_start = line_start,
             .line_end = line_end,
+            .column_byte_offset = position_offset - line_start,
             .line_count = line_count,
             .column_count = column_number,
         };
     }
+
     pub fn lineColToByteOffset(source_contents: []const u8, start_line: usize, start_col: usize, line: usize, col: usize) ?usize {
-        var iter_ = strings.CodepointIterator{
-            .bytes = source_contents,
-            .i = 0,
-        };
-        var iter = strings.CodepointIterator.Cursor{};
+        if (start_line > line or (start_line == line and start_col > col)) return null;
+        if (start_line == line and start_col == col) return 0;
 
-        var line_count: usize = start_line;
-        var column_number: usize = start_col;
+        var iter = (std.unicode.Wtf8View.init(source_contents) catch return null).iterator();
+        var line_count = start_line;
+        var column_number = start_col;
 
-        _ = iter_.next(&iter);
-        while (true) {
-            const c = iter.c;
-            if (!iter_.next(&iter)) break;
+        while (iter.nextCodepoint()) |c| {
             switch (c) {
                 '\n' => {
                     column_number = 1;
@@ -1395,11 +1418,11 @@ pub const Source = struct {
                 },
 
                 '\r' => {
+                    if (iter.i < source_contents.len and source_contents[iter.i] == '\n') {
+                        _ = iter.nextCodepoint();
+                    }
                     column_number = 1;
                     line_count += 1;
-                    if (iter.c == '\n') {
-                        _ = iter_.next(&iter);
-                    }
                 },
 
                 0x2028, 0x2029 => {
@@ -1407,12 +1430,12 @@ pub const Source = struct {
                     column_number = 1;
                 },
                 else => {
-                    column_number += 1;
+                    column_number += 1 + @as(usize, @intFromBool(c > 0xFFFF));
                 },
             }
 
             if (line_count == line and column_number == col) return iter.i;
-            if (line_count > line) return null;
+            if (line_count > line or (line_count == line and column_number > col)) return null;
         }
         return null;
     }

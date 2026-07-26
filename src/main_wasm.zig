@@ -435,6 +435,7 @@ export fn getTests(opts_array: u64) u64 {
     const opts = api.GetTestsRequest.decode(&reader) catch unreachable;
     var code = Logger.Source.initPathString(if (opts.path.len > 0) opts.path else "my-test-file.test.tsx", opts.contents);
     code.contents_is_recycled = true;
+    code.normalizeText(allocator) catch unreachable;
     defer {
         JSAst.Stmt.Data.Store.reset();
         JSAst.Expr.Data.Store.reset();
@@ -505,6 +506,7 @@ export fn transform(opts_array: u64) u64 {
     const path = opts.path orelse loader.stdinName();
     var code = Logger.Source.initPathString(path, opts.contents);
     code.contents_is_recycled = true;
+    code.normalizeText(allocator) catch unreachable;
 
     var parser = JSParser.Parser.init(.{
         .jsx = .{},
@@ -577,6 +579,7 @@ export fn scan(opts_array: u64) u64 {
     const path = opts.path orelse loader.stdinName();
     var code = Logger.Source.initPathString(path, opts.contents);
     code.contents_is_recycled = true;
+    code.normalizeText(allocator) catch unreachable;
 
     var parser = JSParser.Parser.init(.{
         .jsx = .{},
