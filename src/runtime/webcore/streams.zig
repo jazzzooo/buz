@@ -796,11 +796,7 @@ pub fn HTTPServerWritable(comptime ssl: bool, comptime http3: bool) type {
             // we clear the onWritable handler so uWS can handle the backpressure for us
             res.clearOnWritable();
             this.handleFirstWriteIfNecessary();
-            // uWebSockets lacks a tryWrite() function
-            // This means that backpressure will be handled by appending to an "infinite" memory buffer
-            // It will do the backpressure handling for us
-            // so in this scenario, we just append to the buffer
-            // and report success
+            // `buf` is released after this call, so this path needs uWebSockets' owned backpressure.
             if (this.requested_end) {
                 res.end(buf, false);
                 this.has_backpressure = false;

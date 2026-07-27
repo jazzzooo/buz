@@ -106,6 +106,23 @@ pub fn NewResponse(ssl_flag: i32) type {
                 false => .{ .backpressure = len },
             };
         }
+        pub fn prepareWrite(res: *Response, length: usize) PreparedWrite {
+            return if (c.uws_res_prepare_write(ssl_flag, res.downcast(), length)) .chunked else .unchunked;
+        }
+        fn writeBody(res: *Response, data: []const u8, optional: bool) usize {
+            var len: usize = data.len;
+            _ = c.uws_res_write_body(ssl_flag, res.downcast(), data.ptr, &len, optional);
+            return len;
+        }
+        pub fn tryWriteBody(res: *Response, data: []const u8) usize {
+            return res.writeBody(data, true);
+        }
+        pub fn writePreparedBody(res: *Response, data: []const u8) void {
+            bun.debugAssert(res.writeBody(data, false) == data.len);
+        }
+        pub fn finishWrite(res: *Response, prepared: PreparedWrite) bool {
+            return c.uws_res_finish_write(ssl_flag, res.downcast(), prepared == .chunked);
+        }
         pub fn getWriteOffset(res: *Response) u64 {
             return c.uws_res_get_write_offset(ssl_flag, res.downcast());
         }
@@ -475,6 +492,34 @@ pub const AnyResponse = union(enum) {
         };
     }
 
+    pub fn prepareWrite(this: AnyResponse, length: usize) ?PreparedWrite {
+        return switch (this) {
+            inline .SSL, .TCP => |resp| resp.prepareWrite(length),
+            .H3 => null,
+        };
+    }
+
+    pub fn tryWriteBody(this: AnyResponse, data: []const u8) usize {
+        return switch (this) {
+            inline .SSL, .TCP => |resp| resp.tryWriteBody(data),
+            .H3 => unreachable,
+        };
+    }
+
+    pub fn writePreparedBody(this: AnyResponse, data: []const u8) void {
+        switch (this) {
+            inline .SSL, .TCP => |resp| resp.writePreparedBody(data),
+            .H3 => unreachable,
+        }
+    }
+
+    pub fn finishWrite(this: AnyResponse, prepared: PreparedWrite) bool {
+        return switch (this) {
+            inline .SSL, .TCP => |resp| resp.finishWrite(prepared),
+            .H3 => unreachable,
+        };
+    }
+
     pub fn end(this: AnyResponse, data: []const u8, close_connection: bool) void {
         switch (this) {
             inline else => |resp| resp.end(data, close_connection),
@@ -704,6 +749,11 @@ pub const WriteResult = union(enum) {
     backpressure: usize,
 };
 
+pub const PreparedWrite = enum(u8) {
+    unchunked,
+    chunked,
+};
+
 pub const uws_res = c.uws_res;
 
 const c = struct {
@@ -731,6 +781,9 @@ const c = struct {
     pub extern fn uws_res_reset_timeout(ssl: i32, res: *c.uws_res) void;
     pub extern fn uws_res_get_buffered_amount(ssl: i32, res: *c.uws_res) u64;
     pub extern fn uws_res_write(ssl: i32, res: *c.uws_res, data: ?[*]const u8, length: *usize) bool;
+    pub extern fn uws_res_prepare_write(ssl: i32, res: *c.uws_res, length: usize) bool;
+    pub extern fn uws_res_write_body(ssl: i32, res: *c.uws_res, data: [*]const u8, length: *usize, optional: bool) bool;
+    pub extern fn uws_res_finish_write(ssl: i32, res: *c.uws_res, chunked: bool) bool;
     pub extern fn uws_res_get_write_offset(ssl: i32, res: *c.uws_res) u64;
     pub extern fn uws_res_override_write_offset(ssl: i32, res: *c.uws_res, u64) void;
     pub extern fn uws_res_has_responded(ssl: i32, res: *c.uws_res) bool;

@@ -3279,7 +3279,7 @@ CPP_DECL void JSC__JSValue__unpinArrayBuffer(JSC::EncodedJSValue v)
         buf->unpin();
 }
 
-// Borrow `v`'s byte storage for off-thread reading. Splits out only the
+// Borrow `v`'s byte storage without copying. Splits out only the
 // `FastTypedArray` case from `pinArrayBuffer`, because that's the one mode
 // where `possiblySharedBuffer()` actually COPIES data
 // (`ArrayBuffer::tryCreate(span())`) — and it's ≤ fastSizeLimit elements, so
@@ -3299,7 +3299,7 @@ CPP_DECL void JSC__JSValue__unpinArrayBuffer(JSC::EncodedJSValue v)
 //      MUST `unpinArrayBuffer(v)` when done.
 //
 // `out_ptr`/`out_len` describe the VIEW's byte range (offset+length).
-CPP_DECL int32_t JSC__JSValue__borrowBytesForOffThread(JSC::EncodedJSValue v, const uint8_t** out_ptr, size_t* out_len)
+CPP_DECL int32_t JSC__JSValue__borrowBytes(JSC::EncodedJSValue v, const uint8_t** out_ptr, size_t* out_len)
 {
     auto value = JSC::JSValue::decode(v);
     if (auto* view = dynamicDowncast<JSC::JSArrayBufferView>(value)) {

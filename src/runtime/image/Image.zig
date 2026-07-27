@@ -76,7 +76,7 @@ extern fn JSC__JSValue__unpinArrayBuffer(v: jsc.JSValue) void;
 /// 2 = pinned ArrayBuffer (caller must unpin). For OversizeTypedArray the
 /// helper adopts the storage in-place (createAdopted — no byte copy) and
 /// pins; once adopted it's detachable, so it MUST be pinned, not borrowed.
-extern fn JSC__JSValue__borrowBytesForOffThread(v: jsc.JSValue, out_ptr: *[*]const u8, out_len: *usize) i32;
+extern fn JSC__JSValue__borrowBytes(v: jsc.JSValue, out_ptr: *[*]const u8, out_len: *usize) i32;
 
 pub const Fit = enum {
     fill,
@@ -442,7 +442,7 @@ fn pinForTask(this: *Image, this_value: jsc.JSValue, _: *jsc.JSGlobalObject) err
             // tells us whether anything actually needs pinning.
             var ptr: [*]const u8 = undefined;
             var len: usize = 0;
-            return switch (JSC__JSValue__borrowBytesForOffThread(v, &ptr, &len)) {
+            return switch (JSC__JSValue__borrowBytes(v, &ptr, &len)) {
                 0 => error.Detached,
                 // FastTypedArray (≤ fastSizeLimit elements, GC-movable): tiny
                 // by definition — dupe instead of forcing JSC to copy via

@@ -13,10 +13,35 @@ pub const ArrayBuffer = extern struct {
         return this.ptr == null;
     }
 
+    pub const PinnedBytes = struct {
+        value: jsc.JSValue = .zero,
+        bytes: []const u8 = "",
+
+        pub fn deinit(this: *PinnedBytes) void {
+            if (this.value == .zero) return;
+            JSC__JSValue__unpinArrayBuffer(this.value);
+            this.value.unprotect();
+            this.* = .{};
+        }
+    };
+
+    pub fn pinBytes(value: jsc.JSValue) ?PinnedBytes {
+        var ptr: [*]const u8 = undefined;
+        var length: usize = 0;
+        if (JSC__JSValue__borrowBytes(value, &ptr, &length) != 2) return null;
+        value.protect();
+        return .{
+            .value = value,
+            .bytes = ptr[0..length],
+        };
+    }
+
     // require('buffer').kMaxLength.
     // keep in sync with Bun::Buffer::kMaxLength
     pub const max_size = std.math.maxInt(c_uint);
 
+    extern fn JSC__JSValue__unpinArrayBuffer(value: jsc.JSValue) void;
+    extern fn JSC__JSValue__borrowBytes(value: jsc.JSValue, out_ptr: *[*]const u8, out_len: *usize) i32;
     extern fn JSBuffer__fromMmap(*jsc.JSGlobalObject, addr: *anyopaque, len: usize) jsc.JSValue;
 
     // 4 MB or so is pretty good for mmap()

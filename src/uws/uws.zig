@@ -25,6 +25,7 @@ pub const WindowsLoop = @import("../uws_sys/Loop.zig").WindowsLoop;
 pub const Request = @import("../uws_sys/Request.zig").Request;
 pub const AnyRequest = @import("../uws_sys/Request.zig").AnyRequest;
 pub const AnyResponse = @import("../uws_sys/Response.zig").AnyResponse;
+pub const PreparedWrite = @import("../uws_sys/Response.zig").PreparedWrite;
 pub const NewApp = @import("../uws_sys/App.zig").NewApp;
 pub const uws_res = @import("../uws_sys/Response.zig").uws_res;
 pub const RawWebSocket = @import("../uws_sys/WebSocket.zig").RawWebSocket;

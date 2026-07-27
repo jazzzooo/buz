@@ -1390,9 +1390,43 @@ extern "C"
         if (!uwsRes->uWS::AsyncSocket<false>::isCorked()) {
           uwsRes->uWS::AsyncSocket<false>::cork();
         }
-      }
+    }
     return uwsRes->write(stringViewFromC(data, *length), length);
   }
+
+  bool uws_res_prepare_write(int ssl, uws_res_r res, size_t length)
+  {
+    if (ssl)
+    {
+      return ((uWS::HttpResponse<true> *)res)->prepareWrite(length);
+    }
+    return ((uWS::HttpResponse<false> *)res)->prepareWrite(length);
+  }
+
+  bool uws_res_write_body(int ssl, uws_res_r res, const char *data, size_t *length, bool optional) nonnull_fn_decl;
+
+  bool uws_res_write_body(int ssl, uws_res_r res, const char *data, size_t *length, bool optional)
+  {
+    if (ssl)
+    {
+      auto [written, failed] = ((uWS::HttpResponse<true> *)res)->writeBody(stringViewFromC(data, *length), optional);
+      *length = written;
+      return !failed;
+    }
+    auto [written, failed] = ((uWS::HttpResponse<false> *)res)->writeBody(stringViewFromC(data, *length), optional);
+    *length = written;
+    return !failed;
+  }
+
+  bool uws_res_finish_write(int ssl, uws_res_r res, bool chunked)
+  {
+    if (ssl)
+    {
+      return ((uWS::HttpResponse<true> *)res)->finishWrite(chunked);
+    }
+    return ((uWS::HttpResponse<false> *)res)->finishWrite(chunked);
+  }
+
   uint64_t uws_res_get_write_offset(int ssl, uws_res_r res) nonnull_fn_decl;
   uint64_t uws_res_get_write_offset(int ssl, uws_res_r res)
   {

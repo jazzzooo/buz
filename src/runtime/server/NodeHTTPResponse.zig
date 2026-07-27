@@ -35,6 +35,57 @@ upgrade_context: UpgradeCTX = .{},
 
 auto_flusher: AutoFlusher = .{},
 
+pending_write: ?PendingWrite = null,
+
+const pending_write_threshold = 64 * 1024;
+
+const PendingWrite = struct {
+    source: jsc.Node.StringOrBuffer = .empty,
+    bytes: []const u8 = "",
+    offset: usize = 0,
+    prepared: uws.PreparedWrite = .unchunked,
+    pinned: ?jsc.ArrayBuffer.PinnedBytes = null,
+
+    fn take(source: *jsc.Node.StringOrBuffer) ?PendingWrite {
+        var bytes = source.slice();
+        var pinned: ?jsc.ArrayBuffer.PinnedBytes = null;
+
+        switch (source.*) {
+            .buffer => |buffer| {
+                if (buffer.buffer.resizable) return null;
+                var borrowed = jsc.ArrayBuffer.pinBytes(buffer.buffer.value) orelse return null;
+                if (borrowed.bytes.len != bytes.len) {
+                    borrowed.deinit();
+                    return null;
+                }
+                bytes = borrowed.bytes;
+                pinned = borrowed;
+            },
+            else => {},
+        }
+
+        const pending = PendingWrite{
+            .source = source.*,
+            .bytes = bytes,
+            .pinned = pinned,
+        };
+        source.* = .empty;
+        return pending;
+    }
+
+    fn remaining(this: *const PendingWrite) []const u8 {
+        return this.bytes[this.offset..];
+    }
+
+    fn deinit(this: *PendingWrite) void {
+        if (this.pinned) |*pinned| {
+            pinned.deinit();
+        }
+        this.source.deinit();
+        this.* = .{};
+    }
+};
+
 pub const Flags = packed struct(u8) {
     socket_closed: bool = false,
     request_has_completed: bool = false,
@@ -191,6 +242,7 @@ pub fn upgrade(this: *NodeHTTPResponse, data_value: JSValue, sec_websocket_proto
         this.upgrade_context.sec_websocket_key;
 
     if (this.raw_response) |raw_response| {
+        this.spillPendingWrite(raw_response);
         this.raw_response = null;
         this.flags.upgraded = true;
         // Unref the poll_ref since the socket is now upgraded to WebSocket
@@ -372,7 +424,8 @@ pub fn getBufferedAmount(this: *const NodeHTTPResponse, _: *jsc.JSGlobalObject) 
         return jsc.JSValue.jsNumber(0);
     }
     if (this.raw_response) |raw_response| {
-        return jsc.JSValue.jsNumber(raw_response.getBufferedAmount());
+        const pending = if (this.pending_write) |*pending_write| pending_write.remaining().len else 0;
+        return jsc.JSValue.jsNumber(raw_response.getBufferedAmount() +| @as(u64, @intCast(pending)));
     }
     return jsc.JSValue.jsNumber(0);
 }
@@ -539,6 +592,7 @@ fn handleAbortOrTimeout(this: *NodeHTTPResponse, comptime event: AbortEvent, js_
 
     if (event == .abort) {
         this.flags.socket_closed = true;
+        this.releasePendingWrite();
     }
 
     this.ref();
@@ -622,6 +676,7 @@ pub fn onRequestComplete(this: *NodeHTTPResponse) void {
     if (this.flags.request_has_completed) {
         return;
     }
+    bun.debugAssert(this.pending_write == null);
     log("onRequestComplete", .{});
     this.flags.request_has_completed = true;
     this.poll_ref.unref(jsc.VirtualMachine.get());
@@ -642,6 +697,7 @@ pub export fn Bun__NodeHTTPRequest__onResolve(globalObject: *jsc.JSGlobalObject,
         clearResponseCallbacks(this_value, globalObject);
         log("clearOnData", .{});
         if (this.raw_response) |raw_response| {
+            this.spillPendingWrite(raw_response);
             raw_response.clearOnData();
             raw_response.clearOnWritable();
             raw_response.clearTimeout();
@@ -669,6 +725,7 @@ pub export fn Bun__NodeHTTPRequest__onReject(globalObject: *jsc.JSGlobalObject, 
         clearResponseCallbacks(this_value, globalObject);
         log("clearOnData", .{});
         if (this.raw_response) |raw_response| {
+            this.spillPendingWrite(raw_response);
             raw_response.clearOnData();
             raw_response.clearOnWritable();
             raw_response.clearTimeout();
@@ -692,6 +749,7 @@ pub fn abort(this: *NodeHTTPResponse, globalObject: *jsc.JSGlobalObject, callfra
 
     clearTerminalCallbacks(callframe.this(), globalObject);
     this.flags.socket_closed = true;
+    this.releasePendingWrite();
     if (this.raw_response) |raw_response| {
         const state = raw_response.state();
         if (state.isHttpEndCalled()) {
@@ -804,12 +862,49 @@ fn onDrainCorked(this: *NodeHTTPResponse, callback: jsc.JSValue, offset: u64) vo
     globalThis.bunVM().eventLoop().runCallback(callback, globalThis, .js_undefined, &.{jsc.JSValue.jsNumberFromUint64(offset)});
 }
 
+fn releasePendingWrite(this: *NodeHTTPResponse) void {
+    if (this.pending_write) |*pending| {
+        pending.deinit();
+        this.pending_write = null;
+    }
+}
+
+fn spillPendingWrite(this: *NodeHTTPResponse, response: uws.AnyResponse) void {
+    var pending = this.pending_write orelse return;
+    this.pending_write = null;
+    defer pending.deinit();
+
+    const remaining = pending.remaining();
+    response.writePreparedBody(remaining);
+    _ = response.finishWrite(pending.prepared);
+}
+
 fn onDrain(this: *NodeHTTPResponse, offset: u64, response: uws.AnyResponse) bool {
     log("onDrain({d})", .{offset});
 
     response.clearOnWritable();
     if (this.flags.socket_closed or this.flags.request_has_completed or this.flags.upgraded) {
+        this.releasePendingWrite();
         return false;
+    }
+
+    if (this.pending_write) |*pending| {
+        const remaining = pending.remaining();
+        const written = response.tryWriteBody(remaining);
+        bun.debugAssert(written <= remaining.len);
+        pending.offset += written;
+
+        if (pending.offset < pending.bytes.len) {
+            response.onWritable(*NodeHTTPResponse, onDrain, this);
+            return false;
+        }
+
+        const framing_ready = response.finishWrite(pending.prepared);
+        this.releasePendingWrite();
+        if (!framing_ready) {
+            response.onWritable(*NodeHTTPResponse, onDrain, this);
+            return false;
+        }
     }
 
     const this_value = this.getThisValue();
@@ -818,7 +913,7 @@ fn onDrain(this: *NodeHTTPResponse, offset: u64, response: uws.AnyResponse) bool
     }
 
     const globalThis = jsc.VirtualMachine.get().global;
-    const callback = js.gc.take(.onWritable, this_value, globalThis) orelse return false;
+    const callback = js.gc.take(.onWritable, this_value, globalThis) orelse return true;
     bun.debugAssert(callback.isCallable() or callback.isAsyncContextFrame());
 
     response.corked(onDrainCorked, .{ this, callback, offset });
@@ -881,7 +976,7 @@ fn writeOrEnd(
         break :brk null;
     };
 
-    const string_or_buffer: jsc.Node.StringOrBuffer = brk: {
+    var string_or_buffer: jsc.Node.StringOrBuffer = brk: {
         if (input_value.isUndefinedOrNull()) {
             break :brk jsc.Node.StringOrBuffer.empty;
         }
@@ -929,6 +1024,9 @@ fn writeOrEnd(
     } else {
         this.bytes_written +|= bytes.len;
     }
+
+    this.spillPendingWrite(raw_response);
+
     if (is_end) {
 
         // Discard the body read ref if it's pending and no onData callback is set at this point.
@@ -954,6 +1052,46 @@ fn writeOrEnd(
         return jsc.JSValue.jsNumberFromUint64(bytes.len);
     } else {
         const js_this = if (this_value != .zero) this_value else this.getThisValue();
+
+        if (bytes.len >= pending_write_threshold and bytes.len <= std.math.maxInt(c_uint)) {
+            if (PendingWrite.take(&string_or_buffer)) |pending_value| {
+                var pending = pending_value;
+                defer pending.deinit();
+
+                pending.prepared = raw_response.prepareWrite(pending.bytes.len) orelse unreachable;
+                const written = raw_response.tryWriteBody(pending.bytes);
+                bun.debugAssert(written <= pending.bytes.len);
+
+                const body_complete = written == pending.bytes.len;
+                if (!body_complete) {
+                    pending.offset = written;
+                    this.pending_write = pending;
+                    pending = .{};
+                }
+
+                const framing_ready = if (body_complete)
+                    raw_response.finishWrite(pending.prepared)
+                else
+                    false;
+
+                if (!body_complete or !framing_ready) {
+                    if (!callback_value.isUndefined()) {
+                        bun.debugAssert(callback_value.isCallable());
+                        js.gc.set(.onWritable, js_this, globalObject, callback_value.withAsyncContextIfNeeded(globalObject));
+                    }
+                    if (this.pending_write != null or !callback_value.isUndefined()) {
+                        raw_response.onWritable(*NodeHTTPResponse, onDrain, this);
+                    }
+
+                    return jsc.JSValue.jsNumberFromInt64(-@as(i64, @intCast(@max(written, 1))));
+                }
+
+                raw_response.clearOnWritable();
+                js.gc.clear(.onWritable, js_this, globalObject);
+                return jsc.JSValue.jsNumberFromUint64(written);
+            }
+        }
+
         switch (raw_response.write(bytes)) {
             .want_more => |written| {
                 raw_response.clearOnWritable();
@@ -1204,6 +1342,7 @@ fn deinit(this: *NodeHTTPResponse) void {
     bun.debugAssert(this.flags.socket_closed or this.flags.request_has_completed);
 
     this.buffered_request_body_data_during_pause.deinit(bun.default_allocator);
+    this.releasePendingWrite();
     this.poll_ref.unref(jsc.VirtualMachine.get());
     this.body_read_ref.unref(jsc.VirtualMachine.get());
 
@@ -1221,6 +1360,7 @@ pub export fn Bun__NodeHTTPResponse_onClose(response: *NodeHTTPResponse, js_valu
 
 pub export fn Bun__NodeHTTPResponse_setClosed(response: *NodeHTTPResponse) void {
     response.flags.socket_closed = true;
+    response.releasePendingWrite();
 }
 
 const string = []const u8;

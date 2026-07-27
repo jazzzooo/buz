@@ -33,8 +33,6 @@
 
 #include "MoveOnlyFunction.h"
 
-/* todo: tryWrite is missing currently, only send smaller segments with write */
-
 namespace uWS {
 
 template <bool, bool, typename> struct WebSocketContext;
@@ -133,9 +131,7 @@ public:
         /* if write was called and there was previously no Content-Length header set */
         if (httpResponseData->state & HttpResponseData<SSL>::HTTP_WRITE_CALLED && !(httpResponseData->state & HttpResponseData<SSL>::HTTP_WROTE_CONTENT_LENGTH_HEADER) && !httpResponseData->fromAncientRequest) {
 
-            /* We do not have tryWrite-like functionalities, so ignore optional in this path */
-
-
+            /* Chunked end does not retain framing state across partial retries. */
             /* Write the chunked data if there is any (this will not send zero chunks) */
             this->write(data, nullptr);
 
@@ -161,7 +157,7 @@ public:
                 this->uncork();
             }
 
-            /* tryEnd can never fail when in chunked mode, since we do not have tryWrite (yet), only write */
+            /* Chunked mode accepts the entire write into socket backpressure. */
             this->resetTimeout();
             return true;
         } else {
@@ -517,56 +513,14 @@ public:
             this->uncork();
         }
     }
-    /* Write parts of the response in chunking fashion. Starts timeout if failed. */
-    bool write(std::string_view data, size_t *writtenPtr = nullptr) {
+    bool prepareWrite(size_t length) {
+        ASSERT(length <= UINT_MAX);
         writeStatus(HTTP_200_OK);
 
-        /* Do not allow sending 0 chunks, they mark end of response */
-        if (data.empty()) {
-            if (writtenPtr) {
-                *writtenPtr = 0;
-            }
-            /* If you called us, then according to you it was fine to call us so it's fine to still call us */
-            return true;
-        }
-
-        size_t length = data.length();
-
-        // Special handling for extremely large data (greater than UINT_MAX bytes)
-        // most clients expect a max of UINT_MAX, so we need to split the write into multiple writes
-        if (length > UINT_MAX) {
-            bool has_failed = false;
-            size_t total_written = 0;
-            // Process full-sized chunks until remaining data is less than UINT_MAX
-            while (length > UINT_MAX) {
-                size_t written = 0;
-                // Write a UINT_MAX-sized chunk and check for failure
-                // even after failure we continue writing because the data will be buffered
-                if(!this->write(data.substr(0, UINT_MAX), &written)) {
-                    has_failed = true;
-                }
-                total_written += written;
-                length -= UINT_MAX;
-                data = data.substr(UINT_MAX);
-            }
-            // Handle the final chunk (less than UINT_MAX bytes)
-            if (length > 0) {
-                size_t written = 0;
-                if(!this->write(data, &written)) {
-                    has_failed = true;
-                }
-                total_written += written;
-            }
-            if (writtenPtr) {
-                *writtenPtr = total_written;
-            }
-            return !has_failed;
-        }
-
-
         HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+        bool chunked = !(httpResponseData->state & HttpResponseData<SSL>::HTTP_WROTE_CONTENT_LENGTH_HEADER) && !httpResponseData->fromAncientRequest;
 
-        if (!(httpResponseData->state & HttpResponseData<SSL>::HTTP_WROTE_CONTENT_LENGTH_HEADER) && !httpResponseData->fromAncientRequest) {
+        if (chunked) {
             if (!(httpResponseData->state & HttpResponseData<SSL>::HTTP_WRITE_CALLED)) {
                 /* Write mark on first call to write */
                 writeMark();
@@ -578,41 +532,91 @@ public:
                 httpResponseData->state |= HttpResponseData<SSL>::HTTP_WRITE_CALLED;
             }
 
-            writeUnsignedHex((unsigned int) data.length());
+            writeUnsignedHex((unsigned int) length);
             Super::write("\r\n", 2);
         } else if (!(httpResponseData->state & HttpResponseData<SSL>::HTTP_WRITE_CALLED)) {
             writeMark();
             Super::write("\r\n", 2);
             httpResponseData->state |= HttpResponseData<SSL>::HTTP_WRITE_CALLED;
         }
+
+        return chunked;
+    }
+
+    std::pair<size_t, bool> writeBody(std::string_view data, bool optional) {
+        size_t length = data.length();
         size_t total_written = 0;
         bool has_failed = false;
 
-        // Handle data larger than INT_MAX by writing it in chunks of INT_MAX bytes
-        while (length > INT_MAX) {
-            // Write the maximum allowed chunk size (INT_MAX)
-            auto [written, failed] = Super::write(data.data(), INT_MAX);
-            // If the write failed, set the has_failed flag we continue writting because the data will be buffered
+        while (length > 0) {
+            int write_length = (int) std::min<size_t>(length, INT_MAX);
+            auto [written, failed] = Super::write(data.data(), write_length, optional);
             has_failed = has_failed || failed;
-            total_written += written;
-            length -= INT_MAX;
-            data = data.substr(INT_MAX);
-        }
-        // Handle the remaining data (less than INT_MAX bytes)
-        if (length > 0) {
-            // Write the final chunk with exact remaining length
-            auto [written, failed] = Super::write(data.data(), (int) length);
-            has_failed = has_failed || failed;
-            total_written += written;
+            total_written += (size_t) written;
+            if (failed && optional) {
+                break;
+            }
+            length -= (size_t) written;
+            data = data.substr((size_t) written);
         }
 
-        if (!(httpResponseData->state & HttpResponseData<SSL>::HTTP_WROTE_CONTENT_LENGTH_HEADER) && !httpResponseData->fromAncientRequest) {
-            // Write End of Chunked Encoding after data has been written
-            Super::write("\r\n", 2);
+        return {total_written, has_failed};
+    }
+
+    bool finishWrite(bool chunked) {
+        bool success = true;
+        if (chunked) {
+            auto [written, failed] = Super::write("\r\n", 2);
+            success = written == 2 && !failed;
         }
 
-        /* Reset timeout on each sended chunk */
         this->resetTimeout();
+
+        return success;
+    }
+
+    /* Write parts of the response in chunking fashion. Starts timeout if failed. */
+    bool write(std::string_view data, size_t *writtenPtr = nullptr) {
+        /* Do not allow sending 0 chunks, they mark end of response */
+        if (data.empty()) {
+            if (writtenPtr) {
+                *writtenPtr = 0;
+            }
+            /* If you called us, then according to you it was fine to call us so it's fine to still call us */
+            return true;
+        }
+
+        size_t length = data.length();
+
+        // Keep each HTTP chunk within UINT_MAX for client compatibility.
+        if (length > UINT_MAX) {
+            bool has_failed = false;
+            size_t total_written = 0;
+            while (length > UINT_MAX) {
+                size_t written = 0;
+                if (!this->write(data.substr(0, UINT_MAX), &written)) {
+                    has_failed = true;
+                }
+                total_written += written;
+                length -= UINT_MAX;
+                data = data.substr(UINT_MAX);
+            }
+            if (length > 0) {
+                size_t written = 0;
+                if (!this->write(data, &written)) {
+                    has_failed = true;
+                }
+                total_written += written;
+            }
+            if (writtenPtr) {
+                *writtenPtr = total_written;
+            }
+            return !has_failed;
+        }
+
+        bool chunked = prepareWrite(length);
+        auto [total_written, has_failed] = writeBody(data, false);
+        has_failed = !finishWrite(chunked) || has_failed;
 
         if (writtenPtr) {
             *writtenPtr = total_written;

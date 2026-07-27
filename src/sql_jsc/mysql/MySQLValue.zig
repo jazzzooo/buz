@@ -214,7 +214,7 @@ pub const Value = union(enum) {
                     // then safe without a copy. See `Value.Bytes`.
                     var ptr: [*]const u8 = undefined;
                     var len: usize = 0;
-                    return switch (JSC__JSValue__borrowBytesForOffThread(value, &ptr, &len)) {
+                    return switch (JSC__JSValue__borrowBytes(value, &ptr, &len)) {
                         // detached / null
                         0 => Value{ .bytes = .{} },
                         // FastTypedArray — tiny, GC-movable vector; dupe.
@@ -619,7 +619,7 @@ fn gregorianDate(days: i32) Date {
 extern fn JSC__JSValue__unpinArrayBuffer(v: JSC.JSValue) void;
 /// 0 = detached/null, 1 = FastTypedArray (GC-movable — caller should dupe;
 /// no unpin needed), 2 = pinned ArrayBuffer (caller must `unpinArrayBuffer`).
-extern fn JSC__JSValue__borrowBytesForOffThread(v: JSC.JSValue, out_ptr: *[*]const u8, out_len: *usize) i32;
+extern fn JSC__JSValue__borrowBytes(v: JSC.JSValue, out_ptr: *[*]const u8, out_len: *usize) i32;
 
 const AnyMySQLError = @import("../../sql/mysql/protocol/AnyMySQLError.zig");
 const std = @import("std");
