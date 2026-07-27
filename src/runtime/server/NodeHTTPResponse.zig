@@ -205,7 +205,7 @@ pub fn maybeStopReadingBody(this: *NodeHTTPResponse, vm: *jsc.VirtualMachine, th
 
     if ((this.flags.upgraded or this.flags.socket_closed or this.flags.ended) and
         (this.body_read_ref.has or this.body_read_state == .pending) and
-        (!this.flags.hasCustomOnData or js.onDataGetCached(thisValue) == null))
+        (!this.flags.hasCustomOnData or js.gc.get(.onData, thisValue) == null))
     {
         const had_ref = this.body_read_ref.has;
         if (!this.flags.upgraded and !this.flags.socket_closed) {
@@ -320,14 +320,6 @@ pub fn create(
     return js_this;
 }
 
-fn isDone(this: *const NodeHTTPResponse) bool {
-    return this.flags.isDone();
-}
-
-fn isRequestedCompletedOrEnded(this: *const NodeHTTPResponse) bool {
-    return this.flags.isRequestedCompletedOrEnded();
-}
-
 pub fn setOnAbortedHandler(this: *NodeHTTPResponse) void {
     if (this.flags.socket_closed) {
         return;
@@ -386,14 +378,14 @@ pub fn getBufferedAmount(this: *const NodeHTTPResponse, _: *jsc.JSGlobalObject) 
 }
 
 pub fn jsRef(this: *NodeHTTPResponse, globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    if (!this.isDone()) {
+    if (!this.flags.isDone()) {
         this.poll_ref.ref(globalObject.bunVM());
     }
     return .js_undefined;
 }
 
 pub fn jsUnref(this: *NodeHTTPResponse, globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    if (!this.isDone()) {
+    if (!this.flags.isDone()) {
         this.poll_ref.unref(globalObject.bunVM());
     }
     return .js_undefined;
@@ -424,7 +416,7 @@ extern "C" fn NodeHTTPServer__writeHead_https(
 pub fn writeHead(this: *NodeHTTPResponse, globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
     const arguments = callframe.argumentsUndef(3).slice();
 
-    if (this.isRequestedCompletedOrEnded()) {
+    if (this.flags.isRequestedCompletedOrEnded()) {
         return globalObject.ERR(.STREAM_ALREADY_FINISHED, "Stream is already ended", .{}).throw();
     }
 
@@ -508,7 +500,7 @@ fn writeHeadInternal(response: uws.AnyResponse, globalObject: *jsc.JSGlobalObjec
 }
 
 pub fn writeContinue(this: *NodeHTTPResponse, globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    if (this.isDone()) {
+    if (this.flags.isDone()) {
         return .js_undefined;
     }
     const raw_response = this.raw_response orelse return .js_undefined;
@@ -524,6 +516,18 @@ pub const AbortEvent = enum(u8) {
     abort = 1,
     timeout = 2,
 };
+
+fn clearResponseCallbacks(thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject) void {
+    if (thisValue == .zero) return;
+    js.gc.clear(.onAborted, thisValue, globalObject);
+    js.gc.clear(.onWritable, thisValue, globalObject);
+}
+
+fn clearTerminalCallbacks(thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject) void {
+    if (thisValue == .zero) return;
+    clearResponseCallbacks(thisValue, globalObject);
+    js.gc.clear(.onData, thisValue, globalObject);
+}
 
 fn handleAbortOrTimeout(this: *NodeHTTPResponse, comptime event: AbortEvent, js_value: jsc.JSValue) void {
     defer {
@@ -542,18 +546,12 @@ fn handleAbortOrTimeout(this: *NodeHTTPResponse, comptime event: AbortEvent, js_
     defer if (event == .abort) this.markRequestAsDoneIfNecessary();
 
     const js_this: JSValue = if (js_value == .zero) this.getThisValue() else js_value;
-    if (js.onAbortedGetCached(js_this)) |on_aborted| {
-        const globalThis = jsc.VirtualMachine.get().global;
-        defer {
-            if (event == .abort) {
-                js.onAbortedSetCached(js_this, globalThis, .zero);
-            }
-        }
+    const globalThis = jsc.VirtualMachine.get().global;
+    defer if (event == .abort) clearTerminalCallbacks(js_this, globalThis);
 
-        const vm = globalThis.bunVM();
-        const event_loop = vm.eventLoop();
-
-        event_loop.runCallback(on_aborted, globalThis, js_this, &.{
+    if (js.gc.get(.onAborted, js_this)) |on_aborted| {
+        bun.debugAssert(on_aborted.isCallable() or on_aborted.isAsyncContextFrame());
+        globalThis.bunVM().eventLoop().runCallback(on_aborted, globalThis, js_this, &.{
             jsc.JSValue.jsNumber(@backingInt(event)),
         });
     }
@@ -641,9 +639,7 @@ pub export fn Bun__NodeHTTPRequest__onResolve(globalObject: *jsc.JSGlobalObject,
 
     if (!this.flags.request_has_completed and !this.flags.socket_closed) {
         const this_value = this.getThisValue();
-        if (this_value != .zero) {
-            js.onAbortedSetCached(this_value, globalObject, .zero);
-        }
+        clearResponseCallbacks(this_value, globalObject);
         log("clearOnData", .{});
         if (this.raw_response) |raw_response| {
             raw_response.clearOnData();
@@ -670,9 +666,7 @@ pub export fn Bun__NodeHTTPRequest__onReject(globalObject: *jsc.JSGlobalObject, 
 
     if (!this.flags.request_has_completed and !this.flags.socket_closed and !this.flags.upgraded) {
         const this_value = this.getThisValue();
-        if (this_value != .zero) {
-            js.onAbortedSetCached(this_value, globalObject, .zero);
-        }
+        clearResponseCallbacks(this_value, globalObject);
         log("clearOnData", .{});
         if (this.raw_response) |raw_response| {
             raw_response.clearOnData();
@@ -691,11 +685,12 @@ pub export fn Bun__NodeHTTPRequest__onReject(globalObject: *jsc.JSGlobalObject, 
     return .js_undefined;
 }
 
-pub fn abort(this: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    if (this.isDone()) {
+pub fn abort(this: *NodeHTTPResponse, globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    if (this.flags.isDone()) {
         return .js_undefined;
     }
 
+    clearTerminalCallbacks(callframe.this(), globalObject);
     this.flags.socket_closed = true;
     if (this.raw_response) |raw_response| {
         const state = raw_response.state();
@@ -781,17 +776,13 @@ fn onDataOrAborted(this: *NodeHTTPResponse, chunk: []const u8, last: bool, event
         }
     }
 
-    if (js.onDataGetCached(thisValue)) |callback| {
-        if (callback.isUndefined()) {
-            return;
-        }
-
+    if (js.gc.get(.onData, thisValue)) |callback| {
+        bun.debugAssert(callback.isCallable() or callback.isAsyncContextFrame());
         const globalThis = jsc.VirtualMachine.get().global;
-        const event_loop = globalThis.bunVM().eventLoop();
 
         const bytes = this.getBytes(globalThis, chunk);
 
-        event_loop.runCallback(callback, globalThis, .js_undefined, &.{
+        globalThis.bunVM().eventLoop().runCallback(callback, globalThis, .js_undefined, &.{
             bytes,
             jsc.JSValue.jsBoolean(last),
             jsc.JSValue.jsNumber(@backingInt(event)),
@@ -804,31 +795,33 @@ pub fn onData(this: *NodeHTTPResponse, chunk: []const u8, last: bool) void {
     onDataOrAborted(this, chunk, last, .none, this.getThisValue());
 }
 
-fn onDrainCorked(this: *NodeHTTPResponse, offset: u64) void {
+fn onDrainCorked(this: *NodeHTTPResponse, callback: jsc.JSValue, offset: u64) void {
     log("onDrainCorked({d})", .{offset});
     this.ref();
     defer this.deref();
 
-    const thisValue = this.getThisValue();
-    // TODO: Investigate non-callable onWritable values observed during drain.
-    const on_writable = js.onWritableGetCached(thisValue) orelse return;
     const globalThis = jsc.VirtualMachine.get().global;
-    js.onWritableSetCached(thisValue, globalThis, .js_undefined); // TODO(@heimskr): is this necessary?
-    const vm = globalThis.bunVM();
-
-    vm.eventLoop().runCallback(on_writable, globalThis, .js_undefined, &.{jsc.JSValue.jsNumberFromUint64(offset)});
+    globalThis.bunVM().eventLoop().runCallback(callback, globalThis, .js_undefined, &.{jsc.JSValue.jsNumberFromUint64(offset)});
 }
 
 fn onDrain(this: *NodeHTTPResponse, offset: u64, response: uws.AnyResponse) bool {
     log("onDrain({d})", .{offset});
 
+    response.clearOnWritable();
     if (this.flags.socket_closed or this.flags.request_has_completed or this.flags.upgraded) {
-        // return false means we don't have anything to drain
         return false;
     }
 
-    response.corked(onDrainCorked, .{ this, offset });
-    // return true means we may have something to drain
+    const this_value = this.getThisValue();
+    if (this_value == .zero) {
+        return false;
+    }
+
+    const globalThis = jsc.VirtualMachine.get().global;
+    const callback = js.gc.take(.onWritable, this_value, globalThis) orelse return false;
+    bun.debugAssert(callback.isCallable() or callback.isAsyncContextFrame());
+
+    response.corked(onDrainCorked, .{ this, callback, offset });
     return true;
 }
 
@@ -839,7 +832,7 @@ fn writeOrEnd(
     this_value: jsc.JSValue,
     comptime is_end: bool,
 ) bun.JSError!jsc.JSValue {
-    if (this.isRequestedCompletedOrEnded()) {
+    if (this.flags.isRequestedCompletedOrEnded()) {
         return globalObject.ERR(.STREAM_WRITE_AFTER_END, "Stream already ended", .{}).throw();
     }
 
@@ -940,14 +933,12 @@ fn writeOrEnd(
 
         // Discard the body read ref if it's pending and no onData callback is set at this point.
         // This is the equivalent of req._dump().
-        if (this.body_read_ref.has and this.body_read_state == .pending and (!this.flags.hasCustomOnData or js.onDataGetCached(this_value) == null)) {
+        if (this.body_read_ref.has and this.body_read_state == .pending and (!this.flags.hasCustomOnData or js.gc.get(.onData, this_value) == null)) {
             this.body_read_ref.unref(jsc.VirtualMachine.get());
             this.body_read_state = .none;
         }
 
-        if (this_value != .zero) {
-            js.onAbortedSetCached(this_value, globalObject, .zero);
-        }
+        clearResponseCallbacks(this_value, globalObject);
 
         raw_response.clearAborted();
         raw_response.clearOnWritable();
@@ -966,12 +957,13 @@ fn writeOrEnd(
         switch (raw_response.write(bytes)) {
             .want_more => |written| {
                 raw_response.clearOnWritable();
-                js.onWritableSetCached(js_this, globalObject, .js_undefined);
+                js.gc.clear(.onWritable, js_this, globalObject);
                 return jsc.JSValue.jsNumberFromUint64(written);
             },
             .backpressure => |written| {
                 if (!callback_value.isUndefined()) {
-                    js.onWritableSetCached(js_this, globalObject, callback_value.withAsyncContextIfNeeded(globalObject));
+                    bun.debugAssert(callback_value.isCallable());
+                    js.gc.set(.onWritable, js_this, globalObject, callback_value.withAsyncContextIfNeeded(globalObject));
                     raw_response.onWritable(*NodeHTTPResponse, onDrain, this);
                 }
 
@@ -982,38 +974,34 @@ fn writeOrEnd(
 }
 
 pub fn setOnWritable(this: *NodeHTTPResponse, thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject, value: JSValue) void {
-    if (this.isDone() or value.isUndefined()) {
-        js.onWritableSetCached(thisValue, globalObject, .js_undefined);
+    if (this.flags.isDone() or !value.isCallable()) {
+        js.gc.clear(.onWritable, thisValue, globalObject);
     } else {
-        js.onWritableSetCached(thisValue, globalObject, value.withAsyncContextIfNeeded(globalObject));
+        js.gc.set(.onWritable, thisValue, globalObject, value.withAsyncContextIfNeeded(globalObject));
     }
 }
 
 pub fn getOnWritable(_: *NodeHTTPResponse, thisValue: jsc.JSValue, _: *jsc.JSGlobalObject) jsc.JSValue {
-    return js.onWritableGetCached(thisValue) orelse .js_undefined;
+    return js.gc.get(.onWritable, thisValue) orelse .js_undefined;
 }
 
 pub fn getOnAbort(this: *NodeHTTPResponse, thisValue: jsc.JSValue, _: *jsc.JSGlobalObject) jsc.JSValue {
     if (this.flags.socket_closed or this.flags.upgraded) {
         return .js_undefined;
     }
-    return js.onAbortedGetCached(thisValue) orelse .js_undefined;
+    return js.gc.get(.onAborted, thisValue) orelse .js_undefined;
 }
 
 pub fn setOnAbort(this: *NodeHTTPResponse, thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject, value: JSValue) void {
-    if (this.flags.socket_closed or this.flags.upgraded) {
-        return;
-    }
-
-    if (this.isRequestedCompletedOrEnded() or value.isUndefined()) {
-        js.onAbortedSetCached(thisValue, globalObject, .zero);
+    if (this.flags.isDone() or this.flags.upgraded or !value.isCallable()) {
+        js.gc.clear(.onAborted, thisValue, globalObject);
     } else {
-        js.onAbortedSetCached(thisValue, globalObject, value.withAsyncContextIfNeeded(globalObject));
+        js.gc.set(.onAborted, thisValue, globalObject, value.withAsyncContextIfNeeded(globalObject));
     }
 }
 
 pub fn getOnData(_: *NodeHTTPResponse, thisValue: jsc.JSValue, _: *jsc.JSGlobalObject) jsc.JSValue {
-    return js.onDataGetCached(thisValue) orelse .js_undefined;
+    return js.gc.get(.onData, thisValue) orelse .js_undefined;
 }
 
 pub fn getHasCustomOnData(this: *NodeHTTPResponse, _: *jsc.JSGlobalObject) jsc.JSValue {
@@ -1032,7 +1020,7 @@ fn clearOnDataCallback(this: *NodeHTTPResponse, thisValue: jsc.JSValue, globalOb
     log("clearOnDataCallback", .{});
     if (this.body_read_state != .none) {
         if (thisValue != .zero) {
-            js.onDataSetCached(thisValue, globalObject, .js_undefined);
+            js.gc.clear(.onData, thisValue, globalObject);
         }
         if (!this.flags.socket_closed and !this.flags.upgraded) {
             log("clearOnData", .{});
@@ -1050,8 +1038,8 @@ pub fn setOnData(this: *NodeHTTPResponse, thisValue: jsc.JSValue, globalObject: 
     // Only `.pending` accepts a callback. `.done` means either uSockets delivered last=true or JS
     // previously cleared `ondata` (which already called clearOnData()); either way, there is no
     // more body to read, so don't re-register with uSockets or churn refs.
-    if (value.isUndefined() or this.flags.ended or this.flags.socket_closed or this.body_read_state != .pending or this.flags.is_data_buffered_during_pause_last or this.flags.upgraded) {
-        js.onDataSetCached(thisValue, globalObject, .js_undefined);
+    if (!value.isCallable() or this.flags.ended or this.flags.socket_closed or this.body_read_state != .pending or this.flags.is_data_buffered_during_pause_last or this.flags.upgraded) {
+        js.gc.clear(.onData, thisValue, globalObject);
         defer {
             if (this.body_read_ref.has) {
                 this.body_read_ref.unref(globalObject.bunVM());
@@ -1072,7 +1060,7 @@ pub fn setOnData(this: *NodeHTTPResponse, thisValue: jsc.JSValue, globalObject: 
         return;
     }
 
-    js.onDataSetCached(thisValue, globalObject, value.withAsyncContextIfNeeded(globalObject));
+    js.gc.set(.onData, thisValue, globalObject, value.withAsyncContextIfNeeded(globalObject));
     this.flags.hasCustomOnData = true;
     if (this.raw_response) |raw_response| {
         raw_response.onData(*NodeHTTPResponse, onData, this);

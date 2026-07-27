@@ -2104,6 +2104,12 @@ function generateZig(
           field.set(thisValue, globalObject, .zero);
         }
 
+        pub fn take(comptime field: gc, thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject) ?jsc.JSValue {
+          const value = field.get(thisValue) orelse return null;
+          field.clear(thisValue, globalObject);
+          return value;
+        }
+
         pub fn set(comptime field: gc, thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) void {
           switch (field) {
             ${gc_fields
