@@ -1,630 +1,863 @@
-pub const SEGNAME_BUN = "__BUN\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00".*;
-pub const SECTNAME = "__bun\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00".*;
+const std = @import("std");
 
-pub const MachoFile = struct {
-    header: macho.mach_header_64,
-    data: std.array_list.Managed(u8),
-    segment: macho.segment_command_64,
-    section: macho.section_64,
+const bun = @import("bun");
+
+const Allocator = std.mem.Allocator;
+const Sha256 = std.crypto.hash.sha2.Sha256;
+const macho = std.macho;
+const mem = std.mem;
+
+const bun_segment_name = "__BUN";
+const bun_section_name = "__bun";
+const linkedit_segment_name = "__LINKEDIT";
+const text_segment_name = "__TEXT";
+
+const bun_alignment: usize = 0x4000;
+const signature_alignment: usize = 16;
+const signature_identifier = "a.out";
+
+pub fn embedStandalone(
     allocator: Allocator,
+    object: []const u8,
+    payload: []const u8,
+    expected_cpu: macho.cpu_type_t,
+) ![]u8 {
+    const template = try Template.parse(object, expected_cpu);
+    const plan = try EmbedPlan.init(&template, payload.len);
+    return plan.emit(allocator, &template, payload);
+}
 
-    const LoadCommand = struct {
-        cmd: u32,
-        cmdsize: u32,
+fn Located(comptime T: type) type {
+    return struct {
         offset: usize,
+        value: T,
     };
+}
 
-    pub fn init(allocator: Allocator, obj_file: []const u8, blob_to_embed_length: usize) !*MachoFile {
-        var data = try std.array_list.Managed(u8).initCapacity(allocator, obj_file.len + blob_to_embed_length);
-        try data.appendSlice(obj_file);
+const LocatedSegment = Located(macho.segment_command_64);
+const LocatedSection = Located(macho.section_64);
 
-        const header: *const macho.mach_header_64 = @ptrCast(@alignCast(data.items.ptr));
+const FileRange = struct {
+    start: usize,
+    end: usize,
 
-        const self = try allocator.create(MachoFile);
-        errdefer allocator.destroy(self);
+    fn init(start: u64, size: u64, file_size: usize) !FileRange {
+        const end = std.math.add(u64, start, size) catch return error.OffsetOverflow;
+        if (end > file_size) return error.OffsetOutOfRange;
+        return .{
+            .start = std.math.cast(usize, start) orelse return error.OffsetOverflow,
+            .end = std.math.cast(usize, end) orelse return error.OffsetOverflow,
+        };
+    }
 
-        self.* = .{
-            .header = header.*,
-            .data = data,
-            .segment = std.mem.zeroes(macho.segment_command_64),
-            .section = std.mem.zeroes(macho.section_64),
-            .allocator = allocator,
+    fn len(range: FileRange) usize {
+        return range.end - range.start;
+    }
+
+    fn contains(range: FileRange, other: FileRange) bool {
+        return other.start >= range.start and other.end <= range.end;
+    }
+};
+
+const Template = struct {
+    bytes: []const u8,
+    header: macho.mach_header_64,
+    bun_segment: LocatedSegment,
+    bun_section: LocatedSection,
+    linkedit_segment: LocatedSegment,
+    text_segment: ?macho.segment_command_64,
+    code_signature: ?macho.linkedit_data_command,
+    bun_range: FileRange,
+    linkedit_range: FileRange,
+
+    fn parse(bytes: []const u8, expected_cpu: macho.cpu_type_t) !Template {
+        var reader = std.Io.Reader.fixed(bytes);
+        const header = reader.takeStruct(macho.mach_header_64, .little) catch |err| switch (err) {
+            error.ReadFailed => unreachable,
+            error.EndOfStream => return error.InvalidMachO,
         };
 
-        return self;
-    }
+        if (header.magic != macho.MH_MAGIC_64) return error.InvalidMachO;
+        if (expected_cpu != macho.CPU_TYPE_X86_64 and
+            expected_cpu != macho.CPU_TYPE_ARM64)
+        {
+            return error.InvalidObject;
+        }
+        if (header.filetype != macho.MH_EXECUTE or header.cputype != expected_cpu) {
+            return error.InvalidObject;
+        }
 
-    pub fn deinit(self: *MachoFile) void {
-        self.data.deinit();
-        self.allocator.destroy(self);
-    }
+        var iterator = try macho.LoadCommandIterator.init(
+            &header,
+            bytes[@sizeOf(macho.mach_header_64)..],
+        );
+        var bun_segment: ?LocatedSegment = null;
+        var bun_section: ?LocatedSection = null;
+        var linkedit_segment: ?LocatedSegment = null;
+        var text_segment: ?macho.segment_command_64 = null;
+        var code_signature: ?macho.linkedit_data_command = null;
+        var max_other_file_end: usize = 0;
+        var max_other_vm_end: u64 = 0;
+        var previous_file_end: usize = 0;
 
-    pub fn writeSection(self: *MachoFile, data: []const u8) !void {
-        const blob_alignment = 16 * 1024;
-        const PAGE_SIZE: u64 = 1 << 12;
-        const HASH_SIZE: usize = 32; // SHA256 = 32 bytes
+        while (true) {
+            const command_offset = @sizeOf(macho.mach_header_64) + iterator.r.seek;
+            const entry = try iterator.next() orelse break;
+            if (entry.hdr.cmdsize < @sizeOf(macho.load_command) or
+                entry.hdr.cmdsize % @alignOf(u64) != 0)
+            {
+                return error.InvalidMachO;
+            }
 
-        const header_size = @sizeOf(u64);
-        const total_size = header_size + data.len;
-        const aligned_size = alignSize(total_size, blob_alignment);
-
-        // Look for existing __BUN,__BUN section
-
-        var original_fileoff: u64 = 0;
-        var original_vmaddr: u64 = 0;
-        var original_data_end: u64 = 0;
-        var original_segsize: u64 = blob_alignment;
-
-        // Use an index instead of a pointer to avoid issues with resizing the arraylist later.
-        var code_sign_cmd_idx: ?usize = null;
-        var linkedit_seg_idx: ?usize = null;
-
-        var found_bun = false;
-
-        var iter = self.iterator();
-
-        while (try iter.next()) |entry| {
-            const cmd = entry.hdr;
-            switch (cmd.cmd) {
+            switch (entry.hdr.cmd) {
                 .SEGMENT_64 => {
-                    const command = entry.cast(macho.segment_command_64).?;
-                    if (strings.eqlComptime(command.segName(), "__BUN")) {
-                        if (command.nsects > 0) {
-                            const section_offset = @intFromPtr(entry.data.ptr) - @intFromPtr(self.data.items.ptr);
-                            const sections = @as([*]macho.section_64, @ptrCast(@alignCast(&self.data.items[section_offset + @sizeOf(macho.segment_command_64)])))[0..command.nsects];
-                            for (sections) |*sect| {
-                                if (strings.eqlComptime(sect.sectName(), "__bun")) {
-                                    found_bun = true;
-                                    original_fileoff = sect.offset;
-                                    original_vmaddr = sect.addr;
-                                    original_data_end = command.fileoff + command.filesize;
-                                    original_segsize = command.filesize;
-                                    self.segment = command;
-                                    self.section = sect.*;
+                    const segment = entry.cast(macho.segment_command_64) orelse
+                        return error.InvalidMachO;
+                    const section_bytes = std.math.mul(
+                        usize,
+                        std.math.cast(usize, segment.nsects) orelse return error.InvalidMachO,
+                        @sizeOf(macho.section_64),
+                    ) catch return error.InvalidMachO;
+                    const expected_size = std.math.add(
+                        usize,
+                        @sizeOf(macho.segment_command_64),
+                        section_bytes,
+                    ) catch return error.InvalidMachO;
+                    if (entry.data.len != expected_size) return error.InvalidMachO;
 
-                                    // Update segment with proper sizes and alignment
-                                    self.segment.vmsize = alignVmsize(aligned_size, blob_alignment);
-                                    self.segment.filesize = aligned_size;
-                                    self.segment.maxprot = .{ .READ = true, .WRITE = true };
-                                    self.segment.initprot = .{ .READ = true, .WRITE = true };
+                    const segment_range = try FileRange.init(
+                        segment.fileoff,
+                        segment.filesize,
+                        bytes.len,
+                    );
+                    const segment_vm_end = std.math.add(
+                        u64,
+                        segment.vmaddr,
+                        segment.vmsize,
+                    ) catch return error.OffsetOverflow;
+                    if (segment.vmsize < segment.filesize) return error.InvalidObject;
+                    if (segment_range.len() > 0) {
+                        if (segment_range.start < previous_file_end) {
+                            return error.OverlappingSegments;
+                        }
+                        previous_file_end = segment_range.end;
+                    }
+                    const is_bun = mem.eql(u8, segment.segName(), bun_segment_name);
+                    const is_linkedit = mem.eql(
+                        u8,
+                        segment.segName(),
+                        linkedit_segment_name,
+                    );
+                    const is_text = mem.eql(u8, segment.segName(), text_segment_name);
 
-                                    self.section = .{
-                                        .sectname = SECTNAME,
-                                        .segname = SEGNAME_BUN,
-                                        .addr = original_vmaddr,
-                                        .size = @intCast(total_size),
-                                        .offset = @intCast(original_fileoff),
-                                        .@"align" = @intFromFloat(@log2(@as(f64, @floatFromInt(blob_alignment)))),
-                                        .reloff = 0,
-                                        .nreloc = 0,
-                                        .flags = macho.S_REGULAR | macho.S_ATTR_NO_DEAD_STRIP,
-                                        .reserved1 = 0,
-                                        .reserved2 = 0,
-                                        .reserved3 = 0,
-                                    };
-                                    const entry_ptr: [*]u8 = @constCast(entry.data.ptr);
-                                    const segment_command_ptr: *align(1) macho.segment_command_64 = @ptrCast(@alignCast(entry_ptr));
-                                    segment_command_ptr.* = self.segment;
-                                    sect.* = self.section;
-                                }
+                    var only_bun_section: ?LocatedSection = null;
+                    for (entry.getSections(), 0..) |section, section_index| {
+                        const section_offset = command_offset +
+                            @sizeOf(macho.segment_command_64) +
+                            section_index * @sizeOf(macho.section_64);
+                        const section_vm_end = std.math.add(
+                            u64,
+                            section.addr,
+                            section.size,
+                        ) catch return error.OffsetOverflow;
+                        if (section.addr < segment.vmaddr or section_vm_end > segment_vm_end) {
+                            return error.OffsetOutOfRange;
+                        }
+
+                        if (!section.isZerofill() and section.size > 0) {
+                            const section_range = try FileRange.init(
+                                section.offset,
+                                section.size,
+                                bytes.len,
+                            );
+                            if (!segment_range.contains(section_range)) {
+                                return error.OffsetOutOfRange;
                             }
                         }
-                    } else if (strings.eqlComptime(command.segName(), SEG_LINKEDIT)) {
-                        linkedit_seg_idx = @intFromPtr(entry.data.ptr) - @intFromPtr(self.data.items.ptr);
+
+                        if (is_bun) {
+                            if (!mem.eql(u8, section.sectName(), bun_section_name) or
+                                !mem.eql(u8, section.segName(), bun_segment_name))
+                            {
+                                return error.InvalidObject;
+                            }
+                            only_bun_section = .{
+                                .offset = section_offset,
+                                .value = section,
+                            };
+                        }
+                    }
+
+                    if (is_bun) {
+                        if (bun_segment != null or segment.nsects != 1) {
+                            return error.InvalidObject;
+                        }
+                        bun_segment = .{ .offset = command_offset, .value = segment };
+                        bun_section = only_bun_section orelse return error.InvalidObject;
+                    } else if (is_linkedit) {
+                        if (linkedit_segment != null) return error.InvalidObject;
+                        linkedit_segment = .{ .offset = command_offset, .value = segment };
+                    } else {
+                        max_other_file_end = @max(max_other_file_end, segment_range.end);
+                        max_other_vm_end = @max(max_other_vm_end, segment_vm_end);
+                    }
+
+                    if (is_text) {
+                        if (text_segment != null) return error.InvalidObject;
+                        text_segment = segment;
                     }
                 },
                 .CODE_SIGNATURE => {
-                    code_sign_cmd_idx = @intFromPtr(entry.data.ptr) - @intFromPtr(self.data.items.ptr);
+                    const command = entry.cast(macho.linkedit_data_command) orelse
+                        return error.InvalidMachO;
+                    if (code_signature != null) return error.InvalidObject;
+                    code_signature = command;
                 },
                 else => {},
             }
         }
+        if (iterator.r.seek != iterator.r.end) return error.InvalidMachO;
 
-        if (!found_bun) {
+        const commands_end = std.math.add(
+            usize,
+            @sizeOf(macho.mach_header_64),
+            header.sizeofcmds,
+        ) catch return error.InvalidMachO;
+        const found_bun_segment = bun_segment orelse return error.InvalidObject;
+        const found_bun_section = bun_section orelse return error.InvalidObject;
+        const found_linkedit = linkedit_segment orelse
+            return error.MissingLinkeditSegment;
+        const bun_range = try FileRange.init(
+            found_bun_segment.value.fileoff,
+            found_bun_segment.value.filesize,
+            bytes.len,
+        );
+        const linkedit_range = try FileRange.init(
+            found_linkedit.value.fileoff,
+            found_linkedit.value.filesize,
+            bytes.len,
+        );
+        const target_page_size = pageSize(expected_cpu);
+
+        if (bun_range.len() == 0 or
+            found_bun_segment.value.fileoff != found_bun_section.value.offset or
+            found_bun_segment.value.vmaddr != found_bun_section.value.addr or
+            found_bun_section.value.size == 0 or
+            found_bun_section.value.size > found_bun_segment.value.filesize or
+            bun_range.start < commands_end or
+            bun_range.start % bun_alignment != 0 or
+            bun_range.len() % target_page_size != 0 or
+            found_bun_segment.value.vmsize % target_page_size != 0)
+        {
             return error.InvalidObject;
         }
 
-        // Calculate how much larger/smaller the section will be compared to its current size
-        const size_diff = @as(i64, @intCast(aligned_size)) - @as(i64, @intCast(original_segsize));
-
-        // We assume that the section is page-aligned, so we can calculate the number of new pages
-        const num_of_new_pages = @divExact(size_diff, PAGE_SIZE);
-
-        // Pre-grow the backing buffer to fit: the `size_diff` bytes of new section
-        // content and one SHA-256 hash per new page. `buildAndSign` may grow further
-        // to write the complete signature, but reserving this up front avoids the
-        // common reallocation.
-        try self.data.ensureUnusedCapacity(@intCast(size_diff + num_of_new_pages * HASH_SIZE));
-
-        const code_sign_cmd: ?*align(1) macho.linkedit_data_command =
-            if (code_sign_cmd_idx) |idx|
-                @as(*align(1) macho.linkedit_data_command, @ptrCast(@alignCast(@constCast(&self.data.items[idx]))))
-            else
-                null;
-        const linkedit_seg: *align(1) macho.segment_command_64 =
-            if (linkedit_seg_idx) |idx|
-                @as(*align(1) macho.segment_command_64, @ptrCast(@alignCast(@constCast(&self.data.items[idx]))))
-            else
-                return error.MissingLinkeditSegment;
-
-        var sig_size: usize = 0;
-
-        const prev_data_slice = self.data.items[original_fileoff..];
-        self.data.items.len += @as(usize, @intCast(size_diff));
-
-        // Binary is:
-        // [header][...data before __BUN][__BUN][...data after __BUN]
-        // We need to shift [...data after __BUN] forward by size_diff bytes.
-        const after_bun_slice = self.data.items[original_data_end + @as(usize, @intCast(size_diff)) ..];
-        const prev_after_bun_slice = prev_data_slice[original_segsize..];
-        bun.memmove(after_bun_slice, prev_after_bun_slice);
-
-        // Now we copy the u64 size header (8 bytes for alignment)
-        std.mem.writeInt(u64, self.data.items[original_fileoff..][0..8], @intCast(data.len), .little);
-
-        // Now we copy the data itself
-        @memcpy(self.data.items[original_fileoff + 8 ..][0..data.len], data);
-
-        // Lastly, we zero any of the padding that was added
-        const padding_bytes = self.data.items[original_fileoff..][data.len + 8 .. aligned_size];
-        @memset(padding_bytes, 0);
-
-        if (code_sign_cmd) |cs| {
-            sig_size = cs.datasize;
+        const bun_vm_end = std.math.add(
+            u64,
+            found_bun_segment.value.vmaddr,
+            found_bun_segment.value.vmsize,
+        ) catch return error.OffsetOverflow;
+        if (max_other_file_end > bun_range.start or
+            max_other_vm_end > found_bun_segment.value.vmaddr or
+            linkedit_range.start < bun_range.end or
+            found_linkedit.value.vmaddr < bun_vm_end or
+            linkedit_range.end != bytes.len)
+        {
+            return error.OffsetOutOfRange;
         }
 
-        if (size_diff != 0) {
-            // We move the offsets of the LINKEDIT segment ahead by `size_diff`
-            linkedit_seg.fileoff += @as(usize, @intCast(size_diff));
-            linkedit_seg.vmaddr += @as(usize, @intCast(size_diff));
-        }
-
-        if (code_sign_cmd) |cs| {
-            if (self.header.cputype == macho.CPU_TYPE_ARM64 and !bun.feature_flag.BUN_NO_CODESIGN_MACHO_BINARY.get()) {
-                // `buildAndSign` replaces the template's signature with one built by
-                // `MachoSigner`, whose size depends only on the (possibly-shifted)
-                // `cs.dataoff` — not on the template signature's shape. Resize
-                // __LINKEDIT and `LC_CODE_SIGNATURE.datasize` to that exact size.
-                //
-                // This must run even when `size_diff == 0` (bundle fits in the
-                // template's existing __BUN slot): the template may have been signed
-                // with a different page size / identifier / blob set, so its
-                // `cs.datasize` can be smaller than what `sign()` will produce, which
-                // the trailing truncation in `sign()` then chops (issue #29120).
-                const new_sig_dataoff: u64 = cs.dataoff + @as(u64, @intCast(size_diff));
-                const new_sig_size = MachoSigner.computeSignatureSize(new_sig_dataoff);
-
-                // The template signature is the tail of __LINKEDIT; swap its footprint.
-                // vmsize must be page-aligned and >= filesize, so derive it from the
-                // freshly-computed filesize rather than the pre-update vmsize (otherwise
-                // an old vmsize that was already page-aligned to a wider page can leave
-                // the segment one page larger than necessary).
-                linkedit_seg.filesize = linkedit_seg.filesize - sig_size + new_sig_size;
-                linkedit_seg.vmsize = alignSize(linkedit_seg.filesize, PAGE_SIZE);
-
-                // Stamp datasize directly so the `size_diff == 0` path — which skips
-                // `updateLoadCommandOffsets` below — still records the new size.
-                cs.datasize = @intCast(new_sig_size);
-                sig_size = new_sig_size;
-            }
-        }
-
-        if (size_diff != 0) {
-            try self.updateLoadCommandOffsets(original_fileoff, @intCast(size_diff), linkedit_seg.fileoff, linkedit_seg.filesize, sig_size);
-        }
-
-        try self.validateSegments();
+        const result: Template = .{
+            .bytes = bytes,
+            .header = header,
+            .bun_segment = found_bun_segment,
+            .bun_section = found_bun_section,
+            .linkedit_segment = found_linkedit,
+            .text_segment = text_segment,
+            .code_signature = code_signature,
+            .bun_range = bun_range,
+            .linkedit_range = linkedit_range,
+        };
+        try result.validateLinkeditReferences();
+        return result;
     }
 
-    const Shifter = struct {
-        start: u64,
-        amount: u64,
-        linkedit_fileoff: u64,
-        linkedit_filesize: u64,
+    fn loadCommands(template: *const Template) !macho.LoadCommandIterator {
+        return macho.LoadCommandIterator.init(
+            &template.header,
+            template.bytes[@sizeOf(macho.mach_header_64)..],
+        );
+    }
 
-        fn do(value: u64, amount: u64, range_min: u64, range_max: u64) !u64 {
-            if (value == 0) return 0;
-            if (value < range_min) return error.OffsetOutOfRange;
-            if (value > range_max) return error.OffsetOutOfRange;
-
-            // Check for overflow
-            if (value > std.math.maxInt(u64) - amount) {
-                return error.OffsetOverflow;
-            }
-
-            return value + amount;
-        }
-
-        pub fn shift(this: *const Shifter, value: anytype, comptime fields: []const []const u8) !void {
-            inline for (fields) |field| {
-                @field(value, field) = @intCast(try do(@field(value, field), this.amount, this.start, this.linkedit_fileoff + this.linkedit_filesize));
-            }
-        }
-    };
-
-    // Helper function to update load command offsets when resizing an existing section
-    fn updateLoadCommandOffsets(self: *MachoFile, previous_fileoff: u64, size_diff: u64, new_linkedit_fileoff: u64, new_linkedit_filesize: u64, sig_size: usize) !void {
-        // Validate inputs
-        if (new_linkedit_fileoff < previous_fileoff) {
-            return error.InvalidLinkeditOffset;
-        }
-
-        const PAGE_SIZE: u64 = 1 << 12;
-
-        // Ensure all offsets are page-aligned
-        const aligned_previous = alignSize(previous_fileoff, PAGE_SIZE);
-        const aligned_linkedit = alignSize(new_linkedit_fileoff, PAGE_SIZE);
-
-        var iter = self.iterator();
-
-        // Create shifter with validated parameters
-        const shifter = Shifter{
-            .start = aligned_previous,
-            .amount = size_diff,
-            .linkedit_fileoff = aligned_linkedit,
-            .linkedit_filesize = new_linkedit_filesize,
-        };
-
-        while (try iter.next()) |entry| {
-            const cmd = entry.hdr;
-            const cmd_ptr: [*]u8 = @constCast(entry.data.ptr);
-
-            switch (cmd.cmd) {
+    fn validateLinkeditReferences(template: *const Template) !void {
+        var iterator = try template.loadCommands();
+        while (try iterator.next()) |entry| {
+            switch (entry.hdr.cmd) {
+                .SEGMENT_64 => {
+                    for (entry.getSections()) |section| {
+                        const reloc_size = std.math.mul(
+                            u64,
+                            section.nreloc,
+                            @sizeOf(macho.relocation_info),
+                        ) catch return error.OffsetOverflow;
+                        try validateLinkeditRange(
+                            section.reloff,
+                            reloc_size,
+                            template.linkedit_range,
+                        );
+                    }
+                },
                 .SYMTAB => {
-                    const symtab: *align(1) macho.symtab_command = @ptrCast(@alignCast(cmd_ptr));
-
-                    try shifter.shift(symtab, &.{
-                        "symoff",
-                        "stroff",
-                    });
+                    const command = entry.cast(macho.symtab_command) orelse
+                        return error.InvalidMachO;
+                    const symbols_size = std.math.mul(
+                        u64,
+                        command.nsyms,
+                        @sizeOf(macho.nlist_64),
+                    ) catch return error.OffsetOverflow;
+                    try validateLinkeditRange(
+                        command.symoff,
+                        symbols_size,
+                        template.linkedit_range,
+                    );
+                    try validateLinkeditRange(
+                        command.stroff,
+                        command.strsize,
+                        template.linkedit_range,
+                    );
                 },
                 .DYSYMTAB => {
-                    const dysymtab: *align(1) macho.dysymtab_command = @ptrCast(@alignCast(cmd_ptr));
+                    const command = entry.cast(macho.dysymtab_command) orelse
+                        return error.InvalidMachO;
+                    try validateLinkeditOffset(command.tocoff, template.linkedit_range);
+                    try validateLinkeditOffset(command.modtaboff, template.linkedit_range);
+                    try validateLinkeditOffset(command.extrefsymoff, template.linkedit_range);
+                    try validateLinkeditRange(
+                        command.indirectsymoff,
+                        std.math.mul(
+                            u64,
+                            command.nindirectsyms,
+                            @sizeOf(u32),
+                        ) catch return error.OffsetOverflow,
+                        template.linkedit_range,
+                    );
+                    try validateLinkeditRange(
+                        command.extreloff,
+                        std.math.mul(
+                            u64,
+                            command.nextrel,
+                            @sizeOf(macho.relocation_info),
+                        ) catch return error.OffsetOverflow,
+                        template.linkedit_range,
+                    );
+                    try validateLinkeditRange(
+                        command.locreloff,
+                        std.math.mul(
+                            u64,
+                            command.nlocrel,
+                            @sizeOf(macho.relocation_info),
+                        ) catch return error.OffsetOverflow,
+                        template.linkedit_range,
+                    );
+                },
+                .DYLD_INFO, .DYLD_INFO_ONLY => {
+                    const command = entry.cast(macho.dyld_info_command) orelse
+                        return error.InvalidMachO;
+                    try validateLinkeditRange(
+                        command.rebase_off,
+                        command.rebase_size,
+                        template.linkedit_range,
+                    );
+                    try validateLinkeditRange(
+                        command.bind_off,
+                        command.bind_size,
+                        template.linkedit_range,
+                    );
+                    try validateLinkeditRange(
+                        command.weak_bind_off,
+                        command.weak_bind_size,
+                        template.linkedit_range,
+                    );
+                    try validateLinkeditRange(
+                        command.lazy_bind_off,
+                        command.lazy_bind_size,
+                        template.linkedit_range,
+                    );
+                    try validateLinkeditRange(
+                        command.export_off,
+                        command.export_size,
+                        template.linkedit_range,
+                    );
+                },
+                else => if (isLinkeditDataCommand(entry.hdr.cmd)) {
+                    const command = entry.cast(macho.linkedit_data_command) orelse
+                        return error.InvalidMachO;
+                    try validateLinkeditRange(
+                        command.dataoff,
+                        command.datasize,
+                        template.linkedit_range,
+                    );
+                },
+            }
+        }
+    }
+};
 
-                    try shifter.shift(dysymtab, &.{
+const EmbedPlan = struct {
+    bun_segment: macho.segment_command_64,
+    bun_section: macho.section_64,
+    linkedit_segment: macho.segment_command_64,
+    bun_size: usize,
+    file_delta: usize,
+    output_size: usize,
+    signature: ?AdhocSignaturePlan,
+
+    fn init(template: *const Template, payload_size: usize) !EmbedPlan {
+        const content_size = std.math.add(usize, @sizeOf(u64), payload_size) catch
+            return error.OffsetOverflow;
+        const new_bun_size = try alignForward(usize, content_size, bun_alignment);
+        const old_bun_size = template.bun_range.len();
+        if (new_bun_size < old_bun_size) return error.InvalidObject;
+        const file_delta = new_bun_size - old_bun_size;
+
+        const old_bun_vm_size = std.math.cast(
+            usize,
+            template.bun_segment.value.vmsize,
+        ) orelse return error.OffsetOverflow;
+        if (new_bun_size < old_bun_vm_size) return error.InvalidObject;
+        const vm_delta = new_bun_size - old_bun_vm_size;
+
+        var bun_segment = template.bun_segment.value;
+        bun_segment.vmsize = new_bun_size;
+        bun_segment.filesize = new_bun_size;
+        bun_segment.maxprot = .{ .READ = true, .WRITE = true };
+        bun_segment.initprot = .{ .READ = true, .WRITE = true };
+
+        var bun_section = template.bun_section.value;
+        bun_section.size = content_size;
+        bun_section.@"align" = @intCast(std.math.log2(bun_alignment));
+        bun_section.reloff = 0;
+        bun_section.nreloc = 0;
+        bun_section.flags = macho.S_REGULAR | macho.S_ATTR_NO_DEAD_STRIP;
+        bun_section.reserved1 = 0;
+        bun_section.reserved2 = 0;
+        bun_section.reserved3 = 0;
+
+        var linkedit_segment = template.linkedit_segment.value;
+        linkedit_segment.fileoff = std.math.add(
+            u64,
+            linkedit_segment.fileoff,
+            file_delta,
+        ) catch return error.OffsetOverflow;
+        linkedit_segment.vmaddr = std.math.add(
+            u64,
+            linkedit_segment.vmaddr,
+            vm_delta,
+        ) catch return error.OffsetOverflow;
+
+        const should_sign = template.header.cputype == macho.CPU_TYPE_ARM64 and
+            !bun.feature_flag.BUN_NO_CODESIGN_MACHO_BINARY.get();
+        var signature: ?AdhocSignaturePlan = null;
+        var output_size = std.math.add(usize, template.bytes.len, file_delta) catch
+            return error.OffsetOverflow;
+
+        if (should_sign) {
+            const target_page_size = pageSize(template.header.cputype);
+            const old_signature = template.code_signature orelse
+                return error.MissingRequiredSegment;
+            const old_signature_range = try FileRange.init(
+                old_signature.dataoff,
+                old_signature.datasize,
+                template.bytes.len,
+            );
+            if (old_signature_range.end != template.linkedit_range.end or
+                old_signature_range.start % signature_alignment != 0)
+            {
+                return error.InvalidObject;
+            }
+
+            const signature_start = std.math.add(
+                usize,
+                old_signature_range.start,
+                file_delta,
+            ) catch return error.OffsetOverflow;
+            const text = template.text_segment orelse
+                return error.MissingRequiredSegment;
+            const signature_plan = try AdhocSignaturePlan.init(
+                signature_start,
+                target_page_size,
+                text.fileoff,
+                text.filesize,
+            );
+            signature = signature_plan;
+
+            const linkedit_prefix_size =
+                old_signature_range.start - template.linkedit_range.start;
+            linkedit_segment.filesize = std.math.add(
+                u64,
+                linkedit_prefix_size,
+                signature_plan.storage_size,
+            ) catch return error.OffsetOverflow;
+            linkedit_segment.vmsize = try alignForward(
+                u64,
+                linkedit_segment.filesize,
+                target_page_size,
+            );
+            output_size = std.math.add(
+                usize,
+                signature_start,
+                signature_plan.storage_size,
+            ) catch return error.OffsetOverflow;
+        }
+
+        return .{
+            .bun_segment = bun_segment,
+            .bun_section = bun_section,
+            .linkedit_segment = linkedit_segment,
+            .bun_size = new_bun_size,
+            .file_delta = file_delta,
+            .output_size = output_size,
+            .signature = signature,
+        };
+    }
+
+    fn emit(
+        plan: *const EmbedPlan,
+        allocator: Allocator,
+        template: *const Template,
+        payload: []const u8,
+    ) ![]u8 {
+        const output = try allocator.alloc(u8, plan.output_size);
+        errdefer allocator.free(output);
+        @memset(output, 0);
+
+        @memcpy(output[0..template.bun_range.start], template.bytes[0..template.bun_range.start]);
+        std.mem.writeInt(
+            u64,
+            output[template.bun_range.start..][0..@sizeOf(u64)],
+            payload.len,
+            .little,
+        );
+        @memcpy(
+            output[template.bun_range.start + @sizeOf(u64) ..][0..payload.len],
+            payload,
+        );
+
+        const suffix_end = if (plan.signature) |_|
+            std.math.cast(
+                usize,
+                template.code_signature.?.dataoff,
+            ) orelse return error.OffsetOverflow
+        else
+            template.bytes.len;
+        const new_bun_end = template.bun_range.start + plan.bun_size;
+        @memcpy(
+            output[new_bun_end..][0 .. suffix_end - template.bun_range.end],
+            template.bytes[template.bun_range.end..suffix_end],
+        );
+
+        try plan.patchLoadCommands(template, output);
+        if (plan.signature) |signature| try signature.write(output);
+        return output;
+    }
+
+    fn patchLoadCommands(
+        plan: *const EmbedPlan,
+        template: *const Template,
+        output: []u8,
+    ) !void {
+        var iterator = try template.loadCommands();
+        while (true) {
+            const command_offset = @sizeOf(macho.mach_header_64) + iterator.r.seek;
+            const entry = try iterator.next() orelse break;
+            switch (entry.hdr.cmd) {
+                .SEGMENT_64 => {
+                    if (command_offset == template.bun_segment.offset) {
+                        try writeStructAt(output, command_offset, plan.bun_segment);
+                        try writeStructAt(
+                            output,
+                            template.bun_section.offset,
+                            plan.bun_section,
+                        );
+                        continue;
+                    }
+                    if (command_offset == template.linkedit_segment.offset) {
+                        try writeStructAt(output, command_offset, plan.linkedit_segment);
+                        continue;
+                    }
+
+                    for (entry.getSections(), 0..) |original_section, section_index| {
+                        var section = original_section;
+                        section.reloff = try shiftLinkeditOffset(
+                            section.reloff,
+                            plan.file_delta,
+                            template.linkedit_range,
+                        );
+                        try writeStructAt(
+                            output,
+                            command_offset +
+                                @sizeOf(macho.segment_command_64) +
+                                section_index * @sizeOf(macho.section_64),
+                            section,
+                        );
+                    }
+                },
+                .SYMTAB => {
+                    var command = entry.cast(macho.symtab_command).?;
+                    command.symoff = try shiftLinkeditOffset(
+                        command.symoff,
+                        plan.file_delta,
+                        template.linkedit_range,
+                    );
+                    command.stroff = try shiftLinkeditOffset(
+                        command.stroff,
+                        plan.file_delta,
+                        template.linkedit_range,
+                    );
+                    try writeStructAt(output, command_offset, command);
+                },
+                .DYSYMTAB => {
+                    var command = entry.cast(macho.dysymtab_command).?;
+                    inline for (.{
                         "tocoff",
                         "modtaboff",
                         "extrefsymoff",
                         "indirectsymoff",
                         "extreloff",
                         "locreloff",
-                    });
-                },
-                .DYLD_CHAINED_FIXUPS,
-                .CODE_SIGNATURE,
-                .FUNCTION_STARTS,
-                .DATA_IN_CODE,
-                .DYLIB_CODE_SIGN_DRS,
-                .LINKER_OPTIMIZATION_HINT,
-                .DYLD_EXPORTS_TRIE,
-                => {
-                    const linkedit_cmd: *align(1) macho.linkedit_data_command = @ptrCast(@alignCast(cmd_ptr));
-
-                    try shifter.shift(linkedit_cmd, &.{"dataoff"});
-
-                    // Special handling for code signature
-                    if (cmd.cmd == .CODE_SIGNATURE) {
-                        // Update the size of the code signature to the newer signature size
-                        linkedit_cmd.datasize = @intCast(sig_size);
+                    }) |field| {
+                        @field(command, field) = try shiftLinkeditOffset(
+                            @field(command, field),
+                            plan.file_delta,
+                            template.linkedit_range,
+                        );
                     }
+                    try writeStructAt(output, command_offset, command);
                 },
                 .DYLD_INFO, .DYLD_INFO_ONLY => {
-                    const dyld_info: *align(1) macho.dyld_info_command = @ptrCast(@alignCast(cmd_ptr));
-
-                    try shifter.shift(dyld_info, &.{
+                    var command = entry.cast(macho.dyld_info_command).?;
+                    inline for (.{
                         "rebase_off",
                         "bind_off",
                         "weak_bind_off",
                         "lazy_bind_off",
                         "export_off",
-                    });
+                    }) |field| {
+                        @field(command, field) = try shiftLinkeditOffset(
+                            @field(command, field),
+                            plan.file_delta,
+                            template.linkedit_range,
+                        );
+                    }
+                    try writeStructAt(output, command_offset, command);
                 },
-                else => {},
+                else => if (isLinkeditDataCommand(entry.hdr.cmd)) {
+                    var command = entry.cast(macho.linkedit_data_command).?;
+                    command.dataoff = try shiftLinkeditOffset(
+                        command.dataoff,
+                        plan.file_delta,
+                        template.linkedit_range,
+                    );
+                    if (entry.hdr.cmd == .CODE_SIGNATURE) {
+                        if (plan.signature) |signature| {
+                            command.dataoff = std.math.cast(
+                                u32,
+                                signature.start,
+                            ) orelse return error.OffsetOverflow;
+                            command.datasize = std.math.cast(
+                                u32,
+                                signature.storage_size,
+                            ) orelse return error.OffsetOverflow;
+                        }
+                    }
+                    try writeStructAt(output, command_offset, command);
+                },
             }
         }
     }
+};
 
-    pub fn iterator(self: *const MachoFile) macho.LoadCommandIterator {
+const AdhocSignaturePlan = struct {
+    start: usize,
+    page_size: usize,
+    page_count: usize,
+    hash_offset: usize,
+    code_directory_size: usize,
+    blob_size: usize,
+    storage_size: usize,
+    text_fileoff: u64,
+    text_filesize: u64,
+
+    fn init(
+        start: usize,
+        target_page_size: usize,
+        text_fileoff: u64,
+        text_filesize: u64,
+    ) !AdhocSignaturePlan {
+        if (start % signature_alignment != 0) return error.InvalidObject;
+        _ = std.math.cast(u32, start) orelse return error.OffsetOverflow;
+
+        const page_count = std.math.divCeil(
+            usize,
+            start,
+            target_page_size,
+        ) catch return error.OffsetOverflow;
+        const hash_offset = std.math.add(
+            usize,
+            @sizeOf(macho.CodeDirectory),
+            signature_identifier.len + 1,
+        ) catch return error.OffsetOverflow;
+        const hashes_size = std.math.mul(
+            usize,
+            page_count,
+            Sha256.digest_length,
+        ) catch return error.OffsetOverflow;
+        const code_directory_size = std.math.add(
+            usize,
+            hash_offset,
+            hashes_size,
+        ) catch return error.OffsetOverflow;
+        const blob_size = std.math.add(
+            usize,
+            @sizeOf(macho.SuperBlob) + @sizeOf(macho.BlobIndex),
+            code_directory_size,
+        ) catch return error.OffsetOverflow;
+        const storage_size = try alignForward(usize, blob_size, @sizeOf(u64));
+        _ = std.math.cast(u32, page_count) orelse return error.OffsetOverflow;
+        _ = std.math.cast(u32, hash_offset) orelse return error.OffsetOverflow;
+        _ = std.math.cast(u32, code_directory_size) orelse return error.OffsetOverflow;
+        _ = std.math.cast(u32, blob_size) orelse return error.OffsetOverflow;
+        _ = std.math.cast(u32, storage_size) orelse return error.OffsetOverflow;
+
         return .{
-            .next_index = 0,
-            .ncmds = self.header.ncmds,
-            .r = std.Io.Reader.fixed(self.data.items[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds]),
+            .start = start,
+            .page_size = target_page_size,
+            .page_count = page_count,
+            .hash_offset = hash_offset,
+            .code_directory_size = code_directory_size,
+            .blob_size = blob_size,
+            .storage_size = storage_size,
+            .text_fileoff = text_fileoff,
+            .text_filesize = text_filesize,
         };
     }
 
-    pub fn build(self: *MachoFile, writer: anytype) !void {
-        try writer.writeAll(self.data.items);
+    fn write(plan: AdhocSignaturePlan, output: []u8) !void {
+        const signature_end = std.math.add(
+            usize,
+            plan.start,
+            plan.storage_size,
+        ) catch return error.OffsetOverflow;
+        if (signature_end != output.len) return error.InvalidObject;
+
+        var writer = std.Io.Writer.fixed(output[plan.start..][0..plan.blob_size]);
+        try writer.writeStruct(macho.SuperBlob{
+            .magic = macho.CSMAGIC_EMBEDDED_SIGNATURE,
+            .length = @intCast(plan.blob_size),
+            .count = 1,
+        }, .big);
+        try writer.writeStruct(macho.BlobIndex{
+            .type = macho.CSSLOT_CODEDIRECTORY,
+            .offset = @sizeOf(macho.SuperBlob) + @sizeOf(macho.BlobIndex),
+        }, .big);
+        try writer.writeStruct(macho.CodeDirectory{
+            .magic = macho.CSMAGIC_CODEDIRECTORY,
+            .length = @intCast(plan.code_directory_size),
+            .version = macho.CS_SUPPORTSEXECSEG,
+            .flags = macho.CS_ADHOC | macho.CS_LINKER_SIGNED,
+            .hashOffset = @intCast(plan.hash_offset),
+            .identOffset = @sizeOf(macho.CodeDirectory),
+            .nSpecialSlots = 0,
+            .nCodeSlots = @intCast(plan.page_count),
+            .codeLimit = @intCast(plan.start),
+            .hashSize = Sha256.digest_length,
+            .hashType = macho.CS_HASHTYPE_SHA256,
+            .platform = 0,
+            .pageSize = @as(u8, @truncate(std.math.log2(plan.page_size))),
+            .spare2 = 0,
+            .scatterOffset = 0,
+            .teamOffset = 0,
+            .spare3 = 0,
+            .codeLimit64 = 0,
+            .execSegBase = plan.text_fileoff,
+            .execSegLimit = plan.text_filesize,
+            .execSegFlags = macho.CS_EXECSEG_MAIN_BINARY,
+        }, .big);
+        try writer.writeAll(signature_identifier);
+        try writer.writeByte(0);
+
+        var page_start: usize = 0;
+        while (page_start < plan.start) {
+            const page_end = page_start + @min(
+                plan.page_size,
+                plan.start - page_start,
+            );
+            var digest: [Sha256.digest_length]u8 = undefined;
+            Sha256.hash(output[page_start..page_end], &digest, .{});
+            try writer.writeAll(&digest);
+            page_start = page_end;
+        }
+        std.debug.assert(writer.end == plan.blob_size);
     }
+};
 
-    fn validateSegments(self: *MachoFile) !void {
-        var iter = self.iterator();
-        var prev_end: u64 = 0;
-
-        while (try iter.next()) |entry| {
-            const cmd = entry.hdr;
-            if (cmd.cmd == .SEGMENT_64) {
-                const seg = entry.cast(macho.segment_command_64).?;
-                if (seg.fileoff < prev_end) {
-                    return error.OverlappingSegments;
-                }
-                prev_end = seg.fileoff + seg.filesize;
-            }
-        }
-    }
-
-    pub fn buildAndSign(self: *MachoFile, writer: *std.Io.Writer) !void {
-        if (self.header.cputype == macho.CPU_TYPE_ARM64 and !bun.feature_flag.BUN_NO_CODESIGN_MACHO_BINARY.get()) {
-            var data = std.array_list.Managed(u8).init(self.allocator);
-            defer data.deinit();
-            var writer_state = bun.ManagedWriter.init(&data);
-            var writer_finished = false;
-            defer if (!writer_finished) writer_state.finish();
-            try self.build(writer_state.writer());
-            writer_state.finish();
-            writer_finished = true;
-            var signer = try MachoSigner.init(self.allocator, data.items);
-            defer signer.deinit();
-            try signer.sign(writer);
-        } else {
-            try self.build(writer);
-        }
-    }
-
-    const MachoSigner = struct {
-        data: std.array_list.Managed(u8),
-        sig_off: usize,
-        sig_sz: usize,
-        cs_cmd_off: usize,
-        linkedit_off: usize,
-        linkedit_seg: macho.segment_command_64,
-        text_seg: macho.segment_command_64,
-        allocator: Allocator,
-
-        pub fn init(allocator: Allocator, obj: []const u8) !*MachoSigner {
-            var self = try allocator.create(MachoSigner);
-            errdefer allocator.destroy(self);
-
-            const header = @as(*align(1) const macho.mach_header_64, @ptrCast(obj.ptr)).*;
-            const header_size = @sizeOf(macho.mach_header_64);
-
-            var sig_off: usize = 0;
-            var sig_sz: usize = 0;
-            var cs_cmd_off: usize = 0;
-            var linkedit_off: usize = 0;
-
-            var text_seg = std.mem.zeroes(macho.segment_command_64);
-            var linkedit_seg = std.mem.zeroes(macho.segment_command_64);
-
-            var it = macho.LoadCommandIterator{
-                .next_index = 0,
-                .ncmds = header.ncmds,
-                .r = std.Io.Reader.fixed(obj[header_size..][0..header.sizeofcmds]),
-            };
-
-            // First pass: find segments to establish bounds
-            while (try it.next()) |cmd| {
-                if (cmd.hdr.cmd == .SEGMENT_64) {
-                    const seg = cmd.cast(macho.segment_command_64).?;
-
-                    // Store segment info
-                    if (strings.eqlComptime(seg.segName(), SEG_LINKEDIT)) {
-                        linkedit_seg = seg;
-                        linkedit_off = @intFromPtr(cmd.data.ptr) - @intFromPtr(obj.ptr);
-
-                        // Validate linkedit is after text
-                        if (linkedit_seg.fileoff < text_seg.fileoff + text_seg.filesize) {
-                            return error.InvalidLinkeditOffset;
-                        }
-                    } else if (strings.eqlComptime(seg.segName(), "__TEXT")) {
-                        text_seg = seg;
-                    }
-                }
-            }
-
-            // Reset iterator
-            it = macho.LoadCommandIterator{
-                .next_index = 0,
-                .ncmds = header.ncmds,
-                .r = std.Io.Reader.fixed(obj[header_size..][0..header.sizeofcmds]),
-            };
-
-            // Second pass: find code signature
-            while (try it.next()) |cmd| {
-                switch (cmd.hdr.cmd) {
-                    .CODE_SIGNATURE => {
-                        const cs = cmd.cast(macho.linkedit_data_command).?;
-                        sig_off = cs.dataoff;
-                        sig_sz = cs.datasize;
-                        cs_cmd_off = @intFromPtr(cmd.data.ptr) - @intFromPtr(obj.ptr);
-                    },
-                    else => {},
-                }
-            }
-
-            if (linkedit_off == 0 or sig_off == 0) {
-                return error.MissingRequiredSegment;
-            }
-
-            self.* = .{
-                .data = try std.array_list.Managed(u8).initCapacity(allocator, obj.len),
-                .sig_off = sig_off,
-                .sig_sz = sig_sz,
-                .cs_cmd_off = cs_cmd_off,
-                .linkedit_off = linkedit_off,
-                .linkedit_seg = linkedit_seg,
-                .text_seg = text_seg,
-                .allocator = allocator,
-            };
-
-            try self.data.appendSlice(obj);
-            return self;
-        }
-
-        pub fn deinit(self: *MachoSigner) void {
-            self.data.deinit();
-            self.allocator.destroy(self);
-        }
-
-        const IDENTIFIER = "a.out\x00";
-        const SIGNATURE_PAGE_SIZE: usize = 1 << 12;
-        const SIGNATURE_HASH_SIZE: usize = 32; // SHA256 = 32 bytes
-
-        /// Compute the exact number of bytes that `sign()` will write at `sig_off`
-        /// (the `SuperBlob` + `BlobIndex` + `CodeDirectory` + identifier + page
-        /// hashes). `writeSection` uses this to size `linkedit_seg.filesize` and
-        /// the `LC_CODE_SIGNATURE.datasize` so the signer's output fits exactly
-        /// inside __LINKEDIT.
-        pub fn computeSignatureSize(sig_off: u64) usize {
-            const total_pages: usize = @intCast((sig_off + SIGNATURE_PAGE_SIZE - 1) / SIGNATURE_PAGE_SIZE);
-            const super_blob_header_size = @sizeOf(SuperBlob);
-            const blob_index_size = @sizeOf(BlobIndex);
-            const code_dir_header_size = @sizeOf(CodeDirectory);
-            const hash_offset = code_dir_header_size + IDENTIFIER.len;
-            const hashes_size = total_pages * SIGNATURE_HASH_SIZE;
-            const code_dir_length = hash_offset + hashes_size;
-            return super_blob_header_size + blob_index_size + code_dir_length;
-        }
-
-        pub fn sign(self: *MachoSigner, writer: *std.Io.Writer) !void {
-            const PAGE_SIZE: usize = SIGNATURE_PAGE_SIZE;
-            const HASH_SIZE: usize = SIGNATURE_HASH_SIZE;
-
-            // Calculate total binary pages before signature
-            const total_pages = (self.sig_off + PAGE_SIZE - 1) / PAGE_SIZE;
-            const aligned_sig_off = total_pages * PAGE_SIZE;
-
-            // Calculate base signature structure sizes
-            const id = IDENTIFIER;
-            const super_blob_header_size = @sizeOf(SuperBlob);
-            const blob_index_size = @sizeOf(BlobIndex);
-            const code_dir_header_size = @sizeOf(CodeDirectory);
-            const id_offset = code_dir_header_size;
-            const hash_offset = id_offset + id.len;
-
-            // Calculate hash sizes
-            const hashes_size = total_pages * HASH_SIZE;
-            const code_dir_length = hash_offset + hashes_size;
-
-            // Calculate total signature size
-            const sig_structure_size = super_blob_header_size + blob_index_size + code_dir_length;
-            bun.debugAssert(sig_structure_size == computeSignatureSize(self.sig_off));
-            const total_sig_size = alignSize(sig_structure_size, PAGE_SIZE);
-
-            // Setup SuperBlob
-            var super_blob = SuperBlob{
-                .magic = @byteSwap(CSMAGIC_EMBEDDED_SIGNATURE),
-                .length = @byteSwap(@as(u32, @truncate(sig_structure_size))),
-                .count = @byteSwap(@as(u32, 1)),
-            };
-
-            // Setup BlobIndex
-            var blob_index = BlobIndex{
-                .type = @byteSwap(CSSLOT_CODEDIRECTORY),
-                .offset = @byteSwap(@as(u32, super_blob_header_size + blob_index_size)),
-            };
-
-            // Setup CodeDirectory
-            var code_dir = std.mem.zeroes(CodeDirectory);
-            code_dir.magic = @byteSwap(CSMAGIC_CODEDIRECTORY);
-            code_dir.length = @byteSwap(@as(u32, @truncate(code_dir_length)));
-            code_dir.version = @byteSwap(@as(u32, 0x20400));
-            code_dir.flags = @byteSwap(@as(u32, 0x20002));
-            code_dir.hashOffset = @byteSwap(@as(u32, @truncate(hash_offset)));
-            code_dir.identOffset = @byteSwap(@as(u32, @truncate(id_offset)));
-            code_dir.nSpecialSlots = 0;
-            code_dir.nCodeSlots = @byteSwap(@as(u32, @truncate(total_pages)));
-            code_dir.codeLimit = @byteSwap(@as(u32, @truncate(self.sig_off)));
-            code_dir.hashSize = HASH_SIZE;
-            code_dir.hashType = SEC_CODE_SIGNATURE_HASH_SHA256;
-            code_dir.pageSize = 12; // log2(4096)
-
-            // Get text segment info
-            const text_base = alignSize(self.text_seg.fileoff, PAGE_SIZE);
-            const text_limit = alignSize(self.text_seg.filesize, PAGE_SIZE);
-            code_dir.execSegBase = @byteSwap(@as(u64, text_base));
-            code_dir.execSegLimit = @byteSwap(@as(u64, text_limit));
-            code_dir.execSegFlags = @byteSwap(CS_EXECSEG_MAIN_BINARY);
-
-            // Ensure space for signature
-            try self.data.resize(aligned_sig_off + total_sig_size);
-            const signature_buffer = self.data.items[self.sig_off..];
-            self.data.items.len = self.sig_off;
-            @memset(self.data.unusedCapacitySlice(), 0);
-
-            // Position writer at signature offset
-            var sig_writer = std.Io.Writer.fixed(signature_buffer);
-
-            // Write signature components
-            try sig_writer.writeAll(mem.asBytes(&super_blob));
-            try sig_writer.writeAll(mem.asBytes(&blob_index));
-            try sig_writer.writeAll(mem.asBytes(&code_dir));
-            try sig_writer.writeAll(id);
-
-            // Hash and write pages
-            var remaining = self.data.items[0..self.sig_off];
-            while (remaining.len >= PAGE_SIZE) {
-                const page = remaining[0..PAGE_SIZE];
-                var digest: bun.sha.SHA256.Digest = undefined;
-                bun.sha.SHA256.hash(page, &digest, null);
-                try sig_writer.writeAll(&digest);
-                remaining = remaining[PAGE_SIZE..];
-            }
-
-            if (remaining.len > 0) {
-                var last_page: [PAGE_SIZE]u8 = @splat(0);
-                @memcpy(last_page[0..remaining.len], remaining);
-                var digest: bun.sha.SHA256.Digest = undefined;
-                bun.sha.SHA256.hash(&last_page, &digest, null);
-                try sig_writer.writeAll(&digest);
-            }
-
-            // Finally, ensure that the length of data we write matches the total data expected
-            self.data.items.len = self.linkedit_seg.fileoff + self.linkedit_seg.filesize;
-
-            // Write final binary
-            try writer.writeAll(self.data.items);
-        }
+fn isLinkeditDataCommand(command: macho.LC) bool {
+    return switch (command) {
+        .CODE_SIGNATURE,
+        .SEGMENT_SPLIT_INFO,
+        .FUNCTION_STARTS,
+        .DATA_IN_CODE,
+        .DYLIB_CODE_SIGN_DRS,
+        .LINKER_OPTIMIZATION_HINT,
+        .DYLD_EXPORTS_TRIE,
+        .DYLD_CHAINED_FIXUPS,
+        => true,
+        else => false,
     };
-};
-
-fn alignSize(size: u64, base: u64) u64 {
-    const over = size % base;
-    return if (over == 0) size else size + (base - over);
 }
 
-fn alignVmsize(size: u64, page_size: u64) u64 {
-    return alignSize(if (size > 0x4000) size else 0x4000, page_size);
+fn validateLinkeditOffset(offset: u32, linkedit: FileRange) !void {
+    if (offset == 0) return;
+    if (offset < linkedit.start or offset > linkedit.end) {
+        return error.OffsetOutOfRange;
+    }
 }
 
-const SEG_LINKEDIT = "__LINKEDIT";
+fn validateLinkeditRange(offset: u32, size: u64, linkedit: FileRange) !void {
+    if (size == 0) return validateLinkeditOffset(offset, linkedit);
+    if (offset == 0) return error.OffsetOutOfRange;
+    const range = try FileRange.init(offset, size, linkedit.end);
+    if (!linkedit.contains(range)) return error.OffsetOutOfRange;
+}
 
-pub const utils = struct {
-    pub fn isElf(data: []const u8) bool {
-        if (data.len < 4) return false;
-        return mem.readInt(u32, data[0..4], .big) == 0x7f454c46;
-    }
+fn shiftLinkeditOffset(offset: u32, amount: usize, linkedit: FileRange) !u32 {
+    try validateLinkeditOffset(offset, linkedit);
+    if (offset == 0) return 0;
+    const shifted = std.math.add(u64, offset, amount) catch
+        return error.OffsetOverflow;
+    return std.math.cast(u32, shifted) orelse error.OffsetOverflow;
+}
 
-    pub fn isMacho(data: []const u8) bool {
-        if (data.len < 4) return false;
-        return mem.readInt(u32, data[0..4], .little) == macho.MH_MAGIC_64;
-    }
-};
+fn writeStructAt(output: []u8, offset: usize, value: anytype) !void {
+    const end = std.math.add(usize, offset, @sizeOf(@TypeOf(value))) catch
+        return error.OffsetOverflow;
+    if (end > output.len) return error.OffsetOutOfRange;
+    var writer = std.Io.Writer.fixed(output[offset..end]);
+    try writer.writeStruct(value, .little);
+}
 
-const CSMAGIC_CODEDIRECTORY: u32 = 0xfade0c02;
-const CSMAGIC_EMBEDDED_SIGNATURE: u32 = 0xfade0cc0;
-const CSSLOT_CODEDIRECTORY: u32 = 0;
-const SEC_CODE_SIGNATURE_HASH_SHA256: u8 = 2;
-const CS_EXECSEG_MAIN_BINARY: u64 = 0x1;
+fn pageSize(cpu: macho.cpu_type_t) usize {
+    return switch (cpu) {
+        macho.CPU_TYPE_X86_64 => 0x1000,
+        macho.CPU_TYPE_ARM64 => 0x4000,
+        else => unreachable,
+    };
+}
 
-const std = @import("std");
-
-const bun = @import("bun");
-const strings = bun.strings;
-
-const macho = std.macho;
-const BlobIndex = std.macho.BlobIndex;
-const CodeDirectory = std.macho.CodeDirectory;
-const SuperBlob = std.macho.SuperBlob;
-
-const mem = std.mem;
-const Allocator = mem.Allocator;
+fn alignForward(
+    comptime T: type,
+    value: T,
+    alignment: T,
+) !T {
+    _ = std.math.add(T, value, alignment - 1) catch return error.OffsetOverflow;
+    return std.mem.alignForward(T, value, alignment);
+}

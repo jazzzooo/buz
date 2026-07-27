@@ -788,18 +788,23 @@ pub const StandaloneModuleGraph = struct {
                     cleanup(zname, cloned_executable_fd);
                     return bun.invalid_fd;
                 }
-                var macho_file = bun.macho.MachoFile.init(bun.default_allocator, input_result.bytes.items, bytes.len) catch |err| {
-                    Output.prettyErrorln("Error initializing standalone module graph: {}", .{err});
-                    cleanup(zname, cloned_executable_fd);
-                    return bun.invalid_fd;
+                defer input_result.bytes.deinit();
+                const expected_cpu = switch (target.arch) {
+                    .x64 => std.macho.CPU_TYPE_X86_64,
+                    .arm64 => std.macho.CPU_TYPE_ARM64,
+                    .wasm => unreachable,
                 };
-                defer macho_file.deinit();
-                macho_file.writeSection(bytes) catch |err| {
+                const macho_output = bun.macho.embedStandalone(
+                    bun.default_allocator,
+                    input_result.bytes.items,
+                    bytes,
+                    expected_cpu,
+                ) catch |err| {
                     Output.prettyErrorln("Error writing standalone module graph: {}", .{err});
                     cleanup(zname, cloned_executable_fd);
                     return bun.invalid_fd;
                 };
-                input_result.bytes.deinit();
+                defer bun.default_allocator.free(macho_output);
 
                 switch (Syscall.setFileOffset(cloned_executable_fd, 0)) {
                     .err => |err| {
@@ -813,7 +818,7 @@ pub const StandaloneModuleGraph = struct {
                 var file = bun.sys.File{ .handle = cloned_executable_fd };
                 var buffer: [512 * 1024]u8 = undefined;
                 var buffered_writer = file.bufferedWriter(&buffer);
-                macho_file.buildAndSign(&buffered_writer.interface) catch |err| {
+                buffered_writer.interface.writeAll(macho_output) catch |err| {
                     Output.prettyErrorln("Error writing standalone module graph: {}", .{err});
                     cleanup(zname, cloned_executable_fd);
                     return bun.invalid_fd;
@@ -823,6 +828,14 @@ pub const StandaloneModuleGraph = struct {
                     cleanup(zname, cloned_executable_fd);
                     return bun.invalid_fd;
                 };
+                switch (Syscall.ftruncate(cloned_executable_fd, @intCast(macho_output.len))) {
+                    .err => |err| {
+                        Output.prettyErrorln("Error truncating standalone module graph: {f}", .{err});
+                        cleanup(zname, cloned_executable_fd);
+                        return bun.invalid_fd;
+                    },
+                    .result => {},
+                }
                 if (comptime !Environment.isWindows) {
                     _ = bun.c.fchmod(cloned_executable_fd.native(), 0o777);
                 }
