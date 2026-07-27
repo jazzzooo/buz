@@ -87,16 +87,6 @@ function setCloseCallback(self, callback) {
   self[kCloseCallback] = callback;
 }
 
-function assignSocketInternal(self, socket) {
-  if (socket._httpMessage) {
-    throw $ERR_HTTP_SOCKET_ASSIGNED("Socket already assigned");
-  }
-  socket._httpMessage = self;
-  setCloseCallback(socket, onServerResponseClose);
-  self.socket = socket;
-  self.emit("socket", socket);
-}
-
 function onServerResponseClose() {
   // EventEmitter.emit makes a copy of the 'close' listeners array before
   // calling the listeners. detachSocket() unregisters onServerResponseClose
@@ -487,7 +477,6 @@ Server.prototype[kRealListen] = function (tls, port, host, socketPath, reusePort
   {
     const ResponseClass = this[optionsSymbol].ServerResponse || ServerResponse;
     const RequestClass = this[optionsSymbol].IncomingMessage || IncomingMessage;
-    const canUseInternalAssignSocket = ResponseClass?.prototype.assignSocket === ServerResponse.prototype.assignSocket;
     let isHTTPS = false;
     let server = this;
 
@@ -602,12 +591,7 @@ Server.prototype[kRealListen] = function (tls, port, host, socketPath, reusePort
         socket[kRequest] = http_req;
         const is_upgrade = http_req.headers.upgrade;
         if (!is_upgrade) {
-          if (canUseInternalAssignSocket) {
-            // ~10% performance improvement in JavaScriptCore due to avoiding .once("close", ...) and removing a listener
-            assignSocketInternal(http_res, socket);
-          } else {
-            http_res.assignSocket(socket);
-          }
+          http_res.assignSocket(socket);
         }
         function onClose() {
           didFinish = true;
@@ -623,12 +607,7 @@ Server.prototype[kRealListen] = function (tls, port, host, socketPath, reusePort
         } else if (is_upgrade) {
           server.emit("upgrade", http_req, socket, kEmptyBuffer);
           if (!socket._httpMessage) {
-            if (canUseInternalAssignSocket) {
-              // ~10% performance improvement in JavaScriptCore due to avoiding .once("close", ...) and removing a listener
-              assignSocketInternal(http_res, socket);
-            } else {
-              http_res.assignSocket(socket);
-            }
+            http_res.assignSocket(socket);
           }
         } else if (http_req.headers.expect !== undefined) {
           if (http_req.headers.expect === "100-continue") {
@@ -1535,7 +1514,6 @@ ServerResponse.prototype._finish = function () {
 
 ServerResponse.prototype.detachSocket = function (socket) {
   if (socket._httpMessage === this) {
-    if (socket[kCloseCallback]) socket[kCloseCallback] = undefined;
     socket.removeListener("close", onServerResponseClose);
     socket._httpMessage = null;
   }
@@ -1612,7 +1590,7 @@ ServerResponse.prototype.assignSocket = function (socket) {
     throw $ERR_HTTP_SOCKET_ASSIGNED("Socket already assigned");
   }
   socket._httpMessage = this;
-  socket.once("close", onServerResponseClose);
+  socket.on("close", onServerResponseClose);
   this.socket = socket;
   this.emit("socket", socket);
 };

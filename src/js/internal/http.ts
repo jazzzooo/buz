@@ -161,9 +161,10 @@ function setIsNextIncomingMessageHTTPS(value) {
 }
 
 function callCloseCallback(self) {
-  if (self[kCloseCallback]) {
-    self[kCloseCallback]();
+  const callback = self[kCloseCallback];
+  if (callback) {
     self[kCloseCallback] = undefined;
+    callback.$call(self);
   }
 }
 function emitCloseNT(self) {
