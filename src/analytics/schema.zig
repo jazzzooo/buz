@@ -104,9 +104,8 @@ pub const Reader = struct {
     }
 
     pub inline fn readInt(this: *Self, comptime T: type) !T {
-        const slice = try this.read(@sizeOf(T));
-
-        return std.mem.readInt(T, slice[0..@sizeOf(T)], @import("builtin").cpu.arch.endian());
+        const bytes = try this.read(@sizeOf(T));
+        return @bitCast(bytes[0..@sizeOf(T)].*);
     }
 
     pub inline fn readBool(this: *Self) !bool {

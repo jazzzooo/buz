@@ -393,24 +393,24 @@ pub fn SortedHashMap(comptime V: type, comptime max_load_percentage: comptime_in
         /// assuming that if the first 64 bits of 'a' and 'b' are equivalent, then 'a' and 'b' are most likely
         /// equivalent.
         fn cmp(a: [32]u8, b: [32]u8) math.Order {
-            const msa = @as(u64, @bitCast(a[0..8].*));
-            const msb = @as(u64, @bitCast(b[0..8].*));
+            const msa = mem.readInt(u64, a[0..8], .big);
+            const msb = mem.readInt(u64, b[0..8], .big);
             if (msa != msb) {
-                return if (mem.bigToNative(u64, msa) < mem.bigToNative(u64, msb)) .lt else .gt;
+                return math.order(msa, msb);
             } else if (@reduce(.And, @as(@Vector(32, u8), a) == @as(@Vector(32, u8), b))) {
                 return .eq;
             } else {
-                switch (math.order(mem.readIntBig(u64, a[8..16]), mem.readIntBig(u64, b[8..16]))) {
+                switch (math.order(mem.readInt(u64, a[8..16], .big), mem.readInt(u64, b[8..16], .big))) {
                     .eq => {},
                     .lt => return .lt,
                     .gt => return .gt,
                 }
-                switch (math.order(mem.readIntBig(u64, a[16..24]), mem.readIntBig(u64, b[16..24]))) {
+                switch (math.order(mem.readInt(u64, a[16..24], .big), mem.readInt(u64, b[16..24], .big))) {
                     .eq => {},
                     .lt => return .lt,
                     .gt => return .gt,
                 }
-                return math.order(mem.readIntBig(u64, a[24..32]), mem.readIntBig(u64, b[24..32]));
+                return math.order(mem.readInt(u64, a[24..32], .big), mem.readInt(u64, b[24..32], .big));
             }
         }
 
@@ -418,7 +418,7 @@ pub fn SortedHashMap(comptime V: type, comptime max_load_percentage: comptime_in
         /// hash values across a table into buckets which are lexicographically ordered from one another in
         /// ascending order.
         fn idx(a: [32]u8, shift: u6) usize {
-            return @as(usize, @intCast(mem.readIntBig(u64, a[0..8]) >> shift));
+            return @as(usize, @intCast(mem.readInt(u64, a[0..8], .big) >> shift));
         }
 
         pub fn clearRetainingCapacity(self: *Self) void {

@@ -9,7 +9,6 @@
 #ifdef IS_CALLBACK
 #define INJECT_BEFORE int c = 500; // This is a callback, so we need to inject code before the call
 #endif
-#define IS_BIG_ENDIAN 0
 #define USE_JSVALUE64 1
 #define USE_JSVALUE32_64 0
 
@@ -106,18 +105,6 @@ typedef union EncodedJSValue {
 #endif
 
 napi_value asNapiValue;
-
-#if IS_BIG_ENDIAN
-  struct {
-    int32_t tag;
-    int32_t payload;
-  } asBits;
-#else
-  struct {
-    int32_t payload;
-    int32_t tag;
-  } asBits;
-#endif
 
   void* asPtr;
   double asDouble;

@@ -5,14 +5,9 @@ pub const __helpers = @import("std").zig.c_translation.helpers;
 
 pub const @"bool" = bool;
 pub const JSCell = ?*anyopaque;
-const struct_unnamed_1 = extern struct {
-    payload: i32,
-    tag: i32,
-};
 pub const union_EncodedJSValue = extern union {
     asInt64: i64,
     ptr: [*c]JSCell,
-    asBits: struct_unnamed_1,
     asPtr: ?*anyopaque,
     asDouble: f64,
     asJSValue: jsc.JSValue,
@@ -509,7 +504,6 @@ pub const __STDC_UTF_16__ = @as(c_int, 1);
 pub const __STDC_UTF_32__ = @as(c_int, 1);
 pub const _DEBUG = @as(c_int, 1);
 pub const __GCC_HAVE_DWARF2_CFI_ASM = @as(c_int, 1);
-pub const IS_BIG_ENDIAN = @as(c_int, 0);
 pub const USE_JSVALUE64 = @as(c_int, 1);
 pub const USE_JSVALUE32_64 = @as(c_int, 0);
 pub const @"true" = @as(c_int, 1);

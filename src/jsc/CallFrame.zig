@@ -86,29 +86,8 @@ pub const CallFrame = opaque {
     /// This function is manually ported from JSC's equivalent function in C++
     /// See JavaScriptCore/interpreter/CallFrame.h
     fn argumentCountIncludingThis(self: *const CallFrame) u32 {
-        // Register defined in JavaScriptCore/interpreter/Register.h
-        const Register = extern union {
-            value: JSValue, // EncodedJSValue
-            call_frame: *CallFrame,
-            code_block: *anyopaque, // CodeBlock*
-            /// EncodedValueDescriptor defined in JavaScriptCore/runtime/JSCJSValue.h
-            encoded_value: extern union {
-                ptr: JSValue, // JSCell*
-                as_bits: extern struct {
-                    payload: i32,
-                    tag: i32,
-                },
-            },
-            number: f64, // double
-            integer: i64, // integer
-        };
-        const registers: [*]const Register = @ptrCast(@alignCast(self));
-        // argumentCountIncludingThis takes the register at the defined offset, then
-        // calls 'ALWAYS_INLINE int32_t Register::unboxedInt32() const',
-        // which in turn calls 'ALWAYS_INLINE int32_t Register::payload() const'
-        // which accesses `.encodedValue.asBits.payload`
-        // JSC stores and works with value as signed, but it is always 1 or more.
-        return @intCast(registers[offset_argument_count_including_this].encoded_value.as_bits.payload);
+        const registers: [*]const u64 = @ptrCast(@alignCast(self));
+        return @truncate(registers[offset_argument_count_including_this]);
     }
 
     fn Arguments(comptime max: usize) type {
