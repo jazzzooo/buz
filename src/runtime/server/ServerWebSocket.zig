@@ -39,7 +39,7 @@ const new = bun.TrivialNew(ServerWebSocket);
 /// Initialize a ServerWebSocket with the given handler, data value, and signal.
 /// The signal will not be ref'd inside the ServerWebSocket init function, but will unref itself when the ServerWebSocket is destroyed.
 pub fn init(handler: *WebSocketServer.Handler, data_value: jsc.JSValue, signal: ?*bun.webcore.AbortSignal) *ServerWebSocket {
-    const globalObject = handler.globalObject;
+    const globalObject = handler.state.globalObject;
     const this = ServerWebSocket.new(.{
         .handler = handler,
         .signal = signal,
@@ -67,10 +67,11 @@ pub fn onOpen(this: *ServerWebSocket, ws: uws.AnyWebSocket) void {
     this.flags.closed = false;
     this.flags.ssl = ws == .ssl;
 
-    var handler = this.handler;
-    const vm = this.handler.vm;
-    handler.active_connections +|= 1;
-    const globalObject = handler.globalObject;
+    const handler = this.handler;
+    const vm = this.handler.state.vm;
+    handler.connectionOpened();
+    this.flags.opened = true;
+    const globalObject = handler.state.globalObject;
     const onOpenHandler = handler.onOpen;
     if (vm.isShuttingDown()) {
         log("onOpen called after script execution", .{});
@@ -78,7 +79,8 @@ pub fn onOpen(this: *ServerWebSocket, ws: uws.AnyWebSocket) void {
         return;
     }
 
-    this.flags.opened = false;
+    handler.enterDispatch();
+    defer handler.leaveDispatch();
 
     if (onOpenHandler.isEmptyOrUndefinedOrNull()) {
         return;
@@ -98,21 +100,20 @@ pub fn onOpen(this: *ServerWebSocket, ws: uws.AnyWebSocket) void {
     };
     ws.cork(&corker, Corker.run);
     const result = corker.result;
-    this.flags.opened = true;
     if (result.toError()) |err_value| {
         log("onOpen exception", .{});
 
         if (!this.flags.closed) {
             this.flags.closed = true;
+            this.flags.opened = false;
+            handler.connectionClosed();
             // we un-gracefully close the connection if there was an exception
             // we don't want any event handlers to fire after this for anything other than error()
             // https://github.com/oven-sh/bun/issues/1480
             this.websocket().close();
-            handler.active_connections -|= 1;
-            this_value.unprotect();
         }
 
-        handler.runErrorCallback(vm, globalObject, err_value);
+        handler.runErrorCallback(err_value);
     }
 }
 
@@ -126,16 +127,20 @@ pub fn onMessage(
         @backingInt(opcode),
         message,
     });
-    const onMessageHandler = this.handler.onMessage;
+    const handler = this.handler;
+    const onMessageHandler = handler.onMessage;
     if (onMessageHandler.isEmptyOrUndefinedOrNull()) return;
-    var globalObject = this.handler.globalObject;
+    const globalObject = handler.state.globalObject;
     // This is the start of a task.
-    const vm = this.handler.vm;
+    const vm = handler.state.vm;
     if (vm.isShuttingDown()) {
         log("onMessage called after script execution", .{});
         ws.close();
         return;
     }
+
+    handler.enterDispatch();
+    defer handler.leaveDispatch();
 
     const loop = vm.eventLoop();
     loop.enter();
@@ -162,7 +167,7 @@ pub fn onMessage(
     if (result.isEmptyOrUndefinedOrNull()) return;
 
     if (result.toError()) |err_value| {
-        this.handler.runErrorCallback(vm, globalObject, err_value);
+        handler.runErrorCallback(err_value);
         return;
     }
 
@@ -186,12 +191,14 @@ pub fn onDrain(this: *ServerWebSocket, _: uws.AnyWebSocket) void {
     log("onDrain", .{});
 
     const handler = this.handler;
-    const vm = handler.vm;
+    const vm = handler.state.vm;
     if (this.isClosed() or vm.isShuttingDown())
         return;
 
     if (handler.onDrain != .zero) {
-        const globalObject = handler.globalObject;
+        handler.enterDispatch();
+        defer handler.leaveDispatch();
+        const globalObject = handler.state.globalObject;
 
         var corker = Corker{
             .args = &[_]jsc.JSValue{this.this_value.tryGet() orelse .js_undefined},
@@ -205,7 +212,7 @@ pub fn onDrain(this: *ServerWebSocket, _: uws.AnyWebSocket) void {
         const result = corker.result;
 
         if (result.toError()) |err_value| {
-            handler.runErrorCallback(vm, globalObject, err_value);
+            handler.runErrorCallback(err_value);
         }
     }
 }
@@ -234,9 +241,12 @@ pub fn onPing(this: *ServerWebSocket, _: uws.AnyWebSocket, data: []const u8) voi
 
     const handler = this.handler;
     var cb = handler.onPing;
-    const vm = handler.vm;
+    const vm = handler.state.vm;
     if (cb.isEmptyOrUndefinedOrNull() or vm.isShuttingDown()) return;
-    const globalThis = handler.globalObject;
+    const globalThis = handler.state.globalObject;
+
+    handler.enterDispatch();
+    defer handler.leaveDispatch();
 
     // This is the start of a task.
     const loop = vm.eventLoop();
@@ -250,7 +260,7 @@ pub fn onPing(this: *ServerWebSocket, _: uws.AnyWebSocket, data: []const u8) voi
     ) catch |e| {
         const err = globalThis.takeException(e);
         log("onPing error", .{});
-        handler.runErrorCallback(vm, globalThis, err);
+        handler.runErrorCallback(err);
     };
 }
 
@@ -261,10 +271,13 @@ pub fn onPong(this: *ServerWebSocket, _: uws.AnyWebSocket, data: []const u8) voi
     var cb = handler.onPong;
     if (cb.isEmptyOrUndefinedOrNull()) return;
 
-    const globalThis = handler.globalObject;
-    const vm = handler.vm;
+    const globalThis = handler.state.globalObject;
+    const vm = handler.state.vm;
 
     if (vm.isShuttingDown()) return;
+
+    handler.enterDispatch();
+    defer handler.leaveDispatch();
 
     // This is the start of a task.
     const loop = vm.eventLoop();
@@ -278,20 +291,21 @@ pub fn onPong(this: *ServerWebSocket, _: uws.AnyWebSocket, data: []const u8) voi
     ) catch |e| {
         const err = globalThis.takeException(e);
         log("onPong error", .{});
-        handler.runErrorCallback(vm, globalThis, err);
+        handler.runErrorCallback(err);
     };
 }
 
 pub fn onClose(this: *ServerWebSocket, _: uws.AnyWebSocket, code: i32, message: []const u8) void {
     log("onClose", .{});
     // TODO: Can this called inside finalize?
-    var handler = this.handler;
-    const was_closed = this.isClosed();
+    const handler = this.handler;
+    handler.enterDispatch();
+    defer handler.leaveDispatch();
+
     this.flags.closed = true;
-    defer {
-        if (!was_closed) {
-            handler.active_connections -|= 1;
-        }
+    if (this.flags.opened) {
+        this.flags.opened = false;
+        handler.connectionClosed();
     }
     const signal = this.signal;
     this.signal = null;
@@ -307,13 +321,13 @@ pub fn onClose(this: *ServerWebSocket, _: uws.AnyWebSocket, code: i32, message: 
         }
     }
 
-    const vm = handler.vm;
+    const vm = handler.state.vm;
     if (vm.isShuttingDown()) {
         return;
     }
 
     if (!handler.onClose.isEmptyOrUndefinedOrNull()) {
-        const globalObject = handler.globalObject;
+        const globalObject = handler.state.globalObject;
         const loop = vm.eventLoop();
 
         loop.enter();
@@ -321,21 +335,21 @@ pub fn onClose(this: *ServerWebSocket, _: uws.AnyWebSocket, code: i32, message: 
 
         if (signal) |sig| {
             if (!sig.aborted()) {
-                sig.signal(handler.globalObject, .ConnectionClosed);
+                sig.signal(handler.state.globalObject, .ConnectionClosed);
             }
         }
 
         const message_js = bun.String.createUTF8ForJS(globalObject, message) catch |e| {
             const err = globalObject.takeException(e);
             log("onClose error (message) {}", .{this.this_value.isNotEmpty()});
-            handler.runErrorCallback(vm, globalObject, err);
+            handler.runErrorCallback(err);
             return;
         };
 
         _ = handler.onClose.call(globalObject, .js_undefined, &[_]jsc.JSValue{ this.this_value.tryGet() orelse .js_undefined, JSValue.jsNumber(code), message_js }) catch |e| {
             const err = globalObject.takeException(e);
             log("onClose error {}", .{this.this_value.isNotEmpty()});
-            handler.runErrorCallback(vm, globalObject, err);
+            handler.runErrorCallback(err);
             return;
         };
     } else if (signal) |sig| {
@@ -345,7 +359,7 @@ pub fn onClose(this: *ServerWebSocket, _: uws.AnyWebSocket, code: i32, message: 
         defer loop.exit();
 
         if (!sig.aborted()) {
-            sig.signal(handler.globalObject, .ConnectionClosed);
+            sig.signal(handler.state.globalObject, .ConnectionClosed);
         }
     }
 }
@@ -381,7 +395,7 @@ pub fn publish(
         return globalThis.throw("publish requires at least 1 argument", .{});
     }
 
-    const app = this.handler.app orelse {
+    const app = this.handler.state.app orelse {
         log("publish() closed", .{});
         return JSValue.jsNumber(0);
     };
@@ -465,7 +479,7 @@ pub fn publishText(
         return globalThis.throw("publish requires at least 1 argument", .{});
     }
 
-    const app = this.handler.app orelse {
+    const app = this.handler.state.app orelse {
         log("publish() closed", .{});
         return JSValue.jsNumber(0);
     };
@@ -528,7 +542,7 @@ pub fn publishBinary(
         return globalThis.throw("publishBinary requires at least 1 argument", .{});
     }
 
-    const app = this.handler.app orelse {
+    const app = this.handler.state.app orelse {
         log("publish() closed", .{});
         return JSValue.jsNumber(0);
     };
@@ -583,7 +597,7 @@ pub fn publishBinaryWithoutTypeChecks(
     topic_str: *jsc.JSString,
     array: *jsc.JSUint8Array,
 ) bun.JSError!jsc.JSValue {
-    const app = this.handler.app orelse {
+    const app = this.handler.state.app orelse {
         log("publish() closed", .{});
         return JSValue.jsNumber(0);
     };
@@ -622,7 +636,7 @@ pub fn publishTextWithoutTypeChecks(
     topic_str: *jsc.JSString,
     str: *jsc.JSString,
 ) bun.JSError!jsc.JSValue {
-    const app = this.handler.app orelse {
+    const app = this.handler.state.app orelse {
         log("publish() closed", .{});
         return JSValue.jsNumber(0);
     };
@@ -1086,6 +1100,10 @@ pub fn close(
     };
 
     defer message_value.deinit();
+
+    if (this.isClosed()) {
+        return .js_undefined;
+    }
 
     this.flags.closed = true;
     this.websocket().end(code, message_value.slice());

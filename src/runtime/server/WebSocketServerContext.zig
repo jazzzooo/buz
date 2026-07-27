@@ -1,6 +1,5 @@
 const WebSocketServerContext = @This();
 
-globalObject: *jsc.JSGlobalObject = undefined,
 handler: Handler = .{},
 
 maxPayloadLength: u32 = 1024 * 1024 * 16, // 16MB
@@ -13,6 +12,20 @@ resetIdleTimeoutOnSend: bool = true,
 closeOnBackpressureLimit: bool = false,
 
 pub const Handler = struct {
+    pub const State = struct {
+        pub const IdleNotification = struct {
+            context: *anyopaque,
+            callback: *const fn (*anyopaque) void,
+        };
+
+        app: ?*anyopaque = null,
+        vm: *jsc.VirtualMachine = undefined,
+        globalObject: *jsc.JSGlobalObject = undefined,
+        active_connections: usize = 0,
+        active_dispatches: usize = 0,
+        idle_notification: ?IdleNotification = null,
+    };
+
     onOpen: jsc.JSValue = .zero,
     onMessage: jsc.JSValue = .zero,
     onClose: jsc.JSValue = .zero,
@@ -21,12 +34,7 @@ pub const Handler = struct {
     onPing: jsc.JSValue = .zero,
     onPong: jsc.JSValue = .zero,
 
-    app: ?*anyopaque = null,
-
-    // Always set manually.
-    vm: *jsc.VirtualMachine = undefined,
-    globalObject: *jsc.JSGlobalObject = undefined,
-    active_connections: usize = 0,
+    state: State = .{},
 
     /// used by publish()
     flags: packed struct(u8) {
@@ -35,19 +43,57 @@ pub const Handler = struct {
         _: u6 = 0,
     } = .{},
 
-    pub fn runErrorCallback(this: *const Handler, vm: *jsc.VirtualMachine, globalObject: *jsc.JSGlobalObject, error_value: jsc.JSValue) void {
+    fn notifyIfIdle(this: *Handler) void {
+        const notification = this.state.idle_notification orelse return;
+        if (this.state.active_connections > 0 or this.state.active_dispatches > 0) {
+            return;
+        }
+        this.state.idle_notification = null;
+        notification.callback(notification.context);
+    }
+
+    pub fn enterDispatch(this: *Handler) void {
+        this.state.active_dispatches += 1;
+    }
+
+    pub fn leaveDispatch(this: *Handler) void {
+        bun.debugAssert(this.state.active_dispatches > 0);
+        this.state.active_dispatches -= 1;
+        this.notifyIfIdle();
+    }
+
+    pub fn connectionOpened(this: *Handler) void {
+        this.state.active_connections += 1;
+    }
+
+    pub fn connectionClosed(this: *Handler) void {
+        bun.debugAssert(this.state.active_connections > 0);
+        this.state.active_connections -= 1;
+        this.notifyIfIdle();
+    }
+
+    pub fn notifyWhenIdle(this: *Handler, context: *anyopaque, callback: *const fn (*anyopaque) void) void {
+        bun.debugAssert(this.state.active_connections > 0 or this.state.active_dispatches > 0);
+        this.state.idle_notification = .{
+            .context = context,
+            .callback = callback,
+        };
+    }
+
+    pub fn runErrorCallback(this: *const Handler, error_value: jsc.JSValue) void {
+        const globalObject = this.state.globalObject;
         const onError = this.onError;
         if (!onError.isEmptyOrUndefinedOrNull()) {
             _ = onError.call(globalObject, .js_undefined, &.{error_value}) catch |err|
-                this.globalObject.reportActiveExceptionAsUnhandled(err);
+                globalObject.reportActiveExceptionAsUnhandled(err);
             return;
         }
 
-        _ = vm.uncaughtException(globalObject, error_value, false);
+        _ = this.state.vm.uncaughtException(globalObject, error_value, false);
     }
 
-    pub fn fromJS(globalObject: *jsc.JSGlobalObject, object: jsc.JSValue) bun.JSError!Handler {
-        var handler = Handler{ .globalObject = globalObject, .vm = VirtualMachine.get() };
+    pub fn fromJS(globalObject: *jsc.JSGlobalObject, object: jsc.JSValue, callback_roots: *jsc.MarkedArgumentBuffer) bun.JSError!Handler {
+        var handler = Handler{ .state = .{ .globalObject = globalObject, .vm = VirtualMachine.get() } };
 
         var valid = false;
 
@@ -66,7 +112,7 @@ pub const Handler = struct {
                 }
                 const cb = value.withAsyncContextIfNeeded(globalObject);
                 @field(handler, pair[1]) = cb;
-                cb.ensureStillAlive();
+                callback_roots.append(cb);
                 if (i > 0) {
                     // anything other than "error" is considered valid.
                     valid = true;
@@ -78,30 +124,6 @@ pub const Handler = struct {
             return handler;
 
         return globalObject.throwInvalidArguments("WebSocketServerContext expects a message handler", .{});
-    }
-
-    pub fn protect(this: Handler) void {
-        this.onOpen.protect();
-        this.onMessage.protect();
-        this.onClose.protect();
-        this.onDrain.protect();
-        this.onError.protect();
-        this.onPing.protect();
-        this.onPong.protect();
-    }
-
-    pub fn unprotect(this: Handler) void {
-        if (this.vm.isShuttingDown()) {
-            return;
-        }
-
-        this.onOpen.unprotect();
-        this.onMessage.unprotect();
-        this.onClose.unprotect();
-        this.onDrain.unprotect();
-        this.onError.unprotect();
-        this.onPing.unprotect();
-        this.onPong.unprotect();
     }
 };
 
@@ -116,13 +138,6 @@ pub fn toBehavior(this: WebSocketServerContext) uws.WebSocketBehavior {
         .resetIdleTimeoutOnSend = this.resetIdleTimeoutOnSend,
         .closeOnBackpressureLimit = this.closeOnBackpressureLimit,
     };
-}
-
-pub fn protect(this: WebSocketServerContext) void {
-    this.handler.protect();
-}
-pub fn unprotect(this: WebSocketServerContext) void {
-    this.handler.unprotect();
 }
 
 const CompressTable = bun.ComptimeStringMap(i32, .{
@@ -153,9 +168,9 @@ const DecompressTable = bun.ComptimeStringMap(i32, .{
     .{ "256KB", uws.DEDICATED_COMPRESSOR_256KB },
 });
 
-pub fn onCreate(globalObject: *jsc.JSGlobalObject, object: JSValue) bun.JSError!WebSocketServerContext {
+pub fn onCreate(globalObject: *jsc.JSGlobalObject, object: JSValue, callback_roots: *jsc.MarkedArgumentBuffer) bun.JSError!WebSocketServerContext {
     var server = WebSocketServerContext{};
-    server.handler = try Handler.fromJS(globalObject, object);
+    server.handler = try Handler.fromJS(globalObject, object, callback_roots);
 
     if (try object.get(globalObject, "perMessageDeflate")) |per_message_deflate| {
         getter: {
@@ -268,8 +283,6 @@ pub fn onCreate(globalObject: *jsc.JSGlobalObject, object: JSValue) bun.JSError!
             server.handler.flags.publish_to_self = value.toBoolean();
         }
     }
-
-    server.protect();
     return server;
 }
 

@@ -97,6 +97,12 @@ pub fn memoryCost(this: *const ServerConfig) usize {
     return cost;
 }
 
+pub fn take(this: *ServerConfig) ServerConfig {
+    const config = this.*;
+    this.* = .{};
+    return config;
+}
+
 // We need to be able to apply the route to multiple Apps even when there is only one RouteList.
 pub const RouteDeclaration = struct {
     path: [:0]const u8 = "",
@@ -146,28 +152,36 @@ pub const StaticRouteEntry = struct {
     }
 };
 
-fn normalizeStaticRoutesList(this: *ServerConfig) !void {
+pub fn normalizeStaticRoutes(this: *ServerConfig) bun.OOM!void {
+    const Key = struct {
+        path: []const u8,
+        method: HTTP.Method.Optional,
+    };
     const Context = struct {
-        // Ac
-        pub fn hash(route: *StaticRouteEntry) u64 {
+        pub fn hash(_: @This(), key: Key) u64 {
             var hasher = std.hash.Wyhash.init(0);
-            switch (route.method) {
-                .any => hasher.update("ANY"),
-                .method => |*set| {
-                    var iter = set.iterator();
-                    while (iter.next()) |method| {
-                        hasher.update(@tagName(method));
-                    }
-                },
-            }
-            hasher.update(route.path);
+            std.hash.autoHash(&hasher, key.method);
+            hasher.update(key.path);
             return hasher.final();
+        }
+
+        pub fn eql(_: @This(), a: Key, b: Key) bool {
+            if (!std.mem.eql(u8, a.path, b.path)) {
+                return false;
+            }
+            return switch (a.method) {
+                .any => b.method == .any,
+                .method => |a_set| switch (b.method) {
+                    .any => false,
+                    .method => |b_set| a_set.eql(b_set),
+                },
+            };
         }
     };
 
-    var static_routes_dedupe_list = std.array_list.Managed(u64).init(bun.default_allocator);
-    try static_routes_dedupe_list.ensureTotalCapacity(@truncate(this.static_routes.items.len));
-    defer static_routes_dedupe_list.deinit();
+    var seen: std.HashMapUnmanaged(Key, void, Context, std.hash_map.default_max_load_percentage) = .empty;
+    defer seen.deinit(bun.default_allocator);
+    try seen.ensureTotalCapacity(bun.default_allocator, @intCast(this.static_routes.items.len));
 
     // Iterate through the list of static routes backwards
     // Later ones added override earlier ones
@@ -176,12 +190,13 @@ fn normalizeStaticRoutesList(this: *ServerConfig) !void {
         var index = list.items.len - 1;
         while (true) {
             const route = &list.items[index];
-            const hash = Context.hash(route);
-            if (std.mem.indexOfScalar(u64, static_routes_dedupe_list.items, hash) != null) {
+            const result = seen.getOrPutAssumeCapacity(.{
+                .path = route.path,
+                .method = route.method,
+            });
+            if (result.found_existing) {
                 var item = list.orderedRemove(index);
                 item.deinit();
-            } else {
-                try static_routes_dedupe_list.append(hash);
             }
 
             if (index == 0) break;
@@ -189,21 +204,8 @@ fn normalizeStaticRoutesList(this: *ServerConfig) !void {
         }
     }
 
-    // sort the cloned static routes by name for determinism
+    // Sort static routes by name for determinism.
     std.mem.sort(StaticRouteEntry, list.items, {}, StaticRouteEntry.isLessThan);
-}
-
-pub fn cloneForReloadingStaticRoutes(this: *ServerConfig) !ServerConfig {
-    var that = this.*;
-    this.ssl_config = null;
-    this.sni = null;
-    this.address = .{ .tcp = .{} };
-    this.websocket = null;
-    this.bake = null;
-
-    try that.normalizeStaticRoutesList();
-
-    return that;
 }
 
 pub fn appendStaticRoute(this: *ServerConfig, path: []const u8, route: AnyRoute, method: HTTP.Method.Optional) !void {
@@ -404,6 +406,7 @@ pub fn fromJS(
     global: *jsc.JSGlobalObject,
     args: *ServerConfig,
     arguments: *jsc.CallFrame.ArgumentsSlice,
+    callback_roots: *jsc.MarkedArgumentBuffer,
     opts: FromJSOptions,
 ) bun.JSError!void {
     const vm = arguments.vm;
@@ -579,12 +582,14 @@ pub fn fromJS(
 
                 if (value.isCallable()) {
                     try validateRouteName(global, path);
+                    const callback = value.withAsyncContextIfNeeded(global);
+                    callback_roots.append(callback);
                     args.user_routes_to_build.append(.{
                         .route = .{
                             .path = bun.handleOom(bun.default_allocator.dupeSentinel(u8, path, 0)),
                             .method = .any,
                         },
-                        .callback = .create(value.withAsyncContextIfNeeded(global), global),
+                        .callback = callback,
                     }) catch |err| bun.handleOom(err);
                     bun.default_allocator.free(path);
                     continue;
@@ -609,12 +614,14 @@ pub fn fromJS(
                             found = true;
 
                             if (function.isCallable()) {
+                                const callback = function.withAsyncContextIfNeeded(global);
+                                callback_roots.append(callback);
                                 args.user_routes_to_build.append(.{
                                     .route = .{
                                         .path = bun.handleOom(bun.default_allocator.dupeSentinel(u8, path, 0)),
                                         .method = .{ .specific = method },
                                     },
-                                    .callback = .create(function.withAsyncContextIfNeeded(global), global),
+                                    .callback = callback,
                                 }) catch |err| bun.handleOom(err);
                             } else if (try AnyRoute.fromJS(global, path, function, init_ctx)) |html_route| {
                                 var method_set = bun.http.Method.Set.empty;
@@ -764,7 +771,7 @@ pub fn fromJS(
             }
 
             errdefer if (args.ssl_config) |*conf| conf.deinit();
-            args.websocket = try WebSocketServerContext.onCreate(global, websocket_object);
+            args.websocket = try WebSocketServerContext.onCreate(global, websocket_object, callback_roots);
         }
         if (global.hasException()) return error.JSError;
 
@@ -886,7 +893,7 @@ pub fn fromJS(
             }
             const onErrorSnapshot = onError.withAsyncContextIfNeeded(global);
             args.onError = onErrorSnapshot;
-            onErrorSnapshot.protect();
+            callback_roots.append(onErrorSnapshot);
         }
         if (global.hasException()) return error.JSError;
 
@@ -895,8 +902,8 @@ pub fn fromJS(
                 return global.throwInvalidArguments("Expected onNodeHTTPRequest to be a function", .{});
             }
             const onRequest = onRequest_.withAsyncContextIfNeeded(global);
-            onRequest.protect();
             args.onNodeHTTPRequest = onRequest;
+            callback_roots.append(onRequest);
         }
 
         if (try arg.getOptional(global, "fetch", jsc.JSValue)) |onRequest_| {
@@ -904,8 +911,8 @@ pub fn fromJS(
                 return global.throwInvalidArguments("Expected fetch() to be a function", .{});
             }
             const onRequest = onRequest_.withAsyncContextIfNeeded(global);
-            onRequest.protect();
             args.onRequest = onRequest;
+            callback_roots.append(onRequest);
         } else if (args.bake == null and args.onNodeHTTPRequest == .zero and ((args.static_routes.items.len + args.user_routes_to_build.items.len) == 0 and !opts.has_user_routes)) {
             if (global.hasException()) return error.JSError;
             return global.throwInvalidArguments(
@@ -1103,11 +1110,10 @@ pub fn fromJS(
 
 const UserRouteBuilder = struct {
     route: ServerConfig.RouteDeclaration,
-    callback: jsc.Strong.Optional = .empty,
+    callback: jsc.JSValue = .zero,
 
     pub fn deinit(this: *UserRouteBuilder) void {
         this.route.deinit();
-        this.callback.deinit();
     }
 };
 

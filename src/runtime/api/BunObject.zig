@@ -30,7 +30,7 @@ pub const BunObject = struct {
     pub const registerMacro = toJSCallback(Bun.registerMacro);
     pub const resolve = toJSCallback(Bun.resolve);
     pub const resolveSync = toJSCallback(Bun.resolveSync);
-    pub const serve = toJSCallback(Bun.serve);
+    pub const serve = toJSCallback(jsc.MarkedArgumentBuffer.wrap(Bun.serve));
     pub const sha = toJSCallback(host_fn.wrapStaticMethod(Crypto.SHA512_256, "hash_", true));
     pub const shellEscape = toJSCallback(Bun.shellEscape);
     pub const shrink = toJSCallback(Bun.shrink);
@@ -1015,16 +1015,20 @@ pub fn nanoseconds(globalThis: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSErr
     return jsc.JSValue.jsNumberFromUint64(ns);
 }
 
-pub fn serve(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+pub fn serve(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, callback_roots: *jsc.MarkedArgumentBuffer) bun.JSError!jsc.JSValue {
     const arguments = callframe.arguments_old(2).slice();
-    var config: jsc.API.ServerConfig = brk: {
+    var config: jsc.API.ServerConfig = .{};
+    defer config.deinit();
+
+    {
         var args = jsc.CallFrame.ArgumentsSlice.init(globalObject.bunVM(), arguments);
-        var config: jsc.API.ServerConfig = .{};
+        defer args.deinit();
 
         try jsc.API.ServerConfig.fromJS(
             globalObject,
             &config,
             &args,
+            callback_roots,
             .{
                 .allow_bake_config = bun.FeatureFlags.bake(),
                 .has_user_routes = false,
@@ -1032,12 +1036,9 @@ pub fn serve(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.J
         );
 
         if (globalObject.hasException()) {
-            config.deinit();
             return .zero;
         }
-
-        break :brk config;
-    };
+    }
 
     const vm = globalObject.bunVM();
 
@@ -1050,13 +1051,13 @@ pub fn serve(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.J
             if (hot.getEntry(config.id)) |entry| {
                 switch (entry.tag()) {
                     @field(@TypeOf(entry.tag()), @typeName(jsc.API.HTTPServer)) => {
-                        var server: *jsc.API.HTTPServer = entry.as(jsc.API.HTTPServer);
-                        server.onReloadFromZig(&config, globalObject);
+                        const server: *jsc.API.HTTPServer = entry.as(jsc.API.HTTPServer);
+                        server.onReloadFromZig(&config, callback_roots);
                         return server.js_value.tryGet() orelse .js_undefined;
                     },
                     @field(@TypeOf(entry.tag()), @typeName(jsc.API.HTTPSServer)) => {
-                        var server: *jsc.API.HTTPSServer = entry.as(jsc.API.HTTPSServer);
-                        server.onReloadFromZig(&config, globalObject);
+                        const server: *jsc.API.HTTPSServer = entry.as(jsc.API.HTTPSServer);
+                        server.onReloadFromZig(&config, callback_roots);
                         return server.js_value.tryGet() orelse .js_undefined;
                     },
                     else => {},
@@ -1069,17 +1070,19 @@ pub fn serve(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.J
         inline else => |has_ssl_config| {
             const ServerType = if (has_ssl_config) jsc.API.HTTPSServer else jsc.API.HTTPServer;
 
-            var server = try ServerType.init(&config, globalObject);
+            const server = try ServerType.init(&config, globalObject);
             if (globalObject.hasException()) {
                 return .zero;
             }
-            const route_list_object = server.listen();
+            const route_list_object = server.listen(callback_roots);
             if (globalObject.hasException()) {
                 return .zero;
             }
             const obj = server.toJS(globalObject);
+            callback_roots.append(obj);
+            server.writeHandlerSlots(obj);
             if (route_list_object != .zero) {
-                server.routeListSetCached(obj, globalObject, route_list_object);
+                server.routeListSetCached(obj, route_list_object);
             }
             server.js_value.setStrong(obj, globalObject);
 

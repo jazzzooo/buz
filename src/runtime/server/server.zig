@@ -533,16 +533,44 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
             return if (this.config.isDevelopment()) DebugJS.toJS(this, global) else ProductionJS.toJS(this, global);
         }
 
-        pub fn routeListSetCached(this: *ThisServer, value: jsc.JSValue, global: *jsc.JSGlobalObject, route_list: jsc.JSValue) void {
+        pub fn routeListSetCached(this: *ThisServer, value: jsc.JSValue, route_list: jsc.JSValue) void {
             if (this.config.isDevelopment()) {
-                DebugJS.routeListSetCached(value, global, route_list);
+                DebugJS.routeListSetCached(value, this.globalThis, route_list);
             } else {
-                ProductionJS.routeListSetCached(value, global, route_list);
+                ProductionJS.routeListSetCached(value, this.globalThis, route_list);
             }
         }
 
         fn routeListGetCached(this: *ThisServer, value: jsc.JSValue) ?jsc.JSValue {
             return if (this.config.isDevelopment()) DebugJS.routeListGetCached(value) else ProductionJS.routeListGetCached(value);
+        }
+
+        fn gcSet(this: *ThisServer, comptime field: @TypeOf(.enum_literal), server_value: jsc.JSValue, value: jsc.JSValue) void {
+            if (this.config.isDevelopment()) {
+                DebugJS.gc.set(field, server_value, this.globalThis, value);
+            } else {
+                ProductionJS.gc.set(field, server_value, this.globalThis, value);
+            }
+        }
+
+        pub fn writeHandlerSlots(this: *ThisServer, server_value: jsc.JSValue) void {
+            this.gcSet(.onRequest, server_value, this.config.onRequest);
+            this.gcSet(.onError, server_value, this.config.onError);
+            this.gcSet(.onNodeHTTPRequest, server_value, this.config.onNodeHTTPRequest);
+            this.gcSet(.onClientError, server_value, this.on_clienterror);
+
+            const handler = if (this.config.websocket) |*websocket| &websocket.handler else null;
+            inline for (.{
+                .{ .wsOnOpen, "onOpen" },
+                .{ .wsOnMessage, "onMessage" },
+                .{ .wsOnClose, "onClose" },
+                .{ .wsOnDrain, "onDrain" },
+                .{ .wsOnError, "onError" },
+                .{ .wsOnPing, "onPing" },
+                .{ .wsOnPong, "onPong" },
+            }) |fields| {
+                this.gcSet(fields[0], server_value, if (handler) |h| @field(h, fields[1]) else .zero);
+            }
         }
 
         pub const new = bun.TrivialNew(@This());
@@ -591,7 +619,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
         /// So we have to store it.
         user_routes: std.ArrayListUnmanaged(UserRoute) = .empty,
 
-        on_clienterror: jsc.Strong.Optional = .empty,
+        on_clienterror: jsc.JSValue = .zero,
 
         inspector_server_id: jsc.Debugger.DebuggerId = .init(0),
 
@@ -778,7 +806,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
                 return globalThis.throwInvalidArguments("To enable websocket support, set the \"websocket\" object in Bun.serve({})", .{});
             }
 
-            if (this.flags.terminated) {
+            if (this.flags.terminated or !this.hasListener()) {
                 return .false;
             }
 
@@ -1123,41 +1151,29 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
             return .true;
         }
 
-        pub fn onReloadFromZig(this: *ThisServer, new_config: *ServerConfig, globalThis: *jsc.JSGlobalObject) void {
+        pub fn onReloadFromZig(this: *ThisServer, new_config: *ServerConfig, callback_roots: *jsc.MarkedArgumentBuffer) void {
             httplog("onReload", .{});
 
             this.app.?.clearRoutes();
             if (comptime has_h3) if (this.h3_app) |h3a| h3a.clearRoutes();
 
-            // only reload those two, but ignore if they're not specified.
-            if (this.config.onRequest != new_config.onRequest and (new_config.onRequest != .zero and !new_config.onRequest.isUndefined())) {
-                this.config.onRequest.unprotect();
+            if (new_config.onRequest != .zero and !new_config.onRequest.isUndefined()) {
                 this.config.onRequest = new_config.onRequest;
             }
-            if (this.config.onNodeHTTPRequest != new_config.onNodeHTTPRequest) {
-                this.config.onNodeHTTPRequest.unprotect();
-                this.config.onNodeHTTPRequest = new_config.onNodeHTTPRequest;
-            }
-            if (this.config.onError != new_config.onError and (new_config.onError != .zero and !new_config.onError.isUndefined())) {
-                this.config.onError.unprotect();
+            this.config.onNodeHTTPRequest = new_config.onNodeHTTPRequest;
+            if (new_config.onError != .zero and !new_config.onError.isUndefined()) {
                 this.config.onError = new_config.onError;
             }
 
-            if (new_config.websocket) |*ws| {
-                ws.handler.flags.ssl = ssl_enabled;
-                if (ws.handler.onMessage != .zero or ws.handler.onOpen != .zero) {
-                    if (this.config.websocket) |old_ws| {
-                        old_ws.unprotect();
-                    }
-
-                    ws.globalObject = globalThis;
-                    this.config.websocket = ws.*;
-                } else {
-                    // We don't replace the existing websocket config here, but
-                    // the new one was already protected in WebSocketServerContext.onCreate.
-                    // Unprotect the discarded handlers so they don't leak.
-                    ws.unprotect();
-                }
+            if (new_config.websocket) |new_websocket| {
+                const state = if (this.config.websocket) |old|
+                    old.handler.state
+                else
+                    new_websocket.handler.state;
+                this.config.websocket = new_websocket;
+                const websocket = &this.config.websocket.?;
+                websocket.handler.state = state;
+                websocket.handler.flags.ssl = ssl_enabled;
             }
 
             // These get re-applied when we set the static routes again.
@@ -1167,38 +1183,26 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
                 dev_server.html_router.fallback = null;
             }
 
-            var static_routes = this.config.static_routes;
-            this.config.static_routes = .init(bun.default_allocator);
-            for (static_routes.items) |*route| {
-                route.deinit();
-            }
-            static_routes.deinit();
-            this.config.static_routes = new_config.static_routes;
-
-            for (this.config.negative_routes.items) |route| {
-                bun.default_allocator.free(route);
-            }
-            this.config.negative_routes.clearAndFree();
-            this.config.negative_routes = new_config.negative_routes;
+            std.mem.swap(@TypeOf(this.config.static_routes), &this.config.static_routes, &new_config.static_routes);
+            std.mem.swap(@TypeOf(this.config.negative_routes), &this.config.negative_routes, &new_config.negative_routes);
 
             if (new_config.had_routes_object) {
-                for (this.config.user_routes_to_build.items) |*route| {
-                    route.deinit();
-                }
-                this.config.user_routes_to_build.clearAndFree();
-                this.config.user_routes_to_build = new_config.user_routes_to_build;
+                std.mem.swap(@TypeOf(this.config.user_routes_to_build), &this.config.user_routes_to_build, &new_config.user_routes_to_build);
                 for (this.user_routes.items) |*route| {
                     route.deinit();
                 }
                 this.user_routes.clearAndFree(bun.default_allocator);
             }
 
-            const route_list_value = this.setRoutes();
+            const server_js_value = this.js_value.tryGet() orelse .zero;
+            if (server_js_value != .zero) {
+                this.writeHandlerSlots(server_js_value);
+            }
+
+            const route_list_value = this.setRoutes(callback_roots);
             if (new_config.had_routes_object) {
-                if (this.js_value.tryGet()) |server_js_value| {
-                    if (server_js_value != .zero) {
-                        this.routeListSetCached(server_js_value, globalThis, route_list_value);
-                    }
+                if (server_js_value != .zero) {
+                    this.routeListSetCached(server_js_value, route_list_value);
                 }
             }
 
@@ -1211,19 +1215,33 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
             }
         }
 
-        pub fn reloadStaticRoutes(this: *ThisServer) !bool {
+        pub fn reloadStaticRoutes(this: *ThisServer) bun.OOM!bool {
+            const Context = struct {
+                server: *ThisServer,
+                result: bun.OOM!bool = false,
+
+                pub fn run(ctx: *@This(), callback_roots: *jsc.MarkedArgumentBuffer) callconv(.c) void {
+                    ctx.result = ctx.server.reloadStaticRoutesImpl(callback_roots);
+                }
+            };
+            var ctx: Context = .{ .server = this };
+            jsc.MarkedArgumentBuffer.run(Context, &ctx, &Context.run);
+            return ctx.result;
+        }
+
+        fn reloadStaticRoutesImpl(this: *ThisServer, callback_roots: *jsc.MarkedArgumentBuffer) bun.OOM!bool {
             if (this.app == null) {
                 // Static routes will get cleaned up when the server is stopped
                 return false;
             }
-            this.config = try this.config.cloneForReloadingStaticRoutes();
+            try this.config.normalizeStaticRoutes();
             this.app.?.clearRoutes();
             if (comptime has_h3) if (this.h3_app) |h3a| h3a.clearRoutes();
-            const route_list_value = this.setRoutes();
+            const route_list_value = this.setRoutes(callback_roots);
             if (route_list_value != .zero) {
                 if (this.js_value.tryGet()) |server_js_value| {
                     if (server_js_value != .zero) {
-                        this.routeListSetCached(server_js_value, this.globalThis, route_list_value);
+                        this.routeListSetCached(server_js_value, route_list_value);
                     }
                 }
             }
@@ -1231,6 +1249,26 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
         }
 
         pub fn onReload(this: *ThisServer, globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+            const Context = struct {
+                server: *ThisServer,
+                global: *jsc.JSGlobalObject,
+                callframe: *jsc.CallFrame,
+                result: bun.JSError!jsc.JSValue = .js_undefined,
+
+                pub fn run(ctx: *@This(), callback_roots: *jsc.MarkedArgumentBuffer) callconv(.c) void {
+                    ctx.result = ctx.server.onReloadImpl(ctx.global, ctx.callframe, callback_roots);
+                }
+            };
+            var ctx: Context = .{
+                .server = this,
+                .global = globalThis,
+                .callframe = callframe,
+            };
+            jsc.MarkedArgumentBuffer.run(Context, &ctx, &Context.run);
+            return ctx.result;
+        }
+
+        fn onReloadImpl(this: *ThisServer, globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, callback_roots: *jsc.MarkedArgumentBuffer) bun.JSError!jsc.JSValue {
             const arguments = callframe.arguments();
             if (arguments.len < 1) {
                 return globalThis.throwNotEnoughArguments("reload", 1, 0);
@@ -1240,16 +1278,16 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
             defer args_slice.deinit();
 
             var new_config: ServerConfig = .{};
-            try ServerConfig.fromJS(globalThis, &new_config, &args_slice, .{
+            defer new_config.deinit();
+            try ServerConfig.fromJS(globalThis, &new_config, &args_slice, callback_roots, .{
                 .allow_bake_config = false,
                 .has_user_routes = this.user_routes.items.len > 0,
             });
             if (globalThis.hasException()) {
-                new_config.deinit();
                 return error.JSError;
             }
 
-            this.onReloadFromZig(&new_config, globalThis);
+            this.onReloadFromZig(&new_config, callback_roots);
 
             return this.js_value.tryGet() orelse .js_undefined;
         }
@@ -1570,13 +1608,24 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
             this.deinitIfWeCan();
         }
 
-        pub fn activeSocketsCount(this: *const ThisServer) u32 {
+        pub fn activeSocketsCount(this: *const ThisServer) usize {
             const websocket = &(this.config.websocket orelse return 0);
-            return @as(u32, @truncate(websocket.handler.active_connections));
+            return websocket.handler.state.active_connections;
         }
 
         pub fn hasActiveWebSockets(this: *const ThisServer) bool {
             return this.activeSocketsCount() > 0;
+        }
+
+        fn hasActiveWebSocketActivity(this: *const ThisServer) bool {
+            const websocket = &(this.config.websocket orelse return false);
+            return websocket.handler.state.active_connections > 0 or
+                websocket.handler.state.active_dispatches > 0;
+        }
+
+        fn onWebSocketsIdle(context: *anyopaque) void {
+            const this: *ThisServer = @ptrCast(@alignCast(context));
+            this.deinitIfWeCan();
         }
 
         /// True while either the TCP listen socket or (http1: false) the QUIC
@@ -1590,7 +1639,10 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
         }
 
         pub fn getAllClosedPromise(this: *ThisServer, globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-            if (!this.hasListener() and this.pending_requests == 0) {
+            if (!this.hasListener() and
+                this.pending_requests == 0 and
+                !this.hasActiveWebSocketActivity())
+            {
                 return jsc.JSPromise.resolvedPromise(globalThis, .js_undefined).toJS();
             }
             const prom = &this.all_closed_promise;
@@ -1612,12 +1664,16 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
                     this.js_value == .finalized,
                 });
 
-            const vm = this.globalThis.bunVM();
+            if (this.pending_requests > 0 or this.hasListener()) {
+                return;
+            }
 
-            if (this.pending_requests == 0 and
-                !this.hasListener() and
-                !this.hasActiveWebSockets() and
-                !this.flags.has_handled_all_closed_promise and
+            if (this.hasActiveWebSocketActivity()) {
+                this.config.websocket.?.handler.notifyWhenIdle(this, onWebSocketsIdle);
+                return;
+            }
+
+            if (!this.flags.has_handled_all_closed_promise and
                 this.all_closed_promise.strong.has())
             {
                 httplog("schedule other promise", .{});
@@ -1628,38 +1684,32 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
 
                 ServerAllConnectionsClosedTask.schedule(.{
                     .globalObject = this.globalThis,
-                    // Duplicate the Strong handle so that we can hold two independent strong references to it.
-                    .promise = .{
-                        .strong = .create(this.all_closed_promise.value(), this.globalThis),
-                    },
-                    .tracker = jsc.Debugger.AsyncTaskTracker.init(vm),
-                }, vm);
+                    .promise = this.all_closed_promise.take(),
+                    .tracker = jsc.Debugger.AsyncTaskTracker.init(this.vm),
+                }, this.vm);
             }
-            if (this.pending_requests == 0 and
-                !this.hasListener() and
-                !this.hasActiveWebSockets())
-            {
-                if (this.config.websocket) |*ws| {
-                    ws.handler.app = null;
-                }
-                this.unref();
 
-                // Detach DevServer. This is needed because there are aggressive
-                // tests that check for DevServer memory soundness. This reveals
-                // a larger problem, that it seems that some objects like Server
-                // should be detachable from their JSValue, so that when the
-                // native handle is done, keeping the JS binding doesn't use
-                // `this.memoryCost()` bytes.
-                if (this.dev_server) |dev| {
-                    this.dev_server = null;
-                    if (this.app) |app| app.clearRoutes();
-                    dev.deinit();
-                }
+            if (this.config.websocket) |*ws| {
+                ws.handler.state.app = null;
+            }
+            this.js_value.downgrade();
+            this.unref();
 
-                // Only free the memory if the JS reference has been freed too
-                if (this.js_value == .finalized) {
-                    this.scheduleDeinit();
-                }
+            // Detach DevServer. This is needed because there are aggressive
+            // tests that check for DevServer memory soundness. This reveals
+            // a larger problem, that it seems that some objects like Server
+            // should be detachable from their JSValue, so that when the
+            // native handle is done, keeping the JS binding doesn't use
+            // `this.memoryCost()` bytes.
+            if (this.dev_server) |dev| {
+                this.dev_server = null;
+                if (this.app) |app| app.clearRoutes();
+                dev.deinit();
+            }
+
+            // Only free the memory if the JS reference has been freed too
+            if (this.js_value == .finalized) {
+                this.scheduleDeinit();
             }
         }
 
@@ -1707,7 +1757,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
                 listener.close();
             } else if (!this.flags.terminated) {
                 if (this.config.websocket) |*ws| {
-                    ws.handler.app = null;
+                    ws.handler.state.app = null;
                 }
                 this.flags.terminated = true;
                 this.app.?.close();
@@ -1715,9 +1765,6 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
         }
 
         pub fn stop(this: *ThisServer, abrupt: bool) void {
-            if (this.js_value.isNotEmpty()) {
-                this.js_value.downgrade();
-            }
             if (this.config.allow_hot and this.config.id.len > 0) {
                 if (this.globalThis.bunVM().hotMap()) |hot| {
                     hot.remove(this.config.id);
@@ -1779,7 +1826,6 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
 
             this.config.deinit();
 
-            this.on_clienterror.deinit();
             if (comptime has_h3) {
                 if (this.h3_app) |h3a| {
                     this.h3_app = null;
@@ -1823,7 +1869,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
 
             var server = ThisServer.new(.{
                 .globalThis = global,
-                .config = config.*,
+                .config = config.take(),
                 .base_url_string_for_joining = base_url,
                 .vm = jsc.VirtualMachine.get(),
                 .allocator = bun.default_allocator,
@@ -2754,7 +2800,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
             resp.end(json_string, resp.shouldCloseConnection());
         }
 
-        fn setRoutes(this: *ThisServer) jsc.JSValue {
+        fn setRoutes(this: *ThisServer, callback_roots: *jsc.MarkedArgumentBuffer) jsc.JSValue {
             var route_list_value = jsc.JSValue.zero;
             const app = this.app.?;
             const any_server = AnyServer.from(this);
@@ -2783,7 +2829,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
 
                 for (user_routes_to_build_list.items, paths_zig, callbacks_js, 0..) |*builder, *p_zig, *cb_js, i| {
                     p_zig.* = ZigString.init(builder.route.path);
-                    cb_js.* = builder.callback.get().?;
+                    cb_js.* = builder.callback;
                     this.user_routes.appendAssumeCapacity(.{
                         .id = @truncate(i),
                         .server = this,
@@ -2792,14 +2838,14 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
                     builder.route = .{}; // Mark as moved
                 }
                 route_list_value = Bun__ServerRouteList__create(this.globalThis, callbacks_js.ptr, paths_zig.ptr, user_routes_to_build_list.items.len);
+                callback_roots.append(route_list_value);
                 for (user_routes_to_build_list.items) |*builder| builder.deinit();
                 user_routes_to_build_list.deinit(bun.default_allocator);
             }
 
             // --- 2. Setup WebSocket handler's app reference ---
             if (this.config.websocket) |*websocket| {
-                websocket.globalObject = this.globalThis;
-                websocket.handler.app = app;
+                websocket.handler.state.app = app;
                 websocket.handler.flags.ssl = ssl_enabled;
             }
 
@@ -3053,7 +3099,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
         }
 
         // TODO: make this return JSError!void, and do not deinitialize on synchronous failure, to allow errdefer in caller scope
-        pub fn listen(this: *ThisServer) jsc.JSValue {
+        pub fn listen(this: *ThisServer, callback_roots: *jsc.MarkedArgumentBuffer) jsc.JSValue {
             httplog("listen", .{});
             var app: *App = undefined;
             const globalThis = this.globalThis;
@@ -3089,7 +3135,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
                     }
                 }
 
-                route_list_value = this.setRoutes();
+                route_list_value = this.setRoutes(callback_roots);
 
                 // add serverName to the SSL context using default ssl options
                 if (ssl_config.server_name) |server_name_ptr| {
@@ -3117,7 +3163,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
                         }
 
                         // Ensure the routes are set for that domain name.
-                        _ = this.setRoutes();
+                        _ = this.setRoutes(callback_roots);
                     }
                 }
 
@@ -3153,7 +3199,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
                             }
 
                             // Ensure the routes are set for that domain name.
-                            _ = this.setRoutes();
+                            _ = this.setRoutes(callback_roots);
                         }
                     }
                 }
@@ -3167,7 +3213,7 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
                 };
                 this.app = app;
 
-                route_list_value = this.setRoutes();
+                route_list_value = this.setRoutes(callback_roots);
             }
 
             if (this.config.onNodeHTTPRequest != .zero) {
@@ -3256,7 +3302,8 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
         }
 
         pub fn onClientErrorCallback(this: *ThisServer, socket: *uws.Socket, error_code: u8, raw_packet: []const u8) void {
-            if (this.on_clienterror.get()) |callback| {
+            const callback = this.on_clienterror;
+            if (!callback.isEmptyOrUndefinedOrNull()) {
                 const is_ssl = protocol_enum == .https;
                 const node_socket = bun.jsc.fromJSHostCall(this.globalThis, @src(), Bun__createNodeHTTPServerSocketForClientError, .{ is_ssl, socket, this.globalThis }) catch return;
                 if (node_socket.isUndefinedOrNull()) return;
@@ -3437,7 +3484,7 @@ pub const AnyServer = struct {
         };
     }
 
-    pub fn reloadStaticRoutes(this: AnyServer) !bool {
+    pub fn reloadStaticRoutes(this: AnyServer) bun.OOM!bool {
         return switch (this.ptr.tag()) {
             Ptr.case(HTTPServer) => this.ptr.as(HTTPServer).reloadStaticRoutes(),
             Ptr.case(HTTPSServer) => this.ptr.as(HTTPSServer).reloadStaticRoutes(),
@@ -3609,21 +3656,18 @@ pub fn Server__setOnClientError_(globalThis: *jsc.JSGlobalObject, server: jsc.JS
         return globalThis.throw("Failed to set clientError: The provided value is not a function.", .{});
     }
 
-    if (server.as(HTTPServer)) |this| {
-        if (this.app) |app| {
-            this.on_clienterror.deinit();
-            this.on_clienterror = jsc.Strong.Optional.create(callback, globalThis);
-            app.onClientError(*HTTPServer, this, HTTPServer.onClientErrorCallback);
+    inline for (.{ HTTPServer, HTTPSServer }) |Server| {
+        if (server.as(Server)) |this| {
+            if (this.app) |app| {
+                this.on_clienterror = callback;
+                this.gcSet(.onClientError, server, callback);
+                app.onClientError(*Server, this, Server.onClientErrorCallback);
+            }
+            return .js_undefined;
         }
-    } else if (server.as(HTTPSServer)) |this| {
-        if (this.app) |app| {
-            this.on_clienterror.deinit();
-            this.on_clienterror = jsc.Strong.Optional.create(callback, globalThis);
-            app.onClientError(*HTTPSServer, this, HTTPSServer.onClientErrorCallback);
-        }
-    } else {
-        bun.debugAssert(false);
     }
+
+    bun.debugAssert(false);
     return .js_undefined;
 }
 

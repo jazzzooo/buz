@@ -2459,26 +2459,16 @@ describe("handler GC tracing (heapStats wrapper-count)", () => {
     expect({ body, ok }).toEqual({ body: "1", ok: true });
   }, 30_000);
 
-  // An accessor- or Proxy-backed options object returns a fresh handler fn
-  // that is NOT a data property of the object, so nothing on the JS heap
-  // retains it between from_js reading it and serve_with! writing it into the
-  // wrapper's WriteBarrier slot. Without a scoped gcProtect across
-  // init()/listen()'s allocations, that fn is collectible; under
-  // collectContinuously it IS collected, and the first request dispatches
-  // into a freed cell. Pre-PR this was safe because from_js rooted each
-  // callback in a Strong the moment get_truthy returned.
+  // Accessor-backed options produce fresh functions with no other JS-heap
+  // referrer. Scoped roots must span parsing, native initialization, route-list
+  // creation, and installation into the wrapper's WriteBarrier slots.
   test("handlers returned by an accessor-backed options object survive Bun.serve init under collectContinuously", async () => {
     await using proc = Bun.spawn({
       cmd: [
         bunExe(),
         "-e",
         /* js */ `
-        // Each get_truthy("fetch"/"message"/...) hits a getter that allocates
-        // a fresh closure with no other JS-heap referrer. Use getters (not a
-        // Proxy) so accidental extra lookups of the same key don't allocate a
-        // second fn that rotates the first one out of the arena; "extra
-        // lookup collected the cell early" and "no protect collected it" are
-        // indistinguishable failures otherwise.
+        // Use getters rather than a Proxy so each key has exactly one lookup.
         const opts = {
           port: 0,
           development: true,
@@ -2487,6 +2477,9 @@ describe("handler GC tracing (heapStats wrapper-count)", () => {
             return new Response("ok-fetch");
           }; },
           get error() { return () => new Response("err", { status: 500 }); },
+          routes: {
+            get "/route"() { return () => new Response("ok-route"); },
+          },
           websocket: {
             get open() { return ws => ws.send("ws-open"); },
             get message() { return (ws, m) => ws.send("m:" + m); },
@@ -2496,6 +2489,7 @@ describe("handler GC tracing (heapStats wrapper-count)", () => {
         const server = Bun.serve(opts);
         // HTTP path (on_request slot).
         const body = await (await fetch(server.url, { keepalive: false })).text();
+        const routeBody = await (await fetch(new URL("/route", server.url), { keepalive: false })).text();
         // WebSocket path (wsOnOpen + wsOnMessage slots).
         const ws = new WebSocket(server.url);
         const msgs = [];
@@ -2507,7 +2501,7 @@ describe("handler GC tracing (heapStats wrapper-count)", () => {
         await got2;
         ws.close();
         server.stop(true);
-        console.log(JSON.stringify({ body, msgs }));
+        console.log(JSON.stringify({ body, routeBody, msgs }));
       `,
       ],
       env: { ...bunEnv, BUN_JSC_collectContinuously: "1", BUN_JSC_useConcurrentGC: "0" },
@@ -2517,17 +2511,18 @@ describe("handler GC tracing (heapStats wrapper-count)", () => {
 
     const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
 
-    const { body, msgs } = JSON.parse(stdout.trim() || "{}");
+    const { body, routeBody, msgs } = JSON.parse(stdout.trim() || "{}");
     expect({ stderr, exitCode }).toEqual({ stderr: "", exitCode: 0 });
-    expect({ body, msgs }).toEqual({ body: "ok-fetch", msgs: ["ws-open", "m:hi"] });
+    expect({ body, routeBody, msgs }).toEqual({
+      body: "ok-fetch",
+      routeBody: "ok-route",
+      msgs: ["ws-open", "m:hi"],
+    });
   }, 30_000);
 
-  // Sibling of the above for server.reload(): on_reload_from_zig moves the
-  // websocket handler shadows into the heap-boxed self.config before
-  // write_ws_handler_slots roots them, and each wrap_handler_slot allocates
-  // via with_async_context_if_needed. Pre-PR on_create's server.protect()
-  // gcProtected all 7 at read time.
-  test("reload() with accessor-backed websocket handlers survives under collectContinuously", async () => {
+  // Reload has the same handoff, including AsyncLocalStorage wrappers created
+  // while parsing and a new route-list object created before the slots change.
+  test("reload() with accessor-backed handlers survives under collectContinuously", async () => {
     await using proc = Bun.spawn({
       cmd: [
         bunExe(),
@@ -2545,6 +2540,9 @@ describe("handler GC tracing (heapStats wrapper-count)", () => {
         // between moving the shadows into self.config and rooting them).
         als.run({}, () => server.reload({
           fetch(req, s) { if (s.upgrade(req)) return; return new Response("v2"); },
+          routes: {
+            get "/route"() { return () => new Response("route-v2"); },
+          },
           websocket: {
             get open() { return ws => ws.send("r-open"); },
             get message() { return (ws, m) => ws.send("r:" + m); },
@@ -2555,6 +2553,7 @@ describe("handler GC tracing (heapStats wrapper-count)", () => {
           },
         }));
         const body = await (await fetch(server.url, { keepalive: false })).text();
+        const routeBody = await (await fetch(new URL("/route", server.url), { keepalive: false })).text();
         const ws = new WebSocket(server.url);
         const msgs = [];
         await new Promise(r => {
@@ -2564,7 +2563,7 @@ describe("handler GC tracing (heapStats wrapper-count)", () => {
         });
         ws.close();
         server.stop(true);
-        console.log(JSON.stringify({ body, msgs }));
+        console.log(JSON.stringify({ body, routeBody, msgs }));
       `,
       ],
       env: { ...bunEnv, BUN_JSC_collectContinuously: "1", BUN_JSC_useConcurrentGC: "0" },
@@ -2574,9 +2573,13 @@ describe("handler GC tracing (heapStats wrapper-count)", () => {
 
     const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
 
-    const { body, msgs } = JSON.parse(stdout.trim() || "{}");
+    const { body, routeBody, msgs } = JSON.parse(stdout.trim() || "{}");
     expect({ stderr, exitCode }).toEqual({ stderr: "", exitCode: 0 });
-    expect({ body, msgs }).toEqual({ body: "v2", msgs: ["r-open", "r:hi"] });
+    expect({ body, routeBody, msgs }).toEqual({
+      body: "v2",
+      routeBody: "route-v2",
+      msgs: ["r-open", "r:hi"],
+    });
   }, 30_000);
 
   // A ws.close() inside the message handler on the last socket of a stopped
