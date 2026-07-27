@@ -216,6 +216,7 @@ JSObject* ServerRouteList::paramsObjectForRoute(JSC::VM& vm, JSC::JSGlobalObject
         auto param = req->getParameter(static_cast<unsigned short>(i));
         if (!param.empty()) {
             const std::span<const uint8_t> paramBytes(reinterpret_cast<const uint8_t*>(param.data()), param.size());
+            // TODO: Investigate raw non-ASCII bytes in route parameters.
             args.append(jsString(vm, decodeURIComponentSIMD(paramBytes)));
         } else {
             args.append(jsEmptyString(vm));

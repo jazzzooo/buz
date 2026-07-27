@@ -810,6 +810,7 @@ fn onDrainCorked(this: *NodeHTTPResponse, offset: u64) void {
     defer this.deref();
 
     const thisValue = this.getThisValue();
+    // TODO: Investigate non-callable onWritable values observed during drain.
     const on_writable = js.onWritableGetCached(thisValue) orelse return;
     const globalThis = jsc.VirtualMachine.get().global;
     js.onWritableSetCached(thisValue, globalThis, .js_undefined); // TODO(@heimskr): is this necessary?
