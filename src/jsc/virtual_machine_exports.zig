@@ -85,9 +85,17 @@ pub export fn Bun__queueTask(global: *JSGlobalObject, task: *jsc.CppTask) void {
 pub export fn Bun__reportUnhandledError(globalObject: *JSGlobalObject, value: JSValue) callconv(.c) JSValue {
     jsc.markBinding(@src());
 
-    if (!value.isTerminationException()) {
-        _ = globalObject.bunVM().uncaughtException(globalObject, value, false);
+    if (value.isTerminationException()) {
+        if (comptime bun.Environment.isDebug) {
+            var scope: jsc.TopExceptionScope = undefined;
+            scope.init(globalObject, @src());
+            defer scope.deinit();
+            bun.debugAssert(scope.exception() == value.asException(globalObject.vm()));
+        }
+        return .js_undefined;
     }
+
+    _ = globalObject.bunVM().uncaughtException(globalObject, value, false);
     return .js_undefined;
 }
 

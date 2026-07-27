@@ -248,25 +248,29 @@ bool EventEmitter::innerInvokeEventListeners(const Identifier& eventType, Simple
             continue;
 
         fired = true;
-        WTF::NakedPtr<JSC::Exception> exceptionPtr;
-        call(lexicalGlobalObject, jsFunction, callData, thisValue, arguments, exceptionPtr);
-        auto* exception = exceptionPtr.get();
+        auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+        call(lexicalGlobalObject, jsFunction, callData, thisValue, arguments);
 
-        if (exception) [[unlikely]] {
+        if (auto* exception = scope.exception()) [[unlikely]] {
+            if (!scope.clearExceptionExceptTermination())
+                return fired;
+
             auto errorIdentifier = vm.propertyNames->error;
             auto hasErrorListener = this->hasActiveEventListeners(errorIdentifier);
             if (!hasErrorListener || eventType == errorIdentifier) {
                 // If the event type is error, report the exception to the console.
                 Bun__reportUnhandledError(lexicalGlobalObject, JSValue::encode(JSValue(exception)));
-            } else if (hasErrorListener) {
-                MarkedArgumentBuffer expcep;
+            } else {
+                MarkedArgumentBuffer exceptionArguments;
                 JSValue errorValue = exception->value();
-                if (!errorValue) {
+                if (!errorValue)
                     errorValue = JSC::jsUndefined();
-                }
-                expcep.append(errorValue);
-                fireEventListeners(errorIdentifier, WTF::move(expcep));
+                exceptionArguments.append(errorValue);
+                fireEventListeners(errorIdentifier, WTF::move(exceptionArguments));
             }
+
+            if (scope.exception()) [[unlikely]]
+                return fired;
         }
     }
 

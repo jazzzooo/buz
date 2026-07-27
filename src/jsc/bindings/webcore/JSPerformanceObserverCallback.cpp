@@ -28,7 +28,6 @@
 #include "JSPerformanceObserver.h"
 #include "JSPerformanceObserverEntryList.h"
 #include "ScriptExecutionContext.h"
-#include "ZigGlobalObject.h"
 
 namespace WebCore {
 using namespace JSC;
@@ -64,6 +63,7 @@ CallbackResult<typename IDLUndefined::ImplementationType> JSPerformanceObserverC
     auto& vm = globalObject.vm();
 
     JSLockHolder lock(vm);
+    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
     auto& lexicalGlobalObject = globalObject;
     JSValue thisValue = toJS<IDLInterface<PerformanceObserver>>(lexicalGlobalObject, globalObject, thisObject);
     MarkedArgumentBuffer args;
@@ -71,11 +71,10 @@ CallbackResult<typename IDLUndefined::ImplementationType> JSPerformanceObserverC
     args.append(&observer == &thisObject ? thisValue : toJS<IDLInterface<PerformanceObserver>>(lexicalGlobalObject, globalObject, observer));
     ASSERT(!args.hasOverflowed());
 
-    NakedPtr<JSC::Exception> returnedException;
-    m_data->invokeCallback(vm, thisValue, args, JSCallbackData::CallbackType::Function, Identifier(), returnedException);
-    if (returnedException) {
-        UNUSED_PARAM(lexicalGlobalObject);
-        reportException(m_data->callback()->globalObject(), returnedException);
+    if (!scope.exception())
+        m_data->invokeCallback(vm, thisValue, args);
+    if (auto* exception = scope.exception()) {
+        reportException(m_data->callback()->globalObject(), exception);
         return CallbackResultType::ExceptionThrown;
     }
 

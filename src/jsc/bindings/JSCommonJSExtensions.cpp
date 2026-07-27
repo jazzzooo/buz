@@ -285,15 +285,11 @@ JSC::EncodedJSValue builtinLoader(JSC::JSGlobalObject* globalObject, JSC::CallFr
         args.append(specifier);
         JSC::CallData callData = JSC::getCallData(requireESM);
         ASSERT(callData.type == JSC::CallData::Type::JS);
-        NakedPtr<JSC::Exception> returnedException = nullptr;
-        JSC::profiledCall(global, JSC::ProfilingReason::API, requireESM, callData, mod, args, returnedException);
-        if (returnedException) [[unlikely]] {
-            throwException(globalObject, scope, returnedException->value());
-            return {};
-        }
+        JSC::profiledCall(global, JSC::ProfilingReason::API, requireESM, callData, mod, args);
+        RETURN_IF_EXCEPTION(scope, {});
     }
 
-    return JSC::JSValue::encode(jsUndefined());
+    RELEASE_AND_RETURN(scope, JSC::JSValue::encode(jsUndefined()));
 }
 
 template<typename Visitor>

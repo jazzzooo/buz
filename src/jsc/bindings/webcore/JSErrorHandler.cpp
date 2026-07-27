@@ -61,11 +61,15 @@ JSErrorHandler::~JSErrorHandler() = default;
 
 void JSErrorHandler::handleEvent(ScriptExecutionContext& scriptExecutionContext, Event& event)
 {
+    if (scriptExecutionContext.isJSExecutionForbidden())
+        return;
+
     if (!is<ErrorEvent>(event))
         return JSEventListener::handleEvent(scriptExecutionContext, event);
 
     VM& vm = scriptExecutionContext.vm();
     JSLockHolder lock(vm);
+    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
 
     JSObject* jsFunction = this->ensureJSFunction(scriptExecutionContext);
     if (!jsFunction)
@@ -76,46 +80,31 @@ void JSErrorHandler::handleEvent(ScriptExecutionContext& scriptExecutionContext,
         return;
 
     auto callData = getCallData(jsFunction);
-    if (callData.type != CallData::Type::None) {
-        Ref<JSErrorHandler> protectedThis(*this);
+    if (callData.type == CallData::Type::None)
+        return;
 
-        RefPtr<Event> savedEvent;
-        // auto* jsFunctionWindow = dynamicDowncast<JSDOMWindow>( jsFunction->globalObject());
-        // if (jsFunctionWindow) {
-        //     savedEvent = jsFunctionWindow->currentEvent();
+    Ref<JSErrorHandler> protectedThis(*this);
+    auto& errorEvent = downcast<ErrorEvent>(event);
 
-        //     // window.event should not be set when the target is inside a shadow tree, as per the DOM specification.
-        //     if (!event.currentTargetIsInShadowTree())
-        //         jsFunctionWindow->setCurrentEvent(&event);
-        // }
+    MarkedArgumentBuffer args;
+    args.append(toJS<IDLDOMString>(*globalObject, errorEvent.message()));
+    args.append(toJS<IDLUSVString>(*globalObject, errorEvent.filename()));
+    args.append(toJS<IDLUnsignedLong>(errorEvent.lineno()));
+    args.append(toJS<IDLUnsignedLong>(errorEvent.colno()));
+    args.append(errorEvent.error(*globalObject));
+    ASSERT(!args.hasOverflowed());
 
-        auto& errorEvent = downcast<ErrorEvent>(event);
-
-        MarkedArgumentBuffer args;
-        args.append(toJS<IDLDOMString>(*globalObject, errorEvent.message()));
-        args.append(toJS<IDLUSVString>(*globalObject, errorEvent.filename()));
-        args.append(toJS<IDLUnsignedLong>(errorEvent.lineno()));
-        args.append(toJS<IDLUnsignedLong>(errorEvent.colno()));
-        args.append(errorEvent.error(*globalObject));
-        ASSERT(!args.hasOverflowed());
-
-        // JSExecState::instrumentFunction(&scriptExecutionContext, callData);
-
-        NakedPtr<JSC::Exception> exception;
-        JSValue returnValue = JSC::profiledCall(globalObject, JSC::ProfilingReason::Other, jsFunction, callData, globalObject, args, exception);
-
-        // InspectorInstrumentation::didCallFunction(&scriptExecutionContext);
-
-        // if (jsFunctionWindow)
-        //     jsFunctionWindow->setCurrentEvent(savedEvent.get());
-
-        if (exception)
-            reportException(globalObject, exception);
-        else {
-            if (returnValue.isTrue())
-                event.preventDefault();
-        }
+    if (auto* exception = scope.exception()) {
+        reportException(globalObject, exception);
+        return;
     }
+
+    JSValue returnValue = JSC::profiledCall(globalObject, JSC::ProfilingReason::Other, jsFunction, callData, globalObject, args);
+
+    if (auto* exception = scope.exception())
+        reportException(globalObject, exception);
+    else if (returnValue.isTrue())
+        event.preventDefault();
 }
 
 } // namespace WebCore

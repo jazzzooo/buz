@@ -2,6 +2,7 @@
 
 #include "ZigGlobalObject.h"
 #include "helpers.h"
+#include "JavaScriptCore/AsyncContextSwapScope.h"
 #include "JavaScriptCore/ArgList.h"
 #include "JavaScriptCore/JSCellButterfly.h"
 #include "wtf/text/Base64.h"
@@ -1778,33 +1779,23 @@ JSC_DEFINE_HOST_FUNCTION(jsFunctionPerformMicrotaskVariadic, (JSGlobalObject * g
     unsigned length = array->length();
     for (unsigned i = 0; i < length; i++) {
         arguments.append(array->getIndex(globalObject, i));
+        RETURN_IF_EXCEPTION(scope, JSValue::encode(jsUndefined()));
     }
 
-    JSValue result;
-    WTF::NakedPtr<JSC::Exception> exceptionPtr;
     JSValue thisValue = jsUndefined();
 
     if (callframe->argumentCount() > 3) {
         thisValue = callframe->argument(3);
     }
 
-    JSValue restoreAsyncContext = {};
-    InternalFieldTuple* asyncContextData = nullptr;
-    auto setAsyncContext = callframe->argument(2);
-    if (!setAsyncContext.isUndefined()) {
-        asyncContextData = globalObject->m_asyncContextData.get();
-        restoreAsyncContext = asyncContextData->getInternalField(0);
-        asyncContextData->putInternalField(vm, 0, setAsyncContext);
-    }
+    AsyncContextSwapScope asyncContextScope(vm, globalObject, callframe->argument(2));
 
-    JSC::profiledCall(globalObject, ProfilingReason::API, job, callData, thisValue, arguments, exceptionPtr);
+    JSC::profiledCall(globalObject, ProfilingReason::API, job, callData, thisValue, arguments);
+    asyncContextScope.restoreEarly();
 
-    if (asyncContextData) {
-        asyncContextData->putInternalField(vm, 0, restoreAsyncContext);
-    }
-
-    if (auto* exception = exceptionPtr.get()) {
-        Bun__reportUnhandledError(globalObject, JSValue::encode(exception));
+    if (auto* exception = scope.exception()) {
+        if (scope.clearExceptionExceptTermination())
+            Bun__reportUnhandledError(globalObject, JSValue::encode(exception));
     }
 
     return JSValue::encode(jsUndefined());
@@ -2150,13 +2141,7 @@ void GlobalObject::finishCreation(VM& vm)
             RETURN_IF_EXCEPTION(scope, );
 
             JSC::CallData callData = JSC::getCallData(getStylize);
-            NakedPtr<JSC::Exception> returnedException = nullptr;
-            auto result = JSC::profiledCall(init.owner, ProfilingReason::API, getStylize, callData, jsNull(), args, returnedException);
-            RETURN_IF_EXCEPTION(scope, );
-
-            if (returnedException) {
-                throwException(init.owner, scope, returnedException.get());
-            }
+            auto result = JSC::profiledCall(init.owner, ProfilingReason::API, getStylize, callData, jsNull(), args);
             RETURN_IF_EXCEPTION(scope, );
             init.set(uncheckedDowncast<JSFunction>(result));
         });
@@ -2639,20 +2624,16 @@ JSC_DEFINE_CUSTOM_SETTER(JSDOMFileConstructor_setter,
 JSC_DEFINE_CUSTOM_GETTER(getConsoleConstructor, (JSGlobalObject * globalObject, EncodedJSValue thisValue, PropertyName property))
 {
     auto& vm = JSC::getVM(globalObject);
+    auto scope = DECLARE_THROW_SCOPE(vm);
     auto console = JSValue::decode(thisValue).getObject();
     JSC::JSFunction* createConsoleConstructor = JSC::JSFunction::create(vm, globalObject, consoleObjectCreateConsoleConstructorCodeGenerator(vm), globalObject);
     JSC::MarkedArgumentBuffer args;
     args.append(console);
     JSC::CallData callData = JSC::getCallData(createConsoleConstructor);
-    NakedPtr<JSC::Exception> returnedException = nullptr;
-    auto result = JSC::profiledCall(globalObject, ProfilingReason::API, createConsoleConstructor, callData, console, args, returnedException);
-    if (returnedException) {
-        auto scope = DECLARE_THROW_SCOPE(vm);
-        throwException(globalObject, scope, returnedException.get());
-        return {};
-    }
+    auto result = JSC::profiledCall(globalObject, ProfilingReason::API, createConsoleConstructor, callData, console, args);
+    RETURN_IF_EXCEPTION(scope, {});
     console->putDirect(vm, property, result, 0);
-    return JSValue::encode(result);
+    RELEASE_AND_RETURN(scope, JSValue::encode(result));
 }
 
 // `console._stdout` is equal to `process.stdout`
@@ -3204,9 +3185,12 @@ void GlobalObject::handleRejectedPromises()
             continue;
 
         Bun__handleRejectedPromise(this, promise);
-        if (auto ex = scope.exception()) {
-            (void)scope.tryClearException();
-            this->reportUncaughtExceptionAtEventLoop(this, ex);
+        if (auto* exception = scope.exception()) {
+            if (!scope.clearExceptionExceptTermination())
+                return;
+            this->reportUncaughtExceptionAtEventLoop(this, exception);
+            if (scope.exception())
+                return;
         }
     }
 }

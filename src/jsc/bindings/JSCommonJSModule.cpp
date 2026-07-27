@@ -75,7 +75,6 @@
 #include <JavaScriptCore/LazyPropertyInlines.h>
 #include <JavaScriptCore/HeapAnalyzer.h>
 #include "PathInlines.h"
-#include "wtf/NakedPtr.h"
 #include "wtf/URL.h"
 #include "wtf/text/StringImpl.h"
 #include "JSCommonJSExtensions.h"
@@ -741,7 +740,6 @@ JSC_DEFINE_HOST_FUNCTION(functionJSCommonJSModule_compile, (JSGlobalObject * glo
 
     String dirnameString = dirnameValue.toWTFString(globalObject);
 
-    WTF::NakedPtr<JSC::Exception> exception;
     evaluateCommonJSModuleOnce(
         vm,
         uncheckedDowncast<Zig::GlobalObject>(globalObject),

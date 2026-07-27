@@ -44,8 +44,10 @@ void reportException(JSGlobalObject* lexicalGlobalObject, JSC::Exception* except
 {
     auto& vm = JSC::getVM(lexicalGlobalObject);
     RELEASE_ASSERT(vm.currentThreadIsHoldingAPILock());
-    if (vm.isTerminationException(exception))
+    if (vm.isTerminationException(exception)) {
+        ASSERT(vm.hasPendingTerminationException());
         return;
+    }
 
     // We can declare a TopExceptionScope here because we will clear the exception below if it's
     // not a TerminationException. If it's a TerminationException, it'll remain sticky in

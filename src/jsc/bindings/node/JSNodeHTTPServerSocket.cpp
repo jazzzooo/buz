@@ -147,7 +147,6 @@ void JSNodeHTTPServerSocket::onClose()
 
     if (scriptExecutionContext) {
         scriptExecutionContext->postTask([self = this](ScriptExecutionContext& context) {
-            WTF::NakedPtr<JSC::Exception> exception;
             auto* globalObject = defaultGlobalObject(context.globalObject());
             auto* thisObject = self;
             auto* callbackObject = thisObject->functionToCallOnClose.get();
@@ -167,11 +166,12 @@ void JSNodeHTTPServerSocket::onClose()
                     Bun__NodeHTTPResponse_onClose(res->m_ctx, JSValue::encode(res));
                 }
 
-                profiledCall(globalObject, JSC::ProfilingReason::API, callbackObject, callData, thisObject, args, exception);
+                auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
+                profiledCall(globalObject, JSC::ProfilingReason::API, callbackObject, callData, thisObject, args);
 
-                if (auto* ptr = exception.get()) {
-                    exception.clear();
-                    globalObject->reportUncaughtExceptionAtEventLoop(globalObject, ptr);
+                if (auto* exception = scope.exception()) {
+                    if (scope.clearExceptionExceptTermination())
+                        globalObject->reportUncaughtExceptionAtEventLoop(globalObject, exception);
                 }
             }
             thisObject->detach();
@@ -208,7 +208,6 @@ void JSNodeHTTPServerSocket::onDrain()
 
     if (scriptExecutionContext) {
         scriptExecutionContext->postTask([self = this](ScriptExecutionContext& context) {
-            WTF::NakedPtr<JSC::Exception> exception;
             auto* globalObject = defaultGlobalObject(context.globalObject());
             auto* thisObject = self;
             auto* callbackObject = thisObject->functionToCallOnDrain.get();
@@ -220,11 +219,12 @@ void JSNodeHTTPServerSocket::onDrain()
             EnsureStillAliveScope ensureStillAlive(self);
 
             if (globalObject->scriptExecutionStatus(globalObject, thisObject) == ScriptExecutionStatus::Running) {
-                profiledCall(globalObject, JSC::ProfilingReason::API, callbackObject, callData, thisObject, args, exception);
+                auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
+                profiledCall(globalObject, JSC::ProfilingReason::API, callbackObject, callData, thisObject, args);
 
-                if (auto* ptr = exception.get()) {
-                    exception.clear();
-                    globalObject->reportUncaughtExceptionAtEventLoop(globalObject, ptr);
+                if (auto* exception = scope.exception()) {
+                    if (scope.clearExceptionExceptTermination())
+                        globalObject->reportUncaughtExceptionAtEventLoop(globalObject, exception);
                 }
             }
         });
@@ -252,7 +252,6 @@ void JSNodeHTTPServerSocket::onData(const char* data, int length, bool last)
         }
         gcProtect(chunk);
         scriptExecutionContext->postTask([self = this, chunk = chunk, last = last](ScriptExecutionContext& context) {
-            WTF::NakedPtr<JSC::Exception> exception;
             auto* globalObject = defaultGlobalObject(context.globalObject());
             auto* thisObject = self;
             auto* callbackObject = thisObject->functionToCallOnData.get();
@@ -269,11 +268,12 @@ void JSNodeHTTPServerSocket::onData(const char* data, int length, bool last)
             EnsureStillAliveScope ensureStillAlive(self);
 
             if (globalObject->scriptExecutionStatus(globalObject, thisObject) == ScriptExecutionStatus::Running) {
-                profiledCall(globalObject, JSC::ProfilingReason::API, callbackObject, callData, thisObject, args, exception);
+                auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
+                profiledCall(globalObject, JSC::ProfilingReason::API, callbackObject, callData, thisObject, args);
 
-                if (auto* ptr = exception.get()) {
-                    exception.clear();
-                    globalObject->reportUncaughtExceptionAtEventLoop(globalObject, ptr);
+                if (auto* exception = scope.exception()) {
+                    if (scope.clearExceptionExceptTermination())
+                        globalObject->reportUncaughtExceptionAtEventLoop(globalObject, exception);
                 }
             }
         });

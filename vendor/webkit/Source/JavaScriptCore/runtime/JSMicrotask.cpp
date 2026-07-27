@@ -2076,8 +2076,7 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
             asyncContextScope.restoreEarly();
 
             if (auto* exception = catchScope.exception()) {
-                catchScope.clearException();
-                if (Bun__reportUnhandledError)
+                if (catchScope.clearExceptionExceptTermination() && Bun__reportUnhandledError)
                     Bun__reportUnhandledError(globalObject, JSValue::encode(exception));
             }
         }

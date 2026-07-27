@@ -235,8 +235,7 @@ void JSEventListener::handleEvent(ScriptExecutionContext& scriptExecutionContext
             return jsNull();
         return toJS(lexicalGlobalObject, globalObject, *currentTarget);
     }();
-    NakedPtr<JSC::Exception> uncaughtException;
-    JSValue retval = JSC::profiledCall(lexicalGlobalObject, JSC::ProfilingReason::Other, handleEventFunction, callData, thisValue, args, uncaughtException);
+    JSValue retval = JSC::profiledCall(lexicalGlobalObject, JSC::ProfilingReason::Other, handleEventFunction, callData, thisValue, args);
 
     // InspectorInstrumentation::didCallFunction(&scriptExecutionContext);
 
@@ -256,7 +255,7 @@ void JSEventListener::handleEvent(ScriptExecutionContext& scriptExecutionContext
         return false;
     };
 
-    if (handleExceptionIfNeeded(uncaughtException))
+    if (handleExceptionIfNeeded(scope.exception()))
         return;
 
     // Node handles promises in the return value and throws an uncaught exception on nextTick if it rejects.

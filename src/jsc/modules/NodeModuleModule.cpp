@@ -719,6 +719,7 @@ JSC_DEFINE_CUSTOM_GETTER(nodeModuleWrapper,
 {
     // This does not cache anything because it is assumed nobody reads it more than once.
     VM& vm = global->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
     JSC::JSFunction* cb = JSC::JSFunction::create(vm, global, WebCore::commonJSGetWrapperArrayProxyCodeGenerator(vm), global);
     JSC::CallData callData = JSC::getCallData(cb);
 
@@ -728,11 +729,10 @@ JSC_DEFINE_CUSTOM_GETTER(nodeModuleWrapper,
         jsFunctionSetCJSWrapperItem, JSC::ImplementationVisibility::Public,
         JSC::NoIntrinsic));
 
-    NakedPtr<JSC::Exception> returnedException = nullptr;
-    auto result = JSC::profiledCall(global, JSC::ProfilingReason::API, cb, callData, JSC::jsUndefined(), args, returnedException);
-    ASSERT(!returnedException);
+    auto result = JSC::profiledCall(global, JSC::ProfilingReason::API, cb, callData, JSC::jsUndefined(), args);
+    RETURN_IF_EXCEPTION(scope, {});
     ASSERT(result.isCell());
-    return JSC::JSValue::encode(result);
+    RELEASE_AND_RETURN(scope, JSC::JSValue::encode(result));
 }
 
 JSC_DEFINE_CUSTOM_SETTER(setNodeModuleWrapper,
@@ -1106,12 +1106,13 @@ void addNodeModuleConstructorProperties(JSC::VM& vm,
             JSC::VM& vm = init.vm;
             JSC::JSGlobalObject* globalObject = init.owner;
 
+            auto scope = DECLARE_THROW_SCOPE(vm);
             auto* function = JSFunction::create(vm, globalObject, static_cast<JSC::FunctionExecutable*>(commonJSCreateRequireCacheCodeGenerator(vm)), globalObject);
-
-            NakedPtr<JSC::Exception> returnedException = nullptr;
-            auto result = JSC::profiledCall(globalObject, ProfilingReason::API, function, JSC::getCallData(function), globalObject, ArgList(), returnedException);
-            ASSERT(!returnedException);
-            init.set(result.toObject(globalObject));
+            auto result = JSC::profiledCall(globalObject, ProfilingReason::API, function, JSC::getCallData(function), globalObject, ArgList());
+            RETURN_IF_EXCEPTION(scope, );
+            auto* resultObject = result.toObject(globalObject);
+            RETURN_IF_EXCEPTION(scope, );
+            init.set(resultObject);
         });
 
     globalObject->m_lazyRequireExtensionsObject.initLater(

@@ -484,7 +484,7 @@ static EncodedJSValue NodeHTTPServer__onRequest(
         args.append(jsUndefined());
     }
 
-    JSValue returnValue = AsyncContextFrame::profiledCall(globalObject, callbackObject, jsUndefined(), args);
+    JSValue returnValue = AsyncContextFrame::call(globalObject, callbackObject, jsUndefined(), args);
     RETURN_IF_EXCEPTION(scope, {});
 
     return JSValue::encode(returnValue);

@@ -25,6 +25,7 @@
 #include <JavaScriptCore/DateInstance.h>
 #include <JavaScriptCore/JSModuleEnvironment.h>
 #include <JavaScriptCore/JSModuleNamespaceObject.h>
+#include <wtf/Scope.h>
 #include "BunPlugin.h"
 #include "AsyncContextFrame.h"
 #include "ErrorCode.h"
@@ -1390,9 +1391,14 @@ JSC_DEFINE_HOST_FUNCTION(jsMockFunctionWithImplementation, (JSC::JSGlobalObject 
     thisObject->fallbackImplmentation.clear();
     thisObject->tail.clear();
 
-    MarkedArgumentBuffer args;
-    NakedPtr<JSC::Exception> exception;
-    JSValue returnValue = JSC::call(globalObject, callback, callData, jsUndefined(), args, exception);
+    auto restoreImplementation = WTF::makeScopeExit([&] {
+        thisObject->implementation.set(vm, thisObject, lastImpl);
+        thisObject->tail.set(vm, thisObject, lastTail);
+        thisObject->fallbackImplmentation.set(vm, thisObject, lastFallback);
+    });
+
+    JSValue returnValue = JSC::call(globalObject, callback, callData, jsUndefined(), ArgList());
+    RETURN_IF_EXCEPTION(scope, {});
 
     if (auto promise = tryJSDynamicCast<JSC::JSPromise*>(returnValue)) {
         auto capability = JSC::JSPromise::createNewPromiseCapability(globalObject, globalObject->promiseConstructor());
@@ -1411,14 +1417,11 @@ JSC_DEFINE_HOST_FUNCTION(jsMockFunctionWithImplementation, (JSC::JSGlobalObject 
         call(globalObject, performPromiseThenFunction, callData, jsUndefined(), arguments);
         RETURN_IF_EXCEPTION(scope, {});
 
-        return JSC::JSValue::encode(promise);
+        restoreImplementation.release();
+        RELEASE_AND_RETURN(scope, JSC::JSValue::encode(promise));
     }
 
-    thisObject->implementation.set(vm, thisObject, lastImpl);
-    thisObject->tail.set(vm, thisObject, lastImpl);
-    thisObject->fallbackImplmentation.set(vm, thisObject, lastFallback);
-
-    return JSC::JSValue::encode(jsUndefined());
+    RELEASE_AND_RETURN(scope, JSC::JSValue::encode(jsUndefined()));
 }
 } // namespace Bun
 

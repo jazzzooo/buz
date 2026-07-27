@@ -21,7 +21,6 @@
 #include "config.h"
 #include "JSAbortAlgorithm.h"
 
-#include "JSDOMConvertBase.h"
 #include "JSDOMExceptionHandling.h"
 #include "ScriptExecutionContext.h"
 #include "DeleteCallbackDataTask.h"
@@ -65,16 +64,15 @@ CallbackResult<typename IDLUndefined::ImplementationType> JSAbortAlgorithm::hand
     auto& vm = globalObject.vm();
 
     JSLockHolder lock(vm);
-    auto& lexicalGlobalObject = globalObject;
-    JSValue thisValue = jsUndefined();
+    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
     MarkedArgumentBuffer args;
     args.append(value);
     ASSERT(!args.hasOverflowed());
 
-    NakedPtr<JSC::Exception> returnedException;
-    m_data->invokeCallback(vm, thisValue, args, JSCallbackData::CallbackType::Function, Identifier(), returnedException);
-    if (returnedException) {
-        reportException(&lexicalGlobalObject, returnedException);
+    if (!scope.exception())
+        m_data->invokeCallback(vm, jsUndefined(), args);
+    if (auto* exception = scope.exception()) {
+        reportException(&globalObject, exception);
         return CallbackResultType::ExceptionThrown;
     }
 
