@@ -124,14 +124,19 @@ typedef void* JSContext;
 
 #ifdef IS_CALLBACK
 void* callback_ctx;
+#ifdef IS_THREADSAFE_CALLBACK
+BUN_FFI_IMPORT void FFI_Callback_threadsafe_call(void* ctx, size_t argCount, const uint64_t* args);
+#else
+void* callback_global;
+#define JS_GLOBAL_OBJECT callback_global
 BUN_FFI_IMPORT ZIG_REPR_TYPE FFI_Callback_call(void* ctx, size_t argCount, ZIG_REPR_TYPE* args);
-// We wrap 
 static EncodedJSValue _FFI_Callback_call(void* ctx, size_t argCount, ZIG_REPR_TYPE* args)  __attribute__((__always_inline__));
 static EncodedJSValue _FFI_Callback_call(void* ctx, size_t argCount, ZIG_REPR_TYPE* args) {
   EncodedJSValue return_value;
   return_value.asZigRepr = FFI_Callback_call(ctx, argCount, args);
   return return_value;
 }
+#endif
 #endif
 
 static bool JSVALUE_IS_CELL(EncodedJSValue val) __attribute__((__always_inline__));
@@ -154,6 +159,10 @@ static EncodedJSValue DOUBLE_TO_JSVALUE(double val) __attribute__((__always_inli
 static EncodedJSValue FLOAT_TO_JSVALUE(float val) __attribute__((__always_inline__));
 static EncodedJSValue BOOLEAN_TO_JSVALUE(bool val) __attribute__((__always_inline__));
 static EncodedJSValue PTR_TO_JSVALUE(void* ptr) __attribute__((__always_inline__));
+#ifdef IS_THREADSAFE_CALLBACK
+static uint64_t DOUBLE_TO_THREADSAFE_CALLBACK_BITS(double val) __attribute__((__always_inline__));
+static uint64_t FLOAT_TO_THREADSAFE_CALLBACK_BITS(float val) __attribute__((__always_inline__));
+#endif
 
 static void* JSVALUE_TO_PTR(EncodedJSValue val) __attribute__((__always_inline__));
 static int32_t JSVALUE_TO_INT32(EncodedJSValue val) __attribute__((__always_inline__));
@@ -266,6 +275,24 @@ static EncodedJSValue UINT32_TO_JSVALUE(uint32_t val) {
 static EncodedJSValue FLOAT_TO_JSVALUE(float val) {
   return DOUBLE_TO_JSVALUE((double)val);
 }
+
+#ifdef IS_THREADSAFE_CALLBACK
+static uint64_t DOUBLE_TO_THREADSAFE_CALLBACK_BITS(double val) {
+  union {
+    double value;
+    uint64_t bits;
+  } result = { .value = val };
+  return result.bits;
+}
+
+static uint64_t FLOAT_TO_THREADSAFE_CALLBACK_BITS(float val) {
+  union {
+    float value;
+    uint32_t bits;
+  } result = { .value = val };
+  return result.bits;
+}
+#endif
 
 static EncodedJSValue BOOLEAN_TO_JSVALUE(bool val) {
   EncodedJSValue res;

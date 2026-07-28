@@ -28,6 +28,7 @@
 
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include <JavaScriptCore/VM.h>
+#include "ScriptExecutionContext.h"
 #include "ZigGlobalObject.h"
 
 #include <JavaScriptCore/CallData.h>
@@ -37,32 +38,52 @@
 #include "DOMJITIDLTypeFilter.h"
 #include "DOMJITHelpers.h"
 
-class FFICallbackFunctionWrapper {
+class FFICallbackState final : public ThreadSafeRefCounted<FFICallbackState> {
 
-    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(FFICallbackFunctionWrapper);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(FFICallbackState);
 
 public:
-    JSC::Strong<JSC::JSFunction> m_function;
-    JSC::Strong<Zig::GlobalObject> globalObject;
-    ~FFICallbackFunctionWrapper() = default;
+    static Ref<FFICallbackState> create(JSC::JSFunction* function, Zig::GlobalObject* globalObject, std::span<const int32_t> argumentTypes)
+    {
+        return adoptRef(*new FFICallbackState(function, globalObject, argumentTypes));
+    }
 
-    FFICallbackFunctionWrapper(JSC::JSFunction* function, Zig::GlobalObject* globalObject)
+    ~FFICallbackState() = default;
+
+    JSC::JSFunction* function() const { return m_function.get(); }
+    Zig::GlobalObject* globalObject() const { return m_globalObject.get(); }
+    WebCore::ScriptExecutionContextIdentifier contextIdentifier() const { return m_contextIdentifier; }
+    const WTF::Vector<int32_t>& argumentTypes() const { return m_argumentTypes; }
+
+private:
+    FFICallbackState(JSC::JSFunction* function, Zig::GlobalObject* globalObject, std::span<const int32_t> argumentTypes)
         : m_function(globalObject->vm(), function)
-        , globalObject(globalObject->vm(), globalObject)
+        , m_globalObject(globalObject->vm(), globalObject)
+        , m_contextIdentifier(globalObject->scriptExecutionContext()->identifier())
+        , m_argumentTypes(argumentTypes)
     {
     }
+
+    JSC::Strong<JSC::JSFunction, JSC::ShouldStrongDestructorGrabLock::Yes> m_function;
+    JSC::Strong<Zig::GlobalObject, JSC::ShouldStrongDestructorGrabLock::Yes> m_globalObject;
+    WebCore::ScriptExecutionContextIdentifier m_contextIdentifier;
+    WTF::Vector<int32_t> m_argumentTypes;
 };
-extern "C" void FFICallbackFunctionWrapper_destroy(FFICallbackFunctionWrapper* wrapper)
+
+extern "C" void FFICallbackState_deref(FFICallbackState* state)
 {
-    delete wrapper;
+    state->deref();
 }
 
-extern "C" FFICallbackFunctionWrapper* Bun__createFFICallbackFunction(
+extern "C" FFICallbackState* Bun__createFFICallbackState(
     Zig::GlobalObject* globalObject,
-    JSC::EncodedJSValue callbackFn)
+    JSC::EncodedJSValue callbackFn,
+    const int32_t* argumentTypes,
+    size_t argumentCount)
 {
     auto* callbackFunction = uncheckedDowncast<JSC::JSFunction>(JSC::JSValue::decode(callbackFn));
-    return new FFICallbackFunctionWrapper(callbackFunction, globalObject);
+    auto state = FFICallbackState::create(callbackFunction, globalObject, std::span { argumentTypes, argumentCount });
+    return &state.leakRef();
 }
 
 extern "C" Zig::JSFFIFunction* Bun__CreateFFIFunctionWithData(Zig::GlobalObject* globalObject, const ZigString* symbolName, unsigned argCount, Zig::FFIFunction functionPointer, void* data)
@@ -171,90 +192,101 @@ JSFFIFunction* JSFFIFunction::createForFFI(VM& vm, Zig::GlobalObject* globalObje
 
 } // namespace JSC
 
-static ALWAYS_INLINE JSC::EncodedJSValue callFFICallback(FFICallbackFunctionWrapper& wrapper, Zig::GlobalObject* globalObject, const JSC::ArgList& arguments)
+static ALWAYS_INLINE JSC::EncodedJSValue callFFICallback(FFICallbackState& state, Zig::GlobalObject* globalObject, const JSC::ArgList& arguments)
 {
-    auto* function = wrapper.m_function.get();
+    auto* function = state.function();
     auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
     auto result = JSC::profiledCall(globalObject, JSC::ProfilingReason::API, function, JSC::getCallData(function), JSC::jsUndefined(), arguments);
     RETURN_IF_EXCEPTION(scope, JSC::JSValue::encode(JSC::jsNull()));
     RELEASE_AND_RETURN(scope, JSC::JSValue::encode(result));
 }
 
-static ALWAYS_INLINE JSC::EncodedJSValue callFFICallback(FFICallbackFunctionWrapper& wrapper, const JSC::ArgList& arguments)
+static ALWAYS_INLINE JSC::EncodedJSValue callFFICallback(FFICallbackState& state, const JSC::ArgList& arguments)
 {
-    return callFFICallback(wrapper, wrapper.globalObject.get(), arguments);
+    return callFFICallback(state, state.globalObject(), arguments);
 }
 
 extern "C" JSC::EncodedJSValue
-FFI_Callback_call(FFICallbackFunctionWrapper& wrapper, size_t argCount, JSC::EncodedJSValue* args)
+FFI_Callback_call(FFICallbackState& state, size_t argCount, JSC::EncodedJSValue* args)
 {
     JSC::MarkedArgumentBuffer arguments;
     for (size_t i = 0; i < argCount; ++i)
         arguments.appendWithCrashOnOverflow(JSC::JSValue::decode(args[i]));
-    return callFFICallback(wrapper, arguments);
+    return callFFICallback(state, arguments);
 }
+
+extern "C" JSC::EncodedJSValue Bun__FFI__decodeThreadsafeCallbackArgument(Zig::GlobalObject*, int32_t abiType, uint64_t bits);
 
 extern "C" void
-FFI_Callback_threadsafe_call(FFICallbackFunctionWrapper& wrapper, size_t argCount, JSC::EncodedJSValue* args)
+FFI_Callback_threadsafe_call(FFICallbackState& state, size_t argCount, const uint64_t* args)
 {
+    Ref protectedState { state };
+    WTF::Vector<uint64_t, 8> arguments(std::span { args, argCount });
 
-    auto* globalObject = wrapper.globalObject.get();
-    WTF::Vector<JSC::EncodedJSValue, 8> argsVec;
-    for (size_t i = 0; i < argCount; ++i)
-        argsVec.append(args[i]);
+    WebCore::ScriptExecutionContext::postTaskTo(protectedState->contextIdentifier(),
+        [arguments = WTF::move(arguments), protectedState = WTF::move(protectedState)](WebCore::ScriptExecutionContext& ctx) mutable {
+            auto* globalObject = uncheckedDowncast<Zig::GlobalObject>(ctx.jsGlobalObject());
+            const auto& argumentTypes = protectedState->argumentTypes();
+            ASSERT(argumentTypes.size() == arguments.size());
+            if (argumentTypes.size() != arguments.size())
+                return;
 
-    WebCore::ScriptExecutionContext::postTaskTo(globalObject->scriptExecutionContext()->identifier(), [argsVec = WTF::move(argsVec), wrapper](WebCore::ScriptExecutionContext& ctx) mutable {
-        auto* globalObject = uncheckedDowncast<Zig::GlobalObject>(ctx.jsGlobalObject());
-        JSC::MarkedArgumentBuffer arguments;
-        for (size_t i = 0; i < argsVec.size(); ++i)
-            arguments.appendWithCrashOnOverflow(JSC::JSValue::decode(argsVec[i]));
-        (void)callFFICallback(wrapper, globalObject, arguments);
-    });
+            auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+            JSC::MarkedArgumentBuffer jsArguments;
+            for (size_t i = 0; i < arguments.size(); ++i) {
+                auto argument = Bun__FFI__decodeThreadsafeCallbackArgument(globalObject, argumentTypes[i], arguments[i]);
+                RETURN_IF_EXCEPTION(scope, );
+                jsArguments.appendWithCrashOnOverflow(JSC::JSValue::decode(argument));
+            }
+
+            scope.release();
+            (void)callFFICallback(protectedState.get(), globalObject, jsArguments);
+        });
 }
 
 extern "C" JSC::EncodedJSValue
-FFI_Callback_call_0(FFICallbackFunctionWrapper& wrapper, size_t, JSC::EncodedJSValue*)
+FFI_Callback_call_0(FFICallbackState& state, size_t, JSC::EncodedJSValue*)
 {
-    return callFFICallback(wrapper, JSC::ArgList());
+    return callFFICallback(state, JSC::ArgList());
 }
 
 extern "C" JSC::EncodedJSValue
-FFI_Callback_call_1(FFICallbackFunctionWrapper& wrapper, size_t, JSC::EncodedJSValue* args)
+FFI_Callback_call_1(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
 {
     JSC::MarkedArgumentBuffer arguments;
     arguments.append(JSC::JSValue::decode(args[0]));
-    return callFFICallback(wrapper, arguments);
+    return callFFICallback(state, arguments);
 }
 
 extern "C" JSC::EncodedJSValue
-FFI_Callback_call_2(FFICallbackFunctionWrapper& wrapper, size_t, JSC::EncodedJSValue* args)
+FFI_Callback_call_2(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
 {
     JSC::MarkedArgumentBuffer arguments;
     arguments.append(JSC::JSValue::decode(args[0]));
     arguments.append(JSC::JSValue::decode(args[1]));
-    return callFFICallback(wrapper, arguments);
+    return callFFICallback(state, arguments);
 }
 
-extern "C" JSC::EncodedJSValue FFI_Callback_call_3(FFICallbackFunctionWrapper& wrapper, size_t, JSC::EncodedJSValue* args)
+extern "C" JSC::EncodedJSValue FFI_Callback_call_3(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
 {
     JSC::MarkedArgumentBuffer arguments;
     arguments.append(JSC::JSValue::decode(args[0]));
     arguments.append(JSC::JSValue::decode(args[1]));
     arguments.append(JSC::JSValue::decode(args[2]));
-    return callFFICallback(wrapper, arguments);
+    return callFFICallback(state, arguments);
 }
 
-extern "C" JSC::EncodedJSValue FFI_Callback_call_4(FFICallbackFunctionWrapper& wrapper, size_t, JSC::EncodedJSValue* args)
+extern "C" JSC::EncodedJSValue FFI_Callback_call_4(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
 {
     JSC::MarkedArgumentBuffer arguments;
     arguments.append(JSC::JSValue::decode(args[0]));
     arguments.append(JSC::JSValue::decode(args[1]));
     arguments.append(JSC::JSValue::decode(args[2]));
     arguments.append(JSC::JSValue::decode(args[3]));
-    return callFFICallback(wrapper, arguments);
+    return callFFICallback(state, arguments);
 }
 
-extern "C" JSC::EncodedJSValue FFI_Callback_call_5(FFICallbackFunctionWrapper& wrapper, size_t, JSC::EncodedJSValue* args)
+extern "C" JSC::EncodedJSValue FFI_Callback_call_5(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
 {
     JSC::MarkedArgumentBuffer arguments;
     arguments.append(JSC::JSValue::decode(args[0]));
@@ -262,11 +294,11 @@ extern "C" JSC::EncodedJSValue FFI_Callback_call_5(FFICallbackFunctionWrapper& w
     arguments.append(JSC::JSValue::decode(args[2]));
     arguments.append(JSC::JSValue::decode(args[3]));
     arguments.append(JSC::JSValue::decode(args[4]));
-    return callFFICallback(wrapper, arguments);
+    return callFFICallback(state, arguments);
 }
 
 extern "C" JSC::EncodedJSValue
-FFI_Callback_call_6(FFICallbackFunctionWrapper& wrapper, size_t, JSC::EncodedJSValue* args)
+FFI_Callback_call_6(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
 {
     JSC::MarkedArgumentBuffer arguments;
     arguments.append(JSC::JSValue::decode(args[0]));
@@ -275,11 +307,11 @@ FFI_Callback_call_6(FFICallbackFunctionWrapper& wrapper, size_t, JSC::EncodedJSV
     arguments.append(JSC::JSValue::decode(args[3]));
     arguments.append(JSC::JSValue::decode(args[4]));
     arguments.append(JSC::JSValue::decode(args[5]));
-    return callFFICallback(wrapper, arguments);
+    return callFFICallback(state, arguments);
 }
 
 extern "C" JSC::EncodedJSValue
-FFI_Callback_call_7(FFICallbackFunctionWrapper& wrapper, size_t, JSC::EncodedJSValue* args)
+FFI_Callback_call_7(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
 {
     JSC::MarkedArgumentBuffer arguments;
     arguments.append(JSC::JSValue::decode(args[0]));
@@ -289,5 +321,5 @@ FFI_Callback_call_7(FFICallbackFunctionWrapper& wrapper, size_t, JSC::EncodedJSV
     arguments.append(JSC::JSValue::decode(args[4]));
     arguments.append(JSC::JSValue::decode(args[5]));
     arguments.append(JSC::JSValue::decode(args[6]));
-    return callFFICallback(wrapper, arguments);
+    return callFFICallback(state, arguments);
 }

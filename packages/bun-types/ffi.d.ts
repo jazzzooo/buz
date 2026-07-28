@@ -510,10 +510,9 @@ declare module "bun:ffi" {
      * This does not make the function run in a separate thread. It is still up to the application/library
      * to run their code in a separate thread.
      *
-     * By default, {@link JSCallback} calls are not thread-safe. Turning this on
-     * incurs a small performance penalty for every function call. That small
-     * performance penalty needs to be less than the performance gain from
-     * running the function in a separate thread.
+     * Thread-safe callbacks are dispatched asynchronously on the JavaScript context that created them,
+     * so they must return `void`. Their arguments must be scalar or pointer FFI types; JavaScript-managed
+     * types such as `buffer`, `napi_env`, and `napi_value` are not supported.
      *
      * @default false
      */
