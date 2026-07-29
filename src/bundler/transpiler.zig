@@ -169,7 +169,7 @@ pub const Transpiler = struct {
         js_ast.Expr.Data.Store.create();
         js_ast.Stmt.Data.Store.create();
 
-        const fs = try Fs.FileSystem.init(opts.absolute_working_dir);
+        const fs = try Fs.FileSystem.init(io, opts.absolute_working_dir);
         const bundle_options = try options.BundleOptions.fromApi(
             allocator,
             io,

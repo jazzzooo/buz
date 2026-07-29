@@ -14,7 +14,7 @@ changed_filepaths: [max_count]?[:0]u8,
 platform: Platform,
 
 watchlist: WatchList,
-mutex: Mutex,
+mutex: std.Io.Mutex,
 
 fs: *bun.fs.FileSystem,
 allocator: std.mem.Allocator,
@@ -85,7 +85,7 @@ pub fn init(comptime T: type, ctx: *T, fs: *bun.fs.FileSystem, allocator: std.me
         .fs = fs,
         .allocator = allocator,
         .watchlist = WatchList{},
-        .mutex = .{},
+        .mutex = .init,
         .cwd = fs.top_level_dir,
         .ctx = ctx,
         .onFileUpdate = &wrapped.onFileUpdateWrapped,
@@ -116,8 +116,8 @@ pub fn start(this: *Watcher) !void {
 
 pub fn deinit(this: *Watcher, close_descriptors: bool) void {
     if (this.watchloop_handle != null) {
-        this.mutex.lock();
-        defer this.mutex.unlock();
+        this.mutex.lockUncancelable(this.fs.io);
+        defer this.mutex.unlock(this.fs.io);
         this.close_descriptors = close_descriptors;
         this.running = false;
     } else {
@@ -543,8 +543,8 @@ pub fn appendFileMaybeLock(
     comptime clone_file_path: bool,
     comptime lock: bool,
 ) bun.sys.Maybe(void) {
-    if (comptime lock) this.mutex.lock();
-    defer if (comptime lock) this.mutex.unlock();
+    if (comptime lock) this.mutex.lockUncancelable(this.fs.io);
+    defer if (comptime lock) this.mutex.unlock(this.fs.io);
     bun.assert(file_path.len > 1);
     const parent_dir = std.fs.path.dirname(file_path) orelse ".";
     const parent_dir_hash: HashType = getHash(parent_dir);
@@ -627,8 +627,8 @@ pub fn addDirectory(
     file_path: string,
     comptime clone_file_path: bool,
 ) bun.sys.Maybe(WatchItemIndex) {
-    this.mutex.lock();
-    defer this.mutex.unlock();
+    this.mutex.lockUncancelable(this.fs.io);
+    defer this.mutex.unlock(this.fs.io);
 
     const directory = strings.withoutTrailingSlashWindowsPath(file_path);
     const hash = getHash(directory);
@@ -662,9 +662,9 @@ pub fn addFileByPathSlow(
 
     // Check if already watched (with lock to avoid race with removal)
     {
-        this.mutex.lock();
+        this.mutex.lockUncancelable(this.fs.io);
         const already_watched = this.indexOf(hash) != null;
-        this.mutex.unlock();
+        this.mutex.unlock(this.fs.io);
 
         if (already_watched) {
             return true;
@@ -688,13 +688,13 @@ pub fn addFileByPathSlow(
             // watched (race) and returned success without using our fd.
             // Close it if unused.
             if ((comptime Environment.isKqueue) and fd.isValid()) {
-                this.mutex.lock();
+                this.mutex.lockUncancelable(this.fs.io);
                 const maybe_idx = this.indexOf(hash);
                 const stored_fd = if (maybe_idx) |idx|
                     this.watchlist.items(.fd)[idx]
                 else
                     bun.invalid_fd;
-                this.mutex.unlock();
+                this.mutex.unlock(this.fs.io);
 
                 // Only close if entry exists and stored fd differs from ours.
                 // Race scenarios:
@@ -725,8 +725,8 @@ pub fn addFile(
     comptime clone_file_path: bool,
 ) bun.sys.Maybe(void) {
     // This must lock due to concurrent transpiler
-    this.mutex.lock();
-    defer this.mutex.unlock();
+    this.mutex.lockUncancelable(this.fs.io);
+    defer this.mutex.unlock(this.fs.io);
 
     if (this.indexOf(hash)) |index| {
         if (comptime FeatureFlags.atomic_file_watcher) {
@@ -752,8 +752,8 @@ pub fn indexOf(this: *Watcher, hash: HashType) ?u32 {
 }
 
 pub fn remove(this: *Watcher, hash: HashType) void {
-    this.mutex.lock();
-    defer this.mutex.unlock();
+    this.mutex.lockUncancelable(this.fs.io);
+    defer this.mutex.unlock(this.fs.io);
     if (this.indexOf(hash)) |index| {
         this.removeAtIndex(@truncate(index), hash, &[_]HashType{}, .file);
     }
@@ -801,6 +801,5 @@ const PackageJSON = @import("../resolver/package_json.zig").PackageJSON;
 const bun = @import("bun");
 const Environment = bun.Environment;
 const FeatureFlags = bun.FeatureFlags;
-const Mutex = bun.Mutex;
 const Output = bun.Output;
 const strings = bun.strings;

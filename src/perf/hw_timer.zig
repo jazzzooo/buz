@@ -47,8 +47,7 @@ pub inline fn readCounter() u64 {
 /// resolved without measuring it. Never recurses into `getRoughTickCount`.
 pub inline fn nowNs() u64 {
     if (comptime is_supported) {
-        calibrate_once.call(.{});
-        if (calibration.mult != 0) {
+        if (ensureCalibrated() and calibration.mult != 0) {
             const ticks = readCounter() -% calibration.start_counter;
             // u64×u64→u128 widening mul + shift: 2 insns on x64 (`mul`+`shrd`),
             // 3 on arm64 (`mul`+`umulh`+`extr`). `mulWide` guarantees LLVM sees
@@ -74,7 +73,21 @@ const Calibration = struct {
     mult: u64 = 0,
 };
 var calibration: Calibration = .{};
-var calibrate_once = bun.once(calibrate);
+const CalibrationState = enum(u8) { uninitialized, calibrating, calibrated };
+var calibration_state = std.atomic.Value(CalibrationState).init(.uninitialized);
+
+fn ensureCalibrated() bool {
+    const state = calibration_state.load(.acquire);
+    if (state == .calibrated) return true;
+    if (state == .calibrating) return false;
+
+    if (calibration_state.cmpxchgStrong(.uninitialized, .calibrating, .acq_rel, .acquire)) |actual| {
+        return actual == .calibrated;
+    }
+    calibrate();
+    calibration_state.store(.calibrated, .release);
+    return true;
+}
 
 fn calibrate() void {
     const freq = readFrequency();

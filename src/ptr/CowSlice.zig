@@ -139,9 +139,7 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
         /// that perform `borrows` checks are performed.
         pub fn borrow(str: Self) Self {
             if (comptime cow_str_assertions) if (str.debug) |debug| {
-                debug.mutex.lock();
-                defer debug.mutex.unlock();
-                debug.borrows += 1;
+                _ = debug.borrows.fetchAdd(1, .monotonic);
             };
             return .{
                 .ptr = str.ptr,
@@ -194,10 +192,7 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
 
             if (comptime cow_str_assertions) {
                 if (str.debug) |debug| {
-                    debug.mutex.lock();
-                    defer debug.mutex.unlock();
-                    bun.assert(debug.borrows > 0);
-                    debug.borrows -= 1;
+                    bun.assert(debug.borrows.fetchSub(1, .monotonic) > 0);
                     str.debug = null;
                 }
                 str.debug = bun.new(DebugData, .{ .allocator = allocator });
@@ -214,7 +209,6 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
         /// checks. In release builds it is a no-op.
         pub fn deinit(str: *const Self, allocator: Allocator) void {
             if (comptime cow_str_assertions) if (str.debug) |debug| {
-                debug.mutex.lock();
                 bun.assertf(
                     // We cannot compare `ptr` here, because allocator implementations with no
                     // associated data set the context pointer to `undefined`, therefore comparing
@@ -226,15 +220,15 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
                 );
                 if (str.isOwned()) {
                     // active borrows become invalid data
+                    const borrows = debug.borrows.load(.monotonic);
                     bun.assertf(
-                        debug.borrows == 0,
+                        borrows == 0,
                         "Cannot deinit() a CowSlice with active borrows. Current borrow count: {d}",
-                        .{debug.borrows},
+                        .{borrows},
                     );
                     bun.destroy(debug);
                 } else {
-                    debug.borrows -= 1; // double deinit of a borrowed string
-                    debug.mutex.unlock();
+                    bun.assert(debug.borrows.fetchSub(1, .monotonic) > 0);
                 }
             };
             if (str.flags.is_owned) {
@@ -245,10 +239,9 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
 }
 
 const DebugData = if (cow_str_assertions) struct {
-    mutex: bun.Mutex = .{},
     allocator: Allocator,
     /// number of active borrows
-    borrows: usize = 0,
+    borrows: std.atomic.Value(usize) = .init(0),
 };
 
 comptime {

@@ -475,7 +475,7 @@ fn fetchImpl(
                             return .zero;
                         }) |config| {
                             // Intern via GlobalRegistry for deduplication and pointer equality
-                            break :extract_ssl_config SSLConfig.GlobalRegistry.intern(config);
+                            break :extract_ssl_config SSLConfig.GlobalRegistry.intern(vm.io, config);
                         }
                     }
                 }
@@ -1025,7 +1025,7 @@ fn fetchImpl(
 
             // Support blob: urls
             if (url_type == URLType.blob) {
-                if (jsc.WebCore.ObjectURLRegistry.singleton().resolveAndDupe(url_path_decoded)) |blob| {
+                if (jsc.WebCore.ObjectURLRegistry.singleton().resolveAndDupe(globalThis.bunVM().io, url_path_decoded)) |blob| {
                     url_string = bun.String.createFormat("blob:{s}", .{url_path_decoded}) catch |err| bun.handleOom(err);
                     break :blob blob;
                 } else {

@@ -24,7 +24,7 @@ pub fn generateChunksInParallel(
     if (c.source_maps.line_offset_tasks.len > 0) {
         debug(" START {d} source maps (line offset)", .{chunks.len});
         defer debug("  DONE {d} source maps (line offset)", .{chunks.len});
-        c.source_maps.line_offset_wait_group.wait();
+        c.source_maps.line_offset_countdown.wait(c.resolver.io);
         c.allocator().free(c.source_maps.line_offset_tasks);
         c.source_maps.line_offset_tasks.len = 0;
     }
@@ -172,7 +172,7 @@ pub fn generateChunksInParallel(
         if (c.source_maps.quoted_contents_tasks.len > 0) {
             debug(" START {d} source maps (quoted contents)", .{chunks.len});
             defer debug("  DONE {d} source maps (quoted contents)", .{chunks.len});
-            c.source_maps.quoted_contents_wait_group.wait();
+            c.source_maps.quoted_contents_countdown.wait(c.resolver.io);
             c.allocator().free(c.source_maps.quoted_contents_tasks);
             c.source_maps.quoted_contents_tasks.len = 0;
         }

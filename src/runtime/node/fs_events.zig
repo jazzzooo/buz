@@ -86,8 +86,7 @@ pub const kFSEventsSystem: c_int =
     kFSEventStreamEventFlagUnmount |
     kFSEventStreamEventFlagRootChanged;
 
-var fsevents_mutex: Mutex = .{};
-var fsevents_default_loop_mutex: Mutex = .{};
+var fsevents_default_loop_mutex: std.Io.Mutex = .init;
 var fsevents_default_loop: ?*FSEventsLoop = null;
 
 fn dlsym(handle: ?*anyopaque, comptime Type: type, comptime symbol: [:0]const u8) ?Type {
@@ -113,15 +112,8 @@ pub const CoreFoundation = struct {
     StringCreateWithFileSystemRepresentation: *fn (CFAllocatorRef, [*]const u8) callconv(.c) CFStringRef,
     RunLoopDefaultMode: *CFStringRef,
 
-    pub fn get() CoreFoundation {
-        if (fsevents_cf) |cf| return cf;
-        fsevents_mutex.lock();
-        defer fsevents_mutex.unlock();
-        if (fsevents_cf) |cf| return cf;
-
-        InitLibrary();
-
-        return fsevents_cf.?;
+    pub fn get(io: std.Io) CoreFoundation {
+        return libraries_once.call(io, .{}).core_foundation;
     }
 
     // We Actually never deinit it
@@ -145,15 +137,8 @@ pub const CoreServices = struct {
     // libuv set it to -1 so the actual value is this
     kFSEventStreamEventIdSinceNow: FSEventStreamEventId = 18446744073709551615,
 
-    pub fn get() CoreServices {
-        if (fsevents_cs) |cs| return cs;
-        fsevents_mutex.lock();
-        defer fsevents_mutex.unlock();
-        if (fsevents_cs) |cs| return cs;
-
-        InitLibrary();
-
-        return fsevents_cs.?;
+    pub fn get(io: std.Io) CoreServices {
+        return libraries_once.call(io, .{}).core_services;
     }
 
     // We Actually never deinit it
@@ -166,14 +151,18 @@ pub const CoreServices = struct {
 
 };
 
-var fsevents_cf: ?CoreFoundation = null;
-var fsevents_cs: ?CoreServices = null;
+const Libraries = struct {
+    core_foundation: CoreFoundation,
+    core_services: CoreServices,
+};
 
-fn InitLibrary() void {
+var libraries_once = bun.once(initLibraries);
+
+fn initLibraries() Libraries {
     const fsevents_cf_handle = bun.sys.dlopen("/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation", .{ .LAZY = true, .LOCAL = true });
     if (fsevents_cf_handle == null) @panic("Cannot Load CoreFoundation");
 
-    fsevents_cf = CoreFoundation{
+    const core_foundation = CoreFoundation{
         .handle = fsevents_cf_handle,
         .ArrayCreate = dlsym(fsevents_cf_handle, *fn (CFAllocatorRef, [*]?*anyopaque, CFIndex, ?*CFArrayCallBacks) callconv(.c) CFArrayRef, "CFArrayCreate") orelse @panic("Cannot Load CoreFoundation"),
         .Release = dlsym(fsevents_cf_handle, *fn (CFTypeRef) callconv(.c) void, "CFRelease") orelse @panic("Cannot Load CoreFoundation"),
@@ -192,7 +181,7 @@ fn InitLibrary() void {
     const fsevents_cs_handle = bun.sys.dlopen("/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices", .{ .LAZY = true, .LOCAL = true });
     if (fsevents_cs_handle == null) @panic("Cannot Load CoreServices");
 
-    fsevents_cs = CoreServices{
+    const core_services = CoreServices{
         .handle = fsevents_cs_handle,
         .FSEventStreamCreate = dlsym(fsevents_cs_handle, *fn (CFAllocatorRef, FSEventStreamCallback, *FSEventStreamContext, CFArrayRef, FSEventStreamEventId, CFTimeInterval, FSEventStreamCreateFlags) callconv(.c) FSEventStreamRef, "FSEventStreamCreate") orelse @panic("Cannot Load CoreServices"),
         .FSEventStreamInvalidate = dlsym(fsevents_cs_handle, *fn (FSEventStreamRef) callconv(.c) void, "FSEventStreamInvalidate") orelse @panic("Cannot Load CoreServices"),
@@ -201,13 +190,19 @@ fn InitLibrary() void {
         .FSEventStreamStart = dlsym(fsevents_cs_handle, *fn (FSEventStreamRef) callconv(.c) c_int, "FSEventStreamStart") orelse @panic("Cannot Load CoreServices"),
         .FSEventStreamStop = dlsym(fsevents_cs_handle, *fn (FSEventStreamRef) callconv(.c) void, "FSEventStreamStop") orelse @panic("Cannot Load CoreServices"),
     };
+
+    return .{
+        .core_foundation = core_foundation,
+        .core_services = core_services,
+    };
 }
 
 pub const FSEventsLoop = struct {
+    io: std.Io,
     signal_source: CFRunLoopSourceRef,
-    mutex: Mutex = .{},
+    mutex: std.Io.Mutex = .init,
     loop: CFRunLoopRef = null,
-    sem: Semaphore = .{},
+    sem: std.Io.Semaphore = .{},
     thread: std.Thread = undefined,
     tasks: ConcurrentTask.Queue = ConcurrentTask.Queue{},
     watchers: bun.BabyList(?*FSEventsWatcher) = .{},
@@ -263,13 +258,13 @@ pub const FSEventsLoop = struct {
     pub fn CFThreadLoop(this: *FSEventsLoop) void {
         bun.Output.Source.configureNamedThread("CFThreadLoop");
 
-        const CF = CoreFoundation.get();
+        const CF = CoreFoundation.get(this.io);
 
         this.loop = CF.RunLoopGetCurrent();
 
         CF.RunLoopAddSource(this.loop, this.signal_source, CF.RunLoopDefaultMode.*);
 
-        this.sem.post();
+        this.sem.post(this.io);
 
         CF.RunLoopRun();
         CF.RunLoopRemoveSource(this.loop, this.signal_source, CF.RunLoopDefaultMode.*);
@@ -295,10 +290,10 @@ pub const FSEventsLoop = struct {
         }
     }
 
-    pub fn init() !*FSEventsLoop {
+    pub fn init(io: std.Io) !*FSEventsLoop {
         const this = bun.default_allocator.create(FSEventsLoop) catch unreachable;
 
-        const CF = CoreFoundation.get();
+        const CF = CoreFoundation.get(io);
 
         var ctx = CFRunLoopSourceContext{
             .info = this,
@@ -310,18 +305,18 @@ pub const FSEventsLoop = struct {
             return error.FailedToCreateCoreFoudationSourceLoop;
         }
 
-        const fs_loop = FSEventsLoop{ .signal_source = signal_source };
+        const fs_loop = FSEventsLoop{ .io = io, .signal_source = signal_source };
 
         this.* = fs_loop;
         this.thread = try std.Thread.spawn(.{}, FSEventsLoop.CFThreadLoop, .{this});
 
         // sync threads
-        this.sem.wait();
+        this.sem.waitUncancelable(io);
         return this;
     }
 
     fn enqueueTaskConcurrent(this: *FSEventsLoop, task: Task) void {
-        const CF = CoreFoundation.get();
+        const CF = CoreFoundation.get(this.io);
         var concurrent = bun.default_allocator.create(ConcurrentTask) catch unreachable;
         this.tasks.push(concurrent.from(task, true));
         CF.RunLoopSourceSignal(this.signal_source);
@@ -341,8 +336,8 @@ pub const FSEventsLoop = struct {
         // so without this lock we can read `handle.path` / call `handle.emit`
         // on freed memory. Holding the lock also prevents `registerWatcher`
         // from reallocating the `watchers` buffer mid-iteration.
-        loop.mutex.lock();
-        defer loop.mutex.unlock();
+        loop.mutex.lockUncancelable(loop.io);
+        defer loop.mutex.unlock(loop.io);
 
         for (loop.watchers.slice()) |watcher| {
             if (watcher) |handle| {
@@ -403,15 +398,15 @@ pub const FSEventsLoop = struct {
 
     // Runs on CF Thread
     pub fn _schedule(this: *FSEventsLoop) void {
-        this.mutex.lock();
-        defer this.mutex.unlock();
+        this.mutex.lockUncancelable(this.io);
+        defer this.mutex.unlock(this.io);
         this.has_scheduled_watchers = false;
         const watcher_count = this.watcher_count;
 
         const watchers = this.watchers.slice();
 
-        const CF = CoreFoundation.get();
-        const CS = CoreServices.get();
+        const CF = CoreFoundation.get(this.io);
+        const CS = CoreServices.get(this.io);
 
         if (this.fsevent_stream) |stream| {
             // Stop emitting events
@@ -499,8 +494,8 @@ pub const FSEventsLoop = struct {
     }
 
     fn registerWatcher(this: *FSEventsLoop, watcher: *FSEventsWatcher) void {
-        this.mutex.lock();
-        defer this.mutex.unlock();
+        this.mutex.lockUncancelable(this.io);
+        defer this.mutex.unlock(this.io);
         if (this.watcher_count == this.watchers.len) {
             this.watcher_count += 1;
             bun.handleOom(this.watchers.append(bun.default_allocator, watcher));
@@ -522,8 +517,8 @@ pub const FSEventsLoop = struct {
     }
 
     fn unregisterWatcher(this: *FSEventsLoop, watcher: *FSEventsWatcher) void {
-        this.mutex.lock();
-        defer this.mutex.unlock();
+        this.mutex.lockUncancelable(this.io);
+        defer this.mutex.unlock(this.io);
         var watchers = this.watchers.slice();
         for (watchers, 0..) |w, i| {
             if (w) |item| {
@@ -552,14 +547,14 @@ pub const FSEventsLoop = struct {
 
     // Runs on CF loop to close the loop
     fn _stop(this: *FSEventsLoop) void {
-        const CF = CoreFoundation.get();
+        const CF = CoreFoundation.get(this.io);
         CF.RunLoopStop(this.loop);
     }
     fn deinit(this: *FSEventsLoop) void {
         // signal close and wait
         this.enqueueTaskConcurrent(Task.New(FSEventsLoop, FSEventsLoop._stop).init(this));
         this.thread.join();
-        const CF = CoreFoundation.get();
+        const CF = CoreFoundation.get(this.io);
 
         CF.Release(this.signal_source);
         this.signal_source = null;
@@ -621,27 +616,23 @@ pub const FSEventsWatcher = struct {
     }
 };
 
-pub fn watch(path: string, recursive: bool, callback: FSEventsWatcher.Callback, updateEnd: FSEventsWatcher.UpdateEndCallback, ctx: ?*anyopaque) !*FSEventsWatcher {
-    if (fsevents_default_loop) |loop| {
-        return FSEventsWatcher.init(loop, path, recursive, callback, updateEnd, ctx);
-    } else {
-        fsevents_default_loop_mutex.lock();
-        defer fsevents_default_loop_mutex.unlock();
-        if (fsevents_default_loop == null) {
-            fsevents_default_loop = try FSEventsLoop.init();
-        }
-        return FSEventsWatcher.init(fsevents_default_loop.?, path, recursive, callback, updateEnd, ctx);
+pub fn watch(io: std.Io, path: string, recursive: bool, callback: FSEventsWatcher.Callback, updateEnd: FSEventsWatcher.UpdateEndCallback, ctx: ?*anyopaque) !*FSEventsWatcher {
+    fsevents_default_loop_mutex.lockUncancelable(io);
+    defer fsevents_default_loop_mutex.unlock(io);
+    if (fsevents_default_loop == null) {
+        fsevents_default_loop = try FSEventsLoop.init(io);
     }
+    return FSEventsWatcher.init(fsevents_default_loop.?, path, recursive, callback, updateEnd, ctx);
 }
 
-pub fn closeAndWait() void {
+pub fn closeAndWait(io: std.Io) void {
     if (!bun.Environment.isMac) {
         return;
     }
 
+    fsevents_default_loop_mutex.lockUncancelable(io);
+    defer fsevents_default_loop_mutex.unlock(io);
     if (fsevents_default_loop) |loop| {
-        fsevents_default_loop_mutex.lock();
-        defer fsevents_default_loop_mutex.unlock();
         loop.deinit();
         fsevents_default_loop = null;
     }
@@ -653,25 +644,5 @@ const std = @import("std");
 const EventType = @import("./path_watcher.zig").PathWatcher.EventType;
 
 const bun = @import("bun");
-const Semaphore = struct {
-    mutex: bun.Mutex = .{},
-    condition: bun.Condition = .{},
-    permits: usize = 0,
-
-    fn post(this: *Semaphore) void {
-        this.mutex.lock();
-        defer this.mutex.unlock();
-        this.permits += 1;
-        this.condition.signal();
-    }
-
-    fn wait(this: *Semaphore) void {
-        this.mutex.lock();
-        defer this.mutex.unlock();
-        while (this.permits == 0) this.condition.wait(&this.mutex);
-        this.permits -= 1;
-    }
-};
-const Mutex = bun.Mutex;
 const UnboundedQueue = bun.threading.UnboundedQueue;
 const Event = bun.jsc.Node.fs.Watcher.Event;

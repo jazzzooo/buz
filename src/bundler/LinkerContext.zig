@@ -89,10 +89,10 @@ pub const LinkerContext = struct {
     };
 
     pub const SourceMapData = struct {
-        line_offset_wait_group: sync.WaitGroup = .init(),
+        line_offset_countdown: sync.OneShotCountdown = .init(0),
         line_offset_tasks: []Task = &.{},
 
-        quoted_contents_wait_group: sync.WaitGroup = .init(),
+        quoted_contents_countdown: sync.OneShotCountdown = .init(0),
         quoted_contents_tasks: []Task = &.{},
 
         pub const Task = struct {
@@ -104,7 +104,7 @@ pub const LinkerContext = struct {
                 var task: *Task = @fieldParentPtr("thread_task", thread_task);
                 defer {
                     task.ctx.markPendingTaskDone();
-                    task.ctx.source_maps.line_offset_wait_group.finish();
+                    task.ctx.source_maps.line_offset_countdown.finish(task.ctx.resolver.io);
                 }
 
                 const worker = ThreadPool.Worker.get(@fieldParentPtr("linker", task.ctx));
@@ -116,7 +116,7 @@ pub const LinkerContext = struct {
                 var task: *Task = @fieldParentPtr("thread_task", thread_task);
                 defer {
                     task.ctx.markPendingTaskDone();
-                    task.ctx.source_maps.quoted_contents_wait_group.finish();
+                    task.ctx.source_maps.quoted_contents_countdown.finish(task.ctx.resolver.io);
                 }
 
                 const worker = ThreadPool.Worker.get(@fieldParentPtr("linker", task.ctx));
@@ -267,8 +267,8 @@ pub const LinkerContext = struct {
         reachable: []const Index.Int,
     ) void {
         bun.assert(this.options.source_maps != .none);
-        this.source_maps.line_offset_wait_group = .initWithCount(reachable.len);
-        this.source_maps.quoted_contents_wait_group = .initWithCount(reachable.len);
+        this.source_maps.line_offset_countdown = .init(reachable.len);
+        this.source_maps.quoted_contents_countdown = .init(reachable.len);
         this.source_maps.line_offset_tasks = this.allocator().alloc(SourceMapData.Task, reachable.len) catch unreachable;
         this.source_maps.quoted_contents_tasks = this.allocator().alloc(SourceMapData.Task, reachable.len) catch unreachable;
 

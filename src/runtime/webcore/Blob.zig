@@ -5006,7 +5006,7 @@ pub fn FileCloser(comptime This: type) type {
 
                     @atomicStore(@TypeOf(this.io_request.callback), &this.io_request.callback, &scheduleClose, .seq_cst);
                     if (!this.io_request.scheduled)
-                        io.Loop.get().schedule(&this.io_request);
+                        io.Loop.get(bun.fs.FileSystem.instance.io).schedule(&this.io_request);
                     return true;
                 }
             }

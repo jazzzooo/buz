@@ -18,17 +18,17 @@ pub fn dumpSourceStringFailiable(vm: *VirtualMachine, specifier: string, written
 
     const BunDebugHolder = struct {
         pub var dir: ?std.Io.Dir = null;
-        pub var lock: bun.Mutex = .{};
+        pub var lock: std.Io.Mutex = .init;
     };
 
-    BunDebugHolder.lock.lock();
-    defer BunDebugHolder.lock.unlock();
+    BunDebugHolder.lock.lockUncancelable(vm.io);
+    defer BunDebugHolder.lock.unlock(vm.io);
 
     const dir = BunDebugHolder.dir orelse dir: {
         const base_name = switch (Environment.os) {
             else => if (comptime Environment.isAndroid) "/data/local/tmp/bun-debug-src/" else "/tmp/bun-debug-src/",
             .windows => brk: {
-                const temp = bun.fs.FileSystem.RealFS.platformTempDir();
+                const temp = bun.fs.FileSystem.RealFS.platformTempDir(vm.io);
                 var win_temp_buffer: bun.PathBuffer = undefined;
                 @memcpy(win_temp_buffer[0..temp.len], temp);
                 const suffix = "\\bun-debug-src";

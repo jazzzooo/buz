@@ -267,7 +267,7 @@ pub const PackageManagerCommand = struct {
                 Output.prettyln("Cleared 'bun install' cache", .{});
 
                 bunx: {
-                    const tmp = bun.fs.FileSystem.RealFS.platformTempDir();
+                    const tmp = bun.fs.FileSystem.RealFS.platformTempDir(ctx.io);
                     const tmp_dir = std.Io.Dir.cwd().openDir(ctx.io, tmp, .{ .iterate = true }) catch |err| {
                         Output.err(err, "Could not open {s}", .{tmp});
                         had_err = true;

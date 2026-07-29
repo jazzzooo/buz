@@ -29,13 +29,9 @@ const default_report_base_url = "https://bun.report";
 /// flow is not returned to the main application.
 var has_printed_message = false;
 
-/// Non-zero whenever the program triggered a panic.
-/// The counter is incremented/decremented atomically.
-var panicking = std.atomic.Value(u8).init(0);
-
-// Locked to avoid interleaving panic messages from multiple threads.
-// TODO: I don't think it's safe to lock/unlock a mutex inside a signal handler.
-var panic_mutex = bun.Mutex{};
+/// True once a thread has been elected to report a crash.
+var reporter_elected = std.atomic.Value(bool).init(false);
+var crash_io: std.Io = undefined;
 
 /// Counts how many times the panic handler is invoked by this thread.
 /// This is used to catch and handle panics triggered by the panic handler.
@@ -80,7 +76,7 @@ pub threadlocal var current_action: ?Action = null;
 
 var before_crash_handlers: std.ArrayListUnmanaged(struct { *anyopaque, *const OnBeforeCrash }) = .empty;
 
-var before_crash_handlers_mutex: bun.Mutex = .{};
+var before_crash_handlers_mutex: std.Io.Mutex = .init;
 
 /// Prevents crash reports from being uploaded to any server. Reports will still be printed and
 /// abort the process. Overrides BUN_CRASH_REPORT_URL, BUN_ENABLE_CRASH_REPORTING, and all other
@@ -260,7 +256,7 @@ pub fn crashHandler(
             bun.maybeHandlePanicDuringProcessReload();
 
             panic_stage = 1;
-            _ = panicking.fetchAdd(1, .seq_cst);
+            if (reporter_elected.swap(true, .acq_rel)) parkForever();
 
             if (before_crash_handlers_mutex.tryLock()) {
                 for (before_crash_handlers.items) |item| {
@@ -270,9 +266,6 @@ pub fn crashHandler(
             }
 
             {
-                panic_mutex.lock();
-                defer panic_mutex.unlock();
-
                 // Use an raw unbuffered writer to stderr to avoid losing information on
                 // panic in a panic. There is also a possibility that `Output` related code
                 // is not configured correctly, so that would also mask the message.
@@ -501,10 +494,6 @@ pub fn crashHandler(
                     writer.writeAll("\n") catch std.process.abort();
                 }
             }
-
-            // Be aware that this function only lets one thread return from it.
-            // This is important so that we do not try to run the following reload logic twice.
-            waitForOtherThreadToFinishPanicking();
 
             report(trace_str_buf.slice());
 
@@ -969,7 +958,8 @@ pub fn resetOnPosix() void {
     updatePosixSegfaultHandler(&act) catch {};
 }
 
-pub fn init() void {
+pub fn init(io: std.Io) void {
+    crash_io = io;
     if (!enable) return;
     switch (bun.Environment.os) {
         .windows => {
@@ -1142,17 +1132,11 @@ pub fn printMetadata(writer: anytype) !void {
     }
 }
 
-fn waitForOtherThreadToFinishPanicking() void {
-    if (panicking.fetchSub(1, .seq_cst) != 1) {
-        // Another thread is panicking, wait for the last one to finish
-        // and call abort()
-        if (builtin.single_threaded) unreachable;
+fn parkForever() noreturn {
+    if (builtin.single_threaded) std.process.abort();
 
-        // Sleep forever without hammering the CPU
-        var futex = std.atomic.Value(u32).init(0);
-        while (true) bun.Futex.waitForever(&futex, 0);
-        comptime unreachable;
-    }
+    var futex = std.atomic.Value(u32).init(0);
+    while (true) bun.Futex.waitForever(&futex, 0);
 }
 
 /// This is to be called by any thread that is attempting to exit the process.
@@ -1163,12 +1147,7 @@ fn waitForOtherThreadToFinishPanicking() void {
 /// panicking, but the main thread ends up marking a test as passing and then
 /// exiting with code zero before the crash handler can finish the crash.
 pub fn sleepForeverIfAnotherThreadIsCrashing() void {
-    if (panicking.load(.acquire) > 0) {
-        // Sleep forever without hammering the CPU
-        var futex = std.atomic.Value(u32).init(0);
-        while (true) bun.Futex.waitForever(&futex, 0);
-        comptime unreachable;
-    }
+    if (reporter_elected.load(.acquire)) parkForever();
 }
 
 /// Each platform is encoded as a single character. It is placed right after the
@@ -1862,7 +1841,7 @@ fn spawnSymbolizer(program: [:0]const u8, alloc: std.mem.Allocator, trace: std.d
         .stdout = .inherit,
         .stderr = .inherit,
         .windows = if (bun.Environment.isWindows) .{
-            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(crash_io, null, null)),
         },
     }) catch |err| {
         stderr.print("Failed to invoke command: {f}\n", .{bun.fmt.fmtSlice(argv.items, " ")}) catch {};
@@ -1971,7 +1950,7 @@ const OnBeforeCrash = fn (opaque_ptr: *anyopaque) void;
 /// to dump a large amount of state to a file to aid debugging a crash.
 ///
 /// Pre-crash handlers are likely, but not guaranteed to call. Errors are ignored.
-pub fn appendPreCrashHandler(comptime T: type, ptr: *T, comptime handler: fn (*T) anyerror!void) !void {
+pub fn appendPreCrashHandler(io: std.Io, comptime T: type, ptr: *T, comptime handler: fn (*T) anyerror!void) !void {
     const wrap = struct {
         fn onCrash(opaque_ptr: *anyopaque) void {
             handler(@ptrCast(@alignCast(opaque_ptr))) catch |err| {
@@ -1980,14 +1959,14 @@ pub fn appendPreCrashHandler(comptime T: type, ptr: *T, comptime handler: fn (*T
         }
     };
 
-    before_crash_handlers_mutex.lock();
-    defer before_crash_handlers_mutex.unlock();
+    before_crash_handlers_mutex.lockUncancelable(io);
+    defer before_crash_handlers_mutex.unlock(io);
     try before_crash_handlers.append(bun.default_allocator, .{ ptr, wrap.onCrash });
 }
 
-pub fn removePreCrashHandler(ptr: *anyopaque) void {
-    before_crash_handlers_mutex.lock();
-    defer before_crash_handlers_mutex.unlock();
+pub fn removePreCrashHandler(io: std.Io, ptr: *anyopaque) void {
+    before_crash_handlers_mutex.lockUncancelable(io);
+    defer before_crash_handlers_mutex.unlock(io);
     const index = for (before_crash_handlers.items, 0..) |item, i| {
         if (item.@"0" == ptr) break i;
     } else return;
@@ -1995,7 +1974,7 @@ pub fn removePreCrashHandler(ptr: *anyopaque) void {
 }
 
 pub fn isPanicking() bool {
-    return panicking.load(.monotonic) > 0;
+    return reporter_elected.load(.monotonic);
 }
 
 pub const SourceAtAddress = struct {

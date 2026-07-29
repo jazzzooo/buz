@@ -969,7 +969,7 @@ pub const Interpreter = struct {
             },
 
             .vm_args_utf8 = std.array_list.Managed(jsc.ZigString.Slice).init(bun.default_allocator),
-            .__alloc_scope = if (bun.Environment.enableAllocScopes) bun.AllocationScope.init(allocator) else {},
+            .__alloc_scope = if (bun.Environment.enableAllocScopes) bun.AllocationScope.init(ctx.io, allocator) else {},
             .globalThis = undefined,
         };
 

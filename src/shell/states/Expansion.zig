@@ -790,7 +790,7 @@ pub const ShellGlobTask = struct {
 
     pub fn createOnMainThread(walker: *GlobWalker, expansion: *Expansion) *This {
         debug("createOnMainThread", .{});
-        var alloc_scope = bun.AllocationScope.init(bun.default_allocator);
+        var alloc_scope = bun.AllocationScope.init(expansion.base.interpreter.command_ctx.io, bun.default_allocator);
         var this = bun.handleOom(alloc_scope.allocator().create(This));
         this.* = .{
             .alloc_scope = alloc_scope,

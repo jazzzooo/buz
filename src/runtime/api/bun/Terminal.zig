@@ -431,20 +431,19 @@ const OpenPtyFn = *const fn (
 
 /// Dynamic loading of openpty on Linux (it's in libutil which may not be linked)
 const LibUtil = struct {
-    var handle: ?*anyopaque = null;
-    var loaded: bool = false;
-
-    pub fn getHandle() ?*anyopaque {
-        if (loaded) return handle;
-        loaded = true;
-
+    fn loadHandle() ?*anyopaque {
         // Try libutil.so first (most common), then libutil.so.1
         const lib_names = [_][:0]const u8{ "libutil.so", "libutil.so.1", "libc.so.6" };
         for (lib_names) |lib_name| {
-            handle = bun.sys.dlopen(lib_name, .{ .LAZY = true });
-            if (handle != null) return handle;
+            if (bun.sys.dlopen(lib_name, .{ .LAZY = true })) |handle| return handle;
         }
         return null;
+    }
+
+    var handle_once = bun.threadedOnce(loadHandle);
+
+    pub fn getHandle() ?*anyopaque {
+        return handle_once.call(.{});
     }
 
     pub fn getOpenPty() ?OpenPtyFn {

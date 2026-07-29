@@ -29,7 +29,7 @@ pub fn whoami(allocator: std.mem.Allocator, manager: *PackageManager) WhoamiErro
     }
 
     const auth_type = if (manager.options.publish_config.auth_type) |auth_type| @tagName(auth_type) else "web";
-    const ci_name = bun.ci.detectCIName();
+    const ci_name = bun.ci.detectCIName(manager.io);
 
     var print_buf = std.array_list.Managed(u8).init(allocator);
     defer print_buf.deinit();
@@ -106,7 +106,7 @@ pub fn whoami(allocator: std.mem.Allocator, manager: *PackageManager) WhoamiErro
         .follow,
     );
 
-    const res = req.sendSync() catch |err| {
+    const res = req.sendSync(manager.io) catch |err| {
         switch (err) {
             error.OutOfMemory => |oom| return oom,
             else => {

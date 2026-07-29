@@ -6,9 +6,10 @@ pub const WorkPool = struct {
 
     var createOnce = bun.once(
         struct {
-            pub fn create() void {
+            pub fn create(io: std.Io) void {
                 @branchHint(.cold);
                 pool = ThreadPool.init(.{
+                    .io = io,
                     .max_threads = bun.getThreadCount(),
                     .stack_size = ThreadPool.default_thread_stack_size,
                 });
@@ -16,8 +17,12 @@ pub const WorkPool = struct {
         }.create,
     );
 
+    pub fn initialize(io: std.Io) void {
+        createOnce.call(io, .{io});
+    }
+
     pub inline fn get() *ThreadPool {
-        createOnce.call(.{});
+        bun.releaseAssert(createOnce.isDone());
         return &pool;
     }
 

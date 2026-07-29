@@ -109,7 +109,7 @@ fn execTask(allocator: std.mem.Allocator, task_: string, cwd: string, _: string,
         .stdin = .inherit,
 
         .windows = if (Environment.isWindows) .{
-            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
         },
     }) catch return;
 }
@@ -195,7 +195,7 @@ pub const CreateCommand = struct {
     pub fn exec(ctx: Command.Context, example_tag: Example.Tag, template: []const u8) !void {
         @branchHint(.cold);
 
-        HTTP.HTTPThread.init(&.{});
+        HTTP.HTTPThread.init(ctx.io, &.{});
 
         var create_options = try CreateOptions.parse(ctx);
         const positionals = create_options.positionals;
@@ -204,7 +204,7 @@ pub const CreateCommand = struct {
             return try CreateListExamplesCommand.exec(ctx);
         }
 
-        var filesystem = try fs.FileSystem.init(null);
+        var filesystem = try fs.FileSystem.init(ctx.io, null);
         var env_loader: DotEnv.Loader = brk: {
             const map = try ctx.allocator.create(DotEnv.Map);
             map.* = DotEnv.Map.init(ctx.allocator);
@@ -1449,7 +1449,7 @@ pub const CreateCommand = struct {
                 .stdin = .inherit,
 
                 .windows = if (Environment.isWindows) .{
-                    .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                    .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
                 },
             });
             _ = try process.unwrap();
@@ -1606,7 +1606,7 @@ pub const CreateCommand = struct {
                     .stdout = .inherit,
                     .stderr = .inherit,
                     .windows = if (Environment.isWindows) .{
-                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
                     },
                 });
                 _ = child.unwrap() catch {};
@@ -1645,7 +1645,7 @@ pub const CreateCommand = struct {
     }
     pub fn extractInfo(ctx: Command.Context) !struct { example_tag: Example.Tag, template: []const u8 } {
         var example_tag = Example.Tag.unknown;
-        var filesystem = try fs.FileSystem.init(null);
+        var filesystem = try fs.FileSystem.init(ctx.io, null);
 
         const create_options = try CreateOptions.parse(ctx);
         const positionals = create_options.positionals;
@@ -1983,7 +1983,7 @@ pub const Example = struct {
         async_http.client.progress_node = progress;
         async_http.client.flags.reject_unauthorized = env_loader.getTLSRejectUnauthorized();
 
-        const response = try async_http.sendSync();
+        const response = try async_http.sendSync(ctx.io);
 
         switch (response.status_code) {
             404 => return error.GitHubRepositoryNotFound,
@@ -2060,7 +2060,7 @@ pub const Example = struct {
         async_http.client.progress_node = progress;
         async_http.client.flags.reject_unauthorized = env_loader.getTLSRejectUnauthorized();
 
-        var response = try async_http.sendSync();
+        var response = try async_http.sendSync(ctx.io);
 
         switch (response.status_code) {
             404 => return error.ExampleNotFound,
@@ -2143,7 +2143,7 @@ pub const Example = struct {
 
         refresher.maybeRefresh();
 
-        response = try async_http.sendSync();
+        response = try async_http.sendSync(ctx.io);
 
         refresher.maybeRefresh();
 
@@ -2186,7 +2186,7 @@ pub const Example = struct {
             async_http.client.progress_node = progress_node;
         }
 
-        const response = async_http.sendSync() catch |err| {
+        const response = async_http.sendSync(ctx.io) catch |err| {
             switch (err) {
                 error.WouldBlock => {
                     Output.prettyErrorln("Request timed out while trying to fetch examples list. Please try again", .{});
@@ -2248,7 +2248,7 @@ pub const Example = struct {
 
 pub const CreateListExamplesCommand = struct {
     pub fn exec(ctx: Command.Context) !void {
-        const filesystem = try fs.FileSystem.init(null);
+        const filesystem = try fs.FileSystem.init(ctx.io, null);
         var env_loader: DotEnv.Loader = brk: {
             const map = try ctx.allocator.create(DotEnv.Map);
             map.* = DotEnv.Map.init(ctx.allocator);
@@ -2387,7 +2387,7 @@ const GitHandler = struct {
                     .stdout = .inherit,
                     .stderr = .inherit,
                     .windows = if (Environment.isWindows) .{
-                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
                     },
                 });
                 _ = try process.unwrap();

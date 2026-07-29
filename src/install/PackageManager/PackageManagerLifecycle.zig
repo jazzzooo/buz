@@ -7,12 +7,12 @@ pub const LifecycleScriptTimeLog = struct {
         duration: u64,
     };
 
-    mutex: bun.Mutex = .{},
+    mutex: std.Io.Mutex = .init,
     list: std.ArrayListUnmanaged(Entry) = .empty,
 
-    pub fn appendConcurrent(log: *LifecycleScriptTimeLog, allocator: std.mem.Allocator, entry: Entry) void {
-        log.mutex.lock();
-        defer log.mutex.unlock();
+    pub fn appendConcurrent(log: *LifecycleScriptTimeLog, io: std.Io, allocator: std.mem.Allocator, entry: Entry) void {
+        log.mutex.lockUncancelable(io);
+        defer log.mutex.unlock(io);
         bun.handleOom(log.list.append(allocator, entry));
     }
 };
@@ -274,7 +274,7 @@ pub fn spawnPackageLifecycleScripts(
         }
 
         if (this.env.get("PATH")) |env_path| {
-            break :shell_bin bun.cli.RunCommand.findShell(env_path, cwd);
+            break :shell_bin bun.cli.RunCommand.findShell(this.io, env_path, cwd);
         }
 
         break :shell_bin null;

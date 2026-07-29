@@ -496,7 +496,7 @@ pub const BunxCommand = struct {
         debug("install_param: {s}", .{install_param});
         debug("result_package_name: {s}", .{result_package_name});
 
-        const temp_dir = bun.fs.FileSystem.RealFS.platformTempDir();
+        const temp_dir = bun.fs.FileSystem.RealFS.platformTempDir(ctx.io);
 
         const PATH_FOR_BIN_DIRS = brk: {
             if (ignore_cwd.len == 0) break :brk PATH;
@@ -788,7 +788,7 @@ pub const BunxCommand = struct {
             .stdin = .inherit,
 
             .windows = if (Environment.isWindows) .{
-                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(this_transpiler.env, null)),
+                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(ctx.io, this_transpiler.env, null)),
             },
         }) catch |err| {
             Output.prettyErrorln("<r><red>error<r>: bunx failed to install <b>{s}<r> due to error <b>{s}<r>", .{ install_param, @errorName(err) });

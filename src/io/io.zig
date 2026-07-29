@@ -74,12 +74,12 @@ pub const Loop = struct {
     }
     var once = bun.once(load);
 
-    pub fn get() *Loop {
+    pub fn get(io: std.Io) *Loop {
         if (Environment.isWindows) {
             @panic("Do not use this API on windows");
         }
 
-        once.call(.{});
+        once.call(io, .{});
 
         return &loop;
     }

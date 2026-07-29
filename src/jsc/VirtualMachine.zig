@@ -103,7 +103,7 @@ transpiler_store: ModuleLoader.RuntimeTranspilerStore,
 after_event_loop_callback_ctx: ?*anyopaque = null,
 after_event_loop_callback: ?jsc.OpaqueCallback = null,
 
-remap_stack_frames_mutex: bun.Mutex = .{},
+remap_stack_frames_mutex: std.Io.Mutex = .init,
 
 /// The arguments used to launch the process _after_ the script name and bun and any flags applied to Bun
 ///     "bun run foo --bar"
@@ -130,7 +130,7 @@ regular_event_loop: EventLoop = EventLoop{},
 event_loop: *EventLoop = undefined,
 
 ref_strings: jsc.RefString.Map = undefined,
-ref_strings_mutex: bun.Mutex = undefined,
+ref_strings_mutex: std.Io.Mutex = undefined,
 
 active_tasks: usize = 0,
 
@@ -826,7 +826,11 @@ pub inline fn nodeFS(this: *VirtualMachine) *Node.fs.NodeFS {
 pub inline fn rareData(this: *VirtualMachine) *jsc.RareData {
     return this.rare_data orelse brk: {
         this.rare_data = this.allocator.create(jsc.RareData) catch unreachable;
-        this.rare_data.?.* = .{};
+        this.rare_data.?.* = .{
+            .io = this.io,
+            .aws_signature_cache = .init(this.io),
+            .ssl_ctx_cache = .init(this.io),
+        };
         // RareData embeds the per-VM `us_socket_group_t` heads as value fields.
         // `this.allocator` is mimalloc, whose pages LSAN does not scan, so a
         // socket still open at exit and reachable only via e.g.
@@ -953,7 +957,7 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
         // termination of every live worker and wait for each to reach
         // shutdown() (past all resolver access) first. Node.js does the
         // equivalent in Environment::stop_sub_worker_contexts().
-        webcore.WebWorker.terminateAllAndWait(10_000);
+        webcore.WebWorker.terminateAllAndWait(this.io, 10_000);
         // Embedded per-VM socket groups must drain while JSC is still alive
         // (closeAll() fires on_close → JS). After JSC teardown,
         // RareData.deinit() only deinit()s the groups (asserts empty).
@@ -1104,7 +1108,7 @@ pub fn initWithModuleGraph(
         .transpiler = transpiler,
         .console = console,
         .log = log,
-        .timer = bun.api.Timer.All.init(),
+        .timer = bun.api.Timer.All.init(opts.io),
         .origin = transpiler.options.origin,
         .saved_source_map_table = SavedSourceMap.HashTable.init(bun.default_allocator),
         .source_mappings = undefined,
@@ -1113,11 +1117,11 @@ pub fn initWithModuleGraph(
         .origin_timer = SystemTimer.start() catch unreachable,
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
-        .ref_strings_mutex = .{},
+        .ref_strings_mutex = .init,
         .standalone_module_graph = opts.graph.?,
         .initial_script_execution_context_identifier = if (opts.is_main_thread) 1 else std.math.maxInt(i32),
     };
-    vm.source_mappings.init(&vm.saved_source_map_table);
+    vm.source_mappings.init(vm.io, &vm.saved_source_map_table);
     vm.regular_event_loop.tasks = EventLoop.Queue.init(
         default_allocator,
     );
@@ -1228,7 +1232,7 @@ pub fn init(opts: Options) !*VirtualMachine {
         .console = console,
         .log = log,
 
-        .timer = bun.api.Timer.All.init(),
+        .timer = bun.api.Timer.All.init(opts.io),
 
         .origin = transpiler.options.origin,
 
@@ -1239,10 +1243,10 @@ pub fn init(opts: Options) !*VirtualMachine {
         .origin_timer = SystemTimer.start() catch unreachable,
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
-        .ref_strings_mutex = .{},
+        .ref_strings_mutex = .init,
         .initial_script_execution_context_identifier = if (opts.is_main_thread) 1 else std.math.maxInt(i32),
     };
-    vm.source_mappings.init(&vm.saved_source_map_table);
+    vm.source_mappings.init(vm.io, &vm.saved_source_map_table);
     vm.regular_event_loop.tasks = EventLoop.Queue.init(
         default_allocator,
     );
@@ -1389,7 +1393,7 @@ pub fn initWorker(
         .console = console,
         .log = log,
 
-        .timer = bun.api.Timer.All.init(),
+        .timer = bun.api.Timer.All.init(opts.io),
         .origin = transpiler.options.origin,
 
         .saved_source_map_table = SavedSourceMap.HashTable.init(bun.default_allocator),
@@ -1399,12 +1403,12 @@ pub fn initWorker(
         .origin_timer = SystemTimer.start() catch unreachable,
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
-        .ref_strings_mutex = .{},
+        .ref_strings_mutex = .init,
         .standalone_module_graph = worker.parent.standalone_module_graph,
         .worker = worker,
         .initial_script_execution_context_identifier = @as(i32, @intCast(worker.execution_context_id)),
     };
-    vm.source_mappings.init(&vm.saved_source_map_table);
+    vm.source_mappings.init(vm.io, &vm.saved_source_map_table);
     vm.regular_event_loop.tasks = EventLoop.Queue.init(
         default_allocator,
     );
@@ -1487,7 +1491,7 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
         .transpiler = transpiler,
         .console = console,
         .log = log,
-        .timer = bun.api.Timer.All.init(),
+        .timer = bun.api.Timer.All.init(opts.io),
         .origin = transpiler.options.origin,
         .saved_source_map_table = SavedSourceMap.HashTable.init(bun.default_allocator),
         .source_mappings = undefined,
@@ -1496,10 +1500,10 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
         .origin_timer = SystemTimer.start() catch unreachable,
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
-        .ref_strings_mutex = .{},
+        .ref_strings_mutex = .init,
         .initial_script_execution_context_identifier = if (opts.is_main_thread) 1 else std.math.maxInt(i32),
     };
-    vm.source_mappings.init(&vm.saved_source_map_table);
+    vm.source_mappings.init(vm.io, &vm.saved_source_map_table);
     vm.regular_event_loop.tasks = EventLoop.Queue.init(
         default_allocator,
     );
@@ -1580,8 +1584,8 @@ pub fn refCountedString(this: *VirtualMachine, input_: []const u8, hash_: ?u32, 
     jsc.markBinding(@src());
     bun.assert(input_.len > 0);
     const hash = hash_ orelse jsc.RefString.computeHash(input_);
-    this.ref_strings_mutex.lock();
-    defer this.ref_strings_mutex.unlock();
+    this.ref_strings_mutex.lockUncancelable(this.io);
+    defer this.ref_strings_mutex.unlock(this.io);
 
     const entry = this.ref_strings.getOrPut(hash) catch unreachable;
     if (!entry.found_existing) {
@@ -1715,7 +1719,7 @@ fn _resolve(
         return;
     } else if (strings.hasPrefixComptime(specifier, "blob:")) {
         ret.result = null;
-        if (jsc.WebCore.ObjectURLRegistry.singleton().has(specifier["blob:".len..])) {
+        if (jsc.WebCore.ObjectURLRegistry.singleton().has(jsc_vm.io, specifier["blob:".len..])) {
             ret.path = try bun.default_allocator.dupe(u8, specifier);
             return;
         } else {
@@ -2499,9 +2503,9 @@ pub fn swapGlobalForTestIsolation(this: *VirtualMachine) void {
         // The context walk already closed all listening sockets properly
         // (poll stop + fd close); just discard the now-stale fd list so it
         // doesn't grow across files.
-        rare.listening_sockets_for_watch_mode_lock.lock();
+        rare.listening_sockets_for_watch_mode_lock.lockUncancelable(this.io);
         rare.listening_sockets_for_watch_mode.clearRetainingCapacity();
-        rare.listening_sockets_for_watch_mode_lock.unlock();
+        rare.listening_sockets_for_watch_mode_lock.unlock(this.io);
     }
     this.eventLoop().drainMicrotasks() catch {};
 
@@ -2861,8 +2865,8 @@ pub fn remapStackFramePositions(this: *VirtualMachine, frames: [*]jsc.ZigStackFr
 
     // **Warning** this method can be called in the heap collector thread!!
     // https://github.com/oven-sh/bun/issues/17087
-    this.remap_stack_frames_mutex.lock();
-    defer this.remap_stack_frames_mutex.unlock();
+    this.remap_stack_frames_mutex.lockUncancelable(this.io);
+    defer this.remap_stack_frames_mutex.unlock(this.io);
 
     // Hold the SavedSourceMap mutex across the batch so a cached
     // InternalSourceMap view cannot be freed mid-loop by a concurrent
@@ -3830,7 +3834,7 @@ pub fn resolveSourceMapping(
     return this.source_mappings.resolveMapping(path, line, column, source_handling) orelse {
         if (this.standalone_module_graph) |graph| {
             const file = graph.find(path) orelse return null;
-            const map = file.sourcemap.load() orelse return null;
+            const map = file.sourcemap.load(this.io) orelse return null;
 
             map.ref();
 

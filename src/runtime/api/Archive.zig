@@ -616,6 +616,7 @@ const BlobContext = struct {
     };
 
     store: *jsc.WebCore.Blob.Store,
+    io: std.Io,
     compress: Compression,
     output_type: OutputType,
     result: Result = .{ .uncompressed = {} },
@@ -623,7 +624,7 @@ const BlobContext = struct {
     fn run(this: *BlobContext) Result {
         switch (this.compress) {
             .gzip => |opts| {
-                return .{ .compressed = compressGzip(this.store.sharedView(), opts.level) catch |e| return .{ .err = e } };
+                return .{ .compressed = compressGzip(this.io, this.store.sharedView(), opts.level) catch |e| return .{ .err = e } };
             },
             .none => return .{ .uncompressed = {} },
         }
@@ -663,6 +664,7 @@ fn startBlobTask(globalThis: *jsc.JSGlobalObject, store: *jsc.WebCore.Blob.Store
 
     const task = try BlobTask.create(globalThis, .{
         .store = store,
+        .io = globalThis.bunVM().io,
         .compress = compress,
         .output_type = output_type,
     });
@@ -685,6 +687,7 @@ const WriteContext = struct {
     };
 
     data: Data,
+    io: std.Io,
     path: [:0]const u8,
     compress: Compression,
     result: Result = .{ .success = {} },
@@ -695,7 +698,7 @@ const WriteContext = struct {
             .store => |s| s.sharedView(),
         };
         const data_to_write = switch (this.compress) {
-            .gzip => |opts| compressGzip(source_data, opts.level) catch |e| return .{ .err = e },
+            .gzip => |opts| compressGzip(this.io, source_data, opts.level) catch |e| return .{ .err = e },
             .none => source_data,
         };
         defer if (this.compress != .none) bun.default_allocator.free(data_to_write);
@@ -753,6 +756,7 @@ fn startWriteTask(
 
     const task = try WriteTask.create(globalThis, .{
         .data = data,
+        .io = globalThis.bunVM().io,
         .path = path_z,
         .compress = compress,
     });
@@ -908,8 +912,8 @@ fn startFilesTask(globalThis: *jsc.JSGlobalObject, store: *jsc.WebCore.Blob.Stor
 // Helpers
 // ============================================================================
 
-fn compressGzip(data: []const u8, level: u8) ![]u8 {
-    libdeflate.load();
+fn compressGzip(io: std.Io, data: []const u8, level: u8) ![]u8 {
+    libdeflate.load(io);
 
     const compressor = libdeflate.Compressor.alloc(@intCast(level)) orelse return error.GzipInitFailed;
     defer compressor.deinit();

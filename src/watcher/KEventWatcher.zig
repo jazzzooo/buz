@@ -90,8 +90,8 @@ pub fn watchLoopCycle(this: *Watcher) bun.sys.Maybe(void) {
         watchevents = watchevents[0..out_len];
     }
 
-    this.mutex.lock();
-    defer this.mutex.unlock();
+    this.mutex.lockUncancelable(this.fs.io);
+    defer this.mutex.unlock(this.fs.io);
     if (this.running) {
         this.writeTraceEvents(watchevents, this.changed_filepaths[0..watchevents.len]);
         this.onFileUpdate(this.ctx, watchevents, this.changed_filepaths[0..watchevents.len], this.watchlist);

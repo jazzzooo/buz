@@ -39,7 +39,7 @@ pub fn stringify(global: *JSGlobalObject, callFrame: *jsc.CallFrame) JSError!JSV
         return global.throw("YAML.stringify does not support the replacer argument", .{});
     }
 
-    var scope: bun.AllocationScope = .init(bun.default_allocator);
+    var scope: bun.AllocationScope = .init(global.bunVM().io, bun.default_allocator);
     defer scope.deinit();
 
     var stringifier: Stringifier = try .init(scope.allocator(), global, space_value);

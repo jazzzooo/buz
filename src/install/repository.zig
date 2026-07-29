@@ -12,8 +12,8 @@ const SloppyGlobalGitConfig = struct {
     var holder: SloppyGlobalGitConfig = .{};
     var load_and_parse_once = bun.once(loadAndParse);
 
-    pub fn get() SloppyGlobalGitConfig {
-        load_and_parse_once.call(.{});
+    pub fn get(io: std.Io) SloppyGlobalGitConfig {
+        load_and_parse_once.call(io, .{});
         return holder;
     }
 
@@ -111,7 +111,7 @@ pub const Repository = extern struct {
 
     pub var shared_env: struct {
         env: ?DotEnv.Map = null,
-        pub fn get(this: *@This(), allocator: std.mem.Allocator, other: *DotEnv.Loader) DotEnv.Map {
+        pub fn get(this: *@This(), io: std.Io, allocator: std.mem.Allocator, other: *DotEnv.Loader) DotEnv.Map {
             return this.env orelse brk: {
                 // Note: currently if the user sets this to some value that causes
                 // a prompt for a password, the stdout of the prompt will be masked
@@ -122,14 +122,14 @@ pub const Repository = extern struct {
                 var cloned = bun.handleOom(other.map.cloneWithAllocator(allocator));
 
                 if (cloned.get("GIT_ASKPASS") == null) {
-                    const config = SloppyGlobalGitConfig.get();
+                    const config = SloppyGlobalGitConfig.get(io);
                     if (!config.has_askpass) {
                         bun.handleOom(cloned.put("GIT_ASKPASS", "echo"));
                     }
                 }
 
                 if (cloned.get("GIT_SSH_COMMAND") == null) {
-                    const config = SloppyGlobalGitConfig.get();
+                    const config = SloppyGlobalGitConfig.get(io);
                     if (!config.has_ssh_command) {
                         bun.handleOom(cloned.put("GIT_SSH_COMMAND", "ssh -oStrictHostKeyChecking=accept-new"));
                     }
@@ -576,7 +576,7 @@ pub const Repository = extern struct {
 
         return std.mem.trim(u8, exec(
             manager,
-            shared_env.get(allocator, env),
+            shared_env.get(manager.io, allocator, env),
             if (committish.len > 0)
                 &[_]string{ "git", "-C", path, "log", "--format=%H", "-1", committish }
             else

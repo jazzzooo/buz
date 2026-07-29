@@ -12,11 +12,12 @@ comptime {
     @export(&getEval, .{ .name = "Bun__Process__getEval" });
 }
 
-var title_mutex = bun.Mutex{};
+var title_mutex: std.Io.Mutex = .init;
 
-pub fn getTitle(_: *JSGlobalObject, title: *bun.String) callconv(.c) void {
-    title_mutex.lock();
-    defer title_mutex.unlock();
+pub fn getTitle(globalObject: *JSGlobalObject, title: *bun.String) callconv(.c) void {
+    const io = globalObject.bunVM().io;
+    title_mutex.lockUncancelable(io);
+    defer title_mutex.unlock(io);
     const str = bun.cli.Bun__Node__ProcessTitle;
     title.* = bun.String.cloneUTF8(str orelse "bun");
 }
@@ -24,8 +25,9 @@ pub fn getTitle(_: *JSGlobalObject, title: *bun.String) callconv(.c) void {
 // TODO: https://github.com/nodejs/node/blob/master/deps/uv/src/unix/darwin-proctitle.c
 pub fn setTitle(globalObject: *JSGlobalObject, newvalue: *bun.String) callconv(.c) void {
     defer newvalue.deref();
-    title_mutex.lock();
-    defer title_mutex.unlock();
+    const io = globalObject.bunVM().io;
+    title_mutex.lockUncancelable(io);
+    defer title_mutex.unlock(io);
 
     const new_title = newvalue.toOwnedSlice(bun.default_allocator) catch {
         globalObject.throwOutOfMemory() catch {};

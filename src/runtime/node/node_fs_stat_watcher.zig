@@ -216,15 +216,15 @@ pub const StatWatcher = struct {
     /// This field is sometimes set from aonther thread, so we should copy by
     /// value instead of referencing by pointer.
     pub fn getLastStat(this: *StatWatcher) bun.sys.PosixStat {
-        const value = this.last_stat.lock();
-        defer this.last_stat.unlock();
+        const value = this.last_stat.lock(this.ctx.io);
+        defer this.last_stat.unlock(this.ctx.io);
         return value.*;
     }
 
     /// Set the last stat.
     pub fn setLastStat(this: *StatWatcher, stat: *const bun.sys.PosixStat) void {
-        const value = this.last_stat.lock();
-        defer this.last_stat.unlock();
+        const value = this.last_stat.lock(this.ctx.io);
+        defer this.last_stat.unlock(this.ctx.io);
         value.* = stat.*;
     }
 

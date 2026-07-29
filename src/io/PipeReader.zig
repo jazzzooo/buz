@@ -754,6 +754,7 @@ const WindowsBufferedReaderVTable = struct {
         hasMore: ReadState,
     ) bool = null,
     loop: *const fn (*anyopaque) *Async.Loop,
+    io: *const fn (*anyopaque) std.Io,
 };
 
 pub const WindowsBufferedReader = struct {
@@ -805,6 +806,9 @@ pub const WindowsBufferedReader = struct {
             fn loop(this: *anyopaque) *Async.Loop {
                 return Type.loop(@as(*Type, @ptrCast(@alignCast(this))));
             }
+            fn io(this: *anyopaque) std.Io {
+                return jsc.EventLoopHandle.init(Type.eventLoop(@as(*Type, @ptrCast(@alignCast(this))))).io();
+            }
         };
         return .{
             .vtable = .{
@@ -812,6 +816,7 @@ pub const WindowsBufferedReader = struct {
                 .onReaderDone = &fns.onReaderDone,
                 .onReaderError = &fns.onReaderError,
                 .loop = &fns.loop,
+                .io = &fns.io,
             },
         };
     }
@@ -961,7 +966,7 @@ pub const WindowsBufferedReader = struct {
         // Use the event loop from the parent, not the global one
         // This is critical for spawnSync to use its isolated loop
         const loop = this.vtable.loop(this.parent);
-        const source = switch (Source.open(loop, fd)) {
+        const source = switch (Source.open(this.vtable.io(this.parent), loop, fd)) {
             .err => |err| return .{ .err = err },
             .result => |source| source,
         };

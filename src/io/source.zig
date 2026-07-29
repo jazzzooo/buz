@@ -235,7 +235,7 @@ pub const Source = union(enum) {
 
     pub const StdinTTY = struct {
         var data: uv.uv_tty_t = undefined;
-        var lock: bun.Mutex = .{};
+        var lock: std.Io.Mutex = .init;
         var initialized = std.atomic.Value(bool).init(false);
         const value: *uv.uv_tty_t = &data;
 
@@ -243,9 +243,9 @@ pub const Source = union(enum) {
             return tty == StdinTTY.value;
         }
 
-        fn getStdinTTY(loop: *uv.Loop) bun.sys.Maybe(*Source.Tty) {
-            StdinTTY.lock.lock();
-            defer StdinTTY.lock.unlock();
+        fn getStdinTTY(io: std.Io, loop: *uv.Loop) bun.sys.Maybe(*Source.Tty) {
+            StdinTTY.lock.lockUncancelable(io);
+            defer StdinTTY.lock.unlock(io);
 
             if (StdinTTY.initialized.swap(true, .monotonic) == false) {
                 const rc = uv.uv_tty_init(loop, StdinTTY.value, 0, 0);
@@ -259,13 +259,13 @@ pub const Source = union(enum) {
         }
     };
 
-    pub fn openTty(loop: *uv.Loop, fd: bun.FD) bun.sys.Maybe(*Source.Tty) {
+    pub fn openTty(io: std.Io, loop: *uv.Loop, fd: bun.FD) bun.sys.Maybe(*Source.Tty) {
         log("openTTY (fd = {f})", .{fd});
 
         const uv_fd = fd.uv();
 
         if (uv_fd == 0) {
-            return StdinTTY.getStdinTTY(loop);
+            return StdinTTY.getStdinTTY(io, loop);
         }
 
         const tty = bun.default_allocator.create(Source.Tty) catch |err| bun.handleOom(err);
@@ -290,7 +290,7 @@ pub const Source = union(enum) {
         return file;
     }
 
-    pub fn open(loop: *uv.Loop, fd: bun.FD) bun.sys.Maybe(Source) {
+    pub fn open(io: std.Io, loop: *uv.Loop, fd: bun.FD) bun.sys.Maybe(Source) {
         const rc = bun.windows.libuv.uv_guess_handle(fd.uv());
         log("open(fd: {f}, type: {s})", .{ fd, @tagName(rc) });
 
@@ -302,7 +302,7 @@ pub const Source = union(enum) {
                 }
             },
             .tty => {
-                switch (openTty(loop, fd)) {
+                switch (openTty(io, loop, fd)) {
                     .result => |tty| return .{ .result = .{ .tty = tty } },
                     .err => |err| return .{ .err = err },
                 }
@@ -354,7 +354,8 @@ pub const Source = union(enum) {
 };
 
 export fn Source__setRawModeStdin(raw: bool) c_int {
-    const tty = switch (Source.openTty(bun.jsc.VirtualMachine.get().uvLoop(), .stdin())) {
+    const vm = bun.jsc.VirtualMachine.get();
+    const tty = switch (Source.openTty(vm.io, vm.uvLoop(), .stdin())) {
         .result => |tty| tty,
         .err => |e| return e.errno,
     };

@@ -25,6 +25,7 @@ requires_custom_request_ctx: bool = false,
 is_using_default_ciphers: bool = true,
 low_memory_mode: bool = false,
 cached_hash: u64 = 0,
+registry_io: ?std.Io = null,
 
 /// Atomic shared pointer with weak support. Refcounting and allocation are
 /// managed non-intrusively by `bun.ptr.shared`; the SSLConfig struct itself
@@ -134,7 +135,8 @@ pub fn forClientVerification(this: SSLConfig) SSLConfig {
 pub fn isSame(this: *const SSLConfig, other: *const SSLConfig) bool {
     const info = @typeInfo(SSLConfig).@"struct";
     inline for (info.field_names, info.field_types) |field_name, FieldType| {
-        if (comptime std.mem.eql(u8, field_name, "cached_hash")) continue;
+        if (comptime std.mem.eql(u8, field_name, "cached_hash") or
+            std.mem.eql(u8, field_name, "registry_io")) continue;
         const first = @field(this, field_name);
         const second = @field(other, field_name);
         switch (FieldType) {
@@ -216,6 +218,7 @@ pub fn deinit(this: *SSLConfig) void {
         .is_using_default_ciphers = {},
         .low_memory_mode = {},
         .cached_hash = {},
+        .registry_io = {},
     });
 }
 
@@ -254,6 +257,7 @@ pub fn clone(this: *const SSLConfig) SSLConfig {
         .is_using_default_ciphers = this.is_using_default_ciphers,
         .low_memory_mode = this.low_memory_mode,
         .cached_hash = 0,
+        .registry_io = null,
     };
 }
 
@@ -262,7 +266,8 @@ pub fn contentHash(this: *SSLConfig) u64 {
     var hasher = std.hash.Wyhash.init(0);
     const info = @typeInfo(SSLConfig).@"struct";
     inline for (info.field_names, info.field_types) |field_name, FieldType| {
-        if (comptime std.mem.eql(u8, field_name, "cached_hash")) continue;
+        if (comptime std.mem.eql(u8, field_name, "cached_hash") or
+            std.mem.eql(u8, field_name, "registry_io")) continue;
         const value = @field(this, field_name);
         switch (FieldType) {
             ?[*:0]const u8 => {
@@ -306,7 +311,7 @@ pub const GlobalRegistry = struct {
         }
     };
 
-    var mutex: bun.Mutex = .{};
+    var mutex: std.Io.Mutex = .init;
     var configs: std.array_hash_map.Custom(*SSLConfig, WeakPtr, MapContext, true) = .empty;
 
     /// Takes a by-value SSLConfig, wraps it in a `SharedPtr` (strong=1), and
@@ -314,9 +319,10 @@ pub const GlobalRegistry = struct {
     /// way, caller owns exactly one strong ref on the result.
     ///
     /// The returned `SharedPtr` must eventually be `.deinit()`d.
-    pub fn intern(config: SSLConfig) SharedPtr {
+    pub fn intern(io: std.Io, config: SSLConfig) SharedPtr {
         var new_shared = SharedPtr.new(config);
         const new_ptr = new_shared.get();
+        new_ptr.registry_io = io;
 
         // Deferred cleanup MUST run after `mutex.unlock()` (deinit re-locks
         // the registry mutex via `SSLConfig.deinit -> remove`).
@@ -325,8 +331,8 @@ pub const GlobalRegistry = struct {
         defer if (dispose_new) |*s| s.deinit();
         defer if (dispose_old_weak) |*w| w.deinit();
 
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lockUncancelable(io);
+        defer mutex.unlock(io);
 
         const gop = bun.handleOom(configs.getOrPutContext(bun.default_allocator, new_ptr, .{}));
         if (gop.found_existing) {
@@ -352,8 +358,9 @@ pub const GlobalRegistry = struct {
     ///
     /// No-op for configs that were never interned.
     fn remove(config: *SSLConfig) void {
-        mutex.lock();
-        defer mutex.unlock();
+        const io = config.registry_io orelse return;
+        mutex.lockUncancelable(io);
+        defer mutex.unlock(io);
         if (configs.count() == 0) return;
         const idx = configs.getIndexContext(config, .{}) orelse return;
         if (configs.keys()[idx] != config) return;

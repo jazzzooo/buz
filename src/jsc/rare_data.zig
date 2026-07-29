@@ -1,5 +1,7 @@
 const RareData = @This();
 
+io: std.Io,
+
 websocket_deflate: ?*WebSocketDeflate.RareData = null,
 boring_ssl_engine: ?*BoringSSL.ENGINE = null,
 editor_context: EditorContext = EditorContext{},
@@ -50,7 +52,7 @@ ws_client_tls_group: uws.SocketGroup = .{},
 /// Weak digest→`SSL_CTX*` cache. Every JS-thread consumer that turns an
 /// `SSLConfig` into an `SSL_CTX*` goes through here so identical configs
 /// share one CTX (Postgres pool, Valkey, `Bun.connect`, `tls.connect`, …).
-ssl_ctx_cache: api.SSLContextCache = .{},
+ssl_ctx_cache: api.SSLContextCache,
 
 /// `ssl_ctx_cache.getOrCreate(&.{})` — i.e. the default-trust-store client
 /// CTX. Cached separately so the hot `tls:true` / `wss://` path skips even the
@@ -62,14 +64,14 @@ mime_types: ?bun.http.MimeType.Map = null,
 node_fs_stat_watcher_scheduler: ?bun.ptr.RefPtr(StatWatcherScheduler) = null,
 
 listening_sockets_for_watch_mode: std.ArrayListUnmanaged(bun.FD) = .empty,
-listening_sockets_for_watch_mode_lock: bun.Mutex = .{},
+listening_sockets_for_watch_mode_lock: std.Io.Mutex = .init,
 
 fs_watchers_for_isolation: std.ArrayListUnmanaged(*FSWatcher) = .empty,
 stat_watchers_for_isolation: std.ArrayListUnmanaged(*StatWatcher) = .empty,
 
 temp_pipe_read_buffer: ?*PipeReadBuffer = null,
 
-aws_signature_cache: AWSSignatureCache = .{},
+aws_signature_cache: AWSSignatureCache,
 
 s3_default_client: jsc.Strong.Optional = .empty,
 default_csrf_secret: []const u8 = "",
@@ -152,7 +154,7 @@ pub const ProxyEnvStorage = struct {
     /// with the parent's deref → free on the same pointer; (2) the env.map's
     /// backing ArrayHashMap being iterated during clone while the parent's
     /// put() rehashes it.
-    lock: bun.Mutex = .{},
+    lock: std.Io.Mutex = .init,
 
     pub const Slot = struct {
         /// Static-lifetime field name (e.g. "NO_PROXY") — safe to use as
@@ -258,7 +260,12 @@ pub const RefCountedEnvValue = struct {
 pub const AWSSignatureCache = struct {
     cache: bun.StringArrayHashMap([DIGESTED_HMAC_256_LEN]u8) = bun.StringArrayHashMap([DIGESTED_HMAC_256_LEN]u8).empty,
     date: u64 = 0,
-    lock: bun.Mutex = .{},
+    io: std.Io,
+    lock: std.Io.Mutex = .init,
+
+    pub fn init(io: std.Io) AWSSignatureCache {
+        return .{ .io = io };
+    }
 
     pub fn clean(this: *@This()) void {
         for (this.cache.keys()) |cached_key| {
@@ -268,8 +275,8 @@ pub const AWSSignatureCache = struct {
     }
 
     pub fn get(this: *@This(), numeric_day: u64, key: []const u8) ?[]const u8 {
-        this.lock.lock();
-        defer this.lock.unlock();
+        this.lock.lockUncancelable(this.io);
+        defer this.lock.unlock(this.io);
         if (this.date == 0) {
             return null;
         }
@@ -282,8 +289,8 @@ pub const AWSSignatureCache = struct {
     }
 
     pub fn set(this: *@This(), numeric_day: u64, key: []const u8, value: [DIGESTED_HMAC_256_LEN]u8) void {
-        this.lock.lock();
-        defer this.lock.unlock();
+        this.lock.lockUncancelable(this.io);
+        defer this.lock.unlock(this.io);
         if (this.date == 0) {
             this.cache = bun.StringArrayHashMap([DIGESTED_HMAC_256_LEN]u8).empty;
         } else if (this.date != numeric_day) {
@@ -312,22 +319,22 @@ pub fn pipeReadBuffer(this: *RareData) *PipeReadBuffer {
 }
 
 pub fn addListeningSocketForWatchMode(this: *RareData, socket: bun.FD) void {
-    this.listening_sockets_for_watch_mode_lock.lock();
-    defer this.listening_sockets_for_watch_mode_lock.unlock();
+    this.listening_sockets_for_watch_mode_lock.lockUncancelable(this.io);
+    defer this.listening_sockets_for_watch_mode_lock.unlock(this.io);
     this.listening_sockets_for_watch_mode.append(bun.default_allocator, socket) catch {};
 }
 
 pub fn removeListeningSocketForWatchMode(this: *RareData, socket: bun.FD) void {
-    this.listening_sockets_for_watch_mode_lock.lock();
-    defer this.listening_sockets_for_watch_mode_lock.unlock();
+    this.listening_sockets_for_watch_mode_lock.lockUncancelable(this.io);
+    defer this.listening_sockets_for_watch_mode_lock.unlock(this.io);
     if (std.mem.indexOfScalar(bun.FD, this.listening_sockets_for_watch_mode.items, socket)) |i| {
         _ = this.listening_sockets_for_watch_mode.swapRemove(i);
     }
 }
 
 pub fn closeAllListenSocketsForWatchMode(this: *RareData) void {
-    this.listening_sockets_for_watch_mode_lock.lock();
-    defer this.listening_sockets_for_watch_mode_lock.unlock();
+    this.listening_sockets_for_watch_mode_lock.lockUncancelable(this.io);
+    defer this.listening_sockets_for_watch_mode_lock.unlock(this.io);
     for (this.listening_sockets_for_watch_mode.items) |socket| {
         // Prevent TIME_WAIT state
         Syscall.disableLinger(socket);

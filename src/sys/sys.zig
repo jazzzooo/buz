@@ -4715,21 +4715,15 @@ pub fn dlsymWithHandle(comptime Type: type, comptime name: [:0]const u8, comptim
     }
 
     const Wrapper = struct {
-        pub var function: Type = undefined;
-        var failed = false;
-        pub var once = bun.once(loadOnce);
-        fn loadOnce() void {
-            function = bun.cast(Type, dlsymImpl(@call(bun.callmod_inline, handle_getter, .{}), name) orelse {
-                failed = true;
-                return;
-            });
+        fn load() ?Type {
+            const symbol = dlsymImpl(@call(bun.callmod_inline, handle_getter, .{}), name) orelse return null;
+            return bun.cast(Type, symbol);
         }
+
+        var once = bun.threadedOnce(load);
     };
-    Wrapper.once.call(.{});
-    if (Wrapper.failed) {
-        return null;
-    }
-    return Wrapper.function;
+
+    return Wrapper.once.call(.{});
 }
 
 pub const umask = switch (Environment.os) {

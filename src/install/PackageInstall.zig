@@ -727,20 +727,26 @@ pub const PackageInstall = struct {
     fn NewTaskQueue(comptime TaskType: type) type {
         return struct {
             thread_pool: *ThreadPool,
+            io: std.Io,
             errored_task: std.atomic.Value(?*TaskType) = .init(null),
-            wait_group: bun.threading.WaitGroup = .init(),
+            countdown: bun.threading.OneShotCountdown = .init(1),
+            accepting_tasks: bool = true,
 
             pub fn completeOne(this: *@This()) void {
-                this.wait_group.finish();
+                this.countdown.finish(this.io);
             }
 
             pub fn push(this: *@This(), task: *TaskType) void {
-                this.wait_group.addOne();
+                this.countdown.addOne();
                 this.thread_pool.schedule(bun.ThreadPool.Batch.from(&task.task));
             }
 
             pub fn wait(this: *@This()) void {
-                this.wait_group.wait();
+                if (this.accepting_tasks) {
+                    this.accepting_tasks = false;
+                    this.countdown.finish(this.io);
+                }
+                this.countdown.wait(this.io);
             }
         };
     }
@@ -885,7 +891,7 @@ pub const PackageInstall = struct {
                 thread_pool: if (Environment.isWindows) *ThreadPool else void,
             ) !u32 {
                 var real_file_count: u32 = 0;
-                var queue = if (Environment.isWindows) HardLinkWindowsInstallTask.Queue{ .thread_pool = thread_pool };
+                var queue = if (Environment.isWindows) HardLinkWindowsInstallTask.Queue{ .thread_pool = thread_pool, .io = io };
                 defer if (comptime Environment.isWindows) {
                     queue.wait();
                     if (queue.errored_task.load(.monotonic)) |task| task.deinit();

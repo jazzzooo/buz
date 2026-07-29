@@ -897,7 +897,7 @@ pub const AsyncReaddirRecursiveTask = struct {
     root_path: PathString = PathString.empty,
 
     pending_err: ?Syscall.Error = null,
-    pending_err_mutex: bun.Mutex = .{},
+    pending_err_mutex: std.Io.Mutex = .init,
 
     pub const new = bun.TrivialNew(@This());
 
@@ -1033,8 +1033,9 @@ pub const AsyncReaddirRecursiveTask = struct {
                         }
 
                         {
-                            this.pending_err_mutex.lock();
-                            defer this.pending_err_mutex.unlock();
+                            const io = this.globalObject.bunVM().io;
+                            this.pending_err_mutex.lockUncancelable(io);
+                            defer this.pending_err_mutex.unlock(io);
                             if (this.pending_err == null) {
                                 const err_path = if (err.path.len > 0) err.path else this.args.path.slice();
                                 this.pending_err = err.withPath(bun.default_allocator.dupe(u8, err_path) catch "");

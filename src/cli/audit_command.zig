@@ -341,7 +341,7 @@ fn collectPackagesForAudit(allocator: std.mem.Allocator, pm: *PackageManager, pr
 }
 
 fn sendAuditRequest(allocator: std.mem.Allocator, pm: *PackageManager, body: []const u8) bun.OOM![]u8 {
-    libdeflate.load();
+    libdeflate.load(pm.io);
     var compressor = libdeflate.Compressor.alloc(6) orelse return error.OutOfMemory;
     defer compressor.deinit();
 
@@ -392,7 +392,7 @@ fn sendAuditRequest(allocator: std.mem.Allocator, pm: *PackageManager, body: []c
         null,
         .follow,
     );
-    const res = req.sendSync() catch |err| {
+    const res = req.sendSync(pm.io) catch |err| {
         Output.err(err, "audit request failed", .{});
         Global.crash();
     };

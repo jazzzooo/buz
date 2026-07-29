@@ -74,7 +74,7 @@ pub fn view(allocator: std.mem.Allocator, manager: *PackageManager, spec_: strin
     );
     req.client.flags.reject_unauthorized = manager.tlsRejectUnauthorized();
 
-    const res = req.sendSync() catch |err| {
+    const res = req.sendSync(manager.io) catch |err| {
         Output.err(err, "view request failed to send", .{});
         Global.crash();
     };

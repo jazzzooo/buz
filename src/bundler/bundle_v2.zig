@@ -2233,8 +2233,8 @@ pub const BundleV2 = struct {
 
         if (this.graph.pool.workers_assignments.count() > 0) {
             {
-                this.graph.pool.workers_assignments_lock.lock();
-                defer this.graph.pool.workers_assignments_lock.unlock();
+                this.graph.pool.workers_assignments_lock.lockUncancelable(this.transpiler.io);
+                defer this.graph.pool.workers_assignments_lock.unlock(this.transpiler.io);
                 for (this.graph.pool.workers_assignments.values()) |worker| {
                     worker.deinitSoon();
                 }

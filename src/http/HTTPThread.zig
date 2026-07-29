@@ -13,6 +13,7 @@ const ssl_context_cache_max_size = 60;
 const ssl_context_cache_ttl_ns = 30 * std.time.ns_per_min;
 var custom_ssl_context_map = std.array_hash_map.Auto(*SSLConfig, SslContextCacheEntry).empty;
 
+io: std.Io,
 loop: *jsc.MiniEventLoop,
 http_context: NewHTTPContext(false),
 https_context: NewHTTPContext(true),
@@ -35,9 +36,9 @@ queued_shutdowns: std.ArrayListUnmanaged(ShutdownMessage) = .empty,
 queued_writes: std.ArrayListUnmanaged(WriteMessage) = .empty,
 queued_response_body_drains: std.ArrayListUnmanaged(DrainMessage) = .empty,
 
-queued_shutdowns_lock: bun.Mutex = .{},
-queued_writes_lock: bun.Mutex = .{},
-queued_response_body_drains_lock: bun.Mutex = .{},
+queued_shutdowns_lock: std.Io.Mutex = .init,
+queued_writes_lock: std.Io.Mutex = .init,
+queued_response_body_drains_lock: std.Io.Mutex = .init,
 
 queued_threadlocal_proxy_derefs: std.ArrayListUnmanaged(*ProxyTunnel) = .empty,
 
@@ -185,8 +186,9 @@ pub const InitOpts = struct {
     onInitError: *const fn (err: InitError, opts: InitOpts) noreturn = &onInitErrorNoop,
 };
 
-fn initOnce(opts: *const InitOpts) void {
+fn initOnce(io: std.Io, opts: *const InitOpts) void {
     bun.http.http_thread = .{
+        .io = io,
         .loop = undefined,
         .http_context = .{
             .ref_count = .init(),
@@ -198,7 +200,7 @@ fn initOnce(opts: *const InitOpts) void {
         },
         .timer = SystemTimer.start() catch unreachable,
     };
-    bun.libdeflate.load();
+    bun.libdeflate.load(io);
     const thread = std.Thread.spawn(
         .{
             .stack_size = bun.default_thread_stack_size,
@@ -210,8 +212,8 @@ fn initOnce(opts: *const InitOpts) void {
 }
 var init_once = bun.once(initOnce);
 
-pub fn init(opts: *const InitOpts) void {
-    init_once.call(.{opts});
+pub fn init(io: std.Io, opts: *const InitOpts) void {
+    init_once.call(io, .{ io, opts });
 }
 
 pub fn onStart(opts: InitOpts) void {
@@ -231,7 +233,7 @@ pub fn onStart(opts: InitOpts) void {
     const raw: u64 = @min(bun.env_var.BUN_CONFIG_HTTP_IDLE_TIMEOUT.get(), 239 * 60);
     bun.http.idle_timeout_seconds = @intCast(if (raw > 240) ((raw + 59) / 60) * 60 else raw);
 
-    const loop = bun.jsc.MiniEventLoop.initGlobal(null, null);
+    const loop = bun.jsc.MiniEventLoop.initGlobal(bun.http.http_thread.io, null, null);
 
     if (Environment.isWindows) {
         if (bun.env_var.SYSTEMROOT.get() == null) {
@@ -376,8 +378,8 @@ fn drainQueuedShutdowns(this: *@This()) void {
         // socket.close() can potentially be slow
         // Let's not block other threads while this runs.
         var queued_shutdowns = brk: {
-            this.queued_shutdowns_lock.lock();
-            defer this.queued_shutdowns_lock.unlock();
+            this.queued_shutdowns_lock.lockUncancelable(this.io);
+            defer this.queued_shutdowns_lock.unlock(this.io);
             const shutdowns = this.queued_shutdowns;
             this.queued_shutdowns = .empty;
             break :brk shutdowns;
@@ -433,8 +435,8 @@ fn drainQueuedShutdowns(this: *@This()) void {
 fn drainQueuedWrites(this: *@This()) void {
     while (true) {
         var queued_writes = brk: {
-            this.queued_writes_lock.lock();
-            defer this.queued_writes_lock.unlock();
+            this.queued_writes_lock.lockUncancelable(this.io);
+            defer this.queued_writes_lock.unlock(this.io);
             const writes = this.queued_writes;
             this.queued_writes = .empty;
             break :brk writes;
@@ -481,8 +483,8 @@ fn drainQueuedHTTPResponseBodyDrains(this: *@This()) void {
         // socket.close() can potentially be slow
         // Let's not block other threads while this runs.
         var queued_response_body_drains = brk: {
-            this.queued_response_body_drains_lock.lock();
-            defer this.queued_response_body_drains_lock.unlock();
+            this.queued_response_body_drains_lock.lockUncancelable(this.io);
+            defer this.queued_response_body_drains_lock.unlock(this.io);
             const drains = this.queued_response_body_drains;
             this.queued_response_body_drains = .empty;
             break :brk drains;
@@ -518,7 +520,7 @@ fn drainEvents(this: *@This()) void {
     this.drainQueuedHTTPResponseBodyDrains();
     this.drainQueuedWrites();
     this.drainQueuedShutdowns();
-    bun.http.H3.PendingConnect.drainResolved();
+    bun.http.H3.PendingConnect.drainResolved(this.io);
 
     for (this.queued_threadlocal_proxy_derefs.items) |http| {
         http.deref();
@@ -656,8 +658,8 @@ fn processEvents(this: *@This()) noreturn {
 
 pub fn scheduleResponseBodyDrain(this: *@This(), async_http_id: u32) void {
     {
-        this.queued_response_body_drains_lock.lock();
-        defer this.queued_response_body_drains_lock.unlock();
+        this.queued_response_body_drains_lock.lockUncancelable(this.io);
+        defer this.queued_response_body_drains_lock.unlock(this.io);
         this.queued_response_body_drains.append(bun.default_allocator, .{
             .async_http_id = async_http_id,
         }) catch |err| bun.handleOom(err);
@@ -669,8 +671,8 @@ pub fn scheduleResponseBodyDrain(this: *@This(), async_http_id: u32) void {
 pub fn scheduleShutdown(this: *@This(), http: *AsyncHTTP) void {
     threadlog("scheduleShutdown {d}", .{http.async_http_id});
     {
-        this.queued_shutdowns_lock.lock();
-        defer this.queued_shutdowns_lock.unlock();
+        this.queued_shutdowns_lock.lockUncancelable(this.io);
+        defer this.queued_shutdowns_lock.unlock(this.io);
         this.queued_shutdowns.append(bun.default_allocator, .{
             .async_http_id = http.async_http_id,
         }) catch |err| bun.handleOom(err);
@@ -681,8 +683,8 @@ pub fn scheduleShutdown(this: *@This(), http: *AsyncHTTP) void {
 
 pub fn scheduleRequestWrite(this: *@This(), http: *AsyncHTTP, messageType: WriteMessage.Type) void {
     {
-        this.queued_writes_lock.lock();
-        defer this.queued_writes_lock.unlock();
+        this.queued_writes_lock.lockUncancelable(this.io);
+        defer this.queued_writes_lock.unlock(this.io);
         this.queued_writes.append(bun.default_allocator, .{
             .async_http_id = http.async_http_id,
             .message_type = messageType,

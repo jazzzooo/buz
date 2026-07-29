@@ -180,7 +180,7 @@ pub const ReadFile = struct {
         this.close_after_io = true;
         @atomicStore(@TypeOf(this.io_request.callback), &this.io_request.callback, &onRequestReadable, .seq_cst);
         if (!this.io_request.scheduled)
-            io.Loop.get().schedule(&this.io_request);
+            io.Loop.get(bun.fs.FileSystem.instance.io).schedule(&this.io_request);
     }
 
     fn remainingBuffer(this: *const ReadFile, stack_buffer: []u8) []u8 {

@@ -248,58 +248,83 @@ pub const GenerateHeader = struct {
         var platform_: analytics.Platform = undefined;
         pub const Platform = analytics.Platform;
         var linux_kernel_version: Semver.Version = undefined;
-        var run_once = bun.once(struct {
-            fn run() void {
-                if (comptime Environment.isMac) {
-                    platform_ = forMac();
-                } else if (comptime Environment.isLinux) {
-                    platform_ = forLinux();
+        const InitState = enum(u8) { uninitialized, initializing, initialized };
+        var init_state = std.atomic.Value(InitState).init(.uninitialized);
 
-                    const release = std.mem.sliceTo(&linux_os_name.release, 0);
-                    const sliced_string = Semver.SlicedString.init(release, release);
-                    const result = Semver.Version.parse(sliced_string);
-                    linux_kernel_version = result.version.min();
-                } else if (comptime Environment.isFreeBSD) {
-                    platform_ = forFreeBSD();
-                } else if (Environment.isWindows) {
-                    platform_ = Platform{
-                        .os = analytics.OperatingSystem.windows,
-                        .version = &[_]u8{},
-                        .arch = platform_arch,
-                    };
-                }
+        fn initialize() void {
+            if (comptime Environment.isMac) {
+                platform_ = forMac();
+            } else if (comptime Environment.isLinux) {
+                platform_ = forLinux();
+
+                const release = std.mem.sliceTo(&linux_os_name.release, 0);
+                const sliced_string = Semver.SlicedString.init(release, release);
+                const result = Semver.Version.parse(sliced_string);
+                linux_kernel_version = result.version.min();
+            } else if (comptime Environment.isFreeBSD) {
+                platform_ = forFreeBSD();
+            } else if (Environment.isWindows) {
+                platform_ = Platform{
+                    .os = analytics.OperatingSystem.windows,
+                    .version = &[_]u8{},
+                    .arch = platform_arch,
+                };
             }
-        }.run);
+        }
+
+        fn fallbackPlatform() analytics.Platform {
+            return .{
+                .os = switch (Environment.os) {
+                    .mac => .macos,
+                    .linux => if (Environment.isAndroid) .android else .linux,
+                    .windows => .windows,
+                    .freebsd => .freebsd,
+                    .wasm => ._none,
+                },
+                .version = &.{},
+                .arch = platform_arch,
+            };
+        }
+
+        fn ensureInitialized() bool {
+            switch (init_state.load(.acquire)) {
+                .initialized => return true,
+                .initializing => return false,
+                .uninitialized => {},
+            }
+
+            if (init_state.cmpxchgStrong(.uninitialized, .initializing, .acq_rel, .acquire) != null)
+                return init_state.load(.acquire) == .initialized;
+
+            initialize();
+            init_state.store(.initialized, .release);
+            return true;
+        }
 
         pub fn forOS() analytics.Platform {
-            run_once.call(.{});
-            return platform_;
+            return if (ensureInitialized()) platform_ else fallbackPlatform();
         }
 
         // On macOS 13, tests that use sendmsg_x or recvmsg_x hang.
-        var use_msgx_on_macos_14_or_later: bool = undefined;
-        var detectUseMsgXOnMacOS14OrLater_once = bun.once(detectUseMsgXOnMacOS14OrLater);
-        fn detectUseMsgXOnMacOS14OrLater() void {
+        fn useMsgXOnMacOS14OrLater() bool {
             const version = Semver.Version.parseUTF8(forOS().version);
-            use_msgx_on_macos_14_or_later = version.valid and version.version.max().major >= 14;
+            return version.valid and version.version.max().major >= 14;
         }
+
         pub export fn Bun__doesMacOSVersionSupportSendRecvMsgX() i32 {
             if (comptime !Environment.isMac) {
                 // this should not be used on non-mac platforms.
                 return 0;
             }
 
-            detectUseMsgXOnMacOS14OrLater_once.call(.{});
-            return @intFromBool(use_msgx_on_macos_14_or_later);
+            return @intFromBool(useMsgXOnMacOS14OrLater());
         }
 
         pub fn kernelVersion() Semver.Version {
             if (comptime !Environment.isLinux) {
                 @compileError("This function is only implemented on Linux");
             }
-            _ = forOS();
-
-            return linux_kernel_version;
+            return if (ensureInitialized()) linux_kernel_version else .{};
         }
 
         export fn Bun__isEpollPwait2SupportedOnLinuxKernel() i32 {

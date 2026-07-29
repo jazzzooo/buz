@@ -1,5 +1,5 @@
 pub const Installer = struct {
-    trusted_dependencies_mutex: Mutex,
+    trusted_dependencies_mutex: std.Io.Mutex,
     // this is not const for `lockfile.trusted_dependencies`
     lockfile: *Lockfile,
 
@@ -1183,8 +1183,8 @@ pub const Installer = struct {
                             if (is_trusted_through_update_request) {
                                 const trusted_dep_to_add = try installer.manager.allocator.dupe(u8, dep.name.slice(string_buf));
 
-                                installer.trusted_dependencies_mutex.lock();
-                                defer installer.trusted_dependencies_mutex.unlock();
+                                installer.trusted_dependencies_mutex.lockUncancelable(installer.manager.io);
+                                defer installer.trusted_dependencies_mutex.unlock(installer.manager.io);
 
                                 try installer.manager.trusted_deps_to_add_to_package_json.append(
                                     installer.manager.allocator,
@@ -2042,7 +2042,6 @@ const strings = bun.strings;
 const sys = bun.sys;
 const Bitset = std.bit_set.Dynamic;
 const Command = bun.cli.Command;
-const Mutex = bun.threading.Mutex;
 const String = bun.Semver.String;
 
 const install = bun.install;

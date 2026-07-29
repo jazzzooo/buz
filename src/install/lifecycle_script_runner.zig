@@ -384,6 +384,7 @@ pub const LifecycleScriptSubprocess = struct {
                 if (maybe_duration) |nanos| {
                     if (nanos > min_milliseconds_to_log * std.time.ns_per_ms) {
                         this.manager.lifecycle_script_time_log.appendConcurrent(
+                            this.manager.io,
                             this.manager.lockfile.allocator,
                             .{
                                 .package_name = this.package_name,

@@ -11,7 +11,7 @@ pub const FSWatcher = struct {
     ctx: *VirtualMachine,
     verbose: bool = false,
 
-    mutex: Mutex,
+    mutex: std.Io.Mutex,
     signal: ?*webcore.AbortSignal,
     persistent: bool,
     path_watcher: ?*PathWatcher.PathWatcher,
@@ -561,8 +561,8 @@ pub const FSWatcher = struct {
 
     // this can be called from Watcher Thread or JS Context Thread
     pub fn refTask(this: *FSWatcher) bool {
-        this.mutex.lock();
-        defer this.mutex.unlock();
+        this.mutex.lockUncancelable(this.ctx.io);
+        defer this.mutex.unlock(this.ctx.io);
         if (this.closed) return false;
         _ = this.pending_activity_count.fetchAdd(1, .monotonic);
 
@@ -574,19 +574,19 @@ pub const FSWatcher = struct {
     }
 
     pub fn unrefTask(this: *FSWatcher) void {
-        this.mutex.lock();
-        defer this.mutex.unlock();
+        this.mutex.lockUncancelable(this.ctx.io);
+        defer this.mutex.unlock(this.ctx.io);
         // JSC eventually will free it
         const prev = this.pending_activity_count.fetchSub(1, .monotonic);
         bun.debugAssert(prev > 0);
     }
 
     pub fn close(this: *FSWatcher) void {
-        this.mutex.lock();
+        this.mutex.lockUncancelable(this.ctx.io);
         if (!this.closed) {
             this.closed = true;
             const js_this = this.js_this;
-            this.mutex.unlock();
+            this.mutex.unlock(this.ctx.io);
             this.detach();
 
             if (js_this != .zero) {
@@ -603,7 +603,7 @@ pub const FSWatcher = struct {
 
             this.unrefTask();
         } else {
-            this.mutex.unlock();
+            this.mutex.unlock(this.ctx.io);
         }
     }
 
@@ -661,7 +661,7 @@ pub const FSWatcher = struct {
                 .ctx = undefined,
                 .count = 0,
             },
-            .mutex = .{},
+            .mutex = .init,
             .signal = if (args.signal) |s| s.ref() else null,
             .persistent = args.persistent,
             .path_watcher = null,
@@ -701,7 +701,6 @@ const std = @import("std");
 const bun = @import("bun");
 const Async = bun.Async;
 const Environment = bun.Environment;
-const Mutex = bun.Mutex;
 const Output = bun.Output;
 const webcore = bun.webcore;
 

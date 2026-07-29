@@ -53,7 +53,7 @@ pub const FetchTasklet = struct {
     is_waiting_body: bool = false,
     is_waiting_abort: bool = false,
     is_waiting_request_stream_start: bool = false,
-    mutex: Mutex,
+    mutex: std.Io.Mutex,
 
     tracker: jsc.Debugger.AsyncTaskTracker,
 
@@ -452,14 +452,14 @@ pub const FetchTasklet = struct {
     pub fn onProgressUpdate(this: *FetchTasklet) bun.JSTerminated!void {
         jsc.markBinding(@src());
         log("onProgressUpdate", .{});
-        this.mutex.lock();
+        this.mutex.lockUncancelable(this.javascript_vm.io);
         this.has_schedule_callback.store(false, .monotonic);
         const is_done = !this.result.has_more;
 
         const vm = this.javascript_vm;
         // vm is shutting down we cannot touch JS
         if (vm.isShuttingDown()) {
-            this.mutex.unlock();
+            this.mutex.unlock(this.javascript_vm.io);
             if (is_done) {
                 this.deref();
             }
@@ -468,7 +468,7 @@ pub const FetchTasklet = struct {
 
         const globalThis = this.global_this;
         defer {
-            this.mutex.unlock();
+            this.mutex.unlock(this.javascript_vm.io);
             // if we are not done we wait until the next call
             if (is_done) {
                 var poll_ref = this.poll_ref;
@@ -880,8 +880,8 @@ pub const FetchTasklet = struct {
             bun.http.http_thread.scheduleResponseBodyDrain(http_.async_http_id);
         }
 
-        this.mutex.lock();
-        defer this.mutex.unlock();
+        this.mutex.lockUncancelable(this.javascript_vm.io);
+        defer this.mutex.unlock(this.javascript_vm.io);
         const size_hint = this.getSizeHint();
 
         var scheduled_response_buffer = this.scheduled_response_buffer.list;
@@ -1067,7 +1067,7 @@ pub const FetchTasklet = struct {
         var fetch_tasklet = try allocator.create(FetchTasklet);
 
         fetch_tasklet.* = .{
-            .mutex = .{},
+            .mutex = .init,
             .scheduled_response_buffer = .{
                 .allocator = bun.default_allocator,
                 .list = .{
@@ -1181,7 +1181,7 @@ pub const FetchTasklet = struct {
         fetch_tasklet.http.?.client.flags.force_http1 = fetch_options.force_http1;
         fetch_tasklet.is_waiting_request_stream_start = isStream;
         if (isStream) {
-            const buffer = http.ThreadSafeStreamBuffer.new(.{});
+            const buffer = http.ThreadSafeStreamBuffer.new(.{ .io = jsc_vm.io });
             buffer.setDrainCallback(FetchTasklet, FetchTasklet.onWriteRequestDataDrain, fetch_tasklet);
             fetch_tasklet.request_body_streaming_buffer = buffer;
             fetch_tasklet.http.?.request_body = .{
@@ -1378,7 +1378,7 @@ pub const FetchTasklet = struct {
         fetch_options: *const FetchOptions,
         promise: jsc.JSPromise.Strong,
     ) !*FetchTasklet {
-        http.HTTPThread.init(&.{});
+        http.HTTPThread.init(global.bunVM().io, &.{});
         var node = try get(
             allocator,
             global,
@@ -1405,9 +1405,9 @@ pub const FetchTasklet = struct {
         // this is a atomic operation and will enqueue a task to deinit on the main thread
         defer if (is_done) task.derefFromThread();
 
-        task.mutex.lock();
+        task.mutex.lockUncancelable(task.javascript_vm.io);
         // we need to unlock before task.deref();
-        defer task.mutex.unlock();
+        defer task.mutex.unlock(task.javascript_vm.io);
         task.http.?.* = async_http.*;
         task.http.?.response_buffer = async_http.response_buffer;
 
@@ -1487,7 +1487,6 @@ const ZigURL = @import("../../../url/url.zig").URL;
 const bun = @import("bun");
 const Async = bun.Async;
 const MutableString = bun.MutableString;
-const Mutex = bun.Mutex;
 const Output = bun.Output;
 const BoringSSL = bun.BoringSSL.c;
 const FetchHeaders = bun.webcore.FetchHeaders;

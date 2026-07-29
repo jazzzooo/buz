@@ -113,7 +113,7 @@ pub fn filter(
     const bundle = BundleV2.scanModuleGraphFromCLI(
         &scan_transpiler,
         allocator,
-        jsc.AnyEventLoop.init(allocator),
+        jsc.AnyEventLoop.init(ctx.io, allocator),
         entry_points,
     ) catch |err| {
         // Fall back to running every test rather than aborting the run.
@@ -269,7 +269,7 @@ pub fn initWatchTrigger(io: std.Io, allocator: std.mem.Allocator) void {
     else brk: {
         var rng = std.Random.DefaultPrng.init(@as(u64, @bitCast(bun.realMilliseconds(io))) ^
             @as(u64, @intCast(std.c.getpid())));
-        const tmpdir = bun.fs.FileSystem.RealFS.tmpdirPath();
+        const tmpdir = bun.fs.FileSystem.RealFS.tmpdirPath(io);
         const fresh = bun.handleOom(std.fmt.allocPrintSentinel(
             allocator,
             "{s}{c}.bun-test-changed-{x}.trigger",

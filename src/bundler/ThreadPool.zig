@@ -8,7 +8,7 @@ pub const ThreadPool = struct {
     worker_pool: *ThreadPoolLib,
     worker_pool_is_owned: bool = false,
     workers_assignments: std.array_hash_map.Auto(std.Thread.Id, *Worker) = std.array_hash_map.Auto(std.Thread.Id, *Worker).empty,
-    workers_assignments_lock: bun.Mutex = .{},
+    workers_assignments_lock: std.Io.Mutex = .init,
     v2: *BundleV2,
 
     const debug = Output.scoped(.ThreadPool, .visible);
@@ -16,12 +16,12 @@ pub const ThreadPool = struct {
     const IOThreadPool = struct {
         var thread_pool: ThreadPoolLib = undefined;
         // Protects initialization and deinitialization of the IO thread pool.
-        var mutex = bun.threading.Mutex{};
+        var mutex: std.Io.Mutex = .init;
         // 0 means not initialized. 1 means initialized but not used.
         // N > 1 means N-1 `ThreadPool`s are using the IO thread pool.
         var ref_count = std.atomic.Value(usize).init(0);
 
-        pub fn acquire() *ThreadPoolLib {
+        pub fn acquire(io: std.Io) *ThreadPoolLib {
             var count = ref_count.load(.acquire);
             while (true) {
                 if (count == 0) break;
@@ -36,13 +36,14 @@ pub const ThreadPool = struct {
                 ) orelse return &thread_pool;
             }
 
-            mutex.lock();
-            defer mutex.unlock();
+            mutex.lockUncancelable(io);
+            defer mutex.unlock(io);
 
             // .monotonic because the store we care about (the one that stores 1 to
             // indicate the thread pool is initialized) is guarded by the mutex.
             if (ref_count.load(.monotonic) != 0) return &thread_pool;
             thread_pool = .init(.{
+                .io = io,
                 .max_threads = @max(@min(bun.getThreadCount(), 4), 2),
                 // Use a much smaller stack size for the IO thread pool
                 .stack_size = 512 * 1024,
@@ -56,34 +57,13 @@ pub const ThreadPool = struct {
             const old = ref_count.fetchSub(1, .release);
             bun.assertf(old > 1, "IOThreadPool: too many calls to release()", .{});
         }
-
-        pub fn shutdown() bool {
-            // .acquire instead of .acq_rel is okay because we only need to ensure that other
-            // threads are done using the IO pool if we read 1 from the ref count.
-            //
-            // .monotonic is okay because this function is only guaranteed to succeed when we
-            // can ensure that no `ThreadPool`s exist.
-            if (ref_count.cmpxchgStrong(1, 0, .acquire, .monotonic) != null) {
-                // At least one `ThreadPool` still exists.
-                return false;
-            }
-
-            mutex.lock();
-            defer mutex.unlock();
-
-            // .monotonic is okay because the only store that could happen at this point
-            // is guarded by the mutex.
-            if (ref_count.load(.monotonic) != 0) return false;
-            thread_pool.deinit();
-            thread_pool = undefined;
-        }
     };
 
     pub fn init(v2: *BundleV2, worker_pool: ?*ThreadPoolLib) !ThreadPool {
         const pool = worker_pool orelse blk: {
             const cpu_count = bun.getThreadCount();
             const pool = try v2.allocator().create(ThreadPoolLib);
-            pool.* = .init(.{ .max_threads = cpu_count });
+            pool.* = .init(.{ .io = v2.transpiler.io, .max_threads = cpu_count });
             debug("{d} workers", .{cpu_count});
             break :blk pool;
         };
@@ -96,7 +76,7 @@ pub const ThreadPool = struct {
     pub fn initWithPool(v2: *BundleV2, worker_pool: *ThreadPoolLib) ThreadPool {
         return .{
             .worker_pool = worker_pool,
-            .io_pool = if (usesIOPool()) IOThreadPool.acquire() else undefined,
+            .io_pool = if (usesIOPool()) IOThreadPool.acquire(v2.transpiler.io) else undefined,
             .v2 = v2,
         };
     }
@@ -174,8 +154,8 @@ pub const ThreadPool = struct {
     pub fn getWorker(this: *ThreadPool, id: std.Thread.Id) *Worker {
         var worker: *Worker = undefined;
         {
-            this.workers_assignments_lock.lock();
-            defer this.workers_assignments_lock.unlock();
+            this.workers_assignments_lock.lockUncancelable(this.v2.transpiler.io);
+            defer this.workers_assignments_lock.unlock(this.v2.transpiler.io);
             const entry = this.workers_assignments.getOrPut(bun.default_allocator, id) catch unreachable;
             if (entry.found_existing) {
                 return entry.value_ptr.*;

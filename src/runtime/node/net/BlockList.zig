@@ -9,7 +9,7 @@ pub const toJS = js.toJS;
 ref_count: RefCount = .init(),
 globalThis: *jsc.JSGlobalObject,
 da_rules: std.array_list.Managed(Rule),
-mutex: bun.Mutex = .{},
+mutex: std.Io.Mutex = .init,
 
 /// We cannot lock/unlock a mutex
 estimated_size: std.atomic.Value(u32) = .init(0),
@@ -53,8 +53,8 @@ pub fn addAddress(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *j
         break :blk (try SocketAddress.initFromAddrFamily(globalThis, address_js, family_js))._addr;
     };
 
-    this.mutex.lock();
-    defer this.mutex.unlock();
+    this.mutex.lockUncancelable(this.globalThis.bunVM().io);
+    defer this.mutex.unlock(this.globalThis.bunVM().io);
     try this.da_rules.insert(0, .{ .addr = address });
     _ = this.estimated_size.fetchAdd(@sizeOf(Rule), .monotonic);
     return .js_undefined;
@@ -79,8 +79,8 @@ pub fn addRange(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc
             return globalThis.throwInvalidArgumentValueCustom("start", start_js, "must come before end");
         }
     }
-    this.mutex.lock();
-    defer this.mutex.unlock();
+    this.mutex.lockUncancelable(this.globalThis.bunVM().io);
+    defer this.mutex.unlock(this.globalThis.bunVM().io);
     try this.da_rules.insert(0, .{ .range = .{ .start = start, .end = end } });
     _ = this.estimated_size.fetchAdd(@sizeOf(Rule), .monotonic);
     return .js_undefined;
@@ -101,8 +101,8 @@ pub fn addSubnet(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *js
         std.posix.AF.INET6 => prefix = @intCast(try validators.validateInt32(globalThis, prefix_js, "prefix", .{}, 0, 128)),
         else => {},
     }
-    this.mutex.lock();
-    defer this.mutex.unlock();
+    this.mutex.lockUncancelable(this.globalThis.bunVM().io);
+    defer this.mutex.unlock(this.globalThis.bunVM().io);
     try this.da_rules.insert(0, .{ .subnet = .{ .network = network, .prefix = prefix } });
     _ = this.estimated_size.fetchAdd(@sizeOf(Rule), .monotonic);
     return .js_undefined;
@@ -121,8 +121,8 @@ pub fn check(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Ca
             return .false;
         })._addr;
     });
-    this.mutex.lock();
-    defer this.mutex.unlock();
+    this.mutex.lockUncancelable(this.globalThis.bunVM().io);
+    defer this.mutex.unlock(this.globalThis.bunVM().io);
     for (this.da_rules.items) |*item| {
         switch (item.*) {
             .addr => |*a| {
@@ -164,8 +164,8 @@ pub fn rules(this: *@This(), globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JS
     // GC must be able to visit
     var array = try jsc.JSArray.createEmpty(globalThis, 0);
 
-    this.mutex.lock();
-    defer this.mutex.unlock();
+    this.mutex.lockUncancelable(this.globalThis.bunVM().io);
+    defer this.mutex.unlock(this.globalThis.bunVM().io);
     for (this.da_rules.items) |*rule| {
         switch (rule.*) {
             .addr => |*a| {
@@ -187,9 +187,8 @@ pub fn rules(this: *@This(), globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JS
 }
 
 pub fn onStructuredCloneSerialize(this: *@This(), globalThis: *jsc.JSGlobalObject, ctx: *anyopaque, writeBytes: *const fn (*anyopaque, ptr: [*]const u8, len: u32) callconv(jsc.conv) void) void {
-    _ = globalThis;
-    this.mutex.lock();
-    defer this.mutex.unlock();
+    this.mutex.lockUncancelable(globalThis.bunVM().io);
+    defer this.mutex.unlock(globalThis.bunVM().io);
     this.ref();
     var writer: StructuredCloneWriter = .{ .ctx = ctx, .impl = writeBytes };
     writer.interface.writeInt(usize, @intFromPtr(this), .little) catch unreachable;

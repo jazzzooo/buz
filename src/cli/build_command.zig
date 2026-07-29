@@ -339,7 +339,7 @@ pub const BuildCommand = struct {
             const build_result = BundleV2.generateFromCLI(
                 &this_transpiler,
                 allocator,
-                bun.jsc.AnyEventLoop.init(ctx.allocator),
+                bun.jsc.AnyEventLoop.init(ctx.io, ctx.allocator),
                 ctx.debug.hot_reload == .watch,
                 &reachable_file_count,
                 &minify_duration,

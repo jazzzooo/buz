@@ -441,7 +441,7 @@ pub fn executeSimpleS3Request(
         },
     );
     // queue http request
-    bun.http.HTTPThread.init(&.{});
+    bun.http.HTTPThread.init(task.vm.io, &.{});
     var batch = bun.ThreadPool.Batch{};
     task.http.schedule(bun.default_allocator, &batch);
     bun.http.http_thread.schedule(batch);

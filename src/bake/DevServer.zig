@@ -309,7 +309,7 @@ pub fn init(options: Options) bun.JSOOM!*DevServer {
     const separate_ssr_graph = if (options.framework.server_components) |sc| sc.separate_ssr_graph else false;
 
     const dev = bun.new(DevServer, .{
-        .allocation_scope = .initDefault(),
+        .allocation_scope = .initDefault(options.vm.io),
         .root = options.root,
         .vm = options.vm,
         .server = null,
@@ -377,7 +377,7 @@ pub fn init(options: Options) bun.JSOOM!*DevServer {
     defer dev.graph_safety_lock.unlock();
 
     const generic_action = "while initializing development server";
-    const fs = bun.fs.FileSystem.init(options.root) catch |err|
+    const fs = bun.fs.FileSystem.init(dev.vm.io, options.root) catch |err|
         return global.throwError(err, generic_action);
 
     dev.bun_watcher = Watcher.init(DevServer, dev, fs, bun.default_allocator) catch |err|
@@ -558,7 +558,7 @@ pub fn init(options: Options) bun.JSOOM!*DevServer {
     try dev.scanInitialRoutes();
 
     if (bun.FeatureFlags.bake_debugging_features and dev.has_pre_crash_handler)
-        try bun.crash_handler.appendPreCrashHandler(DevServer, dev, dumpStateDueToCrash);
+        try bun.crash_handler.appendPreCrashHandler(dev.vm.io, DevServer, dev, dumpStateDueToCrash);
 
     bun.assert(dev.magic == .valid);
 
@@ -628,7 +628,7 @@ pub fn deinit(dev: *DevServer) void {
         .server_fetch_function_callback = dev.server_fetch_function_callback.deinit(),
         .server_register_update_callback = dev.server_register_update_callback.deinit(),
         .has_pre_crash_handler = if (dev.has_pre_crash_handler)
-            bun.crash_handler.removePreCrashHandler(dev),
+            bun.crash_handler.removePreCrashHandler(dev.vm.io, dev),
         .router = {
             dev.router.deinit(alloc);
         },
@@ -3056,7 +3056,7 @@ fn startNextBundleIfPresent(dev: *DevServer) void {
                 current.processFileList(dev, &entry_points, temp_alloc);
                 current = dev.watcher_atomics.recycleEventFromDevServer(current) orelse break;
                 if (comptime Environment.isDebug) {
-                    assert(current.debug_mutex.tryLock());
+                    assert(current.debug_owned.cmpxchgStrong(false, true, .acquire, .monotonic) == null);
                 }
             }
 

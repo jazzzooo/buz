@@ -1262,7 +1262,7 @@ fn start_(this: *HTTPClient, comptime is_ssl: bool) void {
         // the cache for the new origin.
         if (!this.flags.force_http3 and this.canTryH3AltSvc()) {
             if (H3.AltSvc.lookup(this.url.hostname, this.url.getPortAuto())) |alt_port| {
-                if (H3.ClientContext.getOrCreate(http_thread.loop.loop)) |ctx| {
+                if (H3.ClientContext.getOrCreate(http_thread.io, http_thread.loop.loop)) |ctx| {
                     if (!ctx.connect(this, this.url.hostname, alt_port)) {
                         this.fail(error.ConnectionRefused);
                     }
@@ -1282,7 +1282,7 @@ fn start_(this: *HTTPClient, comptime is_ssl: bool) void {
             this.fail(error.HTTP3Unsupported);
             return;
         }
-        const ctx = H3.ClientContext.getOrCreate(http_thread.loop.loop) orelse {
+        const ctx = H3.ClientContext.getOrCreate(http_thread.io, http_thread.loop.loop) orelse {
             this.fail(error.HTTP3Unsupported);
             return;
         };

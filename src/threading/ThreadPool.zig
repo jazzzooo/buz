@@ -29,6 +29,7 @@ const ThreadPool = @This();
 //   SOFTWARE.
 
 sleep_on_idle_network_thread: bool = true,
+io: std.Io,
 stack_size: u32,
 max_threads: u32,
 sync: Atomic(Sync) = .init(.{}),
@@ -38,9 +39,9 @@ run_queue: Node.Queue = .{},
 threads: Atomic(?*Thread) = .init(null),
 name: []const u8 = "",
 spawned_thread_count: Atomic(u32) = .init(0),
-wait_group: WaitGroup = .init(),
-/// Used by `schedule` to optimize for the case where the thread pool isn't running yet.
-is_running: Atomic(bool) = .init(false),
+pending_count: Atomic(usize) = .init(0),
+quiescence_mutex: std.Io.Mutex = .init,
+quiescence_condition: std.Io.Condition = .init,
 
 const Sync = packed struct(u32) {
     /// Tracks the number of threads not searching for Tasks
@@ -69,6 +70,7 @@ const Sync = packed struct(u32) {
 /// Configuration options for the thread pool.
 /// TODO: add CPU core affinity?
 pub const Config = struct {
+    io: std.Io,
     stack_size: u32 = default_thread_stack_size,
     max_threads: u32,
 };
@@ -76,6 +78,7 @@ pub const Config = struct {
 /// Statically initialize the thread pool using the configuration.
 pub fn init(config: Config) ThreadPool {
     return .{
+        .io = config.io,
         .stack_size = @max(1, config.stack_size),
         .max_threads = @max(1, config.max_threads),
     };
@@ -240,20 +243,7 @@ fn scheduleImpl(self: *ThreadPool, batch: Batch, try_current: bool) void {
         .tail = &batch.tail.?.node,
     };
 
-    // .monotonic access is okay because:
-    //
-    // * If the thread pool hasn't started yet, no thread could concurrently set
-    //   `is_running` to true, because thread pool initialization should only
-    //   happen on one thread.
-    //
-    // * If the thread pool is running, the current thread could be one of the threads
-    //   in the thread pool, but `is_running` was necessarily set to true before the
-    //   thread was created.
-    if (self.is_running.load(.monotonic)) {
-        self.wait_group.add(batch.len);
-    } else {
-        self.wait_group.addUnsynchronized(batch.len);
-    }
+    _ = self.pending_count.fetchAdd(batch.len, .monotonic);
 
     const current = blk: {
         if (!try_current) break :blk null;
@@ -281,7 +271,21 @@ pub fn scheduleInsideThreadPool(self: *ThreadPool, batch: Batch) void {
 
 /// Wait for all tasks to complete. This does not shut down or deinit the thread pool.
 pub fn waitForAll(self: *ThreadPool) void {
-    self.wait_group.wait();
+    self.quiescence_mutex.lockUncancelable(self.io);
+    defer self.quiescence_mutex.unlock(self.io);
+    while (self.pending_count.load(.acquire) != 0) {
+        self.quiescence_condition.waitUncancelable(self.io, &self.quiescence_mutex);
+    }
+}
+
+fn finishTask(self: *ThreadPool) void {
+    const previous = self.pending_count.fetchSub(1, .acq_rel);
+    assert(previous > 0);
+    if (previous != 1) return;
+
+    self.quiescence_mutex.lockUncancelable(self.io);
+    defer self.quiescence_mutex.unlock(self.io);
+    self.quiescence_condition.broadcast(self.io);
 }
 
 fn forceSpawn(self: *ThreadPool) void {
@@ -325,7 +329,6 @@ pub const default_thread_stack_size = brk: {
 /// Warm the thread pool up to the given number of threads.
 /// https://www.youtube.com/watch?v=ys3qcbO5KWw
 pub fn warm(self: *ThreadPool, count: u14) void {
-    self.is_running.store(true, .monotonic);
     const target = @min(count, @as(u14, @truncate(self.max_threads)));
     var sync = self.sync.load(.monotonic);
     while (sync.spawned < target) {
@@ -343,7 +346,6 @@ pub fn warm(self: *ThreadPool, count: u14) void {
 }
 
 noinline fn notifySlow(self: *ThreadPool, is_waking: bool) void {
-    self.is_running.store(true, .monotonic);
     var sync = self.sync.load(.monotonic);
     while (sync.state != .shutdown) {
         const can_wake = is_waking or (sync.state == .pending);
@@ -573,7 +575,7 @@ pub const Thread = struct {
 
                 const task: *Task = @fieldParentPtr("node", result.node);
                 (task.callback)(task);
-                thread_pool.wait_group.finish();
+                thread_pool.finishTask();
             }
 
             Output.flush();
@@ -1046,4 +1048,3 @@ const Output = bun.Output;
 const assert = bun.assert;
 
 const Futex = bun.threading.Futex;
-const WaitGroup = bun.threading.WaitGroup;

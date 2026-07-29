@@ -2,7 +2,8 @@ const SavedSourceMap = @This();
 
 /// This is a pointer to the map located on the VirtualMachine struct
 map: *HashTable,
-mutex: bun.Mutex = .{},
+io: std.Io,
+mutex: std.Io.Mutex = .init,
 
 /// Warm cache for `remapStackFramePositions`: the last decoded sync window and
 /// the last (path_hash -> ISM) resolution. Guarded by `mutex`. Invalidated on
@@ -11,23 +12,23 @@ find_cache: InternalSourceMap.FindCache = .{},
 last_path_hash: u64 = 0,
 last_ism: ?InternalSourceMap = null,
 
-pub fn init(this: *SavedSourceMap, map: *HashTable) void {
+pub fn init(this: *SavedSourceMap, io: std.Io, map: *HashTable) void {
     this.* = .{
+        .io = io,
         .map = map,
-        .mutex = .{},
     };
 
     this.map.lockPointers();
 }
 
 pub inline fn lock(map: *SavedSourceMap) void {
-    map.mutex.lock();
+    map.mutex.lockUncancelable(map.io);
     map.map.unlockPointers();
 }
 
 pub inline fn unlock(map: *SavedSourceMap) void {
     map.map.lockPointers();
-    map.mutex.unlock();
+    map.mutex.unlock(map.io);
 }
 
 /// `InternalSourceMap` is the storage for runtime-transpiled modules.

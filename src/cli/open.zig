@@ -27,7 +27,7 @@ pub fn openURL(url: stringZ) void {
             .stdin = .inherit,
 
             .windows = if (Environment.isWindows) .{
-                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
             },
         }) catch break :maybe_fallback) {
             // don't fallback:
@@ -321,7 +321,7 @@ pub const Editor = enum(u8) {
             .stdout = .inherit,
             .stderr = .inherit,
             .windows = if (Environment.isWindows) .{
-                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
             },
         }) catch {};
     }

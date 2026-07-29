@@ -232,7 +232,8 @@ pub fn BSSList(comptime ValueType: type, comptime _count: anytype) type {
         const Self = @This();
 
         allocator: std.mem.Allocator,
-        mutex: Mutex = .{},
+        io: std.Io,
+        mutex: std.Io.Mutex = .init,
         head: *OverflowBlock,
         tail: OverflowBlock,
         backing_buf: [count]ValueType,
@@ -241,14 +242,15 @@ pub fn BSSList(comptime ValueType: type, comptime _count: anytype) type {
         pub var instance: *Self = undefined;
         pub var loaded = false;
 
-        pub fn init(allocator: std.mem.Allocator) *Self {
+        pub fn init(io: std.Io, allocator: std.mem.Allocator) *Self {
             if (!loaded) {
                 instance = bun.handleOom(bun.default_allocator.create(Self));
                 // Avoid struct initialization syntax.
                 // This makes Bun start about 1ms faster.
                 // https://github.com/ziglang/zig/issues/24313
                 instance.allocator = allocator;
-                instance.mutex = .{};
+                instance.io = io;
+                instance.mutex = .init;
                 instance.tail.zero();
                 instance.head = &instance.tail;
                 instance.used = 0;
@@ -280,8 +282,8 @@ pub fn BSSList(comptime ValueType: type, comptime _count: anytype) type {
         }
 
         pub fn append(self: *Self, value: ValueType) !*ValueType {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
             if (instance.used > max_index) {
                 return self.appendOverflow(value);
             } else {
@@ -318,9 +320,10 @@ pub fn BSSStringList(comptime _count: usize, comptime _item_length: usize) type 
         backing_buf_used: u64,
         overflow_list: Overflow,
         allocator: std.mem.Allocator,
+        io: std.Io,
         slice_buf: [count][]const u8,
         slice_buf_used: u16,
-        mutex: Mutex = .{},
+        mutex: std.Io.Mutex = .init,
         pub var instance: *Self = undefined;
         var loaded: bool = false;
         // only need the mutex on append
@@ -329,17 +332,18 @@ pub fn BSSStringList(comptime _count: usize, comptime _item_length: usize) type 
             len: usize = 0,
         };
 
-        pub fn init(allocator: std.mem.Allocator) *Self {
+        pub fn init(io: std.Io, allocator: std.mem.Allocator) *Self {
             if (!loaded) {
                 instance = bun.handleOom(bun.default_allocator.create(Self));
                 // Avoid struct initialization syntax.
                 // This makes Bun start about 1ms faster.
                 // https://github.com/ziglang/zig/issues/24313
                 instance.allocator = allocator;
+                instance.io = io;
                 instance.backing_buf_used = 0;
                 instance.slice_buf_used = 0;
                 instance.overflow_list.zero();
-                instance.mutex = .{};
+                instance.mutex = .init;
                 loaded = true;
             }
 
@@ -372,16 +376,16 @@ pub fn BSSStringList(comptime _count: usize, comptime _item_length: usize) type 
         }
 
         pub fn append(self: *Self, comptime AppendType: type, _value: AppendType) OOM![]const u8 {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
 
             return try self.doAppend(AppendType, _value);
         }
 
         const lowercase_bufs = bun.ThreadlocalBuffers(struct { buf: bun.PathBuffer = undefined });
         pub fn appendLowerCase(self: *Self, comptime AppendType: type, _value: AppendType) OOM![]const u8 {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
 
             const lowercase_append_buf = &lowercase_bufs.get().buf;
             for (_value, 0..) |c, i| {
@@ -496,7 +500,8 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
         index: IndexMap,
         overflow_list: Overflow,
         allocator: std.mem.Allocator,
-        mutex: Mutex = .{},
+        io: std.Io,
+        mutex: std.Io.Mutex = .init,
         backing_buf: [count]ValueType,
         backing_buf_used: u16,
 
@@ -504,7 +509,7 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
 
         var loaded: bool = false;
 
-        pub fn init(allocator: std.mem.Allocator) *Self {
+        pub fn init(io: std.Io, allocator: std.mem.Allocator) *Self {
             if (!loaded) {
                 // Avoid struct initialization syntax.
                 // This makes Bun start about 1ms faster.
@@ -512,9 +517,10 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
                 instance = bun.handleOom(bun.default_allocator.create(Self));
                 instance.index = IndexMap{};
                 instance.allocator = allocator;
+                instance.io = io;
                 instance.overflow_list.zero();
                 instance.backing_buf_used = 0;
-                instance.mutex = .{};
+                instance.mutex = .init;
                 loaded = true;
             }
 
@@ -531,8 +537,8 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
             const key = if (comptime remove_trailing_slashes) std.mem.trimEnd(u8, denormalized_key, std.fs.path.sep_str) else denormalized_key;
             const _key = bun.hash(key);
 
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
             const index = try self.index.getOrPut(self.allocator, _key);
 
             if (index.found_existing) {
@@ -558,15 +564,15 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
         pub fn get(self: *Self, denormalized_key: []const u8) ?*ValueType {
             const key = if (comptime remove_trailing_slashes) std.mem.trimEnd(u8, denormalized_key, std.fs.path.sep_str) else denormalized_key;
             const _key = bun.hash(key);
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
             const index = self.index.get(_key) orelse return null;
             return self.atIndex(index);
         }
 
         pub fn markNotFound(self: *Self, result: Result) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
 
             self.index.put(self.allocator, result.hash, NotFound) catch unreachable;
         }
@@ -582,8 +588,8 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
         }
 
         pub fn put(self: *Self, result: *Result, value: ValueType) !*ValueType {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
 
             if (result.index.index == NotFound.index or result.index.index == Unassigned.index) {
                 result.index.is_overflow = instance.backing_buf_used > max_index;
@@ -614,8 +620,8 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
 
         /// Returns true if the entry was removed
         pub fn remove(self: *Self, denormalized_key: []const u8) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
 
             const key = if (comptime remove_trailing_slashes)
                 std.mem.trimEnd(u8, denormalized_key, std.fs.path.sep_str)
@@ -715,8 +721,8 @@ pub fn BSSMap(comptime ValueType: type, comptime count: anytype, comptime store_
         // 1. Storing the underlying string.
         // 2. Making the key accessible at the index.
         pub fn putKey(self: *Self, key: anytype, result: *Result) !void {
-            self.map.mutex.lock();
-            defer self.map.mutex.unlock();
+            self.map.mutex.lockUncancelable(self.map.io);
+            defer self.map.mutex.unlock(self.map.io);
             var slice: []u8 = undefined;
 
             // Is this actually a slice into the map? Don't free it.
@@ -887,4 +893,3 @@ const std = @import("std");
 
 const bun = @import("bun");
 const OOM = bun.OOM;
-const Mutex = bun.threading.Mutex;

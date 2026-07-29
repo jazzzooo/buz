@@ -42,7 +42,7 @@ pub fn runAsCoordinator(
     defer if (worker_tmpdir) |d| bun.FD.cwd().deleteTree(ctx.io, d) catch {};
     if (ctx.test_options.reporters.junit or coverage_opts.enabled) {
         const dir = try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/bun-test-worker-{d}", .{
-            bun.fs.FileSystem.RealFS.getDefaultTempDir(),
+            bun.fs.FileSystem.RealFS.getDefaultTempDir(ctx.io),
             if (bun.Environment.isWindows) std.os.windows.GetCurrentProcessId() else std.c.getpid(),
         }, 0);
         bun.FD.cwd().makePath(ctx.io, u8, dir) catch |e| {

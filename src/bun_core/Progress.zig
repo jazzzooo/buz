@@ -53,7 +53,7 @@ done: bool = true,
 /// Protects the `refresh` function, as well as `node.recently_updated_child`.
 /// Without this, callsites would call `Node.end` and then free `Node` memory
 /// while it was still being accessed by the `refresh` function.
-update_mutex: bun.Mutex = .{},
+update_mutex: std.Io.Mutex = .init,
 
 /// Keeps track of how many columns in the terminal have been output, so that
 /// we can move the cursor back later.
@@ -103,14 +103,14 @@ pub const Node = struct {
         self.context.maybeRefresh();
         if (self.parent) |parent| {
             {
-                self.context.update_mutex.lock();
-                defer self.context.update_mutex.unlock();
+                self.context.update_mutex.lockUncancelable(self.context.io);
+                defer self.context.update_mutex.unlock(self.context.io);
                 _ = @cmpxchgStrong(?*Node, &parent.recently_updated_child, self, null, .monotonic, .monotonic);
             }
             parent.completeOne();
         } else {
-            self.context.update_mutex.lock();
-            defer self.context.update_mutex.unlock();
+            self.context.update_mutex.lockUncancelable(self.context.io);
+            defer self.context.update_mutex.unlock(self.context.io);
             self.context.done = true;
             self.context.refreshWithHeldLock();
         }
@@ -127,8 +127,8 @@ pub const Node = struct {
     /// Thread-safe.
     pub fn setName(self: *Node, name: []const u8) void {
         const progress = self.context;
-        progress.update_mutex.lock();
-        defer progress.update_mutex.unlock();
+        progress.update_mutex.lockUncancelable(progress.io);
+        defer progress.update_mutex.unlock(progress.io);
         self.name = name;
         if (self.parent) |parent| {
             @atomicStore(?*Node, &parent.recently_updated_child, self, .release);
@@ -187,7 +187,7 @@ pub fn start(self: *Progress, io: std.Io, name: []const u8, estimated_total_item
 pub fn maybeRefresh(self: *Progress) void {
     if (self.timer) |*timer| {
         if (!self.update_mutex.tryLock()) return;
-        defer self.update_mutex.unlock();
+        defer self.update_mutex.unlock(self.io);
         maybeRefreshWithHeldLock(self, timer);
     }
 }
@@ -205,7 +205,7 @@ fn maybeRefreshWithHeldLock(self: *Progress, timer: *bun.SystemTimer) void {
 /// Updates the terminal and resets `self.next_refresh_timestamp`. Thread-safe.
 pub fn refresh(self: *Progress) void {
     if (!self.update_mutex.tryLock()) return;
-    defer self.update_mutex.unlock();
+    defer self.update_mutex.unlock(self.io);
 
     return self.refreshWithHeldLock();
 }

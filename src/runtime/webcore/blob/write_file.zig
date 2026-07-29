@@ -68,7 +68,7 @@ pub const WriteFile = struct {
         this.close_after_io = true;
         @atomicStore(@TypeOf(this.io_request.callback), &this.io_request.callback, &onRequestWritable, .seq_cst);
         if (!this.io_request.scheduled)
-            io.Loop.get().schedule(&this.io_request);
+            io.Loop.get(bun.fs.FileSystem.instance.io).schedule(&this.io_request);
     }
 
     pub fn createWithCtx(

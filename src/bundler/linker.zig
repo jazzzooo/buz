@@ -24,7 +24,7 @@ pub const Linker = struct {
         resolve_results: *_transpiler.ResolveResults,
         fs: *Fs.FileSystem,
     ) ThisLinker {
-        relative_paths_list = ImportPathsList.init(allocator);
+        relative_paths_list = ImportPathsList.init(resolver.io, allocator);
 
         return ThisLinker{
             .allocator = allocator,

@@ -19,8 +19,8 @@ fn load_once() void {
 
 var loaded_once = bun.once(load_once);
 
-pub fn load() void {
-    loaded_once.call(.{});
+pub fn load(io: std.Io) void {
+    loaded_once.call(io, .{});
 }
 
 pub const Compressor = opaque {

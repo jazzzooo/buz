@@ -875,7 +875,7 @@ pub const Test = struct {
         const JSAst = bun.ast;
         JSAst.Expr.Data.Store.create(default_allocator);
         JSAst.Stmt.Data.Store.create(default_allocator);
-        const fs = try FileSystem.initWithForce(null, true);
+        const fs = try FileSystem.initWithForce(std.testing.io, null, true);
         const top_level_dir = fs.top_level_dir;
 
         const pages_dir = try std.fs.path.resolve(default_allocator, &.{ top_level_dir, "pages" });

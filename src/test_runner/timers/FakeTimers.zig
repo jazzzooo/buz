@@ -7,27 +7,41 @@ timers: TimerHeap = .{ .context = {} },
 
 pub var current_time: struct {
     const min_timespec = bun.timespec{ .sec = std.math.minInt(i64), .nsec = std.math.minInt(i64) };
-    /// starts at 0. offset in milliseconds.
-    offset_raw: bun.timespec = min_timespec,
-    offset_lock: bun.Mutex = .{},
+    offset_sec: std.atomic.Value(i64) = .init(min_timespec.sec),
+    offset_nsec: std.atomic.Value(i64) = .init(min_timespec.nsec),
+    offset_sequence: std.atomic.Value(u32) = .init(0),
+    offset_lock: std.Io.Mutex = .init,
     date_now_offset: f64 = 0,
+
     pub fn getTimespecNow(this: *@This()) ?bun.timespec {
-        this.offset_lock.lock();
-        defer this.offset_lock.unlock();
-        const value = this.offset_raw;
-        if (value.eql(&min_timespec)) return null;
-        return value;
+        while (true) {
+            const sequence = this.offset_sequence.load(.acquire);
+            if (sequence & 1 != 0) continue;
+            const value: bun.timespec = .{
+                .sec = this.offset_sec.load(.acquire),
+                .nsec = this.offset_nsec.load(.acquire),
+            };
+            if (this.offset_sequence.load(.acquire) != sequence) continue;
+            if (value.eql(&min_timespec)) return null;
+            return value;
+        }
     }
+
+    fn storeTimespec(this: *@This(), io: std.Io, value: bun.timespec) void {
+        this.offset_lock.lockUncancelable(io);
+        defer this.offset_lock.unlock(io);
+        _ = this.offset_sequence.fetchAdd(1, .acq_rel);
+        this.offset_sec.store(value.sec, .monotonic);
+        this.offset_nsec.store(value.nsec, .monotonic);
+        _ = this.offset_sequence.fetchAdd(1, .release);
+    }
+
     pub fn set(this: *@This(), globalObject: *jsc.JSGlobalObject, v: struct {
         offset: *const bun.timespec,
         js: ?f64 = null,
     }) void {
         const vm = globalObject.bunVM();
-        {
-            this.offset_lock.lock();
-            defer this.offset_lock.unlock();
-            this.offset_raw = v.offset.*;
-        }
+        this.storeTimespec(vm.io, v.offset.*);
         const timespec_ms: f64 = @floatFromInt(v.offset.ms());
         if (v.js) |js| {
             this.date_now_offset = @floor(js) - timespec_ms;
@@ -38,11 +52,7 @@ pub var current_time: struct {
     }
     pub fn clear(this: *@This(), globalObject: *jsc.JSGlobalObject) void {
         const vm = globalObject.bunVM();
-        {
-            this.offset_lock.lock();
-            defer this.offset_lock.unlock();
-            this.offset_raw = min_timespec;
-        }
+        this.storeTimespec(vm.io, min_timespec);
         bun.cpp.JSMock__setOverridenDateNow(globalObject, std.math.nan(f64));
         vm.overridden_performance_now = null;
     }
@@ -94,8 +104,8 @@ fn executeNext(this: *FakeTimers, globalObject: *jsc.JSGlobalObject) bool {
     const timers = &vm.timer;
 
     const next = blk: {
-        timers.lock.lock();
-        defer timers.lock.unlock();
+        timers.lock.lockUncancelable(timers.io);
+        defer timers.lock.unlock(timers.io);
         break :blk this.timers.deleteMin() orelse return false;
     };
 
@@ -124,8 +134,8 @@ fn executeUntil(this: *FakeTimers, globalObject: *jsc.JSGlobalObject, until: bun
 
     while (true) {
         const next = blk: {
-            timers.lock.lock();
-            defer timers.lock.unlock();
+            timers.lock.lockUncancelable(timers.io);
+            defer timers.lock.unlock(timers.io);
 
             const peek = this.timers.peek() orelse break;
             if (peek.next.greater(&until)) break;
@@ -142,8 +152,8 @@ fn executeOnlyPendingTimers(this: *FakeTimers, globalObject: *jsc.JSGlobalObject
     const timers = &vm.timer;
 
     const target = blk: {
-        timers.lock.lock();
-        defer timers.lock.unlock();
+        timers.lock.lockUncancelable(timers.io);
+        defer timers.lock.unlock(timers.io);
         break :blk this.timers.findMax() orelse return;
     };
     const until = target.next;
@@ -166,8 +176,8 @@ fn errorUnlessFakeTimers(globalObject: *jsc.JSGlobalObject) bun.JSError!void {
     const this = &timers.fake_timers;
 
     {
-        timers.lock.lock();
-        defer timers.lock.unlock();
+        timers.lock.lockUncancelable(timers.io);
+        defer timers.lock.unlock(timers.io);
         if (this.isActive()) return;
     }
     return globalObject.throw("Fake timers are not active. Call useFakeTimers() first.", .{});
@@ -220,8 +230,8 @@ fn useFakeTimers(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
     }
 
     {
-        timers.lock.lock();
-        defer timers.lock.unlock();
+        timers.lock.lockUncancelable(timers.io);
+        defer timers.lock.unlock(timers.io);
         this.activate(js_now, globalObject);
     }
 
@@ -237,8 +247,8 @@ fn useRealTimers(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
     const this = &timers.fake_timers;
 
     {
-        timers.lock.lock();
-        defer timers.lock.unlock();
+        timers.lock.lockUncancelable(timers.io);
+        defer timers.lock.unlock(timers.io);
         this.deactivate(globalObject);
     }
 
@@ -311,8 +321,8 @@ fn getTimerCount(globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSErr
     try errorUnlessFakeTimers(globalObject);
 
     const count = blk: {
-        timers.lock.lock();
-        defer timers.lock.unlock();
+        timers.lock.lockUncancelable(timers.io);
+        defer timers.lock.unlock(timers.io);
         break :blk this.timers.count();
     };
 
@@ -325,8 +335,8 @@ fn clearAllTimers(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) 
     try errorUnlessFakeTimers(globalObject);
 
     {
-        timers.lock.lock();
-        defer timers.lock.unlock();
+        timers.lock.lockUncancelable(timers.io);
+        defer timers.lock.unlock(timers.io);
         this.clear();
     }
 
@@ -338,8 +348,8 @@ fn isFakeTimers(globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSErro
     const this = &timers.fake_timers;
 
     const is_active = blk: {
-        timers.lock.lock();
-        defer timers.lock.unlock();
+        timers.lock.lockUncancelable(timers.io);
+        defer timers.lock.unlock(timers.io);
         break :blk this.isActive();
     };
 

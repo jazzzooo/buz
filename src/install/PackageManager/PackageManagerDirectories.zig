@@ -11,7 +11,7 @@ pub inline fn getCacheDirectoryAndAbsPath(this: *PackageManager) struct { FD, bu
 }
 
 pub inline fn getTemporaryDirectory(this: *PackageManager) TemporaryDirectory {
-    return getTemporaryDirectoryOnce.call(.{this});
+    return getTemporaryDirectoryOnce.call(this.io, .{this});
 }
 
 const TemporaryDirectory = struct {
@@ -30,7 +30,7 @@ var getTemporaryDirectoryOnce = bun.once(struct {
         var cache_directory = manager.getCacheDirectory();
         // The chosen tempdir must be on the same filesystem as the cache directory
         // This makes renameat() work
-        const temp_dir_name = Fs.FileSystem.RealFS.getDefaultTempDir();
+        const temp_dir_name = Fs.FileSystem.RealFS.getDefaultTempDir(manager.io);
 
         var tried_dot_tmp = false;
         var tempdir: std.Io.Dir = bun.MakePath.makeOpenPath(manager.io, std.Io.Dir.cwd(), temp_dir_name, .{}) catch brk: {

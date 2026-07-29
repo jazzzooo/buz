@@ -77,7 +77,7 @@ pub fn watcherAcquireEvent(self: *Self) *HotReloadEvent {
     ev.owner.bun_watcher.thread_lock.assertLocked();
 
     if (comptime Environment.isDebug)
-        assert(ev.debug_mutex.tryLock());
+        assert(ev.debug_owned.cmpxchgStrong(false, true, .acquire, .monotonic) == null);
     return ev;
 }
 
@@ -106,7 +106,7 @@ pub fn watcherReleaseAndSubmitEvent(self: *Self, ev: *HotReloadEvent) void {
         for (std.mem.asBytes(&ev.timer)) |b| {
             if (b != 0xAA) break;
         } else @panic("timer is undefined memory in watcherReleaseAndSubmitEvent");
-        ev.debug_mutex.unlock();
+        assert(ev.debug_owned.swap(false, .release));
     }
 
     if (ev.isEmpty()) return;

@@ -172,7 +172,7 @@ fn runInstall(argv: [][]const u8) !void {
         .stdin = .inherit,
 
         .windows = if (Environment.isWindows) .{
-            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
         },
     }) catch |err| {
         Output.err(err, "failed to install dependencies", .{});
@@ -374,7 +374,7 @@ pub fn generateFiles(io: std.Io, allocator: std.mem.Allocator, entry_point: stri
         .stdin = .inherit,
 
         .windows = if (Environment.isWindows) .{
-            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
         },
     }) catch |err| {
         Output.err(err, "failed to start app", .{});

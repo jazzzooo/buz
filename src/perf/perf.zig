@@ -16,8 +16,9 @@ pub const Ctx = union(enum) {
         }
     }
 };
-var is_enabled_once = bun.once(isEnabledOnce);
 var is_enabled = std.atomic.Value(bool).init(false);
+const InitState = enum(u8) { uninitialized, initializing, initialized };
+var is_enabled_state = std.atomic.Value(InitState).init(.uninitialized);
 fn isEnabledOnMacOSOnce() void {
     if (bun.env_var.DYLD_ROOT_PATH.get() != null or bun.feature_flag.BUN_INSTRUMENTS.get()) {
         is_enabled.store(true, .seq_cst);
@@ -45,7 +46,13 @@ fn isEnabledOnce() void {
 }
 
 pub fn isEnabled() bool {
-    is_enabled_once.call(.{});
+    const state = is_enabled_state.load(.acquire);
+    if (state == .uninitialized and
+        is_enabled_state.cmpxchgStrong(.uninitialized, .initializing, .acq_rel, .acquire) == null)
+    {
+        isEnabledOnce();
+        is_enabled_state.store(.initialized, .release);
+    }
     return is_enabled.load(.seq_cst);
 }
 
@@ -106,13 +113,20 @@ pub const Darwin = struct {
     }
 
     var os_log: ?*OSLog = null;
-    var os_log_once = bun.once(getOnce);
-    fn getOnce() void {
-        os_log = OSLog.init();
-    }
+    var os_log_state = std.atomic.Value(InitState).init(.uninitialized);
 
     pub fn get() ?*OSLog {
-        os_log_once.call(.{});
+        var state = os_log_state.load(.acquire);
+        if (state == .uninitialized) {
+            if (os_log_state.cmpxchgStrong(.uninitialized, .initializing, .acq_rel, .acquire)) |actual| {
+                state = actual;
+            } else {
+                os_log = OSLog.init();
+                os_log_state.store(.initialized, .release);
+                return os_log;
+            }
+        }
+        if (state == .initializing) return null;
         return os_log;
     }
 };
@@ -122,7 +136,7 @@ pub const Linux = struct {
     event: PerfEvent,
 
     var is_initialized = std.atomic.Value(bool).init(false);
-    var init_once = bun.once(initOnce);
+    var init_state = std.atomic.Value(InitState).init(.uninitialized);
 
     extern "c" fn Bun__linux_trace_init() c_int;
     extern "c" fn Bun__linux_trace_close() void;
@@ -134,7 +148,15 @@ pub const Linux = struct {
     }
 
     pub fn isSupported() bool {
-        init_once.call(.{});
+        const state = init_state.load(.acquire);
+        if (state == .uninitialized and
+            init_state.cmpxchgStrong(.uninitialized, .initializing, .acq_rel, .acquire) == null)
+        {
+            initOnce();
+            init_state.store(.initialized, .release);
+        } else if (state == .initializing) {
+            return false;
+        }
         return is_initialized.load(.monotonic);
     }
 

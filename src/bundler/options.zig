@@ -916,7 +916,7 @@ pub fn getLoaderAndVirtualSource(
     }
 
     if (jsc.WebCore.ObjectURLRegistry.isBlobURL(specifier)) {
-        if (jsc.WebCore.ObjectURLRegistry.singleton().resolveAndDupe(specifier["blob:".len..])) |blob| {
+        if (jsc.WebCore.ObjectURLRegistry.singleton().resolveAndDupe(jsc_vm.io, specifier["blob:".len..])) |blob| {
             blob_to_deinit.* = blob;
             loader = blob.getLoader(jsc_vm);
 

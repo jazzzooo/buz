@@ -1589,8 +1589,6 @@ pub const BundleV2 = bundle_v2.BundleV2;
 pub const ParseTask = bundle_v2.ParseTask;
 
 pub const threading = @import("./threading/threading.zig");
-pub const Mutex = threading.Mutex;
-pub const Condition = threading.Condition;
 pub const Futex = threading.Futex;
 pub const ThreadPool = threading.ThreadPool;
 pub const UnboundedQueue = threading.UnboundedQueue;
@@ -2528,7 +2526,7 @@ pub fn runtimeEmbedFile(
         default_allocator.free(static.once.payload);
     }
 
-    return static.once.call(.{io_});
+    return static.once.call(io_, .{io_});
 }
 
 pub inline fn markWindowsOnly() if (Environment.isWindows) void else noreturn {
@@ -2561,31 +2559,31 @@ pub fn linuxKernelVersion() Semver.Version {
 }
 
 const SelfExePath = struct {
-    var set = false;
+    var set = std.atomic.Value(bool).init(false);
     // This deliberately stays small; the previous implementation used the same
     // POSIX-sized buffer and reported an error for unusually long paths.
     var value: [4096 + 1]u8 = undefined;
     var path_len: usize = 0;
-    var lock: Mutex = .{};
+    var lock: std.Io.Mutex = .init;
 
     fn load(io_: std.Io) ![:0]u8 {
         path_len = try std.process.executablePath(io_, &value);
         value[path_len] = 0;
-        set = true;
+        set.store(true, .release);
         return value[0..path_len :0];
     }
 };
 
 pub fn selfExePath() ![:0]u8 {
-    if (SelfExePath.set) return SelfExePath.value[0..SelfExePath.path_len :0];
+    if (SelfExePath.set.load(.acquire)) return SelfExePath.value[0..SelfExePath.path_len :0];
     return error.SelfExePathNotInitialized;
 }
 
 pub fn initSelfExePath(io_: std.Io) !void {
-    if (SelfExePath.set) return;
-    SelfExePath.lock.lock();
-    defer SelfExePath.lock.unlock();
-    if (SelfExePath.set) return;
+    if (SelfExePath.set.load(.acquire)) return;
+    SelfExePath.lock.lockUncancelable(io_);
+    defer SelfExePath.lock.unlock(io_);
+    if (SelfExePath.set.load(.monotonic)) return;
     _ = try SelfExePath.load(io_);
 }
 pub const exe_suffix = if (Environment.isWindows) ".exe" else "";
@@ -2692,6 +2690,10 @@ pub fn assert(ok: bool) callconv(callconv_inline) void {
             unreachable; // ASSERTION FAILURE
         assertionFailure();
     }
+}
+
+pub fn releaseAssert(ok: bool) callconv(callconv_inline) void {
+    if (!ok) assertionFailure();
 }
 
 /// Asserts that some condition holds. Assertions are stripped in release builds.
@@ -3145,8 +3147,8 @@ pub fn getThreadCount() u16 {
     const max_threads = 1024;
     const min_threads = 2;
     const ThreadCount = struct {
-        pub var cached_thread_count: u16 = 0;
-        var cached_thread_count_once = bun.once(getThreadCountOnce);
+        pub var cached_thread_count = std.atomic.Value(u16).init(0);
+
         fn getThreadCountFromUser() ?u16 {
             inline for (.{ "UV_THREADPOOL_SIZE", "GOMAXPROCS" }) |envname| {
                 if (getenvZ(envname)) |env| {
@@ -3164,12 +3166,13 @@ pub fn getThreadCount() u16 {
 
             return null;
         }
-        fn getThreadCountOnce() void {
-            cached_thread_count = @min(max_threads, @max(min_threads, getThreadCountFromUser() orelse jsc.wtf.numberOfProcessorCores()));
-        }
     };
-    ThreadCount.cached_thread_count_once.call(.{});
-    return ThreadCount.cached_thread_count;
+
+    const cached = ThreadCount.cached_thread_count.load(.acquire);
+    if (cached != 0) return cached;
+
+    const detected = @min(max_threads, @max(min_threads, ThreadCount.getThreadCountFromUser() orelse jsc.wtf.numberOfProcessorCores()));
+    return ThreadCount.cached_thread_count.cmpxchgStrong(0, detected, .release, .acquire) orelse detected;
 }
 
 /// Bun-managed-thread-domain one-time initialization, modified to accept
@@ -3178,42 +3181,87 @@ pub fn once(comptime f: anytype) Once(f) {
     return Once(f){};
 }
 
+/// One-time initialization for code that intentionally blocks the current
+/// thread and has no runtime `Io`.
+pub fn threadedOnce(comptime f: anytype) ThreadedOnce(f) {
+    return ThreadedOnce(f){};
+}
+
 /// Copied from zig std. Modified to accept arguments.
 ///
 /// An object that executes the function `f` just once.
 /// It is undefined behavior if `f` re-enters the same Once instance.
 pub fn Once(comptime f: anytype) type {
+    return OnceImpl(f, .io);
+}
+
+pub fn ThreadedOnce(comptime f: anytype) type {
+    return OnceImpl(f, .threaded);
+}
+
+const OnceMode = enum { io, threaded };
+
+fn OnceImpl(comptime f: anytype, comptime mode: OnceMode) type {
     return struct {
         const Return = @typeInfo(@TypeOf(f)).@"fn".return_type.?;
 
         done: bool = false,
         payload: Return = undefined,
-        mutex: bun.Mutex = .{},
+        mutex: std.Io.Mutex = .init,
+
+        pub const call = switch (mode) {
+            .io => callWithIo,
+            .threaded => callThreaded,
+        };
 
         /// Call the function `f`.
         /// If `call` is invoked multiple times `f` will be executed only the
         /// first time.
         /// The invocations are thread-safe.
-        pub fn call(self: *@This(), args: std.meta.ArgsTuple(@TypeOf(f))) Return {
-            if (@atomicLoad(bool, &self.done, .acquire))
+        fn callWithIo(self: *@This(), runtime_io: std.Io, args: std.meta.ArgsTuple(@TypeOf(f))) Return {
+            if (self.isDone())
                 return self.payload;
 
-            return self.callSlow(args);
+            return self.callWithIoSlow(runtime_io, args);
         }
 
-        fn callSlow(self: *@This(), args: std.meta.ArgsTuple(@TypeOf(f))) Return {
+        pub fn isDone(self: *const @This()) bool {
+            return @atomicLoad(bool, &self.done, .acquire);
+        }
+
+        fn callWithIoSlow(self: *@This(), runtime_io: std.Io, args: std.meta.ArgsTuple(@TypeOf(f))) Return {
             @branchHint(.cold);
 
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(runtime_io);
+            defer self.mutex.unlock(runtime_io);
 
-            // The first thread to acquire the mutex gets to run the initializer
-            if (!self.done) {
-                self.payload = @call(.auto, f, args);
-                @atomicStore(bool, &self.done, true, .release);
-            }
+            self.initialize(args);
 
             return self.payload;
+        }
+
+        fn callThreaded(self: *@This(), args: std.meta.ArgsTuple(@TypeOf(f))) Return {
+            if (self.isDone())
+                return self.payload;
+
+            return self.callThreadedSlow(args);
+        }
+
+        fn callThreadedSlow(self: *@This(), args: std.meta.ArgsTuple(@TypeOf(f))) Return {
+            @branchHint(.cold);
+
+            std.Io.Threaded.mutexLock(&self.mutex);
+            defer std.Io.Threaded.mutexUnlock(&self.mutex);
+
+            self.initialize(args);
+
+            return self.payload;
+        }
+
+        fn initialize(self: *@This(), args: std.meta.ArgsTuple(@TypeOf(f))) void {
+            if (self.done) return;
+            self.payload = @call(.auto, f, args);
+            @atomicStore(bool, &self.done, true, .release);
         }
     };
 }

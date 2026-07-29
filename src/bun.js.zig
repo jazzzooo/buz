@@ -108,15 +108,15 @@ pub const Run = struct {
 
         bun.http.experimental_http2_client_from_cli = ctx.runtime_options.experimental_http2_fetch;
         bun.http.experimental_http3_client_from_cli = ctx.runtime_options.experimental_http3_fetch;
-        doPreconnect(ctx.runtime_options.preconnect);
+        doPreconnect(ctx.io, ctx.runtime_options.preconnect);
 
         const callback = OpaqueWrap(Run, Run.start);
         vm.global.vm().holdAPILock(&run, callback);
     }
 
-    fn doPreconnect(preconnect: []const string) void {
+    fn doPreconnect(io: std.Io, preconnect: []const string) void {
         if (preconnect.len == 0) return;
-        bun.HTTPThread.init(&.{});
+        bun.HTTPThread.init(io, &.{});
 
         for (preconnect) |url_str| {
             const url = bun.URL.parse(url_str);
@@ -152,7 +152,7 @@ pub const Run = struct {
             null,
         );
         try bundle.runEnvLoader(bundle.options.env.disable_default_env_files);
-        const mini = jsc.MiniEventLoop.initGlobal(bundle.env, null);
+        const mini = jsc.MiniEventLoop.initGlobal(ctx.io, bundle.env, null);
         mini.top_level_dir = ctx.args.absolute_working_dir orelse "";
         return bun.shell.Interpreter.initAndRunFromFile(ctx, mini, entry_path);
     }
@@ -295,7 +295,7 @@ pub const Run = struct {
 
         bun.http.experimental_http2_client_from_cli = ctx.runtime_options.experimental_http2_fetch;
         bun.http.experimental_http3_client_from_cli = ctx.runtime_options.experimental_http3_fetch;
-        doPreconnect(ctx.runtime_options.preconnect);
+        doPreconnect(ctx.io, ctx.runtime_options.preconnect);
 
         vm.main_is_html_entrypoint = (loader orelse vm.transpiler.options.loader(std.fs.path.extension(entry_path))) == .html;
 

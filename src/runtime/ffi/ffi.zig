@@ -287,14 +287,14 @@ pub const FFI = struct {
             }
         }
 
-        fn getSystemIncludeDir() ?[:0]const u8 {
-            cached_default_system_include_dir_once.call(.{});
+        fn getSystemIncludeDir(io: std.Io) ?[:0]const u8 {
+            cached_default_system_include_dir_once.call(io, .{});
             if (cached_default_system_include_dir.len == 0) return null;
             return cached_default_system_include_dir;
         }
 
-        fn getSystemLibraryDir() ?[:0]const u8 {
-            cached_default_system_include_dir_once.call(.{});
+        fn getSystemLibraryDir(io: std.Io) ?[:0]const u8 {
+            cached_default_system_include_dir_once.call(io, .{});
             if (cached_default_system_library_dir.len == 0) return null;
             return cached_default_system_library_dir;
         }
@@ -331,7 +331,7 @@ pub const FFI = struct {
                 add_system_include_dir: {
                     const dirs_to_try = [_][]const u8{
                         bun.env_var.SDKROOT.get() orelse "",
-                        getSystemIncludeDir() orelse "",
+                        getSystemIncludeDir(globalThis.bunVM().io) orelse "",
                     };
 
                     for (dirs_to_try) |sdkroot| {
@@ -361,13 +361,13 @@ pub const FFI = struct {
                     }
                 }
             } else if (Environment.isLinux) {
-                if (getSystemIncludeDir()) |include_dir| {
+                if (getSystemIncludeDir(globalThis.bunVM().io)) |include_dir| {
                     state.addSysIncludePath(include_dir) catch {
                         debug("TinyCC failed to add sysinclude path", .{});
                     };
                 }
 
-                if (getSystemLibraryDir()) |library_dir| {
+                if (getSystemLibraryDir(globalThis.bunVM().io)) |library_dir| {
                     state.addLibraryPath(library_dir) catch {
                         debug("TinyCC failed to add library path", .{});
                     };
@@ -2372,7 +2372,7 @@ const CompilerRT = struct {
     var create_compiler_rt_dir_once = bun.once(createCompilerRTDir);
 
     pub fn dir(io: std.Io) ?[:0]const u8 {
-        create_compiler_rt_dir_once.call(.{io});
+        create_compiler_rt_dir_once.call(io, .{io});
         if (compiler_rt_dir.len == 0) return null;
         return compiler_rt_dir;
     }

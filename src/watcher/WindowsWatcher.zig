@@ -2,7 +2,6 @@
 
 const WindowsWatcher = @This();
 
-mutex: Mutex = .{},
 iocp: w.HANDLE = undefined,
 watcher: DirWatcher = undefined,
 buf: bun.PathBuffer = undefined,
@@ -317,7 +316,6 @@ const std = @import("std");
 const w = bun.windows;
 
 const bun = @import("bun");
-const Mutex = bun.Mutex;
 const Output = bun.Output;
 
 const WatchEvent = bun.Watcher.WatchEvent;

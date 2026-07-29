@@ -1464,7 +1464,7 @@ pub fn installIsolatedPackages(
             .scripts_node = if (manager.options.log_level.showProgress()) &scripts_node else null,
             .store = &store,
             .tasks = tasks,
-            .trusted_dependencies_mutex = .{},
+            .trusted_dependencies_mutex = .init,
             .trusted_dependencies_from_update_requests = manager.findTrustedDependenciesFromUpdateRequests(),
             .supported_backend = .init(PackageInstall.supported_method),
             .is_new_bun_modules = is_new_bun_modules,

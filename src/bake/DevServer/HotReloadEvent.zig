@@ -22,7 +22,7 @@ timer: bun.SystemTimer,
 /// 1 if referenced, 0 if unreferenced; see WatcherAtomics
 contention_indicator: std.atomic.Value(u32),
 
-debug_mutex: if (Environment.isDebug) bun.Mutex else void,
+debug_owned: if (Environment.isDebug) std.atomic.Value(bool) else void,
 
 pub fn initEmpty(owner: *DevServer) HotReloadEvent {
     return .{
@@ -32,14 +32,14 @@ pub fn initEmpty(owner: *DevServer) HotReloadEvent {
         .dirs = .empty,
         .timer = undefined,
         .contention_indicator = .init(0),
-        .debug_mutex = if (Environment.isDebug) .{} else {},
+        .debug_owned = if (Environment.isDebug) .init(false) else {},
         .extra_files = .empty,
     };
 }
 
 pub fn reset(ev: *HotReloadEvent) void {
     if (Environment.isDebug)
-        ev.debug_mutex.unlock();
+        assert(ev.debug_owned.swap(false, .release));
 
     ev.files.clearRetainingCapacity();
     ev.dirs.clearRetainingCapacity();
@@ -176,7 +176,7 @@ pub fn run(first: *HotReloadEvent) void {
     const dev = first.owner;
 
     if (comptime Environment.isDebug) {
-        assert(first.debug_mutex.tryLock());
+        assert(first.debug_owned.cmpxchgStrong(false, true, .acquire, .monotonic) == null);
         assert(first.contention_indicator.load(.seq_cst) == 0);
     }
 
@@ -200,7 +200,7 @@ pub fn run(first: *HotReloadEvent) void {
         current.processFileList(dev, &entry_points, temp_alloc);
         current = dev.watcher_atomics.recycleEventFromDevServer(current) orelse break;
         if (comptime Environment.isDebug) {
-            assert(current.debug_mutex.tryLock());
+            assert(current.debug_owned.cmpxchgStrong(false, true, .acquire, .monotonic) == null);
         }
     }
 
@@ -233,7 +233,6 @@ pub fn run(first: *HotReloadEvent) void {
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const Mutex = bun.Mutex;
 const Output = bun.Output;
 const Watcher = bun.Watcher;
 const assert = bun.assert;

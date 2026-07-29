@@ -88,6 +88,7 @@ pub const UpgradeCommand = struct {
     var tmpdir_path_buf: bun.PathBuffer = undefined;
 
     pub fn getLatestVersion(
+        io: std.Io,
         allocator: std.mem.Allocator,
         env_loader: *DotEnv.Loader,
         refresher: ?*Progress,
@@ -169,7 +170,7 @@ pub const UpgradeCommand = struct {
         async_http.client.flags.reject_unauthorized = env_loader.getTLSRejectUnauthorized();
 
         if (!silent) async_http.client.progress_node = progress.?;
-        const response = try async_http.sendSync();
+        const response = try async_http.sendSync(io);
 
         switch (response.status_code) {
             404 => return error.HTTP404,
@@ -350,9 +351,9 @@ pub const UpgradeCommand = struct {
     }
 
     fn _exec(ctx: Command.Context) !void {
-        HTTP.HTTPThread.init(&.{});
+        HTTP.HTTPThread.init(ctx.io, &.{});
 
-        var filesystem = try fs.FileSystem.init(null);
+        var filesystem = try fs.FileSystem.init(ctx.io, null);
         var env_loader: DotEnv.Loader = brk: {
             const map = try ctx.allocator.create(DotEnv.Map);
             map.* = DotEnv.Map.init(ctx.allocator);
@@ -377,7 +378,7 @@ pub const UpgradeCommand = struct {
             var refresher = Progress{};
             var progress = refresher.start(ctx.io, "Fetching version tags", 0);
 
-            const version = (try getLatestVersion(ctx.allocator, &env_loader, &refresher, progress, use_profile, false)) orelse return;
+            const version = (try getLatestVersion(ctx.io, ctx.allocator, &env_loader, &refresher, progress, use_profile, false)) orelse return;
 
             progress.end();
             refresher.refresh();
@@ -444,7 +445,7 @@ pub const UpgradeCommand = struct {
             async_http.client.progress_node = progress;
             async_http.client.flags.reject_unauthorized = env_loader.getTLSRejectUnauthorized();
 
-            const response = try async_http.sendSync();
+            const response = try async_http.sendSync(ctx.io);
 
             switch (response.status_code) {
                 404 => {
@@ -551,7 +552,7 @@ pub const UpgradeCommand = struct {
                         .stdout = .inherit,
                         .stderr = .inherit,
                         .windows = if (Environment.isWindows) .{
-                            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
                         },
                     }) catch |err| {
                         save_dir.deleteFile(ctx.io, tmpname) catch {};
@@ -615,7 +616,7 @@ pub const UpgradeCommand = struct {
                         .stdin = .inherit,
 
                         .windows = if (Environment.isWindows) .{
-                            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
                         },
                     }) catch |err| {
                         Output.prettyErrorln("<r><red>error:<r> Failed to spawn Expand-Archive on {s} due to error {s}", .{ tmpname, @errorName(err) });
@@ -640,7 +641,7 @@ pub const UpgradeCommand = struct {
                     .stderr = .buffer,
                     .envp = null,
                     .windows = if (Environment.isWindows) .{
-                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
                     },
                 }) catch |err| {
                     defer save_dir_.deleteTree(ctx.io, version_name) catch {};
@@ -859,7 +860,7 @@ pub const UpgradeCommand = struct {
                     .stderr = .buffer,
                     .envp = envp,
                     .windows = if (Environment.isWindows) .{
-                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
                     },
                 })) |completions_process| {
                     if (completions_process.unwrap()) |result| result.deinit() else |_| {}
@@ -944,12 +945,12 @@ pub const upgrade_js_bindings = struct {
 
     /// For testing upgrades when the temp directory has an open handle without FILE_SHARE_DELETE.
     /// Windows only
-    pub fn jsOpenTempDirWithoutSharingDelete(_: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!bun.jsc.JSValue {
+    pub fn jsOpenTempDirWithoutSharingDelete(global: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!bun.jsc.JSValue {
         if (comptime !Environment.isWindows) return .js_undefined;
         const w = bun.windows;
 
         var buf: bun.WPathBuffer = undefined;
-        const tmpdir_path = fs.FileSystem.RealFS.getDefaultTempDir();
+        const tmpdir_path = fs.FileSystem.RealFS.getDefaultTempDir(global.bunVM().io);
         const path = switch (bun.sys.normalizePathWindows(u8, bun.invalid_fd, tmpdir_path, &buf, .{})) {
             .err => return .js_undefined,
             .result => |norm| norm,

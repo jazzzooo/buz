@@ -149,11 +149,13 @@ const State = struct {
     const Self = @This();
 
     /// This field should not be modified. Therefore, it doesn't need to be protected by the mutex.
+    io: std.Io,
     parent: std.mem.Allocator,
     history: bun.threading.Guarded(History),
 
-    fn init(parent_alloc: std.mem.Allocator) Self {
+    fn init(io: std.Io, parent_alloc: std.mem.Allocator) Self {
         return .{
+            .io = io,
             .parent = parent_alloc,
             .history = .init(.{}),
         };
@@ -162,12 +164,12 @@ const State = struct {
     fn lock(self: *Self) LockedState {
         return .{
             .parent = self.parent,
-            .history = self.history.lock(),
+            .history = self.history.lock(self.io),
         };
     }
 
     fn unlock(self: *Self) void {
-        self.history.unlock();
+        self.history.unlock(self.io);
     }
 
     pub fn deinit(self: *Self) void {
@@ -372,17 +374,18 @@ pub fn AllocationScopeIn(comptime Allocator: type) type {
         /// This type is a `GenericAllocator`; see `src/allocators.zig`.
         pub const Borrowed = BorrowedScope;
 
-        pub fn init(parent_alloc: Allocator) Self {
+        pub fn init(io: std.Io, parent_alloc: Allocator) Self {
             return .{
                 .parent_allocator = parent_alloc,
                 .state = if (comptime Self.enabled) .new(.init(
+                    io,
                     bun.allocators.asStd(parent_alloc),
                 )),
             };
         }
 
-        pub fn initDefault() Self {
-            return .init(bun.memory.initDefault(Allocator));
+        pub fn initDefault(io: std.Io) Self {
+            return .init(io, bun.memory.initDefault(Allocator));
         }
 
         /// Borrows this `AllocationScope`. Use this method instead of copying `self`, as that makes

@@ -14,9 +14,7 @@ pub fn BundleThread(CompletionStruct: type) type {
         const Self = @This();
 
         waker: bun.Async.Waker,
-        ready_mutex: bun.Mutex,
-        ready_condition: bun.Condition,
-        ready: bool,
+        ready: std.Io.Event,
         queue: bun.UnboundedQueue(CompletionStruct, .next),
         generation: bun.Generation = 0,
 
@@ -25,16 +23,12 @@ pub fn BundleThread(CompletionStruct: type) type {
             .waker = undefined,
             .queue = .{},
             .generation = 0,
-            .ready_mutex = .{},
-            .ready_condition = .{},
-            .ready = false,
+            .ready = .unset,
         };
 
-        pub fn spawn(instance: *Self) !std.Thread {
-            instance.ready_mutex.lock();
-            defer instance.ready_mutex.unlock();
-            const thread = try std.Thread.spawn(.{}, threadMain, .{instance});
-            while (!instance.ready) instance.ready_condition.wait(&instance.ready_mutex);
+        pub fn spawn(instance: *Self, io: std.Io) !std.Thread {
+            const thread = try std.Thread.spawn(.{}, threadMain, .{ instance, io });
+            instance.ready.waitUncancelable(io);
             return thread;
         }
 
@@ -42,28 +36,21 @@ pub fn BundleThread(CompletionStruct: type) type {
         /// bundle thread may not be needed.
         pub const singleton = struct {
             var once = bun.once(loadOnceImpl);
-            var instance: ?*Self = null;
 
             // Blocks the calling thread until the bun build thread is created.
             // bun.once also blocks other callers of this function until the first caller is done.
-            fn loadOnceImpl() void {
+            fn loadOnceImpl(io: std.Io) *Self {
                 const bundle_thread = bun.handleOom(bun.default_allocator.create(Self));
                 bundle_thread.* = uninitialized;
-                instance = bundle_thread;
 
-                // 2. Spawn the bun build thread.
-                const os_thread = bundle_thread.spawn() catch
+                const os_thread = bundle_thread.spawn(io) catch
                     Output.panic("Failed to spawn bun build thread", .{});
                 os_thread.detach();
-            }
-
-            pub fn get() *Self {
-                once.call(.{});
-                return instance.?;
+                return bundle_thread;
             }
 
             pub fn enqueue(completion: *CompletionStruct) void {
-                get().enqueue(completion);
+                once.call(completion.io, .{completion.io}).enqueue(completion);
             }
         };
 
@@ -72,16 +59,13 @@ pub fn BundleThread(CompletionStruct: type) type {
             instance.waker.wake();
         }
 
-        fn threadMain(instance: *Self) void {
+        fn threadMain(instance: *Self, io: std.Io) void {
             Output.Source.configureNamedThread("Bundler");
 
             instance.waker = bun.Async.Waker.init() catch @panic("Failed to create waker");
 
             // Unblock the calling thread so it can continue.
-            instance.ready_mutex.lock();
-            instance.ready = true;
-            instance.ready_condition.signal();
-            instance.ready_mutex.unlock();
+            instance.ready.set(io);
 
             var timer: bun.windows.libuv.Timer = undefined;
             if (bun.Environment.isWindows) {
@@ -130,7 +114,7 @@ pub fn BundleThread(CompletionStruct: type) type {
                 transpiler,
                 null, // TODO: Kit
                 allocator,
-                jsc.AnyEventLoop.init(allocator),
+                jsc.AnyEventLoop.init(completion.io, allocator),
                 false,
                 jsc.WorkPool.get(),
                 heap,
@@ -155,8 +139,8 @@ pub fn BundleThread(CompletionStruct: type) type {
 
             errdefer {
                 // Wait for wait groups to finish. There still may be ongoing work.
-                this.linker.source_maps.line_offset_wait_group.wait();
-                this.linker.source_maps.quoted_contents_wait_group.wait();
+                this.linker.source_maps.line_offset_countdown.wait(this.linker.resolver.io);
+                this.linker.source_maps.quoted_contents_countdown.wait(this.linker.resolver.io);
 
                 var out_log = Logger.Log.init(bun.default_allocator);
                 bun.handleOom(this.transpiler.log.appendToWithRecycled(&out_log, true));

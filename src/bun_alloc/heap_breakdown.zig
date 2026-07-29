@@ -25,16 +25,17 @@ pub fn getZone(comptime name: [:0]const u8) *Zone {
     comptime bun.assert(enabled);
 
     const static = struct {
-        pub var zone: *Zone = undefined;
-        pub fn initOnce() void {
-            zone = Zone.init(name);
-        }
-
-        pub var once = bun.once(initOnce);
+        pub var zone = std.atomic.Value(?*Zone).init(null);
     };
 
-    static.once.call(.{});
-    return static.zone;
+    if (static.zone.load(.acquire)) |zone| return zone;
+
+    const candidate = Zone.init(name);
+    if (static.zone.cmpxchgStrong(null, candidate, .release, .acquire)) |existing| {
+        Zone.malloc_destroy_zone(candidate);
+        return existing.?;
+    }
+    return candidate;
 }
 
 pub const Zone = opaque {

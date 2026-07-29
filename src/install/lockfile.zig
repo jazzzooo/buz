@@ -1034,6 +1034,7 @@ pub const Printer = struct {
     pub const Format = enum { yarn };
 
     pub fn print(
+        io: std.Io,
         allocator: Allocator,
         log: *logger.Log,
         input_lockfile_path: string,
@@ -1064,7 +1065,7 @@ pub const Printer = struct {
         if (lockfile_path.len > 0 and lockfile_path[0] == std.fs.path.sep)
             _ = bun.sys.chdir("", std.fs.path.dirname(lockfile_path) orelse std.fs.path.sep_str);
 
-        _ = try FileSystem.init(null);
+        _ = try FileSystem.init(io, null);
 
         var lockfile = try allocator.create(Lockfile);
 

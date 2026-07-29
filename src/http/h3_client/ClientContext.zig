@@ -20,9 +20,9 @@ pub fn get() ?*ClientContext {
     return instance;
 }
 
-pub fn getOrCreate(loop: *uws.Loop) ?*ClientContext {
+pub fn getOrCreate(io: std.Io, loop: *uws.Loop) ?*ClientContext {
     if (instance) |i| return i;
-    lsquic_init_once.call(.{});
+    lsquic_init_once.call(io, .{});
     const qctx = quic.Context.createClient(
         loop,
         0,

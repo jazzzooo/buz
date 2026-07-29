@@ -1390,7 +1390,7 @@ pub const TestCommand = struct {
             break :brk loader;
         };
         bun.jsc.initialize(false);
-        HTTPThread.init(&.{});
+        HTTPThread.init(ctx.io, &.{});
 
         const enable_random = ctx.test_options.randomize;
         const seed: u32 = if (enable_random) ctx.test_options.seed orelse @truncate(bun.fastRandom()) else 0; // seed is limited to u32 so storing it in js doesn't lose precision
@@ -1436,7 +1436,7 @@ pub const TestCommand = struct {
                     .counts = &snapshot_counts,
                     .inline_snapshots_to_write = &inline_snapshots_to_write,
                 },
-                .bun_test_root = .init(ctx.allocator),
+                .bun_test_root = .init(ctx.io, ctx.allocator),
             },
         };
         reporter.repeat_count = @max(ctx.test_options.repeat_count, 1);

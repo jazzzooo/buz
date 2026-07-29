@@ -18,16 +18,17 @@ const LibInfo = struct {
     const GetaddrinfoAsyncHandleReply = fn (?*bun.mach_port) callconv(.c) i32;
     const GetaddrinfoAsyncCancel = fn (?*bun.mach_port) callconv(.c) void;
 
-    var handle: ?*anyopaque = null;
-    var loaded = false;
-    pub fn getHandle() ?*anyopaque {
-        if (loaded)
-            return handle;
-        loaded = true;
-        handle = bun.sys.dlopen("libinfo.dylib", .{ .LAZY = true, .LOCAL = true });
+    fn loadHandle() ?*anyopaque {
+        const handle = bun.sys.dlopen("libinfo.dylib", .{ .LAZY = true, .LOCAL = true });
         if (handle == null)
             Output.debug("libinfo.dylib not found", .{});
         return handle;
+    }
+
+    var handle_once = bun.threadedOnce(loadHandle);
+
+    pub fn getHandle() ?*anyopaque {
+        return handle_once.call(.{});
     }
 
     pub const getaddrinfo_async_start = struct {
@@ -1249,6 +1250,7 @@ pub const internal = struct {
         };
 
         key: Key,
+        io: std.Io,
         result: ?Result = null,
 
         notify: std.ArrayListUnmanaged(DNSRequestOwner) = .empty,
@@ -1300,7 +1302,7 @@ pub const internal = struct {
     const GlobalCache = struct {
         const MAX_ENTRIES = 256;
 
-        lock: bun.Mutex = .{},
+        lock: std.Io.Mutex = .init,
         cache: [MAX_ENTRIES]*Request = undefined,
         len: usize = 0,
 
@@ -1465,15 +1467,15 @@ pub const internal = struct {
     /// path frees the addrinfo request inline (via Bun__addrinfo_freeRequest),
     /// which re-acquires global_cache.lock — so drop it before notifying.
     pub fn registerQuic(request: *Request, pc: *bun.http.H3.PendingConnect) void {
-        global_cache.lock.lock();
+        global_cache.lock.lockUncancelable(request.io);
         const owner: DNSRequestOwner = .{ .quic = pc };
         if (request.result != null) {
-            global_cache.lock.unlock();
+            global_cache.lock.unlock(request.io);
             owner.notify(request);
             return;
         }
         bun.handleOom(request.notify.append(bun.default_allocator, owner));
-        global_cache.lock.unlock();
+        global_cache.lock.unlock(request.io);
     }
 
     const ResultEntry = extern struct {
@@ -1550,7 +1552,7 @@ pub const internal = struct {
             break :brk res.ptr;
         } else null;
 
-        global_cache.lock.lock();
+        global_cache.lock.lockUncancelable(req.io);
 
         req.result = .{
             .info = results,
@@ -1562,7 +1564,7 @@ pub const internal = struct {
         req.refcount -= 1;
 
         // is this correct, or should it go after the loop?
-        global_cache.lock.unlock();
+        global_cache.lock.unlock(req.io);
 
         for (notify.items) |query| {
             query.notifyThreadsafe(req);
@@ -1745,14 +1747,15 @@ pub const internal = struct {
     pub fn getaddrinfo(loop: *bun.uws.Loop, host: ?[:0]const u8, port: u16, is_cache_hit: ?*bool) ?*Request {
         const preload = is_cache_hit == null;
         const key = Request.Key.init(host, port);
-        global_cache.lock.lock();
+        const io = loop.internal_loop_data.getParent().io();
+        global_cache.lock.lockUncancelable(io);
         getaddrinfo_calls += 1;
         var timestamp_to_store: u32 = 0;
         // is there a cache hit?
         if (!bun.feature_flag.BUN_FEATURE_FLAG_DISABLE_DNS_CACHE.get()) {
             if (global_cache.get(key, &timestamp_to_store)) |entry| {
                 if (preload) {
-                    global_cache.lock.unlock();
+                    global_cache.lock.unlock(io);
                     return null;
                 }
 
@@ -1767,7 +1770,7 @@ pub const internal = struct {
                     dns_cache_hits_inflight += 1;
                 }
 
-                global_cache.lock.unlock();
+                global_cache.lock.unlock(io);
 
                 return entry;
             }
@@ -1776,6 +1779,7 @@ pub const internal = struct {
         // no cache hit, we have to make a new request
         const req = Request.new(.{
             .key = key.toOwned(),
+            .io = io,
             .refcount = @as(u32, @intFromBool(!preload)) + 1,
 
             // Seconds since when this request was created
@@ -1785,7 +1789,7 @@ pub const internal = struct {
         _ = global_cache.tryPush(req);
         dns_cache_misses += 1;
         dns_cache_size = global_cache.len;
-        global_cache.lock.unlock();
+        global_cache.lock.unlock(io);
 
         if (comptime Environment.isMac) {
             if (!bun.feature_flag.BUN_FEATURE_FLAG_DISABLE_DNS_CACHE_LIBINFO.get()) {
@@ -1851,8 +1855,8 @@ pub const internal = struct {
         request: *Request,
         socket: *bun.uws.ConnectingSocket,
     ) callconv(.c) void {
-        global_cache.lock.lock();
-        defer global_cache.lock.unlock();
+        global_cache.lock.lockUncancelable(request.io);
+        defer global_cache.lock.unlock(request.io);
         const query = DNSRequestOwner{
             .socket = socket,
         };
@@ -1868,8 +1872,8 @@ pub const internal = struct {
         request: *Request,
         socket: *bun.uws.ConnectingSocket,
     ) callconv(.c) c_int {
-        global_cache.lock.lock();
-        defer global_cache.lock.unlock();
+        global_cache.lock.lockUncancelable(request.io);
+        defer global_cache.lock.unlock(request.io);
         // afterResult sets result and moves the notify list out under this same
         // lock, so once result is non-null the socket is no longer cancellable
         // (the callback has fired or is about to fire on the worker thread).
@@ -1887,8 +1891,8 @@ pub const internal = struct {
     }
 
     fn freeaddrinfo(req: *Request, err: c_int) callconv(.c) void {
-        global_cache.lock.lock();
-        defer global_cache.lock.unlock();
+        global_cache.lock.lockUncancelable(req.io);
+        defer global_cache.lock.unlock(req.io);
 
         if (err != 0) {
             req.valid = false;

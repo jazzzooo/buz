@@ -240,7 +240,7 @@ pub const CronRegisterJob = struct {
             return;
         };
 
-        const tmp_path = makeTempPath("bun-cron-") catch {
+        const tmp_path = makeTempPath(this.global.bunVM().io, "bun-cron-") catch {
             this.setErr("Out of memory", .{});
             this.finish();
             return;
@@ -521,7 +521,7 @@ pub const CronRegisterJob = struct {
         };
         defer bun.default_allocator.free(xml);
 
-        const xml_path = makeTempPath("bun-cron-xml-") catch {
+        const xml_path = makeTempPath(this.global.bunVM().io, "bun-cron-xml-") catch {
             this.setErr("Out of memory", .{});
             this.finish();
             return;
@@ -718,7 +718,7 @@ pub const CronRemoveJob = struct {
             return;
         };
 
-        const tmp_path = makeTempPath("bun-cron-rm-") catch {
+        const tmp_path = makeTempPath(this.global.bunVM().io, "bun-cron-rm-") catch {
             this.setErr("Out of memory", .{});
             this.finish();
             return;
@@ -1756,10 +1756,10 @@ fn allocPrintZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: any
 }
 
 /// Create a temp file path with a random suffix to avoid TOCTOU/symlink attacks.
-fn makeTempPath(comptime prefix: []const u8) ![:0]const u8 {
+fn makeTempPath(io: std.Io, comptime prefix: []const u8) ![:0]const u8 {
     var name_buf: bun.PathBuffer = undefined;
     const name = bun.fs.FileSystem.tmpname(prefix ++ "tmp", &name_buf, bun.fastRandom()) catch return error.OutOfMemory;
-    return bun.default_allocator.dupeSentinel(u8, bun.path.joinAbsString(bun.fs.FileSystem.RealFS.platformTempDir(), &.{name}, .auto), 0);
+    return bun.default_allocator.dupeSentinel(u8, bun.path.joinAbsString(bun.fs.FileSystem.RealFS.platformTempDir(io), &.{name}, .auto), 0);
 }
 
 const std = @import("std");

@@ -16,7 +16,8 @@ pub const TimerHeap = heap.Intrusive(EventLoopTimer, void, EventLoopTimer.less);
 
 pub const All = struct {
     last_id: i32 = 1,
-    lock: bun.Mutex = .{},
+    io: std.Io,
+    lock: std.Io.Mutex = .init,
     thread_id: std.Thread.Id,
     timers: TimerHeap = .{ .context = {} },
     active_timer_count: i32 = 0,
@@ -54,15 +55,16 @@ pub const All = struct {
     /// Updates the "Date" header.
     date_header_timer: DateHeaderTimer = .{},
 
-    pub fn init() @This() {
+    pub fn init(io: std.Io) @This() {
         return .{
+            .io = io,
             .thread_id = std.Thread.getCurrentId(),
         };
     }
 
     pub fn insert(this: *All, timer: *EventLoopTimer) void {
-        this.lock.lock();
-        defer this.lock.unlock();
+        this.lock.lockUncancelable(this.io);
+        defer this.lock.unlock(this.io);
         this.insertLockHeld(timer);
     }
 
@@ -84,8 +86,8 @@ pub const All = struct {
     }
 
     pub fn remove(this: *All, timer: *EventLoopTimer) void {
-        this.lock.lock();
-        defer this.lock.unlock();
+        this.lock.lockUncancelable(this.io);
+        defer this.lock.unlock(this.io);
         this.removeLockHeld(timer);
     }
     fn removeLockHeld(this: *All, timer: *EventLoopTimer) void {
@@ -101,8 +103,8 @@ pub const All = struct {
 
     /// Remove the EventLoopTimer if necessary.
     pub fn update(this: *All, timer: *EventLoopTimer, time: *const timespec) void {
-        this.lock.lock();
-        defer this.lock.unlock();
+        this.lock.lockUncancelable(this.io);
+        defer this.lock.unlock(this.io);
         if (timer.state == .ACTIVE) {
             this.removeLockHeld(timer);
         }
@@ -324,8 +326,8 @@ pub const All = struct {
     // and we do NOT want to hold the lock while the timer is running it's code.
     // This function has to be thread-safe.
     fn next(this: *All, has_set_now: *bool, now: *timespec) ?*EventLoopTimer {
-        this.lock.lock();
-        defer this.lock.unlock();
+        this.lock.lockUncancelable(this.io);
+        defer this.lock.unlock(this.io);
 
         if (this.timers.peek()) |timer| {
             if (!has_set_now.*) {

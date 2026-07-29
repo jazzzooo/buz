@@ -1055,7 +1055,7 @@ fn BaseWindowsPipeWriter(
             // Use the event loop from the parent, not the global one
             // This is critical for spawnSync to use its isolated loop
             const loop = this.parent.loop();
-            const source = switch (Source.open(loop, fd)) {
+            const source = switch (Source.open(jsc.EventLoopHandle.init(this.parent.eventLoop()).io(), loop, fd)) {
                 .result => |source| source,
                 .err => |err| {
                     if (err.getErrno() == .BADF) return this.startWithFile(fd);

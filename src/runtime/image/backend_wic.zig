@@ -386,7 +386,7 @@ const CLSCTX_INPROC_SERVER: u32 = 1;
 
 threadlocal var com_initialised = false;
 var factory_ptr: ?*IWICImagingFactory = null;
-var factory_once = bun.once(loadFactory);
+var factory_once = bun.threadedOnce(loadFactory);
 
 fn factory() error{BackendUnavailable}!*IWICImagingFactory {
     // COM apartment must be entered on the *calling* thread; the factory

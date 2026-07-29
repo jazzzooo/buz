@@ -68,8 +68,8 @@ pub const MessageType = enum(u32) {
     _,
 };
 
-var stderr_mutex: bun.Mutex = .{};
-var stdout_mutex: bun.Mutex = .{};
+var stderr_mutex: std.Io.Mutex = .init;
+var stdout_mutex: std.Io.Mutex = .init;
 
 threadlocal var stderr_lock_count: u16 = 0;
 threadlocal var stdout_lock_count: u16 = 0;
@@ -96,7 +96,9 @@ fn messageWithTypeAndLevel_(
     vals: [*]const JSValue,
     len: usize,
 ) bun.JSError!void {
-    var console = global.bunVM().console;
+    const vm = global.bunVM();
+    const io = vm.io;
+    var console = vm.console;
     defer console.default_indent +|= @as(u16, @intFromBool(message_type == .StartGroup));
 
     if (message_type == .StartGroup and len == 0) {
@@ -113,13 +115,13 @@ fn messageWithTypeAndLevel_(
     // We do this the slightly annoying way to avoid assigning a pointer
     if (level == .Warning or level == .Error or message_type == .Assert) {
         if (stderr_lock_count == 0) {
-            stderr_mutex.lock();
+            stderr_mutex.lockUncancelable(io);
         }
 
         stderr_lock_count += 1;
     } else {
         if (stdout_lock_count == 0) {
-            stdout_mutex.lock();
+            stdout_mutex.lockUncancelable(io);
         }
 
         stdout_lock_count += 1;
@@ -130,13 +132,13 @@ fn messageWithTypeAndLevel_(
             stderr_lock_count -= 1;
 
             if (stderr_lock_count == 0) {
-                stderr_mutex.unlock();
+                stderr_mutex.unlock(io);
             }
         } else {
             stdout_lock_count -= 1;
 
             if (stdout_lock_count == 0) {
-                stdout_mutex.unlock();
+                stdout_mutex.unlock(io);
             }
         }
     }

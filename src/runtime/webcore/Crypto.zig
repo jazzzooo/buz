@@ -140,7 +140,7 @@ pub fn Bun__randomUUIDv7_(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallF
 
     const entropy = globalThis.bunVM().rareData().entropySlice(8);
 
-    const uuid = UUID7.init(timestamp, &entropy[0..8].*);
+    const uuid = UUID7.init(globalThis.bunVM().io, timestamp, &entropy[0..8].*);
 
     if (encoding == .hex) {
         var str, var bytes = bun.String.createUninitialized(.latin1, 36);

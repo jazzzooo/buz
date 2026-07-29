@@ -65,7 +65,7 @@ pub fn initWithNewAllocScope(kind: StateKind, interpreter: *Interpreter, shell: 
         .kind = kind,
         .interpreter = interpreter,
         .shell = shell,
-        .__alloc_scope = if (comptime bun.Environment.enableAllocScopes) .{ .owned = bun.AllocationScope.init(bun.default_allocator) } else {},
+        .__alloc_scope = if (comptime bun.Environment.enableAllocScopes) .{ .owned = bun.AllocationScope.init(interpreter.command_ctx.io, bun.default_allocator) } else {},
     };
 }
 

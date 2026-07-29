@@ -348,8 +348,8 @@ fn processINotifyEventBatch(this: *bun.Watcher, event_count: usize, temp_name_li
     }
     if (all_events.len == 0) return .success;
 
-    this.mutex.lock();
-    defer this.mutex.unlock();
+    this.mutex.lockUncancelable(this.fs.io);
+    defer this.mutex.unlock(this.fs.io);
     if (this.running) {
         // all_events.len == 0 is checked above, so last_event_index + 1 is safe
         this.writeTraceEvents(all_events[0 .. last_event_index + 1], this.changed_filepaths[0..name_off]);

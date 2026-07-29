@@ -123,12 +123,13 @@ pub const BunTestPtr = bun.ptr.shared.WithOptions(*BunTest, .{
     .Allocator = bun.DefaultAllocator,
 });
 pub const BunTestRoot = struct {
+    io: std.Io,
     gpa: std.mem.Allocator,
     active_file: BunTestPtr.Optional,
 
     hook_scope: *DescribeScope,
 
-    pub fn init(outer_gpa: std.mem.Allocator) BunTestRoot {
+    pub fn init(io: std.Io, outer_gpa: std.mem.Allocator) BunTestRoot {
         const gpa = outer_gpa;
         const hook_scope = DescribeScope.create(gpa, .{
             .parent = null,
@@ -141,6 +142,7 @@ pub const BunTestRoot = struct {
             .line_no = 0,
         });
         return .{
+            .io = io,
             .gpa = outer_gpa,
             .active_file = .initNull(),
             .hook_scope = hook_scope,
@@ -248,7 +250,7 @@ pub const BunTest = struct {
         group.begin(@src());
         defer group.end();
 
-        this.allocation_scope = .init(outer_gpa);
+        this.allocation_scope = .init(bunTest.io, outer_gpa);
         this.gpa = this.allocation_scope.allocator();
         this.arena_allocator = .init(this.gpa);
         this.arena = this.arena_allocator.allocator();

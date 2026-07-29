@@ -457,7 +457,7 @@ pub const PmVersionCommand = struct {
             .cwd = cwd,
             .envp = null,
             .windows = if (Environment.isWindows) .{
-                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
             },
         }) catch |err| {
             Output.errGeneric("Failed to spawn git process: {s}", .{@errorName(err)});
@@ -490,7 +490,7 @@ pub const PmVersionCommand = struct {
             .cwd = cwd,
             .envp = null,
             .windows = if (Environment.isWindows) .{
-                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
             },
         }) catch |err| {
             Output.err(err, "Failed to spawn git process", .{});
@@ -537,7 +537,7 @@ pub const PmVersionCommand = struct {
             .stdin = .ignore,
             .envp = null,
             .windows = if (Environment.isWindows) .{
-                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
             },
         }) catch |err| {
             Output.errGeneric("Git add failed: {s}", .{@errorName(err)});
@@ -571,7 +571,7 @@ pub const PmVersionCommand = struct {
             .stdin = .ignore,
             .envp = null,
             .windows = if (Environment.isWindows) .{
-                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
             },
         }) catch |err| {
             Output.errGeneric("Git commit failed: {s}", .{@errorName(err)});
@@ -602,7 +602,7 @@ pub const PmVersionCommand = struct {
             .stdin = .ignore,
             .envp = null,
             .windows = if (Environment.isWindows) .{
-                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(null, null)),
+                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
             },
         }) catch |err| {
             Output.errGeneric("Git tag failed: {s}", .{@errorName(err)});

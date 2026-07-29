@@ -20,7 +20,7 @@ pub const InternalLoopData = extern struct {
     low_prio_budget: i32,
     dns_ready_head: *ConnectingSocket,
     closed_connecting_head: *ConnectingSocket,
-    mutex: bun.Mutex.ReleaseImpl.Type,
+    mutex: std.Io.Mutex,
     parent_ptr: ?*anyopaque,
     parent_tag: c_char,
     iteration_nr: usize,
@@ -61,6 +61,24 @@ pub const InternalLoopData = extern struct {
     const LIBUS_RECV_BUFFER_LENGTH = 524288;
 };
 
+export fn Bun__lock(mutex: *std.Io.Mutex) void {
+    std.Io.Threaded.mutexLock(mutex);
+}
+
+export fn Bun__unlock(mutex: *std.Io.Mutex) void {
+    std.Io.Threaded.mutexUnlock(mutex);
+}
+
+export const Bun__lock__size: usize = @sizeOf(std.Io.Mutex);
+
+comptime {
+    bun.assert(@sizeOf(std.Io.Mutex) == @sizeOf(u32));
+    bun.assert(@alignOf(std.Io.Mutex) == @alignOf(u32));
+    bun.assert(@backingInt(std.Io.Mutex.State.unlocked) == 0);
+    bun.assert(std.Io.Mutex.init.state.raw == .unlocked);
+}
+
+const std = @import("std");
 const bun = @import("bun");
 const jsc = bun.jsc;
 

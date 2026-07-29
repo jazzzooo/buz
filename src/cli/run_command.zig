@@ -51,7 +51,7 @@ pub const RunCommand = struct {
 
     /// Find the "best" shell to use
     /// Cached to only run once
-    pub fn findShell(PATH: string, cwd: string) ?stringZ {
+    pub fn findShell(io: std.Io, PATH: string, cwd: string) ?stringZ {
         const Once = struct {
             var shell_buf: bun.PathBuffer = undefined;
             pub var once = bun.once(struct {
@@ -69,7 +69,7 @@ pub const RunCommand = struct {
             }.run);
         };
 
-        return Once.once.call(.{ PATH, cwd });
+        return Once.once.call(io, .{ PATH, cwd });
     }
 
     const BUN_BIN_NAME = if (Environment.isDebug) "bun-debug" else "bun";
@@ -215,7 +215,7 @@ pub const RunCommand = struct {
         silent: bool,
         use_system_shell: bool,
     ) !void {
-        const shell_bin = findShell(env.get("PATH") orelse "", cwd) orelse return error.MissingShell;
+        const shell_bin = findShell(ctx.io, env.get("PATH") orelse "", cwd) orelse return error.MissingShell;
         env.map.put("npm_lifecycle_event", name) catch unreachable;
         env.map.put("npm_lifecycle_script", original_script) catch unreachable;
 
@@ -245,7 +245,7 @@ pub const RunCommand = struct {
         }
 
         if (!use_system_shell) {
-            const mini = bun.jsc.MiniEventLoop.initGlobal(env, cwd);
+            const mini = bun.jsc.MiniEventLoop.initGlobal(ctx.io, env, cwd);
             const code = bun.shell.Interpreter.initAndRunFromSource(ctx, mini, name, copy_script.items, cwd) catch |err| {
                 if (!silent) {
                     Output.prettyErrorln("<r><red>error<r>: Failed to run script <b>{s}<r> due to error <b>{s}<r>", .{ name, @errorName(err) });
@@ -293,7 +293,7 @@ pub const RunCommand = struct {
             .ipc = ipc_fd,
 
             .windows = if (Environment.isWindows) .{
-                .loop = jsc.EventLoopHandle.init(jsc.MiniEventLoop.initGlobal(env, null)),
+                .loop = jsc.EventLoopHandle.init(jsc.MiniEventLoop.initGlobal(ctx.io, env, null)),
             },
         }) catch |err| {
             if (!silent) {
@@ -466,7 +466,7 @@ pub const RunCommand = struct {
             .use_execve_on_macos = silent,
 
             .windows = if (Environment.isWindows) .{
-                .loop = jsc.EventLoopHandle.init(jsc.MiniEventLoop.initGlobal(env, null)),
+                .loop = jsc.EventLoopHandle.init(jsc.MiniEventLoop.initGlobal(ctx.io, env, null)),
             },
         }) catch |err| {
             bun.handleErrorReturnTrace(err, @errorReturnTrace());
@@ -1264,20 +1264,21 @@ pub const RunCommand = struct {
         async_http: bun.http.AsyncHTTP,
         response_buffer: bun.MutableString,
         url: []const u8,
-        done: *DoneChannel,
+        done: *std.Io.Queue(u32),
+        io: std.Io,
 
-        const DoneChannel = bun.threading.Channel(u32, .{ .Static = 256 });
+        const done_capacity = 256;
 
         fn onDone(self: *RemoteImageDownload, async_http: *bun.http.AsyncHTTP, _: bun.http.HTTPClientResult) void {
             // Mirror sendSyncCallback from AsyncHTTP.zig: the worker's
             // ThreadlocalAsyncHTTP is about to be freed, so copy its
             // mutated state back into our owned AsyncHTTP before writing
-            // to the channel.
+            // to the completion queue.
             async_http.real.?.* = async_http.*;
             async_http.real.?.response_buffer = async_http.response_buffer;
-            // Channel payload is a placeholder tick — the main thread
+            // Queue payload is a placeholder tick — the main thread
             // walks `downloads[]` to read per-task state after N wakeups.
-            self.done.writeItem(0) catch {};
+            self.done.putOneUncancelable(self.io, 0) catch {};
         }
     };
 
@@ -1286,6 +1287,7 @@ pub const RunCommand = struct {
     /// with url → temp-path entries. Failures are silent — an image that
     /// can't be downloaded just falls back to alt-text rendering.
     fn prefetchRemoteImages(
+        io: std.Io,
         contents: []const u8,
         md_opts: bun.md.Options,
         out_map: *bun.StringHashMapUnmanaged([]const u8),
@@ -1313,7 +1315,7 @@ pub const RunCommand = struct {
         if (remote_urls.items.len == 0) return;
 
         const HTTP = bun.http;
-        HTTP.HTTPThread.init(&.{});
+        HTTP.HTTPThread.init(io, &.{});
 
         // Heap-allocate each Download so AsyncHTTP.task has a stable
         // address (see RemoteImageDownload doc comment).
@@ -1326,7 +1328,8 @@ pub const RunCommand = struct {
             downloads.deinit(allocator);
         }
 
-        var done_channel = RemoteImageDownload.DoneChannel.init();
+        var done_buffer: [RemoteImageDownload.done_capacity]u32 = undefined;
+        var done_queue: std.Io.Queue(u32) = .init(&done_buffer);
 
         // Kick off every download in parallel. Accumulate tasks into a
         // single ThreadPool.Batch, then ship the whole batch to the
@@ -1342,7 +1345,8 @@ pub const RunCommand = struct {
                     continue;
                 },
                 .url = raw_url,
-                .done = &done_channel,
+                .done = &done_queue,
+                .io = io,
             };
             d.async_http = HTTP.AsyncHTTP.init(
                 allocator,
@@ -1366,19 +1370,18 @@ pub const RunCommand = struct {
         if (downloads.items.len == 0) return;
         HTTP.http_thread.schedule(batch);
 
-        // Block the main thread on the channel until every scheduled
-        // download has reported back. readItem() uses a mutex+condvar,
-        // no busy loop. The payload value is unused — each wakeup just
+        // Block the main thread until every scheduled download has reported
+        // back. The payload value is unused — each wakeup just
         // means "one more task finished".
         var completed: usize = 0;
         while (completed < downloads.items.len) : (completed += 1) {
-            _ = done_channel.readItem() catch break;
+            _ = done_queue.getOneUncancelable(io) catch break;
         }
 
         // Second pass: walk completed downloads, write successful
         // bodies to temp files, populate out_map. All disk I/O is done
         // AFTER every network request has settled.
-        const tmpdir = bun.fs.FileSystem.RealFS.tmpdirPath();
+        const tmpdir = bun.fs.FileSystem.RealFS.tmpdirPath(io);
         for (downloads.items) |d| {
             if (d.async_http.err != null) continue;
             const status = if (d.async_http.response) |r| r.status_code else 0;
@@ -1436,7 +1439,7 @@ pub const RunCommand = struct {
 
     /// Read a markdown file, render it to ANSI, print to stdout, and exit.
     /// Runs without a JavaScript VM — much faster than booting JSC.
-    fn renderMarkdownFileAndExit(path: string) noreturn {
+    fn renderMarkdownFileAndExit(io: std.Io, path: string) noreturn {
         // No explicit free() on contents / rendered below: every path out
         // of this function calls Global.exit() or bun.outOfMemory() (both
         // noreturn), so the OS reclaims the allocations on process exit.
@@ -1488,7 +1491,7 @@ pub const RunCommand = struct {
         // is a no-op.
         var remote_map: bun.StringHashMapUnmanaged([]const u8) = .{};
         if (kitty_graphics and bun.strings.contains(contents, "![")) {
-            prefetchRemoteImages(contents, md_opts, &remote_map);
+            prefetchRemoteImages(io, contents, md_opts, &remote_map);
         }
 
         // Relative image paths in the markdown should resolve against
@@ -1552,7 +1555,7 @@ pub const RunCommand = struct {
     fn _bootAndHandleError(ctx: Command.Context, path: string, loader: ?bun.options.Loader) bool {
         const resolved_loader: ?bun.options.Loader = loader orelse bun.options.defaultLoaders.get(std.fs.path.extension(path));
         if (resolved_loader) |l| {
-            if (l == .md) renderMarkdownFileAndExit(path);
+            if (l == .md) renderMarkdownFileAndExit(ctx.io, path);
         }
         Run.boot(ctx, ctx.allocator.dupe(u8, path) catch return false, loader) catch |err| {
             ctx.log.print(Output.errorWriter()) catch {};

@@ -332,19 +332,19 @@ pub fn schedule(this: *AsyncHTTP, _: std.mem.Allocator, batch: *ThreadPool.Batch
     batch.push(ThreadPool.Batch.from(&this.task));
 }
 
-fn sendSyncCallback(this: *SingleHTTPChannel, async_http: *AsyncHTTP, result: HTTPClientResult) void {
+fn sendSyncCallback(this: *SingleHTTPQueue, async_http: *AsyncHTTP, result: HTTPClientResult) void {
     async_http.real.?.* = async_http.*;
     async_http.real.?.response_buffer = async_http.response_buffer;
-    this.channel.writeItem(result) catch unreachable;
+    this.queue.putOneUncancelable(this.io, result) catch unreachable;
 }
 
-pub fn sendSync(this: *AsyncHTTP) anyerror!picohttp.Response {
-    HTTPThread.init(&.{});
+pub fn sendSync(this: *AsyncHTTP, io: std.Io) anyerror!picohttp.Response {
+    HTTPThread.init(io, &.{});
 
-    var ctx = try bun.default_allocator.create(SingleHTTPChannel);
-    ctx.* = SingleHTTPChannel.init();
+    const ctx = try bun.default_allocator.create(SingleHTTPQueue);
+    ctx.init(io);
     this.result_callback = HTTPClientResult.Callback.New(
-        *SingleHTTPChannel,
+        *SingleHTTPQueue,
         sendSyncCallback,
     ).init(ctx);
 
@@ -352,7 +352,7 @@ pub fn sendSync(this: *AsyncHTTP) anyerror!picohttp.Response {
     this.schedule(bun.default_allocator, &batch);
     bun.http.http_thread.schedule(batch);
 
-    const result = ctx.channel.readItem() catch unreachable;
+    const result = ctx.queue.getOneUncancelable(io) catch unreachable;
     if (result.fail) |err| {
         return err;
     }
@@ -433,25 +433,14 @@ pub fn onStart(this: *AsyncHTTP) void {
 
 const log = bun.Output.scoped(.AsyncHTTP, .visible);
 
-const HTTPCallbackPair = .{ *AsyncHTTP, HTTPClientResult };
-pub const HTTPChannel = Channel(HTTPCallbackPair, .{ .Static = 1000 });
-// 32 pointers much cheaper than 1000 pointers
-const SingleHTTPChannel = struct {
-    const SingleHTTPCHannel_ = Channel(HTTPClientResult, .{ .Static = 8 });
-    channel: SingleHTTPCHannel_,
-    pub fn reset(_: *@This()) void {}
-    pub fn init() SingleHTTPChannel {
-        return SingleHTTPChannel{ .channel = SingleHTTPCHannel_.init() };
-    }
-};
+const SingleHTTPQueue = struct {
+    storage: [8]HTTPClientResult = undefined,
+    queue: std.Io.Queue(HTTPClientResult) = undefined,
+    io: std.Io = undefined,
 
-pub const HTTPChannelContext = struct {
-    http: AsyncHTTP = undefined,
-    channel: *HTTPChannel,
-
-    pub fn callback(data: HTTPCallbackPair) void {
-        var this: *HTTPChannelContext = @fieldParentPtr("http", data.@"0");
-        this.channel.writeItem(data) catch unreachable;
+    pub fn init(this: *@This(), io: std.Io) void {
+        this.* = .{ .io = io };
+        this.queue = .init(&this.storage);
     }
 };
 
@@ -473,7 +462,6 @@ const MutableString = bun.MutableString;
 const assert = bun.assert;
 const jsc = bun.jsc;
 const picohttp = bun.picohttp;
-const Channel = bun.threading.Channel;
 const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
 
 const ThreadPool = bun.ThreadPool;

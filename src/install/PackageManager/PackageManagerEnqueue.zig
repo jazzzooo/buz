@@ -1277,7 +1277,7 @@ fn enqueueGitClone(
                     *FileSystem.FilenameStore,
                     FileSystem.FilenameStore.instance,
                 ) catch unreachable,
-                .env = Repository.shared_env.get(this.allocator, this.env),
+                .env = Repository.shared_env.get(this.io, this.allocator, this.env),
                 .dep_id = dep_id,
                 .res = res.*,
             },
@@ -1335,7 +1335,7 @@ pub fn enqueueGitCheckout(
                     *FileSystem.FilenameStore,
                     FileSystem.FilenameStore.instance,
                 ) catch unreachable,
-                .env = Repository.shared_env.get(this.allocator, this.env),
+                .env = Repository.shared_env.get(this.io, this.allocator, this.env),
             },
         },
         .apply_patch_task = if (patch_name_and_version_hash) |h| brk: {

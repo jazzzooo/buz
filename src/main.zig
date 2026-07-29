@@ -15,7 +15,7 @@ pub extern "c" var _environ: ?*anyopaque;
 pub extern "c" var environ: ?*anyopaque;
 
 pub fn main(init: std.process.Init) void {
-    _bun.crash_handler.init();
+    _bun.crash_handler.init(init.io);
 
     if (Environment.isPosix) {
         var act: _bun.sys.Sigaction = .{

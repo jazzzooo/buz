@@ -435,7 +435,7 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
     @memcpy(post_script_name[0..4], "post");
     @memcpy(post_script_name[4..], script_name);
 
-    const fsinstance = try bun.fs.FileSystem.init(null);
+    const fsinstance = try bun.fs.FileSystem.init(ctx.io, null);
 
     // these things are leaked because we are going to exit
     // When --workspaces is set, we want to match all workspace packages
@@ -537,13 +537,13 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
         Global.exit(1);
     }
 
-    const event_loop = bun.jsc.MiniEventLoop.initGlobal(this_transpiler.env, null);
+    const event_loop = bun.jsc.MiniEventLoop.initGlobal(ctx.io, this_transpiler.env, null);
     // --no-orphans: register the macOS kqueue parent watch on this MiniEventLoop
     // (the VirtualMachine.init path is never reached for --filter). Linux is
     // already covered by prctl in enable() + linux_pdeathsig on each spawn.
     bun.ParentDeathWatchdog.installOnEventLoop(bun.jsc.EventLoopHandle.init(event_loop));
     const shell_bin: [:0]const u8 = if (Environment.isPosix)
-        RunCommand.findShell(this_transpiler.env.get("PATH") orelse "", fsinstance.top_level_dir) orelse return error.MissingShell
+        RunCommand.findShell(ctx.io, this_transpiler.env.get("PATH") orelse "", fsinstance.top_level_dir) orelse return error.MissingShell
     else
         bun.selfExePath() catch return error.MissingShell;
 

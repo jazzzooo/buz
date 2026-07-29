@@ -302,7 +302,7 @@ pub fn hasEnoughTimePassedBetweenWaitingMessages(this: *PackageManager) bool {
 }
 
 pub fn configureEnvForScripts(this: *PackageManager, ctx: Command.Context, log_level: Options.LogLevel) !transpiler.Transpiler {
-    return configureEnvForScriptsOnce.call(.{ this, ctx, log_level });
+    return configureEnvForScriptsOnce.call(this.io, .{ this, ctx, log_level });
 }
 
 pub var configureEnvForScriptsOnce = bun.once(struct {
@@ -427,7 +427,7 @@ pub const FailFn = *const fn (*PackageManager, *const Dependency, PackageID, any
 pub const debug = Output.scoped(.PackageManager, .hidden);
 
 pub fn ensureTempNodeGypScript(this: *PackageManager) !void {
-    return ensureTempNodeGypScriptOnce.call(.{this});
+    return ensureTempNodeGypScriptOnce.call(this.io, .{this});
 }
 
 var ensureTempNodeGypScriptOnce = bun.once(struct {
@@ -553,7 +553,7 @@ pub fn init(
         try std.process.setCurrentDir(ctx.io, global_dir);
     }
 
-    var fs = try Fs.FileSystem.init(null);
+    var fs = try Fs.FileSystem.init(ctx.io, null);
     const top_level_dir_no_trailing_slash = strings.withoutTrailingSlash(fs.top_level_dir);
     if (comptime Environment.isWindows) {
         _ = Path.pathToPosixBuf(u8, top_level_dir_no_trailing_slash, &cwd_buf);
@@ -847,6 +847,7 @@ pub fn init(
         .env = env,
         .cpu_count = cpu_count,
         .thread_pool = ThreadPool.init(.{
+            .io = ctx.io,
             .max_threads = cpu_count,
         }),
         .resolve_tasks = .{},
@@ -854,7 +855,7 @@ pub fn init(
         .root_package_json_file = root_package_json_file,
         // .progress
         .event_loop = .{
-            .mini = jsc.MiniEventLoop.init(bun.default_allocator),
+            .mini = jsc.MiniEventLoop.init(ctx.io, bun.default_allocator),
         },
         .io = ctx.io,
         .original_package_json_path = original_package_json_path,
@@ -942,7 +943,7 @@ pub fn init(
         break :brk default_max_simultaneous_requests_for_bun_install;
     }, .monotonic);
 
-    HTTP.HTTPThread.init(&.{
+    HTTP.HTTPThread.init(ctx.io, &.{
         .ca = ca,
         .abs_ca_file_name = abs_ca_file_name,
         .onInitError = &httpThreadOnInitError,
@@ -1012,6 +1013,7 @@ pub fn initWithRuntime(
         .env = env,
         .cpu_count = cpu_count,
         .thread_pool = ThreadPool.init(.{
+            .io = io,
             .max_threads = cpu_count,
         }),
         .lockfile = undefined,

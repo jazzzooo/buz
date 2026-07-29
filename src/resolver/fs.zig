@@ -12,6 +12,7 @@ pub const Preallocate = struct {
 };
 
 pub const FileSystem = struct {
+    io: std.Io,
     top_level_dir: stringZ,
 
     // used on subsequent updates
@@ -83,26 +84,27 @@ pub const FileSystem = struct {
         ENOTDIR,
     };
 
-    pub fn init(top_level_dir: ?stringZ) !*FileSystem {
-        return initWithForce(top_level_dir, false);
+    pub fn init(io: std.Io, top_level_dir: ?stringZ) !*FileSystem {
+        return initWithForce(io, top_level_dir, false);
     }
 
-    pub fn initWithForce(top_level_dir_: ?stringZ, comptime force: bool) !*FileSystem {
+    pub fn initWithForce(io: std.Io, top_level_dir_: ?stringZ, comptime force: bool) !*FileSystem {
         const allocator = bun.default_allocator;
         var top_level_dir = top_level_dir_ orelse (if (Environment.isBrowser) "/project/" else try bun.getcwdAlloc(allocator));
         _ = &top_level_dir;
 
         if (!instance_loaded or force) {
             instance = FileSystem{
+                .io = io,
                 .top_level_dir = top_level_dir,
-                .fs = Implementation.init(top_level_dir),
+                .fs = Implementation.init(io, top_level_dir),
                 // must always use default_allocator since the other allocators may not be threadsafe when an element resizes
-                .dirname_store = DirnameStore.init(bun.default_allocator),
-                .filename_store = FilenameStore.init(bun.default_allocator),
+                .dirname_store = DirnameStore.init(io, bun.default_allocator),
+                .filename_store = FilenameStore.init(io, bun.default_allocator),
             };
             instance_loaded = true;
 
-            _ = DirEntry.EntryStore.init(allocator);
+            _ = DirEntry.EntryStore.init(io, allocator);
         }
 
         return &instance;
@@ -126,7 +128,7 @@ pub const FileSystem = struct {
         //     // dir.data.remove(name);
         // }
 
-        pub fn addEntry(dir: *DirEntry, prev_map: ?*EntryMap, entry: *const bun.DirIterator.IteratorResult, allocator: std.mem.Allocator, comptime Iterator: type, iterator: Iterator) !void {
+        pub fn addEntry(dir: *DirEntry, io: std.Io, prev_map: ?*EntryMap, entry: *const bun.DirIterator.IteratorResult, allocator: std.mem.Allocator, comptime Iterator: type, iterator: Iterator) !void {
             const name_slice = entry.name.slice();
             const found_kind: ?Entry.Kind = switch (entry.kind) {
                 .directory => .dir,
@@ -158,8 +160,8 @@ pub const FileSystem = struct {
                     const prehashed = bun.StringHashMapContext.PrehashedCaseInsensitive.init(stack, name_slice);
                     defer prehashed.deinit(stack);
                     if (map.getAdapted(name_slice, prehashed)) |existing| {
-                        existing.mutex.lock();
-                        defer existing.mutex.unlock();
+                        existing.mutex.lockUncancelable(io);
+                        defer existing.mutex.unlock(io);
                         existing.dir = dir.dir;
 
                         existing.need_stat = existing.need_stat or
@@ -194,7 +196,7 @@ pub const FileSystem = struct {
                     .base_ = name,
                     .base_lowercase_ = name_lowercased,
                     .dir = dir.dir,
-                    .mutex = .{},
+                    .mutex = .init,
                     // Call "stat" lazily for performance. The "@material-ui/icons" package
                     // contains a directory with over 11,000 entries in it and running "stat"
                     // for each entry was a big performance issue for that package.
@@ -336,7 +338,7 @@ pub const FileSystem = struct {
         // Necessary because the hash table uses it as a key
         base_lowercase_: strings.StringOrTinyString,
 
-        mutex: Mutex,
+        mutex: std.Io.Mutex,
         need_stat: bool = true,
 
         abs_path: PathString = PathString.empty,
@@ -437,7 +439,8 @@ pub const FileSystem = struct {
     }
 
     pub const RealFS = struct {
-        entries_mutex: Mutex = .{},
+        io: std.Io,
+        entries_mutex: std.Io.Mutex = .init,
         entries: *EntriesOption.Map,
         cwd: string,
         file_limit: usize = 32,
@@ -489,8 +492,8 @@ pub const FileSystem = struct {
         }
 
         var get_platform_tempdir = bun.once(detectPlatformTempDir);
-        pub fn platformTempDir() []const u8 {
-            return get_platform_tempdir.call(.{});
+        pub fn platformTempDir(io: std.Io) []const u8 {
+            return get_platform_tempdir.call(io, .{});
         }
 
         pub const Tmpfile = switch (Environment.os) {
@@ -498,13 +501,13 @@ pub const FileSystem = struct {
             else => TmpfilePosix,
         };
 
-        pub fn tmpdirPath() []const u8 {
-            return bun.env_var.BUN_TMPDIR.getNotEmpty() orelse platformTempDir();
+        pub fn tmpdirPath(io: std.Io) []const u8 {
+            return bun.env_var.BUN_TMPDIR.getNotEmpty() orelse platformTempDir(io);
         }
 
-        pub fn openTmpDir(_: *const RealFS) !std.Io.Dir {
+        pub fn openTmpDir(this: *const RealFS) !std.Io.Dir {
             if (comptime Environment.isWindows) {
-                return (try bun.sys.openDirAtWindowsA(bun.invalid_fd, tmpdirPath(), .{
+                return (try bun.sys.openDirAtWindowsA(bun.invalid_fd, tmpdirPath(this.io), .{
                     .iterable = true,
                     // we will not delete the temp directory
                     .can_rename_or_delete = false,
@@ -512,7 +515,7 @@ pub const FileSystem = struct {
                 }).unwrap()).stdDir();
             }
 
-            return try bun.openDirAbsolute(tmpdirPath());
+            return try bun.openDirAbsolute(tmpdirPath(this.io));
         }
 
         pub fn entriesAt(this: *RealFS, index: allocators.IndexType, generation: bun.Generation) ?*EntriesOption {
@@ -547,8 +550,8 @@ pub const FileSystem = struct {
             return existing;
         }
 
-        pub fn getDefaultTempDir() string {
-            return bun.env_var.BUN_TMPDIR.get() orelse platformTempDir();
+        pub fn getDefaultTempDir(io: std.Io) string {
+            return bun.env_var.BUN_TMPDIR.get() orelse platformTempDir(io);
         }
 
         pub const TmpfilePosix = struct {
@@ -670,8 +673,8 @@ pub const FileSystem = struct {
         }
 
         pub fn bustEntriesFailure(rfs: *RealFS, file_path: string) void {
-            rfs.entries_mutex.lock();
-            defer rfs.entries_mutex.unlock();
+            rfs.entries_mutex.lockUncancelable(rfs.io);
+            defer rfs.entries_mutex.unlock(rfs.io);
 
             if (rfs.entries.get(file_path)) |entry| {
                 if (entry.* == .entries) return;
@@ -721,16 +724,18 @@ pub const FileSystem = struct {
         var _entries_option_map: *EntriesOption.Map = undefined;
         var _entries_option_map_loaded: bool = false;
         pub fn init(
+            io: std.Io,
             cwd: string,
         ) RealFS {
             const file_limit = adjustUlimit() catch unreachable;
 
             if (!_entries_option_map_loaded) {
-                _entries_option_map = EntriesOption.Map.init(bun.default_allocator);
+                _entries_option_map = EntriesOption.Map.init(io, bun.default_allocator);
                 _entries_option_map_loaded = true;
             }
 
             return RealFS{
+                .io = io,
                 .entries = _entries_option_map,
                 .cwd = cwd,
                 .file_limit = file_limit,
@@ -850,8 +855,6 @@ pub const FileSystem = struct {
             comptime Iterator: type,
             iterator: Iterator,
         ) !DirEntry {
-            _ = fs;
-
             var iter = bun.iterateDir(.fromStdDir(handle));
             var dir = DirEntry.init(_dir, generation);
             const allocator = bun.default_allocator;
@@ -865,7 +868,7 @@ pub const FileSystem = struct {
             while (try iter.next().unwrap()) |*_entry| {
                 debug("readdir entry {s}", .{_entry.name.slice()});
 
-                try dir.addEntry(prev_map, _entry, allocator, Iterator, iterator);
+                try dir.addEntry(fs.io, prev_map, _entry, allocator, Iterator, iterator);
             }
 
             debug("readdir({f}, {s}) = {d}", .{ printHandle(bun.FD.fromStdDir(handle).native()), _dir, dir.data.count() });
@@ -936,11 +939,11 @@ pub const FileSystem = struct {
             bun.resolver.Resolver.assertValidCacheKey(dir);
             var cache_result: ?allocators.Result = null;
             if (comptime FeatureFlags.enable_entry_cache) {
-                fs.entries_mutex.lock();
+                fs.entries_mutex.lockUncancelable(fs.io);
             }
             defer {
                 if (comptime FeatureFlags.enable_entry_cache) {
-                    fs.entries_mutex.unlock();
+                    fs.entries_mutex.unlock(fs.io);
                 }
             }
             var in_place: ?*DirEntry = null;
@@ -1296,13 +1299,6 @@ pub const FileSystem = struct {
 
             return cache;
         }
-
-        //         // Stores the file entries for directories we've listed before
-        // entries_mutex: std.Mutex
-        // entries      map[string]entriesOrErr
-
-        // // If true, do not use the "entries" cache
-        // doNotCacheEntries bool
     };
 
     pub const Implementation = RealFS;
@@ -1627,7 +1623,6 @@ const FD = bun.FD;
 const FeatureFlags = bun.FeatureFlags;
 const MAX_PATH_BYTES = bun.MAX_PATH_BYTES;
 const MutableString = bun.MutableString;
-const Mutex = bun.Mutex;
 const OOM = bun.OOM;
 const Output = bun.Output;
 const PathBuffer = bun.PathBuffer;

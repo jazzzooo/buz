@@ -97,6 +97,13 @@ pub const EventLoopHandle = union(EventLoopKind) {
         };
     }
 
+    pub fn io(this: EventLoopHandle) std.Io {
+        return switch (this) {
+            .js => this.js.virtual_machine.io,
+            .mini => this.mini.io,
+        };
+    }
+
     pub fn pipeReadBuffer(this: EventLoopHandle) []u8 {
         return switch (this) {
             .js => this.js.pipeReadBuffer(),

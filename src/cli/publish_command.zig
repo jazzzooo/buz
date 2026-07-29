@@ -490,6 +490,7 @@ pub const PublishCommand = struct {
     }
 
     fn checkPackageVersionExists(
+        io: std.Io,
         allocator: std.mem.Allocator,
         package_name: string,
         version: string,
@@ -548,7 +549,7 @@ pub const PublishCommand = struct {
             .follow,
         );
 
-        const res = req.sendSync() catch return false;
+        const res = req.sendSync(io) catch return false;
         if (res.status_code != 200) return false;
 
         // Parse the response to check if this specific version exists
@@ -580,6 +581,7 @@ pub const PublishCommand = struct {
         if (tolerate_republish) {
             const version_without_build_tag = Dependency.withoutBuildTag(ctx.package_version);
             const package_exists = checkPackageVersionExists(
+                ctx.manager.io,
                 ctx.allocator,
                 ctx.package_name,
                 version_without_build_tag,
@@ -613,6 +615,7 @@ pub const PublishCommand = struct {
         defer print_buf.deinit(ctx.allocator);
 
         const publish_headers = try constructPublishHeaders(
+            ctx.manager.io,
             ctx.allocator,
             &print_buf,
             registry,
@@ -644,7 +647,7 @@ pub const PublishCommand = struct {
             .follow,
         );
 
-        const res = req.sendSync() catch |err| {
+        const res = req.sendSync(ctx.manager.io) catch |err| {
             switch (err) {
                 error.OutOfMemory => |oom| return oom,
                 else => {
@@ -705,6 +708,7 @@ pub const PublishCommand = struct {
                 const otp = try getOTP(directory_publish, ctx, registry, &response_buf, &print_buf);
 
                 const otp_headers = try constructPublishHeaders(
+                    ctx.manager.io,
                     ctx.allocator,
                     &print_buf,
                     registry,
@@ -729,7 +733,7 @@ pub const PublishCommand = struct {
                     .follow,
                 );
 
-                const otp_res = otp_req.sendSync() catch |err| {
+                const otp_res = otp_req.sendSync(ctx.manager.io) catch |err| {
                     switch (err) {
                         error.OutOfMemory => |oom| return oom,
                         else => {
@@ -848,6 +852,7 @@ pub const PublishCommand = struct {
             }).detach();
 
             var auth_headers = try constructPublishHeaders(
+                ctx.manager.io,
                 ctx.allocator,
                 print_buf,
                 registry,
@@ -873,7 +878,7 @@ pub const PublishCommand = struct {
                     .follow,
                 );
 
-                const res = req.sendSync() catch |err| {
+                const res = req.sendSync(ctx.manager.io) catch |err| {
                     switch (err) {
                         error.OutOfMemory => |oom| return oom,
                         else => {
@@ -1332,6 +1337,7 @@ pub const PublishCommand = struct {
     }
 
     fn constructPublishHeaders(
+        io: std.Io,
         allocator: std.mem.Allocator,
         print_buf: *std.ArrayListUnmanaged(u8),
         registry: *const Npm.Registry.Scope,
@@ -1345,7 +1351,7 @@ pub const PublishCommand = struct {
             if (auth_type) |auth| @tagName(auth) else "web"
         else
             "legacy";
-        const ci_name = bun.ci.detectCIName();
+        const ci_name = bun.ci.detectCIName(io);
 
         {
             headers.count("accept", "*/*");

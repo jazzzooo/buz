@@ -13,7 +13,7 @@ run_loop_timer: *RunLoopTimer,
 event_loop_timer: EventLoopTimer,
 imminent: *std.atomic.Value(?*WTFTimer),
 repeat: bool,
-lock: bun.Mutex = .{},
+lock: std.Io.Mutex = .init,
 script_execution_context_id: bun.webcore.ScriptExecutionContext.Identifier,
 
 const new = bun.TrivialNew(WTFTimer);
@@ -62,8 +62,8 @@ pub fn update(this: *WTFTimer, seconds: f64, repeat: bool) void {
 }
 
 pub fn cancel(this: *WTFTimer) void {
-    this.lock.lock();
-    defer this.lock.unlock();
+    this.lock.lockUncancelable(this.vm.io);
+    defer this.lock.unlock(this.vm.io);
 
     if (this.script_execution_context_id.valid()) {
         // Only clear imminent if this timer was the one that set it
@@ -130,8 +130,8 @@ export fn WTFTimer__cancel(this: *WTFTimer) void {
 }
 
 export fn WTFTimer__secondsUntilTimer(this: *WTFTimer) f64 {
-    this.lock.lock();
-    defer this.lock.unlock();
+    this.lock.lockUncancelable(this.vm.io);
+    defer this.lock.unlock(this.vm.io);
     if (this.event_loop_timer.state == .ACTIVE) {
         const until = this.event_loop_timer.next.duration(&bun.timespec.now(.force_real_time));
         const sec: f64, const nsec: f64 = .{ @floatFromInt(until.sec), @floatFromInt(until.nsec) };

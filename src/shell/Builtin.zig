@@ -382,14 +382,14 @@ pub fn init(
         .ls => {
             cmd.exec.bltn.impl = .{
                 .ls = Ls{
-                    .alloc_scope = shell.AllocScope.beginScope(bun.default_allocator),
+                    .alloc_scope = shell.AllocScope.beginScope(interpreter.command_ctx.io, bun.default_allocator),
                 },
             };
         },
         .yes => {
             cmd.exec.bltn.impl = .{
                 .yes = Yes{
-                    .alloc_scope = shell.AllocScope.beginScope(bun.default_allocator),
+                    .alloc_scope = shell.AllocScope.beginScope(interpreter.command_ctx.io, bun.default_allocator),
                 },
             };
         },

@@ -314,7 +314,7 @@ pub const ShellCpTask = struct {
     src_absolute: ?[:0]const u8 = null,
     tgt_absolute: ?[:0]const u8 = null,
     cwd_path: [:0]const u8,
-    verbose_output_lock: bun.Mutex = .{},
+    verbose_output_lock: std.Io.Mutex = .init,
     verbose_output: ArrayList(u8) = ArrayList(u8).init(bun.default_allocator),
 
     task: jsc.WorkPoolTask = .{ .callback = &runFromThreadPool },
@@ -571,9 +571,10 @@ pub const ShellCpTask = struct {
     }
 
     pub fn onCopyImpl(this: *ShellCpTask, src: [:0]const u8, dest: [:0]const u8) void {
-        this.verbose_output_lock.lock();
+        const io = this.event_loop.io();
+        this.verbose_output_lock.lockUncancelable(io);
         log("onCopy: {s} -> {s}\n", .{ src, dest });
-        defer this.verbose_output_lock.unlock();
+        defer this.verbose_output_lock.unlock(io);
         var writer_state = bun.ManagedWriter.init(&this.verbose_output);
         defer writer_state.finish();
         writer_state.writer().print("{s} -> {s}\n", .{ src, dest }) catch bun.outOfMemory();

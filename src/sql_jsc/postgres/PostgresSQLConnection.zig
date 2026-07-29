@@ -309,7 +309,7 @@ pub fn flushData(this: *PostgresSQLConnection) void {
     this.flags.has_backpressure = wrote < chunk.len;
     debug("flushData: wrote {d}/{d} bytes", .{ wrote, chunk.len });
     if (wrote > 0) {
-        SocketMonitor.write(chunk[0..@intCast(wrote)]);
+        SocketMonitor.write(this.vm.io, chunk[0..@intCast(wrote)]);
         this.write_buffer.consume(@intCast(wrote));
     }
 }
@@ -528,7 +528,7 @@ pub fn onData(this: *PostgresSQLConnection, data: []const u8) void {
     const event_loop = vm.eventLoop();
     event_loop.enter();
     defer event_loop.exit();
-    SocketMonitor.read(data);
+    SocketMonitor.read(this.vm.io, data);
     // reset the head to the last message so remaining reflects the right amount of bytes
     this.read_buffer.head = this.last_message_start;
 

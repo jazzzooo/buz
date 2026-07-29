@@ -21,7 +21,7 @@ const words: Record<string, { reason: string; regex?: boolean }> = {
   "std.StringHashMapUnmanaged(": { reason: "bun.StringHashMapUnmanaged has a faster `eql`" },
   "std.StringHashMap(": { reason: "bun.StringHashMap has a faster `eql`" },
   "std.unicode": { reason: "Use bun.strings instead" },
-  "std.Thread.Mutex": {reason: "Use bun.Mutex instead" },
+  "std.Thread.Mutex": {reason: "Use std.Io.Mutex with the owning process I/O" },
   ".jsBoolean(true)": { reason: "Use .true instead" },
   "JSValue.true": { reason: "Use .true instead" },
   ".jsBoolean(false)": { reason: "Use .false instead" },

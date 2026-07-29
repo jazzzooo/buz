@@ -18,7 +18,7 @@ pub const ExecCommand = struct {
                 Global.exit(1);
             },
         };
-        const mini = bun.jsc.MiniEventLoop.initGlobal(bundle.env, cwd);
+        const mini = bun.jsc.MiniEventLoop.initGlobal(ctx.io, bundle.env, cwd);
         const parts: []const []const u8 = &[_][]const u8{
             cwd,
             "[eval]",

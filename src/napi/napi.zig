@@ -1400,7 +1400,8 @@ pub const ThreadSafeFunction = struct {
 
     // User implementation error can cause this number to go negative.
     thread_count: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
-    lock: bun.Mutex = .{},
+    io: std.Io,
+    lock: std.Io.Mutex = .init,
 
     event_loop: *jsc.EventLoop,
     tracker: jsc.Debugger.AsyncTaskTracker,
@@ -1419,7 +1420,7 @@ pub const ThreadSafeFunction = struct {
 
     callback: Callback = undefined,
     dispatch_state: DispatchState.Atomic = DispatchState.Atomic.init(.idle),
-    blocking_condvar: bun.Condition = .{},
+    blocking_condvar: std.Io.Condition = .init,
     closing: std.atomic.Value(ClosingState) = std.atomic.Value(ClosingState).init(.not_closing),
     aborted: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
 
@@ -1515,8 +1516,8 @@ pub const ThreadSafeFunction = struct {
     pub fn dispatchOne(this: *ThreadSafeFunction, is_first: bool) bool {
         var queue_finalizer_after_call = false;
         const has_more, const task = brk: {
-            this.lock.lock();
-            defer this.lock.unlock();
+            this.lock.lockUncancelable(this.io);
+            defer this.lock.unlock(this.io);
             const was_blocked = this.queue.isBlocked();
             const t = this.queue.data.readItem() orelse {
                 // When there are no tasks and the number of threads that have
@@ -1524,7 +1525,7 @@ pub const ThreadSafeFunction = struct {
                 // ThreadSafeFunction.
                 if (this.thread_count.load(.seq_cst) == 0) {
                     if (this.queue.max_queue_size > 0) {
-                        this.blocking_condvar.signal();
+                        this.blocking_condvar.signal(this.io);
                     }
                     this.maybeQueueFinalizer();
                 }
@@ -1534,11 +1535,11 @@ pub const ThreadSafeFunction = struct {
             if (this.queue.count.fetchSub(1, .seq_cst) == 1 and this.thread_count.load(.seq_cst) == 0) {
                 this.closing.store(.closing, .seq_cst);
                 if (this.queue.max_queue_size > 0) {
-                    this.blocking_condvar.signal();
+                    this.blocking_condvar.signal(this.io);
                 }
                 queue_finalizer_after_call = true;
             } else if (was_blocked and !this.queue.isBlocked()) {
-                this.blocking_condvar.signal();
+                this.blocking_condvar.signal(this.io);
             }
 
             break :brk .{ !this.isClosing(), t };
@@ -1587,11 +1588,11 @@ pub const ThreadSafeFunction = struct {
     }
 
     pub fn enqueue(this: *ThreadSafeFunction, ctx: ?*anyopaque, block: bool) napi_status {
-        this.lock.lock();
-        defer this.lock.unlock();
+        this.lock.lockUncancelable(this.io);
+        defer this.lock.unlock(this.io);
         if (block) {
             while (this.queue.isBlocked()) {
-                this.blocking_condvar.wait(&this.lock);
+                this.blocking_condvar.waitUncancelable(this.io, &this.lock);
             }
         } else {
             if (this.queue.isBlocked()) {
@@ -1657,8 +1658,8 @@ pub const ThreadSafeFunction = struct {
     }
 
     pub fn acquire(this: *ThreadSafeFunction) napi_status {
-        this.lock.lock();
-        defer this.lock.unlock();
+        this.lock.lockUncancelable(this.io);
+        defer this.lock.unlock(this.io);
         if (this.isClosing()) {
             return @backingInt(NapiStatus.closing);
         }
@@ -1667,8 +1668,8 @@ pub const ThreadSafeFunction = struct {
     }
 
     pub fn release(this: *ThreadSafeFunction, mode: napi_threadsafe_function_release_mode, already_locked: bool) napi_status {
-        if (!already_locked) this.lock.lock();
-        defer if (!already_locked) this.lock.unlock();
+        if (!already_locked) this.lock.lockUncancelable(this.io);
+        defer if (!already_locked) this.lock.unlock(this.io);
 
         if (this.thread_count.load(.seq_cst) < 0) {
             return @backingInt(NapiStatus.invalid_arg);
@@ -1682,7 +1683,7 @@ pub const ThreadSafeFunction = struct {
                     this.closing.store(.closing, .seq_cst);
                     this.aborted.store(true, .seq_cst);
                     if (this.queue.max_queue_size > 0) {
-                        this.blocking_condvar.signal();
+                        this.blocking_condvar.signal(this.io);
                     }
                 }
                 this.scheduleDispatch();
@@ -1721,6 +1722,7 @@ pub export fn napi_create_threadsafe_function(
 
     const vm = env.toJS().bunVM();
     var function = ThreadSafeFunction.new(.{
+        .io = vm.io,
         .event_loop = vm.eventLoop(),
         .env = .cloneFromRaw(env),
         .callback = if (call_js_cb) |c| .{

@@ -228,11 +228,11 @@ pub const StandaloneModuleGraph = struct {
         none,
 
         /// It probably is not possible to run two decoding jobs on the same file
-        var init_lock: bun.Mutex = .{};
+        var init_lock: std.Io.Mutex = .init;
 
-        pub fn load(this: *LazySourceMap) ?*SourceMap.ParsedSourceMap {
-            init_lock.lock();
-            defer init_lock.unlock();
+        pub fn load(this: *LazySourceMap, io: std.Io) ?*SourceMap.ParsedSourceMap {
+            init_lock.lockUncancelable(io);
+            defer init_lock.unlock(io);
 
             return switch (this.*) {
                 .none => null,
@@ -724,7 +724,7 @@ pub const StandaloneModuleGraph = struct {
                                 if (!tried_changing_abs_dir) {
                                     tried_changing_abs_dir = true;
                                     const zname_z = bun.strings.concat(bun.default_allocator, &.{
-                                        bun.fs.FileSystem.RealFS.tmpdirPath(),
+                                        bun.fs.FileSystem.RealFS.tmpdirPath(io),
                                         std.fs.path.sep_str,
                                         zname,
                                         &.{0},

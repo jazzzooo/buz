@@ -20,17 +20,7 @@
 
 #include <stdint.h>
 
-#if defined(__APPLE__)
-#include <os/lock.h>
-typedef os_unfair_lock zig_mutex_t;
-#elif defined(__linux__) || defined(__FreeBSD__)
 typedef uint32_t zig_mutex_t;
-#elif defined(_WIN32)
-// SRWLOCK
-typedef void* zig_mutex_t;
-#else
-#error "Unsupported platform"
-#endif
 
 // IMPORTANT: When changing this, don't forget to update the zig version in uws.zig as well!
 struct us_quic_socket_context_s;

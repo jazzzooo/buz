@@ -1,7 +1,8 @@
 const ThreadSafeStreamBuffer = @This();
 
 buffer: bun.io.StreamBuffer = .{},
-mutex: bun.Mutex = .{},
+io: std.Io,
+mutex: std.Io.Mutex = .init,
 ref_count: StreamBufferRefCount = .initExactRefs(2), // 1 for main thread and 1 for http thread
 // callback will be called passing the context for the http callback
 // this is used to report when the buffer is drained and only if end chunk was not sent/reported
@@ -26,12 +27,12 @@ pub const deref = StreamBufferRefCount.deref;
 pub const new = bun.TrivialNew(@This());
 
 pub fn acquire(this: *ThreadSafeStreamBuffer) *bun.io.StreamBuffer {
-    this.mutex.lock();
+    this.mutex.lockUncancelable(this.io);
     return &this.buffer;
 }
 
 pub fn release(this: *ThreadSafeStreamBuffer) void {
-    this.mutex.unlock();
+    this.mutex.unlock(this.io);
 }
 
 /// Should only be called in the main thread and before schedule the it to the http thread
@@ -58,4 +59,5 @@ pub fn deinit(this: *ThreadSafeStreamBuffer) void {
     bun.destroy(this);
 }
 
+const std = @import("std");
 const bun = @import("bun");

@@ -23,6 +23,7 @@ const MiniEventLoop = @This();
 
 tasks: Queue,
 concurrent_tasks: ConcurrentTaskQueue = .{},
+io: std.Io,
 loop: *uws.Loop,
 allocator: std.mem.Allocator,
 file_polls_: ?*Async.FilePoll.Store = null,
@@ -40,9 +41,9 @@ pub threadlocal var global: *MiniEventLoop = undefined;
 
 pub const ConcurrentTaskQueue = UnboundedQueue(AnyTaskWithExtraContext, .next);
 
-pub fn initGlobal(env: ?*bun.DotEnv.Loader, cwd: ?[]const u8) *MiniEventLoop {
+pub fn initGlobal(io: std.Io, env: ?*bun.DotEnv.Loader, cwd: ?[]const u8) *MiniEventLoop {
     if (globalInitialized) return global;
-    const loop = MiniEventLoop.init(bun.default_allocator);
+    const loop = MiniEventLoop.init(io, bun.default_allocator);
     global = bun.handleOom(bun.default_allocator.create(MiniEventLoop));
     global.* = loop;
     global.loop.internal_loop_data.setParentEventLoop(bun.jsc.EventLoopHandle.init(global));
@@ -112,10 +113,12 @@ pub fn filePolls(this: *MiniEventLoop) *Async.FilePoll.Store {
 }
 
 pub fn init(
+    io: std.Io,
     allocator: std.mem.Allocator,
 ) MiniEventLoop {
     return .{
         .tasks = Queue.init(allocator),
+        .io = io,
         .allocator = allocator,
         .loop = uws.Loop.get(),
     };

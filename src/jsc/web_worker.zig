@@ -106,7 +106,7 @@ requested_terminate: std.atomic.Value(bool) = .init(false),
 /// `shutdown()` nulls it. Lives inside `arena`. `vm_lock` must be held for any
 /// cross-thread read (see header comment).
 vm: ?*jsc.VirtualMachine = null,
-vm_lock: bun.Mutex = .{},
+vm_lock: std.Io.Mutex = .init,
 
 // ---- Parent-thread only -----------------------------------------------------
 
@@ -149,15 +149,15 @@ extern fn WebWorker__dispatchError(*jsc.JSGlobalObject, *anyopaque, bun.String, 
 ///
 /// Lock ordering: `LiveWorkers.mutex` → `worker.vm_lock` (never the reverse).
 const LiveWorkers = struct {
-    var mutex: bun.Mutex = .{};
+    var mutex: std.Io.Mutex = .init;
     var list: std.DoublyLinkedList = .{};
     /// Number of workers registered in `list`. Separate atomic so
     /// `terminateAllAndWait` can futex-wait on it without the mutex.
     var outstanding: std.atomic.Value(u32) = .init(0);
 
     fn register(worker: *WebWorker) void {
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lockUncancelable(worker.parent.io);
+        defer mutex.unlock(worker.parent.io);
         list.append(&worker.live_node);
         _ = outstanding.fetchAdd(1, .release);
         // Wake terminateAllAndWait so it re-sweeps and catches this worker
@@ -167,9 +167,9 @@ const LiveWorkers = struct {
     }
 
     fn unregister(worker: *WebWorker) void {
-        mutex.lock();
+        mutex.lockUncancelable(worker.parent.io);
         list.remove(&worker.live_node);
-        mutex.unlock();
+        mutex.unlock(worker.parent.io);
         // Wake any waiter in terminateAllAndWait when we hit zero. Waking
         // unconditionally is fine (spurious wakeups just re-check the
         // counter) and avoids a compare-before-wake race.
@@ -195,7 +195,7 @@ const LiveWorkers = struct {
 /// safepoint. We do NOT use `thread_suspend`/`SuspendThread` — a worker
 /// frozen mid-mimalloc-alloc or holding the `dir_cache` mutex would
 /// deadlock/corrupt the very cleanup we're trying to make safe.
-pub fn terminateAllAndWait(timeout_ms: u64) void {
+pub fn terminateAllAndWait(io: std.Io, timeout_ms: u64) void {
     if (LiveWorkers.outstanding.load(.acquire) == 0) return;
 
     // Futex-wait on the counter so we sleep rather than burn a core. Each
@@ -209,14 +209,14 @@ pub fn terminateAllAndWait(timeout_ms: u64) void {
     const deadline_ns = timeout_ms * std.time.ns_per_ms;
     while (true) {
         {
-            LiveWorkers.mutex.lock();
-            defer LiveWorkers.mutex.unlock();
+            LiveWorkers.mutex.lockUncancelable(io);
+            defer LiveWorkers.mutex.unlock(io);
             var it = LiveWorkers.list.first;
             while (it) |node| : (it = node.next) {
                 const worker: *WebWorker = @fieldParentPtr("live_node", node);
                 if (worker.requested_terminate.swap(true, .release)) continue;
-                worker.vm_lock.lock();
-                defer worker.vm_lock.unlock();
+                worker.vm_lock.lockUncancelable(io);
+                defer worker.vm_lock.unlock(io);
                 if (worker.vm) |vm| {
                     vm.jsc_vm.notifyNeedTermination();
                     vm.eventLoop().wakeup();
@@ -394,8 +394,8 @@ pub fn notifyNeedTermination(this: *WebWorker) callconv(.c) void {
 
     // vm_lock serialises against shutdown() nulling `vm` and freeing the arena
     // it lives in.
-    this.vm_lock.lock();
-    defer this.vm_lock.unlock();
+    this.vm_lock.lockUncancelable(this.parent.io);
+    defer this.vm_lock.unlock(this.parent.io);
     if (this.vm) |vm| {
         vm.jsc_vm.notifyNeedTermination();
         vm.eventLoop().wakeup();
@@ -490,8 +490,8 @@ fn startVM(this: *WebWorker) !void {
     const map = try allocator.create(bun.DotEnv.Map);
     {
         const parent_storage = &this.parent.proxy_env_storage;
-        parent_storage.lock.lock();
-        defer parent_storage.lock.unlock();
+        parent_storage.lock.lockUncancelable(this.parent.io);
+        defer parent_storage.lock.unlock(this.parent.io);
 
         temp_proxy_storage.cloneFrom(parent_storage);
         map.* = try this.parent.transpiler.env.map.cloneWithAllocator(allocator);
@@ -541,8 +541,8 @@ fn startVM(this: *WebWorker) !void {
     // Instead we return; threadMain enters holdAPILock(spin) and spin()'s
     // first check observes requested_terminate.
     {
-        this.vm_lock.lock();
-        defer this.vm_lock.unlock();
+        this.vm_lock.lockUncancelable(this.parent.io);
+        defer this.vm_lock.unlock(this.parent.io);
         this.vm = vm;
     }
 
@@ -706,8 +706,8 @@ fn shutdown(this: *WebWorker) noreturn {
     var vm_to_deinit: ?*jsc.VirtualMachine = null;
     var loop: ?*bun.uws.Loop = null;
     {
-        this.vm_lock.lock();
-        defer this.vm_lock.unlock();
+        this.vm_lock.lockUncancelable(this.parent.io);
+        defer this.vm_lock.unlock(this.parent.io);
         if (this.vm) |vm| {
             loop = vm.uwsLoop();
             this.vm = null;
@@ -923,7 +923,7 @@ fn resolveEntryPointSpecifier(
     }
 
     if (bun.webcore.ObjectURLRegistry.isBlobURL(str)) {
-        if (bun.webcore.ObjectURLRegistry.singleton().has(str["blob:".len..])) {
+        if (bun.webcore.ObjectURLRegistry.singleton().has(parent.io, str["blob:".len..])) {
             return str;
         } else {
             error_message.* = bun.String.static("Blob URL is missing");

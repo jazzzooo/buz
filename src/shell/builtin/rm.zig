@@ -16,7 +16,6 @@ state: union(enum) {
         filepath_args: []const [*:0]const u8,
         total_tasks: usize,
         err: ?Syscall.Error = null,
-        lock: bun.Mutex = bun.Mutex{},
         error_signal: std.atomic.Value(bool) = .{ .raw = false },
         output_done: std.atomic.Value(usize) = .{ .raw = 0 },
         output_count: std.atomic.Value(usize) = .{ .raw = 0 },
@@ -470,7 +469,7 @@ pub const ShellRmTask = struct {
     root_path: bun.PathString = bun.PathString.empty,
 
     error_signal: *std.atomic.Value(bool),
-    err_mutex: bun.Mutex = .{},
+    err_mutex: std.Io.Mutex = .init,
     /// Main-thread callbacks that must complete before this task can be freed:
     /// always one for onShellRmTaskDone (via finishConcurrently), plus one per DirTask whose
     /// verbose output was queued. Decremented by decrPendingAndMaybeDeinit.
@@ -535,8 +534,9 @@ pub const ShellRmTask = struct {
                         .result => |p| bun.handleOom(bun.default_allocator.dupeSentinel(u8, p, 0)),
                         .err => |err| {
                             debug("[runFromThreadPoolImpl:getcwd] DirTask({x}) failed: {s}: {s}", .{ @intFromPtr(this), @tagName(err.getErrno()), err.path });
-                            this.task_manager.err_mutex.lock();
-                            defer this.task_manager.err_mutex.unlock();
+                            const io = this.task_manager.event_loop.io();
+                            this.task_manager.err_mutex.lockUncancelable(io);
+                            defer this.task_manager.err_mutex.unlock(io);
                             if (this.task_manager.err == null) {
                                 this.task_manager.err = err;
                                 this.task_manager.error_signal.store(true, .seq_cst);
@@ -553,8 +553,9 @@ pub const ShellRmTask = struct {
             switch (this.task_manager.removeEntry(this, this.is_absolute)) {
                 .err => |err| {
                     debug("[runFromThreadPoolImpl] DirTask({x}) failed: {s}: {s}", .{ @intFromPtr(this), @tagName(err.getErrno()), err.path });
-                    this.task_manager.err_mutex.lock();
-                    defer this.task_manager.err_mutex.unlock();
+                    const io = this.task_manager.event_loop.io();
+                    this.task_manager.err_mutex.lockUncancelable(io);
+                    defer this.task_manager.err_mutex.unlock(io);
                     if (this.task_manager.err == null) {
                         this.task_manager.err = err;
                         this.task_manager.error_signal.store(true, .seq_cst);
@@ -629,8 +630,9 @@ pub const ShellRmTask = struct {
             switch (this.task_manager.removeEntryDirAfterChildren(this)) {
                 .err => |e| {
                     debug("[deleteAfterWaitingForChildren] DirTask({x}) failed: {s}: {s}", .{ @intFromPtr(this), @tagName(e.getErrno()), e.path });
-                    this.task_manager.err_mutex.lock();
-                    defer this.task_manager.err_mutex.unlock();
+                    const io = this.task_manager.event_loop.io();
+                    this.task_manager.err_mutex.lockUncancelable(io);
+                    defer this.task_manager.err_mutex.unlock(io);
                     if (this.task_manager.err == null) {
                         this.task_manager.err = e;
                     } else {

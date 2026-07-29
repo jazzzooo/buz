@@ -406,7 +406,7 @@ pub const InitCommand = struct {
             };
         }
 
-        var fs = try Fs.FileSystem.init(null);
+        var fs = try Fs.FileSystem.init(io, null);
         const project_dirname = std.fs.path.basename(fs.topLevelDirWithoutTrailingSlash());
         const destination_dir = std.Io.Dir.cwd();
 

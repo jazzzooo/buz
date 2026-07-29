@@ -1,6 +1,6 @@
 const ObjectURLRegistry = @This();
 
-lock: bun.Mutex = .{},
+lock: std.Io.Mutex = .init,
 map: std.AutoHashMap(UUID, *Entry) = std.AutoHashMap(UUID, *Entry).init(bun.default_allocator),
 
 pub const Entry = struct {
@@ -23,23 +23,16 @@ pub fn register(this: *ObjectURLRegistry, vm: *jsc.VirtualMachine, blob: *const 
     const uuid = vm.rareData().nextUUID();
     const entry = Entry.init(blob);
 
-    this.lock.lock();
-    defer this.lock.unlock();
+    this.lock.lockUncancelable(vm.io);
+    defer this.lock.unlock(vm.io);
     bun.handleOom(this.map.put(uuid, entry));
     return uuid;
 }
 
 pub fn singleton() *ObjectURLRegistry {
     const Singleton = struct {
-        pub var registry: ObjectURLRegistry = undefined;
-        pub var once = bun.once(get);
-
-        fn get() void {
-            registry = .{};
-        }
+        pub var registry: ObjectURLRegistry = .{};
     };
-
-    Singleton.once.call(.{});
 
     return &Singleton.registry;
 }
@@ -48,31 +41,31 @@ fn uuidFromPathname(pathname: []const u8) ?UUID {
     return UUID.parse(pathname) catch return null;
 }
 
-pub fn resolveAndDupe(this: *ObjectURLRegistry, pathname: []const u8) ?jsc.WebCore.Blob {
+pub fn resolveAndDupe(this: *ObjectURLRegistry, io: std.Io, pathname: []const u8) ?jsc.WebCore.Blob {
     const uuid = uuidFromPathname(pathname) orelse return null;
-    this.lock.lock();
-    defer this.lock.unlock();
+    this.lock.lockUncancelable(io);
+    defer this.lock.unlock(io);
     const entry = this.map.get(uuid) orelse return null;
     return entry.blob.dupeWithContentType(true);
 }
 
 pub fn resolveAndDupeToJS(this: *ObjectURLRegistry, pathname: []const u8, globalObject: *jsc.JSGlobalObject) ?jsc.JSValue {
-    var blob = jsc.WebCore.Blob.new(this.resolveAndDupe(pathname) orelse return null);
+    var blob = jsc.WebCore.Blob.new(this.resolveAndDupe(globalObject.bunVM().io, pathname) orelse return null);
     return blob.toJS(globalObject);
 }
 
-pub fn revoke(this: *ObjectURLRegistry, pathname: []const u8) void {
+pub fn revoke(this: *ObjectURLRegistry, io: std.Io, pathname: []const u8) void {
     const uuid = uuidFromPathname(pathname) orelse return;
-    this.lock.lock();
-    defer this.lock.unlock();
+    this.lock.lockUncancelable(io);
+    defer this.lock.unlock(io);
     const entry = this.map.fetchRemove(uuid) orelse return;
     entry.value.deinit();
 }
 
-pub fn has(this: *ObjectURLRegistry, pathname: []const u8) bool {
+pub fn has(this: *ObjectURLRegistry, io: std.Io, pathname: []const u8) bool {
     const uuid = uuidFromPathname(pathname) orelse return false;
-    this.lock.lock();
-    defer this.lock.unlock();
+    this.lock.lockUncancelable(io);
+    defer this.lock.unlock(io);
     return this.map.contains(uuid);
 }
 
@@ -119,7 +112,7 @@ fn Bun__revokeObjectURL_(globalObject: *jsc.JSGlobalObject, callframe: *jsc.Call
     if (sliced.len < "blob:".len + UUID.stringLength) {
         return .js_undefined;
     }
-    ObjectURLRegistry.singleton().revoke(sliced["blob:".len..]);
+    ObjectURLRegistry.singleton().revoke(globalObject.bunVM().io, sliced["blob:".len..]);
     return .js_undefined;
 }
 

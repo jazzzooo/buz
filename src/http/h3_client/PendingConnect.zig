@@ -13,10 +13,16 @@ const PendingConnect = @This();
 session: *ClientSession,
 pc: *quic.PendingConnect,
 loop_ptr: *uws.Loop,
+io: std.Io,
 next: ?*PendingConnect = null,
 
 pub fn register(session: *ClientSession, pc: *quic.PendingConnect, l: *uws.Loop) void {
-    const self = bun.new(PendingConnect, .{ .session = session, .pc = pc, .loop_ptr = l });
+    const self = bun.new(PendingConnect, .{
+        .session = session,
+        .pc = pc,
+        .loop_ptr = l,
+        .io = l.internal_loop_data.getParent().io(),
+    });
     session.ref();
     bun.dns.internal.registerQuic(@ptrCast(@alignCast(pc.addrinfo())), self);
 }
@@ -51,18 +57,18 @@ pub fn onDNSResolved(this: *PendingConnect) void {
 /// wake the loop. `drainResolved` runs from `HTTPThread.drainEvents` on the
 /// next loop iteration after the wakeup.
 pub fn onDNSResolvedThreadsafe(this: *PendingConnect) void {
-    resolved_mutex.lock();
+    resolved_mutex.lockUncancelable(this.io);
     this.next = resolved_head;
     resolved_head = this;
-    resolved_mutex.unlock();
+    resolved_mutex.unlock(this.io);
     this.loop_ptr.wakeup();
 }
 
-pub fn drainResolved() void {
-    resolved_mutex.lock();
+pub fn drainResolved(io: std.Io) void {
+    resolved_mutex.lockUncancelable(io);
     var head = resolved_head;
     resolved_head = null;
-    resolved_mutex.unlock();
+    resolved_mutex.unlock(io);
     while (head) |pc| {
         const next = pc.next;
         pc.onDNSResolved();
@@ -83,9 +89,10 @@ pub fn failSession(session: *ClientSession, err: anyerror) void {
     session.deref();
 }
 
-var resolved_mutex: bun.Mutex = .{};
+var resolved_mutex: std.Io.Mutex = .init;
 var resolved_head: ?*PendingConnect = null;
 
+const std = @import("std");
 const bun = @import("bun");
 
 const H3 = bun.http.H3;

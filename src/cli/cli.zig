@@ -11,6 +11,7 @@ pub const Cli = struct {
     pub fn start(allocator: std.mem.Allocator, io_: std.Io) void {
         is_main_thread = true;
         io = io_;
+        bun.jsc.WorkPool.initialize(io);
         start_time = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
         log_ = logger.Log.init(allocator);
 
@@ -1200,6 +1201,7 @@ pub const Command = struct {
         }
 
         try Install.Lockfile.Printer.print(
+            ctx.io,
             ctx.allocator,
             ctx.log,
             ctx.args.entry_points[0],

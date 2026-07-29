@@ -5,9 +5,9 @@ const AllocScope = @This();
 
 __scope: if (bun.Environment.enableAllocScopes) bun.AllocationScope else void,
 
-pub fn beginScope(alloc: std.mem.Allocator) AllocScope {
+pub fn beginScope(io: std.Io, alloc: std.mem.Allocator) AllocScope {
     if (comptime bun.Environment.enableAllocScopes) {
-        return .{ .__scope = bun.AllocationScope.init(alloc) };
+        return .{ .__scope = bun.AllocationScope.init(io, alloc) };
     }
     return .{ .__scope = {} };
 }

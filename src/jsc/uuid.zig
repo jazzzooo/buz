@@ -126,13 +126,13 @@ pub const zero: UUID = .{ .bytes = @splat(0) };
 pub const UUID7 = struct {
     bytes: [16]u8,
 
-    var uuid_v7_lock = bun.Mutex{};
+    var uuid_v7_lock: std.Io.Mutex = .init;
     var uuid_v7_last_timestamp: std.atomic.Value(u64) = .{ .raw = 0 };
     var uuid_v7_counter: std.atomic.Value(u32) = .{ .raw = 0 };
 
-    fn getCount(timestamp: u64) u32 {
-        uuid_v7_lock.lock();
-        defer uuid_v7_lock.unlock();
+    fn getCount(io: std.Io, timestamp: u64) u32 {
+        uuid_v7_lock.lockUncancelable(io);
+        defer uuid_v7_lock.unlock(io);
         if (uuid_v7_last_timestamp.swap(timestamp, .monotonic) != timestamp) {
             uuid_v7_counter.store(0, .monotonic);
         }
@@ -140,8 +140,8 @@ pub const UUID7 = struct {
         return uuid_v7_counter.fetchAdd(1, .monotonic) % 4096;
     }
 
-    pub fn init(timestamp: u64, random: *[8]u8) UUID7 {
-        const count = getCount(timestamp);
+    pub fn init(io: std.Io, timestamp: u64, random: *[8]u8) UUID7 {
+        const count = getCount(io, timestamp);
 
         var bytes: [16]u8 = undefined;
 

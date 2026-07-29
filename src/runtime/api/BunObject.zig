@@ -1482,8 +1482,8 @@ pub const EnvironmentVariables = struct {
         // this, the worker could load the slot pointer between our deref
         // (refcount → 0 → free) and the null write below, then call ref()
         // on freed memory.
-        storage.lock.lock();
-        defer storage.lock.unlock();
+        storage.lock.lockUncancelable(vm.io);
+        defer storage.lock.unlock(vm.io);
 
         const slot = storage.slot(name_slice.slice()) orelse return;
 

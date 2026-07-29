@@ -355,14 +355,12 @@ pub const LoadResult = struct {
 };
 
 // This is a global so even if multiple resolvers are created, the mutex will still work
-var resolver_Mutex: Mutex = undefined;
-var resolver_Mutex_loaded: bool = false;
-var package_manager_init_mutex: Mutex = .{};
+var resolver_mutex: std.Io.Mutex = .init;
+var package_manager_init_mutex: std.Io.Mutex = .init;
 
 const BinFolderArray = bun.BoundedArray(string, 128);
-var bin_folders: BinFolderArray = undefined;
-var bin_folders_lock: Mutex = .{};
-var bin_folders_loaded: bool = false;
+var bin_folders: BinFolderArray = .{};
+var bin_folders_lock: std.Io.Mutex = .init;
 
 pub const AnyResolveWatcher = struct {
     context: *anyopaque,
@@ -457,7 +455,7 @@ pub const Resolver = struct {
     // reducing parallelism in the resolver helps the rest of the bundler go
     // faster. I'm not sure why this is but please don't change this unless you
     // do a lot of testing with various benchmarks and there aren't any regressions.
-    mutex: *Mutex,
+    mutex: *std.Io.Mutex,
 
     /// This cache maps a directory path to information about that directory and
     /// all parent directories. When interacting with this structure, make sure
@@ -476,8 +474,8 @@ pub const Resolver = struct {
     custom_dir_paths: ?[]const bun.String = null,
 
     pub fn ensurePackageManager(this: *Resolver) !*PackageManager {
-        package_manager_init_mutex.lock();
-        defer package_manager_init_mutex.unlock();
+        package_manager_init_mutex.lockUncancelable(this.io);
+        defer package_manager_init_mutex.unlock(this.io);
 
         if (this.package_manager) |pm| return pm;
 
@@ -493,7 +491,7 @@ pub const Resolver = struct {
             .{},
             this.env_loader.?,
         );
-        bun.HTTPThread.init(&.{});
+        bun.HTTPThread.init(this.io, &.{});
         pm.onWake = this.onWakePackageManager;
         this.package_manager = pm;
         return pm;
@@ -525,16 +523,11 @@ pub const Resolver = struct {
         _fs: *Fs.FileSystem,
         opts: options.BundleOptions,
     ) ThisResolver {
-        if (!resolver_Mutex_loaded) {
-            resolver_Mutex = .{};
-            resolver_Mutex_loaded = true;
-        }
-
         return ThisResolver{
             .allocator = allocator,
             .io = io,
-            .dir_cache = DirInfo.HashMap.init(bun.default_allocator),
-            .mutex = &resolver_Mutex,
+            .dir_cache = DirInfo.HashMap.init(io, bun.default_allocator),
+            .mutex = &resolver_mutex,
             .caches = CacheSet.init(allocator),
             .opts = opts,
             .timer = Timer.start() catch @panic("Timer fail"),
@@ -857,8 +850,6 @@ pub const Resolver = struct {
             break :brk source_dir;
         };
 
-        // r.mutex.lock();
-        // defer r.mutex.unlock();
         errdefer (r.flushDebugLogs(.fail) catch {});
 
         // A path with a null byte cannot exist on the filesystem. Continuing
@@ -2184,6 +2175,7 @@ pub const Resolver = struct {
             var dir_iterator = bun.iterateDir(open_dir);
             while (dir_iterator.next().unwrap() catch null) |_value| {
                 new_entry.addEntry(
+                    r.fs.io,
                     if (in_place) |existing| &existing.data else null,
                     &_value,
                     allocator,
@@ -2537,7 +2529,6 @@ pub const Resolver = struct {
     }
 
     pub fn binDirs(_: *const ThisResolver) []const string {
-        if (!bin_folders_loaded) return &[_]string{};
         return bin_folders.constSlice();
     }
 
@@ -2593,8 +2584,8 @@ pub const Resolver = struct {
     }
 
     fn dirInfoCachedMaybeLog(r: *ThisResolver, raw_input_path: string, comptime enable_logging: bool, comptime follow_symlinks: bool) !?*DirInfo {
-        r.mutex.lock();
-        defer r.mutex.unlock();
+        r.mutex.lockUncancelable(r.io);
+        defer r.mutex.unlock(r.io);
         var input_path = raw_input_path;
 
         if (isDotSlash(input_path) or strings.eqlComptime(input_path, ".")) {
@@ -2654,8 +2645,8 @@ pub const Resolver = struct {
 
         const rfs = &r.fs.fs;
 
-        rfs.entries_mutex.lock();
-        defer rfs.entries_mutex.unlock();
+        rfs.entries_mutex.lockUncancelable(r.io);
+        defer rfs.entries_mutex.unlock(r.io);
 
         while (top.len > root_path.len) : (top = Dirname.dirname(top)) {
             assert(top.ptr == root_path.ptr);
@@ -2884,6 +2875,7 @@ pub const Resolver = struct {
                 var dir_iterator = bun.iterateDir(open_dir);
                 while (dir_iterator.next().unwrap() catch null) |_value| {
                     new_entry.addEntry(
+                        r.fs.io,
                         if (in_place) |existing| &existing.data else null,
                         &_value,
                         allocator,
@@ -3927,17 +3919,12 @@ pub const Resolver = struct {
             append_bin_dir: {
                 if (info.hasNodeModules()) {
                     if (entries.hasComptimeQuery("node_modules")) {
-                        if (!bin_folders_loaded) {
-                            bin_folders_loaded = true;
-                            bin_folders = BinFolderArray.init(0) catch unreachable;
-                        }
-
                         const file = bun.sys.openat(fd, bun.pathLiteral("node_modules/.bin"), bun.O.DIRECTORY | bun.O.RDONLY, 0).unwrap() catch
                             break :append_bin_dir;
                         defer file.close();
                         const bin_path = file.getFdPath(bufs(.node_bin_path)) catch break :append_bin_dir;
-                        bin_folders_lock.lock();
-                        defer bin_folders_lock.unlock();
+                        bin_folders_lock.lockUncancelable(r.io);
+                        defer bin_folders_lock.unlock(r.io);
 
                         for (bin_folders.constSlice()) |existing_folder| {
                             if (strings.eql(existing_folder, bin_path)) {
@@ -3952,16 +3939,11 @@ pub const Resolver = struct {
                 if (info.isNodeModules()) {
                     if (entries.getComptimeQuery(".bin")) |q| {
                         if (q.entry.kind(rfs, r.store_fd) == .dir) {
-                            if (!bin_folders_loaded) {
-                                bin_folders_loaded = true;
-                                bin_folders = BinFolderArray.init(0) catch unreachable;
-                            }
-
                             const file = bun.sys.openat(fd, ".bin", bun.O.DIRECTORY | bun.O.RDONLY, 0).unwrap() catch break :append_bin_dir;
                             defer file.close();
                             const bin_path = bun.getFdPath(file, bufs(.node_bin_path)) catch break :append_bin_dir;
-                            bin_folders_lock.lock();
-                            defer bin_folders_lock.unlock();
+                            bin_folders_lock.lockUncancelable(r.io);
+                            defer bin_folders_lock.unlock(r.io);
 
                             for (bin_folders.constSlice()) |existing_folder| {
                                 if (strings.eql(existing_folder, bin_path)) {
@@ -4254,7 +4236,6 @@ const FD = bun.FD;
 const FeatureFlags = bun.FeatureFlags;
 const FileDescriptorType = bun.FD;
 const MutableString = bun.MutableString;
-const Mutex = bun.Mutex;
 const Output = bun.Output;
 const PathString = bun.PathString;
 const Semver = bun.Semver;

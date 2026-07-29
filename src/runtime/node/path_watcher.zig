@@ -27,16 +27,17 @@
 /// Process-global manager. Created on first `fs.watch()`, never destroyed (matches
 /// the FSEvents loop and Windows libuv loop lifetimes).
 var default_manager: ?*PathWatcherManager = null;
-var default_manager_mutex: Mutex = .{};
+var default_manager_mutex: std.Io.Mutex = .init;
 
 const log = Output.scoped(.@"fs.watch", .hidden);
 
 pub const PathWatcherManager = struct {
+    io: std.Io,
     /// Guards `watchers` and all per-platform dispatch maps. The reader thread holds
     /// this while dispatching, so `detach()` on the JS thread cannot free a PathWatcher
     /// mid-emit. A single lock here replaces the three interacting mutexes of the old
     /// design.
-    mutex: Mutex = .{},
+    mutex: std.Io.Mutex = .init,
 
     /// Dedup map: dedup key → PathWatcher. The key is the resolved path with a one-byte
     /// suffix encoding `recursive` (so `fs.watch(p)` and `fs.watch(p, {recursive:true})`
@@ -47,18 +48,18 @@ pub const PathWatcherManager = struct {
     /// On macOS this is empty — FSEvents owns its own thread via `fs_events.zig`.
     platform: Platform = .{},
 
-    pub fn get() bun.sys.Maybe(*PathWatcherManager) {
+    pub fn get(io: std.Io) bun.sys.Maybe(*PathWatcherManager) {
         // No unlocked fast path: `default_manager` is a plain global and an unsynchronized
         // read here would be textbook broken DCLP (a concurrent Worker's first `fs.watch()`
         // on ARM64 could observe the non-null pointer before `m.* = .{}` is visible and
         // lock a garbage `m.mutex`). `get()` runs once per `fs.watch()` call; the mutex is
         // uncontended after initialization.
-        default_manager_mutex.lock();
-        defer default_manager_mutex.unlock();
+        default_manager_mutex.lockUncancelable(io);
+        defer default_manager_mutex.unlock(io);
         if (default_manager) |m| return .{ .result = m };
 
         const m = bun.handleOom(bun.default_allocator.create(PathWatcherManager));
-        m.* = .{};
+        m.* = .{ .io = io };
         switch (Platform.init(m)) {
             .err => |e| {
                 bun.default_allocator.destroy(m);
@@ -193,10 +194,10 @@ pub const PathWatcher = struct {
             return;
         };
 
-        manager.mutex.lock();
+        manager.mutex.lockUncancelable(manager.io);
         _ = this.handlers.swapRemove(ctx);
         if (this.handlers.count() > 0) {
-            manager.mutex.unlock();
+            manager.mutex.unlock(manager.io);
             return;
         }
 
@@ -206,7 +207,7 @@ pub const PathWatcher = struct {
         if (comptime !Environment.isMac) {
             Platform.removeWatch(manager, this);
         }
-        manager.mutex.unlock();
+        manager.mutex.unlock(manager.io);
 
         if (comptime Environment.isMac) {
             // Takes fsevents_loop.mutex; must not hold manager.mutex (see doc comment).
@@ -235,9 +236,7 @@ pub fn watch(
     // without an indirect-call-per-event; assert they're what node_fs_watcher passes.
     comptime bun.assert(callback == onPathUpdateFn);
     comptime bun.assert(updateEnd == onUpdateEndFn);
-    _ = vm;
-
-    const manager = switch (PathWatcherManager.get()) {
+    const manager = switch (PathWatcherManager.get(vm.io)) {
         .err => |e| return .{ .err = e },
         .result => |m| m,
     };
@@ -276,13 +275,13 @@ pub fn watch(
     defer bun.path_buffer_pool.put(key_buf);
     const key = PathWatcherManager.makeKey(key_buf, resolved, recursive);
 
-    manager.mutex.lock();
+    manager.mutex.lockUncancelable(manager.io);
 
     const gop = bun.handleOom(manager.watchers.getOrPut(bun.default_allocator, key));
     if (gop.found_existing) {
         const existing = gop.value_ptr.*;
         bun.handleOom(existing.handlers.put(bun.default_allocator, ctx, .{}));
-        manager.mutex.unlock();
+        manager.mutex.unlock(manager.io);
         return .{ .result = existing };
     }
 
@@ -311,18 +310,18 @@ pub fn watch(
             // Still under the same lock as the map insertion, so no other thread
             // can have observed `watcher` yet — unconditional destroy is safe.
             manager.unlinkWatcherLocked(watcher);
-            manager.mutex.unlock();
+            manager.mutex.unlock(manager.io);
             watcher.manager = null;
             watcher.destroy();
             // `Linux.addOne` builds the error with `.path = watcher.path`, which we
             // just freed; strip it like every other return in this function.
             return .{ .err = err.withoutPath() };
         }
-        manager.mutex.unlock();
+        manager.mutex.unlock(manager.io);
         return .{ .result = watcher };
     }
 
-    manager.mutex.unlock();
+    manager.mutex.unlock(manager.io);
 
     if (Platform.addWatch(manager, watcher).asErr()) |err| {
         // `watcher` was visible in the dedup map while we were unlocked above; a
@@ -332,17 +331,17 @@ pub fn watch(
         // and leave `watcher.manager` set so their `detach()` takes the locked path
         // (→ `unlinkWatcherLocked` no-ops, `removeWatch` no-ops on null `fsevents`,
         // then frees). Never free memory another thread holds.
-        manager.mutex.lock();
+        manager.mutex.lockUncancelable(manager.io);
         manager.unlinkWatcherLocked(watcher);
         _ = watcher.handlers.swapRemove(ctx);
         if (watcher.handlers.count() > 0) {
             watcher.emitError(err);
             watcher.flush();
-            manager.mutex.unlock();
+            manager.mutex.unlock(manager.io);
             return .{ .err = err.withoutPath() };
         }
         watcher.manager = null;
-        manager.mutex.unlock();
+        manager.mutex.unlock(manager.io);
         watcher.destroy();
         return .{ .err = err.withoutPath() };
     }
@@ -576,19 +575,19 @@ const Linux = struct {
                         .errno = @truncate(@backingInt(errno)),
                         .syscall = .read,
                     };
-                    manager.mutex.lock();
+                    manager.mutex.lockUncancelable(manager.io);
                     for (manager.watchers.values()) |w| {
                         w.emitError(err);
                         w.flush();
                     }
-                    manager.mutex.unlock();
+                    manager.mutex.unlock(manager.io);
                     return;
                 },
             }
             const n: usize = @intCast(rc);
             if (n == 0) continue;
 
-            manager.mutex.lock();
+            manager.mutex.lockUncancelable(manager.io);
             // Track which PathWatchers got at least one event so we flush() each once.
             var touched: std.array_hash_map.Auto(*PathWatcher, void) = .empty;
             defer touched.deinit(bun.default_allocator);
@@ -672,7 +671,7 @@ const Linux = struct {
             }
 
             for (touched.keys()) |w| w.flush();
-            manager.mutex.unlock();
+            manager.mutex.unlock(manager.io);
         }
     }
 };
@@ -705,8 +704,9 @@ const Darwin = struct {
     /// loop mutex, and the CF thread holds that while calling `onFSEvent` (which
     /// takes `manager.mutex`). Keeping this call outside `manager.mutex` makes the
     /// lock order one-way: fsevents_loop.mutex → manager.mutex.
-    fn addWatch(_: *PathWatcherManager, watcher: *PathWatcher) bun.sys.Maybe(void) {
+    fn addWatch(manager: *PathWatcherManager, watcher: *PathWatcher) bun.sys.Maybe(void) {
         watcher.platform.fsevents = FSEvents.watch(
+            manager.io,
             watcher.path,
             watcher.recursive,
             onFSEvent,
@@ -746,8 +746,8 @@ const Darwin = struct {
     fn onFSEvent(ctx: ?*anyopaque, event: Event, is_file: bool) void {
         const watcher: *PathWatcher = @ptrCast(@alignCast(ctx.?));
         const manager = default_manager orelse return;
-        manager.mutex.lock();
-        defer manager.mutex.unlock();
+        manager.mutex.lockUncancelable(manager.io);
+        defer manager.mutex.unlock(manager.io);
         if (watcher.manager == null) return;
         switch (event) {
             inline .rename, .change => |path, tag| {
@@ -761,8 +761,8 @@ const Darwin = struct {
     fn onFSEventFlush(ctx: ?*anyopaque) void {
         const watcher: *PathWatcher = @ptrCast(@alignCast(ctx.?));
         const manager = default_manager orelse return;
-        manager.mutex.lock();
-        defer manager.mutex.unlock();
+        manager.mutex.lockUncancelable(manager.io);
+        defer manager.mutex.unlock(manager.io);
         if (watcher.manager == null) return;
         watcher.flush();
     }
@@ -901,7 +901,7 @@ const Kqueue = struct {
             const count = bun.sys.syscall.kevent(plat.kq.native(), &events, 0, &events, events.len, null);
             if (count <= 0) continue;
 
-            manager.mutex.lock();
+            manager.mutex.lockUncancelable(manager.io);
             var touched: std.array_hash_map.Auto(*PathWatcher, void) = .empty;
             defer touched.deinit(bun.default_allocator);
 
@@ -935,7 +935,7 @@ const Kqueue = struct {
             }
 
             for (touched.keys()) |w| w.flush();
-            manager.mutex.unlock();
+            manager.mutex.unlock(manager.io);
         }
     }
 };
@@ -946,7 +946,6 @@ const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const Mutex = bun.Mutex;
 const Output = bun.Output;
 
 const jsc = bun.jsc;

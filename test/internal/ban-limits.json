@@ -29,7 +29,7 @@
   "std.StringArrayHashMapUnmanaged(": 11,
   "std.StringHashMap(": 0,
   "std.StringHashMapUnmanaged(": 0,
-  "std.Thread.Mutex": 1,
+  "std.Thread.Mutex": 0,
   "std.debug.assert": 27,
   "std.debug.dumpStackTrace": 0,
   "std.debug.print": 0,

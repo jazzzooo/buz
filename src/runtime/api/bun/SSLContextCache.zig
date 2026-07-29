@@ -22,10 +22,15 @@
 const SSLContextCache = @This();
 
 map: std.array_hash_map.Custom(Digest, *Entry, DigestContext, false) = .empty,
-mutex: bun.Mutex = .{},
+io: std.Io,
+mutex: std.Io.Mutex = .init,
 ops_since_compact: u32 = 0,
 
 pub const Digest = [32]u8;
+
+pub fn init(io: std.Io) SSLContextCache {
+    return .{ .io = io };
+}
 
 /// SHA-256 output is uniformly distributed, so the first 4 bytes are a perfect
 /// bucket hash — no need to re-Wyhash 32 bytes (what AutoContext would do).
@@ -78,8 +83,8 @@ pub fn getOrCreateDigest(
     err: *uws.create_bun_socket_error_t,
 ) ?*BoringSSL.SSL_CTX {
     {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         if (self.map.get(d)) |entry| {
             if (entry.ctx) |ctx| {
                 _ = BoringSSL.SSL_CTX_up_ref(ctx);
@@ -94,8 +99,8 @@ pub fn getOrCreateDigest(
     // across an SSL_CTX_free that *did* tombstone would self-deadlock.
     const ctx = opts.createSSLContext(err) orelse return null;
 
-    self.mutex.lock();
-    defer self.mutex.unlock();
+    self.mutex.lockUncancelable(self.io);
+    defer self.mutex.unlock(self.io);
 
     // Re-check: another caller may have inserted while we were building.
     // Prefer the already-cached one and drop ours so callers converge.
@@ -151,8 +156,8 @@ export fn bun_ssl_ctx_cache_on_free(
     _ = argl;
     _ = argp;
     const entry: *Entry = @ptrCast(@alignCast(ptr orelse return));
-    entry.owner.mutex.lock();
-    defer entry.owner.mutex.unlock();
+    entry.owner.mutex.lockUncancelable(entry.owner.io);
+    defer entry.owner.mutex.unlock(entry.owner.io);
     entry.ctx = null;
 }
 
@@ -173,8 +178,8 @@ fn compactLocked(self: *SSLContextCache) void {
 /// dereference the freed `Entry`/map. Map itself holds no refs, so no
 /// `SSL_CTX_free` here.
 pub fn deinit(self: *SSLContextCache) void {
-    self.mutex.lock();
-    defer self.mutex.unlock();
+    self.mutex.lockUncancelable(self.io);
+    defer self.mutex.unlock(self.io);
     for (self.map.values()) |entry| {
         if (entry.ctx) |ctx| {
             _ = BoringSSL.SSL_CTX_set_ex_data(ctx, c.us_ssl_ctx_cache_ex_idx(), null);

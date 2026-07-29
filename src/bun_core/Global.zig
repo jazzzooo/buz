@@ -211,7 +211,7 @@ comptime {
 
 pub export fn Bun__onExit() void {
     if (comptime bun.Environment.isNative) {
-        bun.jsc.Node.FSEvents.closeAndWait();
+        bun.jsc.Node.FSEvents.closeAndWait(bun.cli.Cli.io);
 
         runExitCallbacks();
         Output.flush();

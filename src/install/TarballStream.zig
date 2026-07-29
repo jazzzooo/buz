@@ -24,7 +24,7 @@ const TarballStream = @This();
 // Cross-thread producer state (HTTP → worker)
 // ---------------------------------------------------------------------
 
-mutex: Mutex = .{},
+mutex: std.Io.Mutex = .init,
 
 /// Compressed .tgz bytes that have arrived from the HTTP thread but have
 /// not yet been consumed by libarchive.
@@ -178,14 +178,14 @@ pub fn deinit(this: *TarballStream) void {
 /// deferred to `drain` on a worker so the HTTP event loop stays
 /// responsive.
 pub fn onChunk(this: *TarballStream, chunk: []const u8, is_last: bool, err: ?anyerror) void {
-    this.mutex.lock();
+    this.mutex.lockUncancelable(this.package_manager.io);
     if (chunk.len > 0) {
         bun.handleOom(this.pending.appendSlice(this.allocator, chunk));
         this.bytes_received += chunk.len;
     }
     if (is_last) this.closed = true;
     if (err) |e| this.http_err = e;
-    this.mutex.unlock();
+    this.mutex.unlock(this.package_manager.io);
 
     this.scheduleDrain();
 }
@@ -230,9 +230,9 @@ fn drain(this: *TarballStream) void {
                 // chunk arriving: if `pending` is non-empty now, try
                 // to reclaim the flag ourselves instead of waiting
                 // for the next schedule.
-                this.mutex.lock();
+                this.mutex.lockUncancelable(this.package_manager.io);
                 const again = this.pending.items.len > 0 or this.closed;
-                this.mutex.unlock();
+                this.mutex.unlock(this.package_manager.io);
                 if (again and !this.draining.swap(true, .acq_rel)) continue;
                 return;
             }
@@ -246,7 +246,7 @@ fn drain(this: *TarballStream) void {
         this.reading.clearAndFree(this.allocator);
         this.read_pos = 0;
 
-        this.mutex.lock();
+        this.mutex.lockUncancelable(this.package_manager.io);
         // Hash any bytes that arrived after libarchive hit
         // end-of-archive so the integrity digest covers the full
         // response (tar zero-padding, gzip footer). Skip this once
@@ -261,7 +261,7 @@ fn drain(this: *TarballStream) void {
         this.pending.clearRetainingCapacity();
         const closed = this.closed;
         const http_err = this.http_err;
-        this.mutex.unlock();
+        this.mutex.unlock(this.package_manager.io);
         // A transport error that arrives *after* libarchive reached
         // EOF (e.g. the server RSTs the connection once the last
         // byte is on the wire) must not override a successful
@@ -279,9 +279,9 @@ fn drain(this: *TarballStream) void {
         // finished yet. Yield; the next `onChunk` will reschedule us
         // to discard the new bytes and eventually observe `closed`.
         this.draining.store(false, .release);
-        this.mutex.lock();
+        this.mutex.lockUncancelable(this.package_manager.io);
         const again = this.pending.items.len > 0 or this.closed;
-        this.mutex.unlock();
+        this.mutex.unlock(this.package_manager.io);
         if (again and !this.draining.swap(true, .acq_rel)) continue;
         return;
     }
@@ -291,8 +291,8 @@ fn drain(this: *TarballStream) void {
 /// callback can hand them to libarchive. Returns true if new bytes were
 /// added or the stream is now closed.
 fn takePending(this: *TarballStream) bool {
-    this.mutex.lock();
-    defer this.mutex.unlock();
+    this.mutex.lockUncancelable(this.package_manager.io);
+    defer this.mutex.unlock(this.package_manager.io);
 
     if (this.pending.items.len == 0) return this.closed;
 
@@ -461,10 +461,10 @@ fn archiveReadCallback(
     // libarchive may have called us more than once for a single
     // `step()` (e.g. gzip header + first deflate block), and `onChunk`
     // might have landed a fresh chunk in the meantime.
-    this.mutex.lock();
+    this.mutex.lockUncancelable(this.package_manager.io);
     const has_pending = this.pending.items.len > 0;
     const closed = this.closed;
-    this.mutex.unlock();
+    this.mutex.unlock(this.package_manager.io);
 
     if (has_pending) {
         // Pull the new bytes into `reading` and retry the read. We are
@@ -902,13 +902,13 @@ fn populateResult(this: *TarballStream, task: *Task) void {
 /// Prepare this stream for another HTTP attempt after a failed request
 /// that never scheduled a drain.
 pub fn resetForRetry(this: *TarballStream) void {
-    this.mutex.lock();
+    this.mutex.lockUncancelable(this.package_manager.io);
     this.pending.clearRetainingCapacity();
     this.closed = false;
     this.http_err = null;
     this.status_code = 0;
     this.bytes_received = 0;
-    this.mutex.unlock();
+    this.mutex.unlock(this.package_manager.io);
 }
 
 const std = @import("std");
@@ -926,5 +926,4 @@ const ThreadPool = bun.ThreadPool;
 const logger = bun.logger;
 const strings = bun.strings;
 const FileSystem = bun.fs.FileSystem;
-const Mutex = bun.threading.Mutex;
 const lib = bun.libarchive.lib;

@@ -152,7 +152,7 @@ pub fn exePath(this: *const CompileTarget, buf: *bun.PathBuffer, version_str: [:
 }
 
 pub fn downloadToPath(this: *const CompileTarget, io: std.Io, env: *bun.DotEnv.Loader, allocator: std.mem.Allocator, dest_z: [:0]const u8) !void {
-    HTTP.HTTPThread.init(&.{});
+    HTTP.HTTPThread.init(io, &.{});
     var refresher = bun.Progress{};
 
     {
@@ -189,7 +189,7 @@ pub fn downloadToPath(this: *const CompileTarget, io: std.Io, env: *bun.DotEnv.L
             async_http.client.progress_node = progress;
             async_http.client.flags.reject_unauthorized = env.getTLSRejectUnauthorized();
 
-            const response = try async_http.sendSync();
+            const response = try async_http.sendSync(io);
 
             switch (response.status_code) {
                 404 => {

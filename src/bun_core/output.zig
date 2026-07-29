@@ -277,17 +277,18 @@ pub const Source = struct {
         }
     };
 
-    pub const ColorDepth = enum {
+    pub const ColorDepth = enum(u8) {
         none,
         @"16",
         @"256",
         @"16m",
     };
-    var lazy_color_depth: ColorDepth = .none;
-    var color_depth_once = bun.once(getColorDepthOnce);
+    var lazy_color_depth = std.atomic.Value(ColorDepth).init(.none);
+    var color_depth_initialized = std.atomic.Value(bool).init(false);
+
     fn getColorDepthOnce() void {
         if (getForceColorDepth()) |depth| {
-            lazy_color_depth = depth;
+            lazy_color_depth.store(depth, .monotonic);
             return;
         }
 
@@ -301,12 +302,12 @@ pub const Source = struct {
         }
 
         if (bun.env_var.TMUX.get() != null) {
-            lazy_color_depth = .@"256";
+            lazy_color_depth.store(.@"256", .monotonic);
             return;
         }
 
         if (bun.env_var.CI.get() != null) {
-            lazy_color_depth = .@"16";
+            lazy_color_depth.store(.@"16", .monotonic);
             return;
         }
 
@@ -320,7 +321,7 @@ pub const Source = struct {
             };
             inline for (use_16m) |program| {
                 if (strings.eqlComptime(term_program, program)) {
-                    lazy_color_depth = .@"16m";
+                    lazy_color_depth.store(.@"16m", .monotonic);
                     return;
                 }
             }
@@ -330,7 +331,7 @@ pub const Source = struct {
 
         if (bun.env_var.COLORTERM.get()) |color_term| {
             if (strings.eqlComptime(color_term, "truecolor") or strings.eqlComptime(color_term, "24bit")) {
-                lazy_color_depth = .@"16m";
+                lazy_color_depth.store(.@"16m", .monotonic);
                 return;
             }
             has_color_term_set = true;
@@ -338,7 +339,7 @@ pub const Source = struct {
 
         if (term.len > 0) {
             if (strings.hasPrefixComptime(term, "xterm-256")) {
-                lazy_color_depth = .@"256";
+                lazy_color_depth.store(.@"256", .monotonic);
                 return;
             }
             const pairs = .{
@@ -363,7 +364,7 @@ pub const Source = struct {
 
             inline for (pairs) |pair| {
                 if (strings.eqlComptime(term, pair[0])) {
-                    lazy_color_depth = pair[1];
+                    lazy_color_depth.store(pair[1], .monotonic);
                     return;
                 }
             }
@@ -377,21 +378,25 @@ pub const Source = struct {
                 strings.includes(term, "xterm") or
                 strings.includes(term, "screen"))
             {
-                lazy_color_depth = .@"16";
+                lazy_color_depth.store(.@"16", .monotonic);
                 return;
             }
         }
 
         if (has_color_term_set) {
-            lazy_color_depth = .@"16";
+            lazy_color_depth.store(.@"16", .monotonic);
             return;
         }
 
-        lazy_color_depth = .none;
+        lazy_color_depth.store(.none, .monotonic);
     }
+
     pub fn colorDepth() ColorDepth {
-        color_depth_once.call(.{});
-        return lazy_color_depth;
+        if (!color_depth_initialized.load(.acquire)) {
+            getColorDepthOnce();
+            color_depth_initialized.store(true, .release);
+        }
+        return lazy_color_depth.load(.acquire);
     }
 
     pub fn setInit(io: IoType, stdout: StreamType, stderr: StreamType) void {
@@ -465,52 +470,42 @@ pub fn isGithubAction() bool {
 }
 
 pub fn isAIAgent() bool {
-    const get_is_agent = struct {
-        var value = false;
-        fn evaluate() bool {
-            if (bun.env_var.AGENT.get()) |env| {
-                return strings.eqlComptime(env, "1");
-            }
-
-            if (isVerbose()) {
-                return false;
-            }
-
-            // Claude Code.
-            if (bun.env_var.CLAUDECODE.get()) {
-                return true;
-            }
-
-            // Replit.
-            if (bun.env_var.REPL_ID.get()) {
-                return true;
-            }
-
-            // TODO: add environment variable for Gemini
-            // Gemini does not appear to add any environment variables to identify it.
-
-            // TODO: add environment variable for Codex
-            // codex does not appear to add any environment variables to identify it.
-
-            // TODO: add environment variable for Cursor Background Agents
-            // cursor does not appear to add any environment variables to identify it.
-
-            return false;
-        }
-
-        fn setValue() void {
-            value = evaluate();
-        }
-
-        var once = bun.once(setValue);
-
-        pub fn isEnabled() bool {
-            once.call(.{});
-            return value;
-        }
+    const State = enum(u8) {
+        unknown,
+        no,
+        yes,
+    };
+    const Cache = struct {
+        var state: std.atomic.Value(State) = .init(.unknown);
     };
 
-    return get_is_agent.isEnabled();
+    const cached = Cache.state.load(.acquire);
+    if (cached != .unknown) return cached == .yes;
+
+    const detected = detectAIAgent();
+    const desired: State = if (detected) .yes else .no;
+    const stored = Cache.state.cmpxchgStrong(.unknown, desired, .release, .acquire) orelse desired;
+    return stored == .yes;
+}
+
+fn detectAIAgent() bool {
+    if (bun.env_var.AGENT.get()) |env| {
+        return strings.eqlComptime(env, "1");
+    }
+
+    if (isVerbose()) {
+        return false;
+    }
+
+    if (bun.env_var.CLAUDECODE.get()) {
+        return true;
+    }
+
+    if (bun.env_var.REPL_ID.get()) {
+        return true;
+    }
+
+    return false;
 }
 
 pub fn isVerbose() bool {
@@ -842,7 +837,8 @@ fn ScopedLogger(comptime tagname: []const u8, comptime visibility: Visibility) t
             .tagname = tagname,
             .env_name = env_name,
             .debug_arg = debug_arg,
-            .visible = visibility == .visible,
+            .default_visible = visibility == .visible,
+            .visible = .init(visibility == .visible),
         };
 
         pub fn isVisible() bool {
@@ -871,32 +867,36 @@ const ScopedLogState = struct {
     tagname: []const u8,
     env_name: [:0]const u8,
     debug_arg: []const u8,
-    visible: bool,
-    visibility_once: bun.Once(evaluateScopedLogVisibility) = .{},
+    default_visible: bool,
+    visible: std.atomic.Value(bool),
+    visibility_evaluated: std.atomic.Value(bool) = .init(false),
 
     noinline fn isVisible(state: *ScopedLogState) bool {
-        state.visibility_once.call(.{state});
-        return state.visible;
+        if (!state.visibility_evaluated.load(.acquire)) {
+            state.visible.store(evaluateScopedLogVisibility(state), .monotonic);
+            state.visibility_evaluated.store(true, .release);
+        }
+        return state.visible.load(.acquire);
     }
 };
 
-fn evaluateScopedLogVisibility(state: *ScopedLogState) void {
+fn evaluateScopedLogVisibility(state: *const ScopedLogState) bool {
     if (bun.getenvZAnyCase(state.env_name)) |val| {
-        state.visible = !strings.eqlComptime(val, "0");
+        return !strings.eqlComptime(val, "0");
     } else if (bun.env_var.BUN_DEBUG_ALL.get()) |val| {
-        state.visible = val;
+        return val;
     } else if (bun.env_var.BUN_DEBUG_QUIET_LOGS.get()) |val| {
-        state.visible = state.visible and !val;
+        return state.default_visible and !val;
     } else {
         for (bun.argv) |arg| {
             if (strings.eqlCaseInsensitiveASCII(arg, state.debug_arg, true) or
                 strings.eqlCaseInsensitiveASCII(arg, "--debug-all", true))
             {
-                state.visible = true;
-                break;
+                return true;
             }
         }
     }
+    return state.default_visible;
 }
 
 const ScopedLogEntry = struct {
@@ -919,7 +919,7 @@ const ScopedLogEntry = struct {
             ScopedDebugWriter.failed.store(true, .monotonic);
         }
 
-        ScopedDebugWriter.lock.unlock();
+        ScopedDebugWriter.lock.unlock(ScopedDebugWriter.io);
         ScopedDebugWriter.disable_inside_log -= 1;
     }
 };
@@ -942,9 +942,9 @@ noinline fn beginScopedLog(
         return null;
     }
 
-    ScopedDebugWriter.lock.lock();
+    ScopedDebugWriter.lock.lockUncancelable(ScopedDebugWriter.io);
     if (ScopedDebugWriter.failed.load(.monotonic)) {
-        ScopedDebugWriter.lock.unlock();
+        ScopedDebugWriter.lock.unlock(ScopedDebugWriter.io);
         ScopedDebugWriter.disable_inside_log -= 1;
         return null;
     }
@@ -1302,7 +1302,8 @@ pub const ScopedDebugWriter = struct {
     var buffered_writer: File.QuietWriter = undefined;
     var use_ansi = false;
     var failed = std.atomic.Value(bool).init(false);
-    var lock = bun.Mutex{};
+    var lock: std.Io.Mutex = .init;
+    var io: std.Io = undefined;
 };
 pub fn disableScopedDebugWriter() void {
     if (!@inComptime()) {
@@ -1344,6 +1345,7 @@ pub fn initScopedDebugWriterAtStartup(io: std.Io) void {
 
     ScopedDebugWriter.buffered_writer = file.quietBufferedWriter(&ScopedDebugWriter.buffer);
     ScopedDebugWriter.use_ansi = enable_ansi_colors_stdout and file.handle == rawWriter().handle;
+    ScopedDebugWriter.io = io;
     ScopedDebugWriter.initialized.store(true, .release);
 }
 

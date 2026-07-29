@@ -396,12 +396,26 @@ const TrackedRef = struct {
     pub const Id = bun.GenericIndex(u32, TrackedRef);
 };
 
+const DebugLock = struct {
+    state: std.atomic.Value(bool) = .init(false),
+
+    fn lock(this: *DebugLock) void {
+        while (this.state.swap(true, .acquire)) {
+            while (this.state.load(.monotonic)) std.atomic.spinLoopHint();
+        }
+    }
+
+    fn unlock(this: *DebugLock) void {
+        bun.assert(this.state.swap(false, .release));
+    }
+};
+
 /// Provides Ref tracking. This is not generic over the pointer T to reduce analysis complexity.
 pub fn DebugData(thread_safe: bool) type {
     return struct {
         const Debug = @This();
         magic: enum(u128) { valid = 0x2f84e51d, _ } align(@alignOf(u32)),
-        lock: if (thread_safe) std.debug.SafetyLock else bun.Mutex,
+        lock: if (thread_safe) DebugLock else std.debug.SafetyLock,
         next_id: u32,
         map: std.AutoHashMapUnmanaged(TrackedRef.Id, TrackedRef),
 
@@ -423,19 +437,11 @@ pub fn DebugData(thread_safe: bool) type {
             genericDump(type_name, ptr, ref_count, &debug.map);
         }
 
-        fn nextId(debug: *@This()) TrackedRef.Id {
-            if (thread_safe) {
-                return .init(@atomicRmw(u32, &debug.next_id, .Add, 1, .seq_cst));
-            } else {
-                defer debug.next_id += 1;
-                return .init(debug.next_id);
-            }
-        }
-
         fn acquire(debug: *@This(), return_address: usize) TrackedRef.Id {
             debug.lock.lock();
             defer debug.lock.unlock();
-            const id = nextId(debug);
+            const id = TrackedRef.Id.init(debug.next_id);
+            debug.next_id += 1;
             debug.map.put(bun.default_allocator, id, .{
                 .acquired_at = .capture(return_address),
             }) catch |err| bun.handleOom(err);

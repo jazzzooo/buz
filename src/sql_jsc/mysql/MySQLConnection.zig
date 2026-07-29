@@ -130,7 +130,7 @@ fn flushData(this: *@This()) void {
     this.flags.has_backpressure = wrote < chunk.len;
     debug("flushData: wrote {d}/{d} bytes", .{ wrote, chunk.len });
     if (wrote > 0) {
-        SocketMonitor.write(chunk[0..@intCast(wrote)]);
+        SocketMonitor.write(this.getJSConnection().vm.io, chunk[0..@intCast(wrote)]);
         this.write_buffer.consume(@intCast(wrote));
     }
 }
@@ -263,7 +263,7 @@ pub fn readAndProcessData(this: *MySQLConnection, data: []const u8) !void {
     // Clear the timeout.
     this.socket.setTimeout(0);
 
-    SocketMonitor.read(data);
+    SocketMonitor.read(this.getJSConnection().vm.io, data);
 
     if (this.read_buffer.remaining().len == 0) {
         var consumed: usize = 0;

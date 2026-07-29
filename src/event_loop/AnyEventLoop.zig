@@ -46,9 +46,10 @@ pub const AnyEventLoop = union(EventLoopKind) {
     }
 
     pub fn init(
+        io: std.Io,
         allocator: std.mem.Allocator,
     ) AnyEventLoop {
-        return .{ .mini = MiniEventLoop.init(allocator) };
+        return .{ .mini = MiniEventLoop.init(io, allocator) };
     }
 
     pub fn tick(
