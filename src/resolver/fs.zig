@@ -627,7 +627,7 @@ pub const FileSystem = struct {
                 }
 
                 if (!bun.windows.MoveFileExW(existing.ptr, new.ptr, bun.windows.MOVEFILE_COPY_ALLOWED | bun.windows.MOVEFILE_REPLACE_EXISTING | bun.windows.MOVEFILE_WRITE_THROUGH).toBool()) {
-                    try bun.windows.Win32Error.get().unwrap();
+                    return bun.windows.getLastError();
                 }
             }
         };

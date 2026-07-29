@@ -290,7 +290,7 @@ pub const FD = packed struct(backing_int) {
                     break :result switch (bun.c.NtClose(handle)) {
                         .SUCCESS => null,
                         else => |rc| bun.sys.Error{
-                            .errno = if (bun.windows.Win32Error.fromNTStatus(rc).toSystemErrno()) |errno| @backingInt(errno) else 1,
+                            .errno = @backingInt(bun.sys.SystemErrno.fromNtStatus(rc)),
                             .syscall = .CloseHandle,
                             .fd = fd,
                         },

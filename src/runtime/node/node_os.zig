@@ -790,7 +790,7 @@ pub fn release() bun.String {
 }
 
 pub extern fn set_process_priority(pid: i32, priority: i32) i32;
-pub fn setProcessPriorityImpl(pid: i32, priority: i32) std.c.E {
+pub fn setProcessPriorityImpl(pid: i32, priority: i32) bun.sys.E {
     if (pid < 0) return .SRCH;
 
     const code: i32 = set_process_priority(pid, priority);
@@ -798,8 +798,11 @@ pub fn setProcessPriorityImpl(pid: i32, priority: i32) std.c.E {
     if (code == -2) return .SRCH;
     if (code == 0) return .SUCCESS;
 
-    const errcode = bun.sys.getErrno(code);
-    return @fromBackingInt(@intCast(@backingInt(errcode)));
+    if (comptime bun.Environment.isWindows) {
+        return bun.windows.libuv.translateUVErrorToE(code);
+    }
+
+    return bun.sys.getErrno(code);
 }
 
 pub fn setPriority1(global: *jsc.JSGlobalObject, pid: i32, priority: i32) !void {

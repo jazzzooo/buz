@@ -272,7 +272,10 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
             err.putDirect(globalObject, ZigString.static("errno"), JSValue.jsNumber(errno));
             err.putDirect(globalObject, ZigString.static("address"), ZigString.initUTF8(hostname).toJS(globalObject));
             if (port) |p| err.putDirect(globalObject, ZigString.static("port"), .jsNumber(p));
-            if (bun.sys.SystemErrno.init(errno)) |str| {
+            if (comptime Environment.isWindows) {
+                const str = bun.sys.SystemErrno.fromWinsock(@as(bun.windows.WinsockError, @fromBackingInt(errno)));
+                err.putDirect(globalObject, ZigString.static("code"), ZigString.init(@tagName(str)).toJS(globalObject));
+            } else if (bun.sys.SystemErrno.init(errno)) |str| {
                 err.putDirect(globalObject, ZigString.static("code"), ZigString.init(@tagName(str)).toJS(globalObject));
             }
         }

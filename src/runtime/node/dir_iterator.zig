@@ -323,19 +323,9 @@ pub fn NewIterator(comptime use_windows_ospath: bool) type {
 
                         if (rc != .SUCCESS) {
                             bun.sys.syslog("NtQueryDirectoryFile({f}) = {s}", .{ self.dir, @tagName(rc) });
-
-                            if ((bun.windows.Win32Error.fromNTStatus(rc).toSystemErrno())) |errno| {
-                                return .{
-                                    .err = .{
-                                        .errno = @backingInt(errno),
-                                        .syscall = .NtQueryDirectoryFile,
-                                    },
-                                };
-                            }
-
                             return .{
                                 .err = .{
-                                    .errno = @backingInt(bun.sys.SystemErrno.EUNKNOWN),
+                                    .errno = @backingInt(bun.sys.SystemErrno.fromNtStatus(rc)),
                                     .syscall = .NtQueryDirectoryFile,
                                 },
                             };

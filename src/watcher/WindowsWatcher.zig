@@ -45,9 +45,9 @@ const DirWatcher = struct {
             bun.c.FILE_NOTIFY_CHANGE_CREATION;
         if (!w.ReadDirectoryChangesW(this.dirHandle, &this.buf, @intCast(this.buf.len), .TRUE, filter, null, &this.overlapped, null).toBool()) {
             const err = w.GetLastError();
-            log("failed to start watching directory: {s}", .{@tagName(err)});
+            log("failed to start watching directory: {}", .{err});
             return .{ .err = .{
-                .errno = @backingInt(bun.sys.SystemErrno.init(err) orelse bun.sys.SystemErrno.EINVAL),
+                .errno = @backingInt(bun.sys.SystemErrno.fromWin32(err)),
                 .syscall = .watch,
             } };
         }
@@ -117,8 +117,7 @@ pub fn init(this: *WindowsWatcher, root: []const u8) !void {
     );
 
     if (rc != .SUCCESS) {
-        const err = bun.windows.Win32Error.fromNTStatus(rc);
-        log("failed to open directory for watching: {s}", .{@tagName(err)});
+        log("failed to open directory for watching: {}", .{rc});
         return Error.CreateFileFailed;
     }
     errdefer _ = bun.windows.CloseHandle(handle);
@@ -162,9 +161,9 @@ pub fn next(this: *WindowsWatcher, timeout: Timeout) bun.sys.Maybe(?EventIterato
             if (err == .TIMEOUT or err == .WAIT_TIMEOUT) {
                 return .{ .result = null };
             } else {
-                log("GetQueuedCompletionStatus failed: {s}", .{@tagName(err)});
+                log("GetQueuedCompletionStatus failed: {}", .{err});
                 return .{ .err = .{
-                    .errno = @backingInt(bun.sys.SystemErrno.init(err) orelse bun.sys.SystemErrno.EINVAL),
+                    .errno = @backingInt(bun.sys.SystemErrno.fromWin32(err)),
                     .syscall = .watch,
                 } };
             }

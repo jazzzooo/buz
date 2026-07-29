@@ -707,7 +707,7 @@ pub const RunCommand = struct {
                 @ptrCast(&target_path_buffer[prefix.len]),
             );
             if (len == 0) {
-                Output.debug("Failed to create temporary node dir: {s}", .{@tagName(std.os.windows.GetLastError())});
+                Output.debug("Failed to create temporary node dir: {}", .{std.os.windows.GetLastError()});
                 return;
             }
 

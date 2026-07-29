@@ -1343,23 +1343,14 @@ fn openDirAtWindowsNtPath(
         }
     }
 
-    switch (windows.Win32Error.fromNTStatus(rc)) {
+    switch (rc) {
         .SUCCESS => {
             return .{ .result = .fromNative(fd) };
         },
-        else => |code| {
-            if (code.toSystemErrno()) |sys_err| {
-                return .{
-                    .err = .{
-                        .errno = @backingInt(sys_err),
-                        .syscall = .open,
-                    },
-                };
-            }
-
+        else => |status| {
             return .{
                 .err = .{
-                    .errno = @backingInt(E.UNKNOWN),
+                    .errno = @backingInt(SystemErrno.fromNtStatus(status)),
                     .syscall = .open,
                 },
             };
@@ -1384,10 +1375,7 @@ fn openWindowsDevicePath(
     );
     if (rc == w.INVALID_HANDLE_VALUE) {
         return .{ .err = .{
-            .errno = if (windows.Win32Error.get().toSystemErrno()) |e|
-                @backingInt(e)
-            else
-                @backingInt(E.UNKNOWN),
+            .errno = @backingInt(SystemErrno.fromWin32(windows.GetLastError())),
             .syscall = .open,
         } };
     }
@@ -1572,7 +1560,7 @@ pub fn openFileAtWindowsNtPath(
             continue;
         }
 
-        switch (windows.Win32Error.fromNTStatus(rc)) {
+        switch (rc) {
             .SUCCESS => {
                 if (options.access_mask & w.FILE_APPEND_DATA != 0) {
                     // https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfilepointerex
@@ -1588,19 +1576,10 @@ pub fn openFileAtWindowsNtPath(
                 }
                 return .{ .result = .fromNative(result) };
             },
-            else => |code| {
-                if (code.toSystemErrno()) |sys_err| {
-                    return .{
-                        .err = .{
-                            .errno = @backingInt(sys_err),
-                            .syscall = .open,
-                        },
-                    };
-                }
-
+            else => |status| {
                 return .{
                     .err = .{
-                        .errno = @backingInt(E.UNKNOWN),
+                        .errno = @backingInt(SystemErrno.fromNtStatus(status)),
                         .syscall = .open,
                     },
                 };
@@ -2060,8 +2039,9 @@ pub fn write(fd: bun.FD, bytes: []const u8) Maybe(usize) {
                 null,
             );
             if (rc == 0) {
-                log("WriteFile({f}, {d}) = {s}", .{ fd, adjusted_len, @tagName(bun.windows.getLastErrno()) });
                 const er = std.os.windows.GetLastError();
+                const errno = SystemErrno.fromWin32(er).toE();
+                log("WriteFile({f}, {d}) = {s}", .{ fd, adjusted_len, @tagName(errno) });
                 if (er == .ACCESS_DENIED) {
                     // file is not writable
                     return .{ .err = .{
@@ -2070,7 +2050,6 @@ pub fn write(fd: bun.FD, bytes: []const u8) Maybe(usize) {
                         .fd = fd,
                     } };
                 }
-                const errno = (SystemErrno.init(bun.windows.GetLastError()) orelse SystemErrno.EUNKNOWN).toE();
                 return .{
                     .err = sys.Error{
                         .errno = @backingInt(errno),
@@ -2976,12 +2955,12 @@ pub fn symlinkW(dest: [:0]const u16, target: [:0]const u16, options: WindowsSyml
         const flags = options.flags();
 
         if (!windows.CreateSymbolicLinkW(dest, target, flags).toBool()) {
-            const errno = bun.windows.Win32Error.get();
-            log("CreateSymbolicLinkW({f}, {f}, {}) = {s}", .{
+            const errno = bun.windows.GetLastError();
+            log("CreateSymbolicLinkW({f}, {f}, {}) = {}", .{
                 bun.fmt.fmtPath(u16, dest, .{}),
                 bun.fmt.fmtPath(u16, target, .{}),
                 flags,
-                @tagName(errno),
+                errno,
             });
             switch (errno) {
                 .INVALID_PARAMETER => {
@@ -2993,29 +2972,28 @@ pub fn symlinkW(dest: [:0]const u16, target: [:0]const u16, options: WindowsSyml
                 else => {},
             }
 
-            if (errno.toSystemErrno()) |err| {
-                switch (err) {
-                    .ENOENT,
-                    .EEXIST,
-                    => {
-                        return .{
-                            .err = .{
-                                .errno = @backingInt(err),
-                                .syscall = .symlink,
-                            },
-                        };
-                    },
+            const err = SystemErrno.fromWin32(errno);
+            switch (err) {
+                .ENOENT,
+                .EEXIST,
+                => {
+                    return .{
+                        .err = .{
+                            .errno = @backingInt(err),
+                            .syscall = .symlink,
+                        },
+                    };
+                },
 
-                    else => {},
-                }
-                WindowsSymlinkOptions.has_failed_to_create_symlink = true;
-                return .{
-                    .err = .{
-                        .errno = @backingInt(err),
-                        .syscall = .symlink,
-                    },
-                };
+                else => {},
             }
+            WindowsSymlinkOptions.has_failed_to_create_symlink = true;
+            return .{
+                .err = .{
+                    .errno = @backingInt(err),
+                    .syscall = .symlink,
+                },
+            };
         }
 
         log("CreateSymbolicLinkW({f}, {f}, {}) = 0", .{
@@ -4351,6 +4329,10 @@ pub fn selfProcessMemoryUsage() ?usize {
 }
 
 export fn Bun__errnoName(err: c_int) ?[*:0]const u8 {
+    if (comptime Environment.isWindows) {
+        if (err < 0) return @ptrCast(bun.windows.libuv.uv_err_name(err));
+        return @tagName(SystemErrno.fromErrno(err) orelse return null);
+    }
     return @tagName(SystemErrno.init(err) orelse return null);
 }
 

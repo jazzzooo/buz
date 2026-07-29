@@ -80,7 +80,10 @@ pub const us_socket_t = opaque {
         var length: i32 = @intCast(@min(buf.len, max_i32));
         c.us_socket_local_address(this, buf.ptr, &length);
         if (length < 0) {
-            const errno = bun.sys.getErrno(length);
+            const errno = if (comptime bun.Environment.isWindows)
+                bun.windows.getLastWinsockErrno()
+            else
+                bun.sys.getErrno(length);
             bun.debugAssert(errno != .SUCCESS);
             return bun.errnoToZigErr(errno);
         }
@@ -93,7 +96,10 @@ pub const us_socket_t = opaque {
         var length: i32 = @intCast(@min(buf.len, max_i32));
         c.us_socket_remote_address(this, buf.ptr, &length);
         if (length < 0) {
-            const errno = bun.sys.getErrno(length);
+            const errno = if (comptime bun.Environment.isWindows)
+                bun.windows.getLastWinsockErrno()
+            else
+                bun.sys.getErrno(length);
             bun.debugAssert(errno != .SUCCESS);
             return bun.errnoToZigErr(errno);
         }

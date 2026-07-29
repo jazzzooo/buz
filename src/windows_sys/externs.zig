@@ -1,5 +1,5 @@
 //! Raw Win32 extern fn declarations split from sys/windows/windows.zig.
-//! Custom types (Win32Error) and helper wrappers stay in sys/windows/.
+//! Helper wrappers stay in sys/windows/.
 
 pub const LPDWORD = *DWORD;
 pub const HPCON = *anyopaque;
@@ -31,6 +31,10 @@ pub extern "ntdll" fn NtCreateFile(
     ea_buffer: ?*const anyopaque,
     ea_length: ULONG,
 ) callconv(.winapi) windows.NTSTATUS;
+
+pub extern "ntdll" fn RtlNtStatusToDosError(
+    status: windows.NTSTATUS,
+) callconv(.winapi) windows.Win32Error;
 
 pub extern "kernel32" fn GetFileInformationByHandle(
     hFile: HANDLE,

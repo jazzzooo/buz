@@ -990,7 +990,7 @@ pub const upgrade_js_bindings = struct {
             0,
         );
 
-        switch (bun.windows.Win32Error.fromNTStatus(rc)) {
+        switch (rc) {
             .SUCCESS => tempdir_fd = .fromNative(fd),
             else => {},
         }

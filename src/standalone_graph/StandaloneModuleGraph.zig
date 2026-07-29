@@ -1209,15 +1209,11 @@ pub const StandaloneModuleGraph = struct {
 
             // Move the file using MoveFileExW
             if (!bun.windows.MoveFileExW(temp_buf_u16[0..temp_w.len :0].ptr, dest_buf_u16[0..dest_w.len :0].ptr, bun.windows.MOVEFILE_COPY_ALLOWED | bun.windows.MOVEFILE_REPLACE_EXISTING | bun.windows.MOVEFILE_WRITE_THROUGH).toBool()) {
-                const err = bun.windows.Win32Error.get();
-                if (err.toSystemErrno()) |sys_err| {
-                    if (sys_err == .EISDIR) {
-                        return CompileResult.failFmt("{s} is a directory. Please choose a different --outfile or delete the directory", .{outfile});
-                    } else {
-                        return CompileResult.failFmt("failed to move executable to {s}: {s}", .{ dest_path, @tagName(sys_err) });
-                    }
+                const err = bun.sys.SystemErrno.fromWin32(bun.windows.GetLastError());
+                if (err == .EISDIR) {
+                    return CompileResult.failFmt("{s} is a directory. Please choose a different --outfile or delete the directory", .{outfile});
                 } else {
-                    return CompileResult.failFmt("failed to move executable to {s}", .{dest_path});
+                    return CompileResult.failFmt("failed to move executable to {s}: {s}", .{ dest_path, @tagName(err) });
                 }
             }
 

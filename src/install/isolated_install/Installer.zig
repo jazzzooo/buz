@@ -661,7 +661,7 @@ pub const Installer = struct {
 
                                         if (src_path_len == 0 or src_path_len >= src_path.buf().len) {
                                             const err: bun.sys.SystemErrno = if (src_path_len == 0)
-                                                (bun.windows.Win32Error.get().toSystemErrno() orelse .EUNKNOWN)
+                                                bun.sys.SystemErrno.fromWin32(bun.windows.GetLastError())
                                             else
                                                 .ENAMETOOLONG;
                                             return .failure(

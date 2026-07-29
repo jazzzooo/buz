@@ -340,7 +340,7 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
 
 fn translateToErrInt(err: anytype) bun.sys.Error.Int {
     return switch (@TypeOf(err)) {
-        bun.windows.NTSTATUS => @backingInt(bun.windows.translateNTStatusToErrno(err)),
+        bun.windows.NTSTATUS => @backingInt(bun.sys.SystemErrno.fromNtStatus(err)),
         else => @truncate(@backingInt(err)),
     };
 }

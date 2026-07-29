@@ -497,15 +497,10 @@ pub const CreateCommand = struct {
                                                 }
                                             }
 
-                                            if (bun.windows.Win32Error.get().toSystemErrno()) |err| {
-                                                Output.err(err, "failed to copy file {f}", .{
-                                                    bun.fmt.fmtOSPath(entry.path, .{}),
-                                                });
-                                            } else {
-                                                Output.errGeneric("failed to copy file {f}", .{
-                                                    bun.fmt.fmtOSPath(entry.path, .{}),
-                                                });
-                                            }
+                                            const err = bun.sys.SystemErrno.fromWin32(bun.windows.GetLastError());
+                                            Output.err(err, "failed to copy file {f}", .{
+                                                bun.fmt.fmtOSPath(entry.path, .{}),
+                                            });
                                             node_.end();
                                             progress_.refresh();
                                             Global.crash();

@@ -1991,7 +1991,11 @@ pub fn NewServer(protocol_enum: enum { http, https }) type {
                         }
                     },
                     .unix => |unix| {
-                        switch (bun.sys.getErrno(@as(i32, -1))) {
+                        const errno = if (comptime Environment.isWindows)
+                            bun.windows.getLastWinsockErrno()
+                        else
+                            bun.sys.getErrno(@as(i32, -1));
+                        switch (errno) {
                             .SUCCESS => {
                                 error_instance = if ((jsc.SystemError{
                                     .message = bun.String.init(std.fmt.bufPrint(&output_buf, "Failed to listen on unix socket {f}", .{bun.fmt.QuotedFormatter{ .text = unix }}) catch "Failed to start server"),

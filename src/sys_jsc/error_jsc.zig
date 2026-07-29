@@ -47,6 +47,20 @@ pub const TestingAPIs = struct {
         return bun.String.createUTF8ForJS(globalThis, @tagName(result));
     }
 
+    pub fn translateNtStatusToE(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+        const arguments = callframe.arguments();
+        if (arguments.len < 1 or !arguments[0].isNumber()) {
+            return globalThis.throw("translateNtStatusToE: expected 1 number argument", .{});
+        }
+        if (comptime !Environment.isWindows) {
+            return .js_undefined;
+        }
+        const raw: u32 = @bitCast(arguments[0].toInt32());
+        const status: std.os.windows.NTSTATUS = @fromBackingInt(raw);
+        const result = bun.sys.SystemErrno.fromNtStatus(status).toE();
+        return bun.String.createUTF8ForJS(globalThis, @tagName(result));
+    }
+
     /// Verifies `bun.sys.Sigaction`'s layout matches the host libc by
     /// round-tripping a known handler through `sigaction(2)`. If the struct
     /// layout disagrees with libc (as `std.posix.Sigaction` does on Android

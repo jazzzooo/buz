@@ -319,7 +319,7 @@ pub fn kind(self: File) Maybe(std.Io.File.Kind) {
             switch (windows.GetLastError()) {
                 .SUCCESS => {},
                 else => |err| {
-                    return .{ .err = Error.fromCode((SystemErrno.init(err) orelse SystemErrno.EUNKNOWN).toE(), .fstat) };
+                    return .{ .err = Error.fromCode(SystemErrno.fromWin32(err).toE(), .fstat) };
                 },
             }
         }

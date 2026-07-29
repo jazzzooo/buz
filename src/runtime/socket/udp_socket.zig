@@ -333,7 +333,11 @@ pub const UDPSocket = struct {
         ) orelse {
             this.closed = true;
             if (err != 0) {
-                const code = @tagName(bun.sys.SystemErrno.init(@as(c_int, @intCast(err))).?);
+                const errno = if (comptime bun.Environment.isWindows)
+                    bun.sys.SystemErrno.fromWinsock(@as(bun.windows.WinsockError, @fromBackingInt(@intCast(@abs(@as(i64, err))))))
+                else
+                    bun.sys.SystemErrno.init(@as(c_int, @intCast(err))).?;
+                const code = @tagName(errno);
                 const sys_err = jsc.SystemError{
                     .errno = err,
                     .code = bun.String.static(code),
@@ -355,8 +359,15 @@ pub const UDPSocket = struct {
             defer bun.default_allocator.free(address_z);
             const ret = this.socket.?.connect(address_z, connect.port);
             if (ret != 0) {
-                if (bun.sys.Maybe(void).errnoSys(ret, .connect)) |*sys_err| {
-                    return globalThis.throwValue(try sys_err.err.toJS(globalThis));
+                const sys_err = if (comptime bun.Environment.isWindows)
+                    if (ret == -1)
+                        bun.sys.Maybe(void).errno(bun.windows.getLastWinsockErrno(), .connect)
+                    else
+                        null
+                else
+                    bun.sys.Maybe(void).errnoSys(ret, .connect);
+                if (sys_err) |sys_error| {
+                    return globalThis.throwValue(try sys_error.err.toJS(globalThis));
                 }
 
                 if (bun.c_ares.Error.initEAI(ret)) |eai_err| {
@@ -569,11 +580,10 @@ pub const UDPSocket = struct {
             }
 
             if (comptime use_wsa) {
-                if (bun.windows.WSAGetLastError()) |wsa| {
-                    if (wsa != .SUCCESS) {
-                        bun.c.WSASetLastError(0);
-                        return bun.sys.Maybe(void).errno(wsa.toE(), tag);
-                    }
+                const wsa = bun.windows.getLastWinsockErrno();
+                if (wsa != .SUCCESS) {
+                    bun.c.WSASetLastError(0);
+                    return bun.sys.Maybe(void).errno(wsa, tag);
                 }
             }
 

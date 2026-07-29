@@ -284,18 +284,10 @@ pub const S = struct {
 
 pub fn getErrno(rc: anytype) E {
     if (comptime @TypeOf(rc) == bun.windows.NTSTATUS) {
-        return bun.windows.translateNTStatusToErrno(rc);
+        return SystemErrno.fromNtStatus(rc).toE();
     }
 
-    if (Win32Error.get().toSystemErrno()) |sys| {
-        return sys.toE();
-    }
-
-    if (bun.windows.WSAGetLastError()) |wsa| {
-        return wsa.toE();
-    }
-
-    return .SUCCESS;
+    return SystemErrno.fromWin32(bun.windows.GetLastError()).toE();
 }
 
 pub const SystemErrno = enum(u16) {
@@ -964,141 +956,44 @@ pub const SystemErrno = enum(u16) {
         return error_map[@backingInt(this)];
     }
 
-    pub fn init(code: anytype) ?SystemErrno {
-        if (@TypeOf(code) == u16 or (@TypeOf(code) == c_int and code > 0)) {
-            // Win32Error and WSA Error codes
-            if (code <= @backingInt(Win32Error.IO_REISSUE_AS_CACHED) or (code >= @backingInt(Win32Error.WSAEINTR) and code <= @backingInt(Win32Error.WSA_QOS_RESERVED_PETYPE))) {
-                return init(@as(Win32Error, @fromBackingInt(@intCast(code))));
-            } else {
-                // uv error codes
-                const enum_info = @typeInfo(SystemErrno).@"enum";
-                inline for (enum_info.field_names, enum_info.field_values) |field_name, field_value| {
-                    if (comptime std.mem.startsWith(u8, field_name, "UV_")) {
-                        if (comptime @hasField(SystemErrno, field_name["UV_".len..])) {
-                            if (code == field_value) {
-                                return @field(SystemErrno, field_name["UV_".len..]);
-                            }
-                        }
-                    }
-                }
-                if (comptime bun.Environment.allow_assert)
-                    bun.Output.debugWarn("Unknown error code: {d}\n", .{code});
+    pub fn fromErrno(code: c_int) ?SystemErrno {
+        if (code < 0 or code >= max) return null;
+        return @fromBackingInt(@intCast(code));
+    }
 
-                return null;
-            }
-        }
+    fn fromUv(code: c_int) SystemErrno {
+        return @fromBackingInt(@intCast(@backingInt(uv.translateUVErrorToE(code))));
+    }
 
-        if (comptime @TypeOf(code) == Win32Error or @TypeOf(code) == std.os.windows.Win32Error) {
-            return switch (@as(Win32Error, @fromBackingInt(@intCast(@backingInt(code))))) {
-                Win32Error.NOACCESS => SystemErrno.EACCES,
-                Win32Error.WSAEACCES => SystemErrno.EACCES,
-                Win32Error.ELEVATION_REQUIRED => SystemErrno.EACCES,
-                Win32Error.CANT_ACCESS_FILE => SystemErrno.EACCES,
-                Win32Error.ADDRESS_ALREADY_ASSOCIATED => SystemErrno.EADDRINUSE,
-                Win32Error.WSAEADDRINUSE => SystemErrno.EADDRINUSE,
-                Win32Error.WSAEADDRNOTAVAIL => SystemErrno.EADDRNOTAVAIL,
-                Win32Error.WSAEAFNOSUPPORT => SystemErrno.EAFNOSUPPORT,
-                Win32Error.WSAEWOULDBLOCK => SystemErrno.EAGAIN,
-                Win32Error.WSAEALREADY => SystemErrno.EALREADY,
-                Win32Error.INVALID_FLAGS => SystemErrno.EBADF,
-                Win32Error.INVALID_HANDLE => SystemErrno.EBADF,
-                Win32Error.LOCK_VIOLATION => SystemErrno.EBUSY,
-                Win32Error.PIPE_BUSY => SystemErrno.EBUSY,
-                Win32Error.SHARING_VIOLATION => SystemErrno.EBUSY,
-                Win32Error.OPERATION_ABORTED => SystemErrno.ECANCELED,
-                Win32Error.WSAEINTR => SystemErrno.ECANCELED,
-                Win32Error.NO_UNICODE_TRANSLATION => SystemErrno.ECHARSET,
-                Win32Error.CONNECTION_ABORTED => SystemErrno.ECONNABORTED,
-                Win32Error.WSAECONNABORTED => SystemErrno.ECONNABORTED,
-                Win32Error.CONNECTION_REFUSED => SystemErrno.ECONNREFUSED,
-                Win32Error.WSAECONNREFUSED => SystemErrno.ECONNREFUSED,
-                Win32Error.NETNAME_DELETED => SystemErrno.ECONNRESET,
-                Win32Error.WSAECONNRESET => SystemErrno.ECONNRESET,
-                Win32Error.ALREADY_EXISTS => SystemErrno.EEXIST,
-                Win32Error.FILE_EXISTS => SystemErrno.EEXIST,
-                Win32Error.BUFFER_OVERFLOW => SystemErrno.EFAULT,
-                Win32Error.WSAEFAULT => SystemErrno.EFAULT,
-                Win32Error.HOST_UNREACHABLE => SystemErrno.EHOSTUNREACH,
-                Win32Error.WSAEHOSTUNREACH => SystemErrno.EHOSTUNREACH,
-                Win32Error.INSUFFICIENT_BUFFER => SystemErrno.EINVAL,
-                Win32Error.INVALID_DATA => SystemErrno.EINVAL,
-                Win32Error.INVALID_PARAMETER => SystemErrno.EINVAL,
-                Win32Error.SYMLINK_NOT_SUPPORTED => SystemErrno.EINVAL,
-                Win32Error.WSAEINVAL => SystemErrno.EINVAL,
-                Win32Error.WSAEPFNOSUPPORT => SystemErrno.EINVAL,
-                Win32Error.BEGINNING_OF_MEDIA => SystemErrno.EIO,
-                Win32Error.BUS_RESET => SystemErrno.EIO,
-                Win32Error.CRC => SystemErrno.EIO,
-                Win32Error.DEVICE_DOOR_OPEN => SystemErrno.EIO,
-                Win32Error.DEVICE_REQUIRES_CLEANING => SystemErrno.EIO,
-                Win32Error.DISK_CORRUPT => SystemErrno.EIO,
-                Win32Error.EOM_OVERFLOW => SystemErrno.EIO,
-                Win32Error.FILEMARK_DETECTED => SystemErrno.EIO,
-                Win32Error.GEN_FAILURE => SystemErrno.EIO,
-                Win32Error.INVALID_BLOCK_LENGTH => SystemErrno.EIO,
-                Win32Error.IO_DEVICE => SystemErrno.EIO,
-                Win32Error.NO_DATA_DETECTED => SystemErrno.EIO,
-                Win32Error.NO_SIGNAL_SENT => SystemErrno.EIO,
-                Win32Error.OPEN_FAILED => SystemErrno.EIO,
-                Win32Error.SETMARK_DETECTED => SystemErrno.EIO,
-                Win32Error.SIGNAL_REFUSED => SystemErrno.EIO,
-                Win32Error.WSAEISCONN => SystemErrno.EISCONN,
-                Win32Error.CANT_RESOLVE_FILENAME => SystemErrno.ELOOP,
-                Win32Error.TOO_MANY_OPEN_FILES => SystemErrno.EMFILE,
-                Win32Error.WSAEMFILE => SystemErrno.EMFILE,
-                Win32Error.WSAEMSGSIZE => SystemErrno.EMSGSIZE,
-                Win32Error.FILENAME_EXCED_RANGE => SystemErrno.ENAMETOOLONG,
-                Win32Error.NETWORK_UNREACHABLE => SystemErrno.ENETUNREACH,
-                Win32Error.WSAENETUNREACH => SystemErrno.ENETUNREACH,
-                Win32Error.WSAENOBUFS => SystemErrno.ENOBUFS,
-                Win32Error.BAD_PATHNAME => SystemErrno.ENOENT,
-                Win32Error.DIRECTORY => SystemErrno.ENOTDIR,
-                Win32Error.ENVVAR_NOT_FOUND => SystemErrno.ENOENT,
-                Win32Error.FILE_NOT_FOUND => SystemErrno.ENOENT,
-                Win32Error.INVALID_NAME => SystemErrno.ENOENT,
-                Win32Error.INVALID_DRIVE => SystemErrno.ENOENT,
-                Win32Error.INVALID_REPARSE_DATA => SystemErrno.ENOENT,
-                Win32Error.MOD_NOT_FOUND => SystemErrno.ENOENT,
-                Win32Error.PATH_NOT_FOUND => SystemErrno.ENOENT,
-                Win32Error.WSAHOST_NOT_FOUND => SystemErrno.ENOENT,
-                Win32Error.WSANO_DATA => SystemErrno.ENOENT,
-                Win32Error.NOT_ENOUGH_MEMORY => SystemErrno.ENOMEM,
-                Win32Error.OUTOFMEMORY => SystemErrno.ENOMEM,
-                Win32Error.CANNOT_MAKE => SystemErrno.ENOSPC,
-                Win32Error.DISK_FULL => SystemErrno.ENOSPC,
-                Win32Error.EA_TABLE_FULL => SystemErrno.ENOSPC,
-                Win32Error.END_OF_MEDIA => SystemErrno.ENOSPC,
-                Win32Error.HANDLE_DISK_FULL => SystemErrno.ENOSPC,
-                Win32Error.NOT_CONNECTED => SystemErrno.ENOTCONN,
-                Win32Error.WSAENOTCONN => SystemErrno.ENOTCONN,
-                Win32Error.DIR_NOT_EMPTY => SystemErrno.ENOTEMPTY,
-                Win32Error.WSAENOTSOCK => SystemErrno.ENOTSOCK,
-                Win32Error.NOT_SUPPORTED => SystemErrno.ENOTSUP,
-                Win32Error.WSAEOPNOTSUPP => SystemErrno.ENOTSUP,
-                Win32Error.BROKEN_PIPE => SystemErrno.EPIPE,
-                Win32Error.ACCESS_DENIED => SystemErrno.EPERM,
-                Win32Error.PRIVILEGE_NOT_HELD => SystemErrno.EPERM,
-                Win32Error.BAD_PIPE => SystemErrno.EPIPE,
-                Win32Error.NO_DATA => SystemErrno.EPIPE,
-                Win32Error.PIPE_NOT_CONNECTED => SystemErrno.EPIPE,
-                Win32Error.WSAESHUTDOWN => SystemErrno.EPIPE,
-                Win32Error.WSAEPROTONOSUPPORT => SystemErrno.EPROTONOSUPPORT,
-                Win32Error.WRITE_PROTECT => SystemErrno.EROFS,
-                Win32Error.SEM_TIMEOUT => SystemErrno.ETIMEDOUT,
-                Win32Error.WSAETIMEDOUT => SystemErrno.ETIMEDOUT,
-                Win32Error.NOT_SAME_DEVICE => SystemErrno.EXDEV,
-                Win32Error.INVALID_FUNCTION => SystemErrno.EISDIR,
-                Win32Error.META_EXPANSION_TOO_LONG => SystemErrno.E2BIG,
-                Win32Error.WSAESOCKTNOSUPPORT => SystemErrno.ESOCKTNOSUPPORT,
-                Win32Error.DELETE_PENDING => SystemErrno.EBUSY,
-                else => null,
-            };
-        }
+    pub fn fromWin32(code: std.os.windows.Win32Error) SystemErrno {
+        const raw = @backingInt(code);
+        if (raw == @as(u32, @intCast(bun.c.ERROR_INVALID_REPARSE_DATA))) return .ENOENT;
+        if (raw > std.math.maxInt(c_int)) return .EUNKNOWN;
+        return fromUv(uv.uv_translate_sys_error(@intCast(raw)));
+    }
 
-        if (code < 0)
-            return init(-code);
+    pub fn fromWinsock(code: bun.windows.WinsockError) SystemErrno {
+        return fromUv(uv.uv_translate_sys_error(@backingInt(code)));
+    }
 
-        return @as(SystemErrno, @fromBackingInt(@intCast(code)));
+    pub fn fromNtStatus(status: std.os.windows.NTSTATUS) SystemErrno {
+        return switch (status) {
+            .SUCCESS => .SUCCESS,
+            .ACCESS_DENIED, .CANNOT_DELETE => .EPERM,
+            .INVALID_HANDLE => .EBADF,
+            .INVALID_PARAMETER, .OBJECT_NAME_INVALID => .EINVAL,
+            .OBJECT_NAME_COLLISION => .EEXIST,
+            .FILE_IS_A_DIRECTORY => .EISDIR,
+            .OBJECT_PATH_NOT_FOUND, .OBJECT_NAME_NOT_FOUND => .ENOENT,
+            .NOT_A_DIRECTORY => .ENOTDIR,
+            .RETRY => .EAGAIN,
+            .DIRECTORY_NOT_EMPTY => .ENOTEMPTY,
+            .FILE_TOO_LARGE => .E2BIG,
+            .NOT_SAME_DEVICE => .EXDEV,
+            .DELETE_PENDING, .SHARING_VIOLATION => .EBUSY,
+            .NOT_IMPLEMENTED, .INVALID_DEVICE_REQUEST, .ILLEGAL_FUNCTION => .ENOTSUP,
+            else => fromWin32(bun.windows.RtlNtStatusToDosError(status)),
+        };
     }
 };
 
@@ -1177,5 +1072,4 @@ pub const UV_E = struct {
 const bun = @import("bun");
 const std = @import("std");
 
-const Win32Error = bun.windows.Win32Error;
 const uv = bun.windows.libuv;

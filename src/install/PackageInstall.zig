@@ -545,9 +545,8 @@ pub const PackageInstall = struct {
 
         const dest_path_length = bun.windows.GetFinalPathNameByHandleW(destbase.handle, &state.buf, state.buf.len, 0);
         if (dest_path_length == 0 or dest_path_length >= state.buf.len) {
-            const e = bun.windows.Win32Error.get();
             const err = if (dest_path_length == 0)
-                (if (e.toSystemErrno()) |sys_err| bun.errnoToZigErr(sys_err) else error.Unexpected)
+                bun.windows.getLastError()
             else
                 error.NameTooLong;
             state.cached_package_dir.close(io);
@@ -572,9 +571,8 @@ pub const PackageInstall = struct {
 
         const cache_path_length = bun.windows.GetFinalPathNameByHandleW(state.cached_package_dir.handle, &state.buf2, state.buf2.len, 0);
         if (cache_path_length == 0 or cache_path_length >= state.buf2.len) {
-            const e = bun.windows.Win32Error.get();
             const err = if (cache_path_length == 0)
-                (if (e.toSystemErrno()) |sys_err| bun.errnoToZigErr(sys_err) else error.Unexpected)
+                bun.windows.getLastError()
             else
                 error.NameTooLong;
             state.cached_package_dir.close(io);
@@ -654,11 +652,8 @@ pub const PackageInstall = struct {
                                         progress.refresh();
                                     }
 
-                                    if (bun.windows.Win32Error.get().toSystemErrno()) |err| {
-                                        Output.prettyError("<r><red>{s}<r>: copying file {f}", .{ @tagName(err), bun.fmt.fmtOSPath(entry.path, .{}) });
-                                    } else {
-                                        Output.prettyError("<r><red>error<r> copying file {f}", .{bun.fmt.fmtOSPath(entry.path, .{})});
-                                    }
+                                    const err = bun.sys.SystemErrno.fromWin32(bun.windows.GetLastError());
+                                    Output.prettyError("<r><red>{s}<r>: copying file {f}", .{ @tagName(err), bun.fmt.fmtOSPath(entry.path, .{}) });
 
                                     Global.crash();
                                 }
@@ -1279,9 +1274,8 @@ pub const PackageInstall = struct {
             var wbuf: bun.WPathBuffer = undefined;
             const dest_path_length = bun.windows.GetFinalPathNameByHandleW(destination_dir.handle, &wbuf, wbuf.len, 0);
             if (dest_path_length == 0 or dest_path_length >= wbuf.len) {
-                const e = bun.windows.Win32Error.get();
                 const err = if (dest_path_length == 0)
-                    (if (e.toSystemErrno()) |sys_err| bun.errnoToZigErr(sys_err) else error.Unexpected)
+                    bun.windows.getLastError()
                 else
                     error.NameTooLong;
                 return Result.fail(err, .linking_dependency, null);
