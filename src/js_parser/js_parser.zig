@@ -364,21 +364,23 @@ pub const DeclaredSymbol = struct {
     is_top_level: bool = false,
 
     pub const List = struct {
-        entries: bun.MultiArrayList(DeclaredSymbol) = .{},
+        const Entries = std.MultiArrayList(DeclaredSymbol);
+
+        entries: Entries = .empty,
 
         pub fn refs(this: *const List) []Ref {
             return this.entries.items(.ref);
         }
 
-        pub fn toOwnedSlice(this: *List) List {
-            const new = this.*;
+        pub fn take(this: *List) List {
+            const result = this.*;
 
             this.* = .{};
-            return new;
+            return result;
         }
 
         pub fn clone(this: *const List, allocator: std.mem.Allocator) !List {
-            return List{ .entries = try this.entries.clone(allocator) };
+            return .{ .entries = try this.entries.clone(allocator) };
         }
 
         pub inline fn len(this: List) usize {
@@ -386,8 +388,7 @@ pub const DeclaredSymbol = struct {
         }
 
         pub fn append(this: *List, allocator: std.mem.Allocator, entry: DeclaredSymbol) !void {
-            try this.ensureUnusedCapacity(allocator, 1);
-            this.appendAssumeCapacity(entry);
+            try this.entries.append(allocator, entry);
         }
 
         pub fn appendList(this: *List, allocator: std.mem.Allocator, other: List) !void {
@@ -396,7 +397,19 @@ pub const DeclaredSymbol = struct {
         }
 
         pub fn appendListAssumeCapacity(this: *List, other: List) void {
-            this.entries.appendListAssumeCapacity(other.entries);
+            const start = this.entries.len;
+            const count = other.entries.len;
+            bun.assert(count <= this.entries.capacity - start);
+            this.entries.len += count;
+
+            const dest = this.entries.slice();
+            const source = other.entries.slice();
+            inline for (comptime std.meta.fieldNames(DeclaredSymbol)) |field_name| {
+                if (@sizeOf(@FieldType(DeclaredSymbol, field_name)) != 0) {
+                    const field = @field(Entries.Field, field_name);
+                    @memcpy(dest.items(field)[start..][0..count], source.items(field));
+                }
+            }
         }
 
         pub fn appendAssumeCapacity(this: *List, entry: DeclaredSymbol) void {
@@ -420,9 +433,7 @@ pub const DeclaredSymbol = struct {
         }
 
         pub fn initCapacity(allocator: std.mem.Allocator, capacity: usize) !List {
-            var entries = bun.MultiArrayList(DeclaredSymbol){};
-            try entries.ensureUnusedCapacity(allocator, capacity);
-            return List{ .entries = entries };
+            return .{ .entries = try Entries.initCapacity(allocator, capacity) };
         }
 
         pub fn fromSlice(allocator: std.mem.Allocator, entries: []const DeclaredSymbol) !List {

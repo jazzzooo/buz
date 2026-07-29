@@ -2,10 +2,10 @@ pub const LinkerGraph = @This();
 
 const debug = Output.scoped(.LinkerGraph, .visible);
 
-files: File.List = .{},
+files: File.List = .empty,
 files_live: BitSet = undefined,
 entry_point_reachability: EntryPointReachability = .empty,
-entry_points: EntryPoint.List = .{},
+entry_points: EntryPoint.List = .empty,
 symbols: js_ast.Symbol.Map = .{},
 
 allocator: std.mem.Allocator,
@@ -14,8 +14,8 @@ code_splitting: bool = false,
 
 // This is an alias from Graph
 // it is not a clone!
-ast: MultiArrayList(JSAst) = .{},
-meta: MultiArrayList(JSMeta) = .{},
+ast: std.MultiArrayList(JSAst) = .empty,
+meta: std.MultiArrayList(JSMeta) = .empty,
 
 /// We should avoid traversing all files in the bundle, because the linker
 /// should be able to run a linking operation on a large bundle where only
@@ -221,6 +221,16 @@ pub fn topLevelSymbolToParts(g: *LinkerGraph, id: u32, ref: Ref) []u32 {
     return &.{};
 }
 
+fn fillMultiArrayList(comptime T: type, list: std.MultiArrayList(T), value: T) void {
+    const List = std.MultiArrayList(T);
+    const sliced = list.slice();
+    inline for (comptime std.meta.fieldNames(T)) |field_name| {
+        if (@sizeOf(@FieldType(T, field_name)) != 0) {
+            @memset(sliced.items(@field(List.Field, field_name)), @field(value, field_name));
+        }
+    }
+}
+
 pub fn load(
     this: *LinkerGraph,
     entry_points: []const Index,
@@ -231,19 +241,15 @@ pub fn load(
 ) !void {
     const scb = server_component_boundaries.slice();
     try this.files.setCapacity(this.allocator, sources.len);
-    this.files.zero();
+    this.files.len = sources.len;
+    fillMultiArrayList(File, this.files, .{});
     this.files_live = try BitSet.initEmpty(
         this.allocator,
         sources.len,
     );
-    this.files.len = sources.len;
-    var files = this.files.slice();
+    const files = this.files.slice();
 
-    var entry_point_kinds = files.items(.entry_point_kind);
-    {
-        const kinds = std.mem.sliceAsBytes(entry_point_kinds);
-        @memset(kinds, 0);
-    }
+    const entry_point_kinds = files.items(.entry_point_kind);
 
     // Setup entry points
     {
@@ -252,10 +258,7 @@ pub fn load(
         const source_indices = this.entry_points.items(.source_index);
 
         const path_strings: []bun.PathString = this.entry_points.items(.output_path);
-        {
-            const output_was_auto_generated = std.mem.sliceAsBytes(this.entry_points.items(.output_path_was_auto_generated));
-            @memset(output_was_auto_generated, 0);
-        }
+        @memset(this.entry_points.items(.output_path_was_auto_generated), false);
 
         for (entry_points, path_strings, source_indices) |i, *path_string, *source_index| {
             const source = sources[i.get()];
@@ -292,10 +295,10 @@ pub fn load(
             });
         }
 
-        var import_records_list: []ImportRecord.List = this.ast.items(.import_records);
+        const import_records_list: []ImportRecord.List = this.ast.items(.import_records);
         try this.meta.setCapacity(this.allocator, import_records_list.len);
         this.meta.len = this.ast.len;
-        this.meta.zero();
+        fillMultiArrayList(JSMeta, this.meta, .{});
 
         if (scb.list.len > 0) {
             this.is_scb_bitset = BitSet.initEmpty(this.allocator, this.files.len) catch unreachable;
@@ -344,10 +347,6 @@ pub fn load(
             stable_source_indices[source_index.get()] = Index.source(i);
         }
 
-        @memset(
-            files.items(.distance_from_entry_point),
-            (LinkerGraph.File{}).distance_from_entry_point,
-        );
         this.stable_source_indices = @as([]const u32, @ptrCast(stable_source_indices));
     }
 
@@ -462,7 +461,7 @@ pub const File = struct {
         return this.entry_point_kind.isEntryPoint();
     }
 
-    pub const List = MultiArrayList(File);
+    pub const List = std.MultiArrayList(File);
 };
 
 pub fn propagateAsyncDependencies(this: *LinkerGraph) !void {
@@ -535,7 +534,6 @@ const bun = @import("bun");
 const BabyList = bun.BabyList;
 const Environment = bun.Environment;
 const ImportRecord = bun.ImportRecord;
-const MultiArrayList = bun.MultiArrayList;
 const Output = bun.Output;
 const Owned = bun.ptr.Owned;
 

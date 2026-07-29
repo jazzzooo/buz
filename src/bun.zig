@@ -483,7 +483,6 @@ pub const StringHashMapUnowned = struct {
 };
 
 pub const collections = @import("./collections/collections.zig");
-pub const MultiArrayList = bun.collections.MultiArrayList;
 pub const BabyList = collections.BabyList;
 pub const ByteList = collections.ByteList; // alias of BabyList(u8)
 pub const OffsetByteList = collections.OffsetByteList;

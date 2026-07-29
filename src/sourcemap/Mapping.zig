@@ -24,18 +24,17 @@ pub const MappingWithoutName = struct {
 };
 
 pub const List = struct {
-    impl: Value = .{ .without_names = .{} },
+    impl: Value = .{ .without_names = .empty },
     names: []const bun.Semver.String = &[_]bun.Semver.String{},
     names_buffer: bun.ByteList = .{},
 
     pub const Value = union(enum) {
-        without_names: bun.MultiArrayList(MappingWithoutName),
-        with_names: bun.MultiArrayList(Mapping),
+        without_names: std.MultiArrayList(MappingWithoutName),
+        with_names: std.MultiArrayList(Mapping),
 
         pub fn memoryCost(this: *const Value) usize {
             return switch (this.*) {
-                .without_names => |*list| list.memoryCost(),
-                .with_names => |*list| list.memoryCost(),
+                inline else => |list| @TypeOf(list).capacityInBytes(list.capacity),
             };
         }
 
@@ -50,13 +49,13 @@ pub const List = struct {
         if (this.impl == .with_names) return;
 
         var without_names = this.impl.without_names;
-        var with_names = bun.MultiArrayList(Mapping){};
+        var with_names: std.MultiArrayList(Mapping) = .empty;
         try with_names.ensureTotalCapacity(allocator, without_names.len);
         defer without_names.deinit(allocator);
 
         with_names.len = without_names.len;
-        var old_slices = without_names.slice();
-        var new_slices = with_names.slice();
+        const old_slices = without_names.slice();
+        const new_slices = with_names.slice();
 
         @memcpy(new_slices.items(.generated), old_slices.items(.generated));
         @memcpy(new_slices.items(.original), old_slices.items(.original));

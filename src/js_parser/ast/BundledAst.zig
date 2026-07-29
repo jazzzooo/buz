@@ -1,10 +1,7 @@
 //! Like Ast but slimmer and for bundling only.
 //!
-//! On Linux, the hottest function in the bundler is:
-//! src.multi_array_list.MultiArrayList(src.js_ast.Ast).ensureTotalCapacity
-//! https://share.firefox.dev/3NNlRKt
-//!
-//! So we make a slimmer version of Ast for bundling that doesn't allocate as much memory
+//! The slimmer representation reduces allocation and copying in the bundler's
+//! `std.MultiArrayList`.
 
 approximate_newline_count: u32 = 0,
 nested_scope_slot_counts: SlotCounts = .{},

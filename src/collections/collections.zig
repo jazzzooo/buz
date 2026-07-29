@@ -1,4 +1,3 @@
-pub const MultiArrayList = @import("./multi_array_list.zig").MultiArrayList;
 pub const baby_list = @import("./baby_list.zig");
 pub const BabyList = baby_list.BabyList;
 pub const ByteList = baby_list.ByteList; // alias of BabyList(u8)

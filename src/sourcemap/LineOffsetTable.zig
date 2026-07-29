@@ -13,7 +13,7 @@ columns_for_non_ascii: BabyList(i32) = .{},
 byte_offset_to_first_non_ascii: u32 = 0,
 byte_offset_to_start_of_line: u32 = 0,
 
-pub const List = bun.MultiArrayList(LineOffsetTable);
+pub const List = std.MultiArrayList(LineOffsetTable);
 
 pub fn findLine(byte_offsets_to_start_of_line: []const u32, loc: Logger.Loc) i32 {
     assert(loc.start > -1); // checked by caller
@@ -72,7 +72,7 @@ pub fn findIndex(byte_offsets_to_start_of_line: []const u32, loc: Logger.Loc) ?u
 
 pub fn generate(allocator: std.mem.Allocator, contents: std.unicode.Wtf8View, approximate_line_count: i32) List {
     const bytes = contents.bytes;
-    var list = List{};
+    var list: List = .empty;
     // Preallocate the top-level table using the approximate line count from the lexer
     list.ensureUnusedCapacity(allocator, @as(usize, @intCast(@max(approximate_line_count, 1)))) catch unreachable;
     var column: i32 = 0;

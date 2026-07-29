@@ -7,7 +7,7 @@ text_lockfile_version: TextLockfile.Version = TextLockfile.Version.current,
 
 meta_hash: MetaHash = zero_hash,
 
-packages: Lockfile.Package.List = .{},
+packages: Lockfile.Package.List = .empty,
 buffers: Buffers = .{},
 
 /// name -> PackageID || [*]PackageID
@@ -28,7 +28,7 @@ patched_dependencies: PatchedDependenciesMap = .empty,
 overrides: OverrideMap = .{},
 catalogs: CatalogMap = .{},
 
-saved_config_version: ?bun.ConfigVersion,
+saved_config_version: ?bun.ConfigVersion = null,
 
 pub const DepSorter = struct {
     lockfile: *const Lockfile,
@@ -382,14 +382,7 @@ pub fn loadFromDir(
 pub fn loadFromBytes(this: *Lockfile, pm: ?*PackageManager, buf: []u8, allocator: Allocator, log: *logger.Log) LoadResult {
     var stream = Stream.init(buf);
 
-    this.format = FormatVersion.current;
-    this.scripts = .{};
-    this.trusted_dependencies = null;
-    this.workspace_paths = .empty;
-    this.workspace_versions = .empty;
-    this.overrides = .{};
-    this.catalogs = .{};
-    this.patched_dependencies = .empty;
+    this.initEmpty(allocator);
 
     const load_result = Lockfile.Serializer.load(this, &stream, allocator, log, pm) catch |err| {
         return LoadResult{ .err = .{ .step = .parse_file, .value = err, .lockfile_path = "bun.lockb", .format = .binary } };
@@ -902,8 +895,8 @@ pub fn hoist(
         .install_root_dependencies = install_root_dependencies,
         .workspace_filters = workspace_filters,
         .packages_to_install = packages_to_install,
-        .pending_optional_peers = .empty,
     };
+    defer builder.deinit();
 
     try (Tree{}).processSubtree(
         Tree.root_dep_id,
@@ -914,7 +907,7 @@ pub fn hoist(
 
     // This goes breadth-first
     while (builder.queue.readItem()) |item| {
-        try builder.list.items(.tree)[item.tree_id].processSubtree(
+        try builder.trees.items[item.tree_id].processSubtree(
             item.dependency_id,
             item.hoist_root_id,
             method,
@@ -922,7 +915,7 @@ pub fn hoist(
         );
     }
 
-    const cleaned = try builder.clean();
+    const cleaned = try builder.finish();
     lockfile.buffers.trees = cleaned.trees;
     lockfile.buffers.hoisted_dependencies = cleaned.dep_ids;
 }
@@ -1308,21 +1301,10 @@ inline fn strWithType(this: *const Lockfile, comptime Type: type, slicable: Type
 
 pub fn initEmpty(this: *Lockfile, allocator: Allocator) void {
     this.* = .{
-        .format = Lockfile.FormatVersion.current,
-        .packages = .{},
-        .buffers = .{},
         .package_index = PackageIndex.Map.initContext(allocator, .{}),
         .string_pool = StringPool.init(allocator),
         .allocator = allocator,
         .scratch = Scratch.init(allocator),
-        .scripts = .{},
-        .trusted_dependencies = null,
-        .workspace_paths = .empty,
-        .workspace_versions = .empty,
-        .overrides = .{},
-        .catalogs = .{},
-        .meta_hash = zero_hash,
-        .saved_config_version = null,
     };
 }
 

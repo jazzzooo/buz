@@ -239,7 +239,7 @@ pub const Store = struct {
             return parents.keys();
         }
 
-        pub const List = bun.MultiArrayList(Entry);
+        pub const List = std.MultiArrayList(Entry);
 
         const DependenciesItem = struct {
             entry_id: Id,
@@ -428,7 +428,7 @@ pub const Store = struct {
             };
         };
 
-        pub const List = bun.MultiArrayList(Node);
+        pub const List = std.MultiArrayList(Node);
 
         pub const Id = NewId(Node);
     };

@@ -1940,7 +1940,7 @@ pub const Example = struct {
             ),
         );
 
-        var header_entries: Headers.Entry.List = .{};
+        var header_entries: Headers.Entry.List = .empty;
         var headers_buf: string = "";
 
         if (env_loader.map.get("GITHUB_TOKEN") orelse env_loader.map.get("GITHUB_ACCESS_TOKEN")) |access_token| {

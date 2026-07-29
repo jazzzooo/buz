@@ -90,7 +90,7 @@ pub fn memoryCostDetailed(dev: *DevServer) MemoryCost {
         .source_maps = {
             other_bytes += memoryCostArrayHashMap(dev.source_maps.entries);
             for (dev.source_maps.entries.values()) |entry| {
-                source_maps += entry.files.memoryCost();
+                source_maps += @TypeOf(entry.files).capacityInBytes(entry.files.capacity);
                 const files = entry.files.slice();
                 for (0..files.len) |i| {
                     source_maps += files.get(i).memoryCost();

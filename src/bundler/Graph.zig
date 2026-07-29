@@ -8,10 +8,10 @@ entry_points: std.ArrayListUnmanaged(Index) = .empty,
 /// Maps entry point source indices to their original specifiers (for virtual entries resolved by plugins)
 entry_point_original_names: IndexStringMap = .{},
 /// Every source index has an associated InputFile
-input_files: MultiArrayList(InputFile) = .{},
+input_files: std.MultiArrayList(InputFile) = .empty,
 /// Every source index has an associated Ast
 /// When a parse is in progress / queued, it is `Ast.empty`
-ast: MultiArrayList(JSAst) = .{},
+ast: std.MultiArrayList(JSAst) = .empty,
 
 /// During the scan + parse phase, this value keeps a count of the remaining
 /// tasks. Once it hits zero, the scan phase ends and linking begins. Note
@@ -124,7 +124,6 @@ const options = @import("./options.zig");
 const Loader = options.Loader;
 
 const bun = @import("bun");
-const MultiArrayList = bun.MultiArrayList;
 const BabyList = bun.collections.BabyList;
 const ThreadLocalArena = bun.allocators.MimallocArena;
 

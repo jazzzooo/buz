@@ -366,7 +366,7 @@ const BasicBlockRange = extern struct {
 };
 
 pub const ByteRangeMapping = struct {
-    line_offset_table: LineOffsetTable.List = .{},
+    line_offset_table: LineOffsetTable.List = .empty,
     source_id: i32,
     source_url: bun.jsc.ZigString.Slice,
 

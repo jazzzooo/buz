@@ -3519,7 +3519,7 @@ pub fn NewParser_(
                     .stmts = final_stmts,
                     .symbol_uses = p.symbol_uses,
                     .import_symbol_property_uses = p.import_symbol_property_uses,
-                    .declared_symbols = p.declared_symbols.toOwnedSlice(),
+                    .declared_symbols = p.declared_symbols.take(),
                     .import_record_indices = bun.BabyList(u32).fromOwnedSlice(
                         p.import_records_for_current_part.toOwnedSlice(
                             p.allocator,

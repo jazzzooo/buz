@@ -235,7 +235,8 @@ pub const BuilderMethod = enum {
 pub fn Builder(comptime method: BuilderMethod) type {
     return struct {
         allocator: Allocator,
-        list: bun.MultiArrayList(Entry) = .{},
+        trees: std.ArrayListUnmanaged(Tree) = .empty,
+        dependency_lists: std.ArrayListUnmanaged(Lockfile.DependencyIDList) = .empty,
         resolutions: []PackageID,
         dependencies: []const Dependency,
         resolution_lists: []const Lockfile.DependencyIDSlice,
@@ -246,7 +247,7 @@ pub fn Builder(comptime method: BuilderMethod) type {
         // builder.resolutions[peer.dep_id] to the resolved pkg_id. A dependency ID set is used because there
         // can be multiple instances of the same package in the tree, so the same unresolved dependency ID
         // could be visited multiple times before it's resolved.
-        pending_optional_peers: std.array_hash_map.Auto(PackageNameHash, std.array_hash_map.Auto(DependencyID, void)),
+        pending_optional_peers: std.array_hash_map.Auto(PackageNameHash, std.array_hash_map.Auto(DependencyID, void)) = .empty,
         manager: if (method == .filter) *const PackageManager else void,
         sort_buf: std.ArrayListUnmanaged(DependencyID) = .empty,
         workspace_filters: if (method == .filter) []const WorkspaceFilter else void = if (method == .filter) &.{},
@@ -269,37 +270,52 @@ pub fn Builder(comptime method: BuilderMethod) type {
             return this.lockfile.packages.items(.resolution)[id].fmt(this.lockfile.buffers.string_bytes.items, .auto);
         }
 
-        pub const Entry = struct {
-            tree: Tree,
-            dependencies: Lockfile.DependencyIDList,
-        };
-
-        pub const CleanResult = struct {
+        pub const FinishResult = struct {
             trees: std.ArrayListUnmanaged(Tree),
             dep_ids: std.ArrayListUnmanaged(DependencyID),
         };
 
+        fn append(this: *@This(), tree: Tree) OOM!void {
+            try this.trees.ensureUnusedCapacity(this.allocator, 1);
+            try this.dependency_lists.ensureUnusedCapacity(this.allocator, 1);
+            this.trees.appendAssumeCapacity(tree);
+            this.dependency_lists.appendAssumeCapacity(.empty);
+        }
+
+        fn pop(this: *@This()) void {
+            _ = this.trees.pop();
+            var dependencies = this.dependency_lists.pop().?;
+            dependencies.deinit(this.allocator);
+        }
+
+        pub fn deinit(this: *@This()) void {
+            for (this.dependency_lists.items) |*dependencies| {
+                dependencies.deinit(this.allocator);
+            }
+            this.dependency_lists.deinit(this.allocator);
+            this.trees.deinit(this.allocator);
+            this.queue.deinit();
+            this.sort_buf.deinit(this.allocator);
+            for (this.pending_optional_peers.values()) |*peers| {
+                peers.deinit(this.allocator);
+            }
+            this.pending_optional_peers.deinit(this.allocator);
+        }
+
         /// Flatten the multi-dimensional ArrayList of package IDs into a single easily serializable array
-        pub fn clean(this: *@This()) OOM!CleanResult {
-            var total: u32 = 0;
+        pub fn finish(this: *@This()) OOM!FinishResult {
+            var total: usize = 0;
 
-            const list_ptr = this.list.bytes;
-            const slice = this.list.toOwnedSlice();
-            var trees = slice.items(.tree);
-            const dependencies = slice.items(.dependencies);
-
-            for (trees) |*tree| {
-                total += tree.dependencies.len;
+            for (this.dependency_lists.items) |dependencies| {
+                total += dependencies.items.len;
             }
 
             var dep_ids = try DependencyIDList.initCapacity(this.allocator, total);
 
-            for (trees, dependencies) |*tree, *child| {
-                defer child.deinit(this.allocator);
-
+            for (this.trees.items, this.dependency_lists.items) |*tree, dependencies| {
                 const off: u32 = @intCast(dep_ids.items.len);
-                for (child.items) |dep_id| {
-                    const pkg_id = this.lockfile.buffers.resolutions.items[dep_id];
+                for (dependencies.items) |dep_id| {
+                    const pkg_id = this.resolutions[dep_id];
                     if (pkg_id == invalid_package_id) {
                         // optional peers that never resolved
                         continue;
@@ -313,22 +329,11 @@ pub fn Builder(comptime method: BuilderMethod) type {
                 tree.dependencies.len = len;
             }
 
-            this.queue.deinit();
-            this.sort_buf.deinit(this.allocator);
-            for (this.pending_optional_peers.values()) |*peers| {
-                peers.deinit(this.allocator);
-            }
-            this.pending_optional_peers.deinit(this.allocator);
-
-            // take over the `builder.list` pointer for only trees
-            if (@intFromPtr(trees.ptr) != @intFromPtr(list_ptr)) {
-                var new: [*]Tree = @ptrCast(list_ptr);
-                bun.copy(Tree, new[0..trees.len], trees);
-                trees = new[0..trees.len];
-            }
+            const trees = this.trees;
+            this.trees = .empty;
 
             return .{
-                .trees = std.ArrayListUnmanaged(Tree).fromOwnedSlice(trees),
+                .trees = trees,
                 .dep_ids = dep_ids,
             };
         }
@@ -464,19 +469,15 @@ pub fn processSubtree(
 
     if (resolution_list.len == 0) return;
 
-    try builder.list.append(builder.allocator, .{
-        .tree = .{
-            .parent = this.id,
-            .id = @as(Id, @truncate(builder.list.len)),
-            .dependency_id = dependency_id,
-        },
-        .dependencies = .empty,
+    try builder.append(.{
+        .parent = this.id,
+        .id = @as(Id, @truncate(builder.trees.items.len)),
+        .dependency_id = dependency_id,
     });
 
-    const list_slice = builder.list.slice();
-    const trees = list_slice.items(.tree);
-    const dependency_lists = list_slice.items(.dependencies);
-    const next: *Tree = &trees[builder.list.len - 1];
+    const trees = builder.trees.items;
+    const dependency_lists = builder.dependency_lists.items;
+    const next: *Tree = &trees[builder.trees.items.len - 1];
 
     const pkgs = builder.lockfile.packages.slice();
     const pkg_resolutions = pkgs.items(.resolution);
@@ -653,8 +654,8 @@ pub fn processSubtree(
     }
 
     if (next.dependencies.len == 0) {
-        if (comptime Environment.allow_assert) assert(builder.list.len == next.id + 1);
-        _ = builder.list.pop();
+        if (comptime Environment.allow_assert) assert(builder.trees.items.len == next.id + 1);
+        builder.pop();
     }
 }
 

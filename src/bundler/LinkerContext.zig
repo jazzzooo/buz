@@ -144,7 +144,7 @@ pub const LinkerContext = struct {
 
             if (!loader.canHaveSourceMap()) {
                 // This is not a file which we support generating source maps for
-                line_offset_table.* = .{};
+                line_offset_table.* = .empty;
                 return;
             }
 
@@ -2729,7 +2729,6 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 const FeatureFlags = bun.FeatureFlags;
 const ImportRecord = bun.ImportRecord;
-const MultiArrayList = bun.MultiArrayList;
 const MutableString = bun.MutableString;
 const OOM = bun.OOM;
 const Output = bun.Output;

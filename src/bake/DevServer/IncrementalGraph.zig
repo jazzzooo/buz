@@ -1856,8 +1856,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
 
                     var file_paths = try ArrayListUnmanaged([]const u8).initCapacity(gpa, g.current_chunk_parts.items.len);
                     errdefer file_paths.deinit(gpa);
-                    var contained_maps: bun.MultiArrayList(PackedMap.Shared) = .empty;
-                    try contained_maps.ensureTotalCapacity(gpa, g.current_chunk_parts.items.len);
+                    var contained_maps = try std.MultiArrayList(PackedMap.Shared).initCapacity(gpa, g.current_chunk_parts.items.len);
                     errdefer contained_maps.deinit(gpa);
 
                     var overlapping_memory_cost: usize = 0;
@@ -1871,7 +1870,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
                         contained_maps.appendAssumeCapacity(source_map);
                     }
 
-                    overlapping_memory_cost += contained_maps.memoryCost() + DevServer.memoryCostSlice(file_paths.items);
+                    overlapping_memory_cost += @TypeOf(contained_maps).capacityInBytes(contained_maps.capacity) + DevServer.memoryCostSlice(file_paths.items);
 
                     const ref_count = out.ref_count;
                     out.* = .{
@@ -1885,8 +1884,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
                 .server => {
                     var file_paths = try ArrayListUnmanaged([]const u8).initCapacity(gpa, g.current_chunk_parts.items.len);
                     errdefer file_paths.deinit(gpa);
-                    var contained_maps: bun.MultiArrayList(PackedMap.Shared) = .empty;
-                    try contained_maps.ensureTotalCapacity(gpa, g.current_chunk_parts.items.len);
+                    var contained_maps = try std.MultiArrayList(PackedMap.Shared).initCapacity(gpa, g.current_chunk_parts.items.len);
                     errdefer contained_maps.deinit(gpa);
 
                     var overlapping_memory_cost: u32 = 0;
@@ -1898,7 +1896,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
                         overlapping_memory_cost += @intCast(item.source_map.memoryCost());
                     }
 
-                    overlapping_memory_cost += @intCast(contained_maps.memoryCost() + DevServer.memoryCostSlice(file_paths.items));
+                    overlapping_memory_cost += @intCast(@TypeOf(contained_maps).capacityInBytes(contained_maps.capacity) + DevServer.memoryCostSlice(file_paths.items));
 
                     out.* = .{
                         .dev_allocator = g.dev_allocator(),

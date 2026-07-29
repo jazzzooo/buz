@@ -2020,80 +2020,26 @@ pub fn Package(comptime SemverIntType: type) type {
             string_builder.clamp();
         }
 
-        pub const List = bun.MultiArrayList(PackageType);
+        pub const List = std.MultiArrayList(PackageType);
 
         pub const Serializer = struct {
-            pub const sizes = blk: {
-                const info = @typeInfo(PackageType).@"struct";
-                const Data = struct {
-                    size: usize,
-                    size_index: usize,
-                    alignment: usize,
-                    Type: type,
-                };
-                var data: [info.field_names.len]Data = undefined;
-                for (info.field_types, info.field_attrs, &data, 0..) |FieldType, field_attr, *elem, i| {
-                    elem.* = .{
-                        .size = @sizeOf(FieldType),
-                        .size_index = i,
-                        .Type = FieldType,
-                        .alignment = if (@sizeOf(FieldType) == 0) 1 else field_attr.@"align" orelse @alignOf(FieldType),
-                    };
-                }
-                const SortContext = struct {
-                    data: []Data,
-                    pub fn swap(comptime ctx: @This(), comptime lhs: usize, comptime rhs: usize) void {
-                        const tmp = ctx.data[lhs];
-                        ctx.data[lhs] = ctx.data[rhs];
-                        ctx.data[rhs] = tmp;
-                    }
-                    pub fn lessThan(comptime ctx: @This(), comptime lhs: usize, comptime rhs: usize) bool {
-                        return ctx.data[lhs].alignment > ctx.data[rhs].alignment;
-                    }
-                };
-                std.sort.insertionContext(0, info.field_names.len, SortContext{
-                    .data = &data,
-                });
-                var sizes_bytes: [info.field_names.len]usize = undefined;
-                var field_indexes: [info.field_names.len]usize = undefined;
-                var Types: [info.field_names.len]type = undefined;
-                for (data, &sizes_bytes, &field_indexes, &Types) |elem, *size, *index, *Type| {
-                    size.* = elem.size;
-                    index.* = elem.size_index;
-                    Type.* = elem.Type;
-                }
-                break :blk .{
-                    .bytes = sizes_bytes,
-                    .fields = field_indexes,
-                    .Types = Types,
-                };
-            };
-
-            const FieldsEnum = @typeInfo(List.Field).@"enum";
-
-            pub fn byteSize(list: List) usize {
-                const sizes_vector: @Vector(sizes.bytes.len, usize) = sizes.bytes;
-                const capacity_vector: @Vector(sizes.bytes.len, usize) = @splat(list.len);
-                return @reduce(.Add, capacity_vector * sizes_vector);
-            }
-
-            const AlignmentType = sizes.Types[sizes.fields[0]];
+            const field_names = std.meta.fieldNames(PackageType);
 
             pub fn save(list: List, comptime StreamType: type, stream: StreamType, comptime Writer: type, writer: Writer) !void {
                 try writer.writeInt(u64, list.len, .little);
-                try writer.writeInt(u64, @alignOf(@TypeOf(list.bytes)), .little);
-                try writer.writeInt(u64, sizes.Types.len, .little);
+                try writer.writeInt(u64, @alignOf(PackageType), .little);
+                try writer.writeInt(u64, field_names.len, .little);
                 const begin_at = try stream.getPos();
                 try writer.writeInt(u64, 0, .little);
                 const end_at = try stream.getPos();
                 try writer.writeInt(u64, 0, .little);
 
-                _ = try Aligner.write(@TypeOf(list.bytes), Writer, writer, try stream.getPos());
+                _ = try Aligner.write(PackageType, Writer, writer, try stream.getPos());
 
                 const really_begin_at = try stream.getPos();
-                var sliced = list.slice();
+                const sliced = list.slice();
 
-                inline for (FieldsEnum.field_names) |field_name| {
+                inline for (field_names) |field_name| {
                     const value = sliced.items(@field(List.Field, field_name));
                     if (comptime Environment.allow_assert) {
                         debug("save(\"{s}\") = {d} bytes", .{ field_name, std.mem.sliceAsBytes(value).len });
@@ -2140,20 +2086,20 @@ pub fn Package(comptime SemverIntType: type) type {
 
                 const input_alignment = try reader.takeInt(u64, .little);
 
-                var list = List{};
+                var list: List = .empty;
+                errdefer list.deinit(allocator);
 
-                const Alingee = @TypeOf(list.bytes);
-                const expected_alignment = @alignOf(Alingee);
+                const expected_alignment = @alignOf(PackageType);
                 if (expected_alignment != input_alignment) {
                     return error.@"Lockfile validation failed: alignment mismatch";
                 }
 
                 const field_count = try reader.takeInt(u64, .little);
                 switch (field_count) {
-                    sizes.Types.len => {},
+                    field_names.len => {},
                     // "scripts" field is absent before v0.6.8
                     // we will back-fill from each package.json
-                    sizes.Types.len - 1 => {},
+                    field_names.len - 1 => {},
                     else => {
                         return error.@"Lockfile validation failed: unexpected number of package fields";
                     },
@@ -2170,10 +2116,9 @@ pub fn Package(comptime SemverIntType: type) type {
                 var needs_update = false;
                 if (migrate_from_v2) {
                     const OldPackageV2 = Package(u32);
-                    var list_for_migrating_from_v2 = OldPackageV2.List{};
+                    var list_for_migrating_from_v2 = try OldPackageV2.List.initCapacity(allocator, list_len);
                     defer list_for_migrating_from_v2.deinit(allocator);
 
-                    try list_for_migrating_from_v2.ensureTotalCapacity(allocator, list_len);
                     list_for_migrating_from_v2.len = list_len;
 
                     try loadFields(stream, end_at, OldPackageV2.List, &list_for_migrating_from_v2, &needs_update);
@@ -2219,10 +2164,10 @@ pub fn Package(comptime SemverIntType: type) type {
             }
 
             fn loadFields(stream: *Stream, end_at: u64, comptime ListType: type, list: *ListType, needs_update: *bool) !void {
-                var sliced = list.slice();
+                const sliced = list.slice();
 
-                inline for (FieldsEnum.field_names) |field_name| {
-                    const value = sliced.items(@field(List.Field, field_name));
+                inline for (field_names) |field_name| {
+                    const value = sliced.items(@field(ListType.Field, field_name));
 
                     comptime assertNoUninitializedPadding(@TypeOf(value));
                     const bytes = std.mem.sliceAsBytes(value);

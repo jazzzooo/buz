@@ -4006,7 +4006,7 @@ pub const EntryPoint = struct {
     /// all automatically generated output paths.
     output_path_was_auto_generated: bool = false,
 
-    pub const List = MultiArrayList(EntryPoint);
+    pub const List = std.MultiArrayList(EntryPoint);
 
     pub const Kind = enum {
         none,
@@ -4443,7 +4443,6 @@ pub const Loader = options.Loader;
 pub const Index = bun.ast.Index;
 pub const Symbol = js_ast.Symbol;
 pub const EventLoop = bun.jsc.AnyEventLoop;
-pub const MultiArrayList = bun.MultiArrayList;
 pub const Stmt = js_ast.Stmt;
 pub const Expr = js_ast.Expr;
 pub const E = js_ast.E;

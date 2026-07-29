@@ -189,7 +189,7 @@ pub fn NewBuilder(comptime SourceMapFormatType: type) type {
     return struct {
         const ThisBuilder = @This();
         source_map: SourceMapper,
-        line_offset_tables: LineOffsetTable.List = .{},
+        line_offset_tables: LineOffsetTable.List = .empty,
         prev_state: SourceMapState = SourceMapState{},
         last_generated_update: u32 = 0,
         generated_column: i32 = 0,

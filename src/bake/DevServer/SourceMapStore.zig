@@ -63,7 +63,7 @@ pub const Entry = struct {
     /// Outer slice is owned, inner slice is shared with IncrementalGraph.
     paths: []const []const u8,
     /// Indexes are off by one because this excludes the HMR Runtime.
-    files: bun.MultiArrayList(PackedMap.Shared),
+    files: std.MultiArrayList(PackedMap.Shared),
     /// The memory cost can be shared between many entries and IncrementalGraph
     /// So this is only used for eviction logic, to pretend this was the only
     /// entry. To compute the memory cost of DevServer, this cannot be used.
@@ -502,7 +502,7 @@ pub const GetResult = struct {
     index: bun.GenericIndex(u32, Entry),
     mappings: SourceMap.Mapping.List,
     file_paths: []const []const u8,
-    entry_files: *const bun.MultiArrayList(PackedMap.Shared),
+    entry_files: *const std.MultiArrayList(PackedMap.Shared),
 
     pub fn deinit(self: *@This(), alloc: Allocator) void {
         self.mappings.deinit(alloc);
