@@ -14,11 +14,10 @@ pub noinline fn computeChunks(
     defer arena.deinit();
 
     var temp_allocator = arena.allocator();
-    var js_chunks = bun.StringArrayHashMap(Chunk).empty;
+    var js_chunks = JSChunkMap.empty;
     try js_chunks.ensureUnusedCapacity(temp_allocator, this.graph.entry_points.len);
 
-    // Key is the hash of the CSS order. This deduplicates identical CSS files.
-    var css_chunks = std.array_hash_map.Auto(u64, Chunk).empty;
+    var css_chunks = CSSChunkMap.empty;
     var js_chunks_with_css: usize = 0;
 
     // Maps entry point IDs to their index in js_chunks.values().
@@ -28,11 +27,12 @@ pub noinline fn computeChunks(
 
     const entry_source_indices = this.graph.entry_points.items(.source_index);
     const css_asts = this.graph.ast.items(.css);
-    var html_chunks = bun.StringArrayHashMap(Chunk).empty;
+    var html_chunks = JSChunkMap.empty;
     const loaders = this.parse_graph.input_files.items(.loader);
     const ast_targets = this.graph.ast.items(.target);
 
     const code_splitting = this.graph.code_splitting;
+    const reachability = this.graph.entry_point_reachability;
     const could_be_browser_target_from_server_build = this.options.target.isServerSide() and this.parse_graph.html_imports.html_source_indices.len > 0;
     const has_server_html_imports = this.parse_graph.html_imports.server_source_indices.len > 0;
 
@@ -40,8 +40,7 @@ pub noinline fn computeChunks(
     for (entry_source_indices, 0..) |source_index, entry_id_| {
         const entry_bit = @as(Chunk.EntryPoint.ID, @truncate(entry_id_));
 
-        var entry_bits = &this.graph.files.items(.entry_bits)[source_index];
-        entry_bits.set(entry_bit);
+        const entry_bits = reachability.row(source_index);
 
         const has_html_chunk = loaders[source_index] == .html;
 
@@ -50,74 +49,55 @@ pub noinline fn computeChunks(
         // reachable from other entry points (e.g., via re-exports), its content goes into
         // a shared chunk rather than staying in the entry point's chunk.
         // https://github.com/evanw/esbuild/blob/cd832972927f1f67b6d2cc895c06a8759c1cf309/internal/linker/linker.go#L3882
-        var entry_point_chunk_bits = try AutoBitSet.initEmpty(this.allocator(), this.graph.entry_points.len);
-        entry_point_chunk_bits.set(entry_bit);
-
-        const js_chunk_key = brk: {
-            if (code_splitting) {
-                break :brk try temp_allocator.dupe(u8, entry_point_chunk_bits.bytes(this.graph.entry_points.len));
-            } else {
-                // Force HTML chunks to always be generated, even if there's an identical JS file.
-                break :brk try std.fmt.allocPrint(temp_allocator, "{f}", .{JSChunkKeyFormatter{
-                    .has_html = has_html_chunk,
-                    .entry_bits = entry_bits.bytes(this.graph.entry_points.len),
-                }});
-            }
-        };
+        const entry_point_chunk_bits = reachability.singleton(entry_bit);
+        const js_chunk_key = if (code_splitting)
+            JSChunkKey.forCodeSplitting(entry_point_chunk_bits)
+        else
+            JSChunkKey.forEntry(entry_bit);
 
         // Put this early on in this loop so that CSS-only entry points work.
         if (has_html_chunk) {
             const html_chunk_entry = try html_chunks.getOrPut(temp_allocator, js_chunk_key);
-            if (!html_chunk_entry.found_existing) {
-                html_chunk_entry.value_ptr.* = .{
-                    .entry_point = .{
-                        .entry_point_id = entry_bit,
-                        .source_index = source_index,
-                        .is_entry_point = true,
-                    },
-                    .entry_bits = entry_point_chunk_bits,
-                    .content = .html,
-                    .output_source_map = SourceMap.SourceMapPieces.init(this.allocator()),
-                    .flags = .{ .is_browser_chunk_from_server_build = could_be_browser_target_from_server_build and ast_targets[source_index] == .browser },
-                };
-            }
+            bun.assert(!html_chunk_entry.found_existing);
+            html_chunk_entry.value_ptr.* = .{
+                .entry_point = .{
+                    .entry_point_id = entry_bit,
+                    .source_index = source_index,
+                    .is_entry_point = true,
+                },
+                .entry_bits = entry_point_chunk_bits,
+                .content = .html,
+                .output_source_map = SourceMap.SourceMapPieces.init(this.allocator()),
+                .flags = .{ .is_browser_chunk_from_server_build = could_be_browser_target_from_server_build and ast_targets[source_index] == .browser },
+            };
         }
 
         if (css_asts[source_index] != null) {
             const order = this.findImportedFilesInCSSOrder(temp_allocator, &.{Index.init(source_index)});
             // Create a chunk for the entry point here to ensure that the chunk is
             // always generated even if the resulting file is empty
-            const hash_to_use = if (!this.options.css_chunking)
-                bun.hash(try temp_allocator.dupe(u8, entry_bits.bytes(this.graph.entry_points.len)))
-            else brk: {
-                var hasher = std.hash.Wyhash.init(5);
-                bun.writeAnyToHasher(&hasher, order.len);
-                for (order.slice()) |x| x.hash(&hasher);
-                break :brk hasher.final();
+            const css_chunk_key = CSSChunkKey.forEntry(entry_bit);
+            const css_chunk_entry = try css_chunks.getOrPut(temp_allocator, css_chunk_key);
+            bun.assert(!css_chunk_entry.found_existing);
+            css_chunk_entry.value_ptr.* = .{
+                .entry_point = .{
+                    .entry_point_id = entry_bit,
+                    .source_index = source_index,
+                    .is_entry_point = true,
+                },
+                .entry_bits = entry_point_chunk_bits,
+                .content = .{
+                    .css = .{
+                        .imports_in_chunk_in_order = order,
+                        .asts = bun.handleOom(this.allocator().alloc(bun.css.BundlerStyleSheet, order.len)),
+                    },
+                },
+                .output_source_map = SourceMap.SourceMapPieces.init(this.allocator()),
+                .flags = .{
+                    .has_html_chunk = has_html_chunk,
+                    .is_browser_chunk_from_server_build = could_be_browser_target_from_server_build and ast_targets[source_index] == .browser,
+                },
             };
-            const css_chunk_entry = try css_chunks.getOrPut(temp_allocator, hash_to_use);
-            if (!css_chunk_entry.found_existing) {
-                // const css_chunk_entry = try js_chunks.getOrPut();
-                css_chunk_entry.value_ptr.* = .{
-                    .entry_point = .{
-                        .entry_point_id = entry_bit,
-                        .source_index = source_index,
-                        .is_entry_point = true,
-                    },
-                    .entry_bits = entry_point_chunk_bits,
-                    .content = .{
-                        .css = .{
-                            .imports_in_chunk_in_order = order,
-                            .asts = bun.handleOom(this.allocator().alloc(bun.css.BundlerStyleSheet, order.len)),
-                        },
-                    },
-                    .output_source_map = SourceMap.SourceMapPieces.init(this.allocator()),
-                    .flags = .{
-                        .has_html_chunk = has_html_chunk,
-                        .is_browser_chunk_from_server_build = could_be_browser_target_from_server_build and ast_targets[source_index] == .browser,
-                    },
-                };
-            }
 
             continue;
         }
@@ -125,6 +105,7 @@ pub noinline fn computeChunks(
         // Create a chunk for the entry point here to ensure that the chunk is
         // always generated even if the resulting file is empty
         const js_chunk_entry = try js_chunks.getOrPut(temp_allocator, js_chunk_key);
+        bun.assert(!js_chunk_entry.found_existing);
         entry_point_to_js_chunk_idx[entry_id_] = @intCast(js_chunk_entry.index);
         js_chunk_entry.value_ptr.* = .{
             .entry_point = .{
@@ -158,14 +139,8 @@ pub noinline fn computeChunks(
                 // This ensures that when multiple JS entry points import the
                 // same CSS files, they share a single CSS output chunk rather
                 // than producing duplicates that collide on hash-based naming.
-                const hash_to_use = brk: {
-                    var hasher = std.hash.Wyhash.init(5);
-                    bun.writeAnyToHasher(&hasher, order.len);
-                    for (order.slice()) |x| x.hash(&hasher);
-                    break :brk hasher.final();
-                };
-
-                const css_chunk_entry = try css_chunks.getOrPut(temp_allocator, hash_to_use);
+                const css_chunk_key = CSSChunkKey.forImportOrder(order.slice());
+                const css_chunk_entry = try css_chunks.getOrPut(temp_allocator, css_chunk_key);
 
                 js_chunk_entry.value_ptr.content.javascript.css_chunks = try this.allocator().dupe(u32, &.{
                     @intCast(css_chunk_entry.index),
@@ -185,7 +160,7 @@ pub noinline fn computeChunks(
                             .source_index = source_index,
                             .is_entry_point = true,
                         },
-                        .entry_bits = entry_bits.*,
+                        .entry_bits = entry_bits,
                         .content = .{
                             .css = .{
                                 .imports_in_chunk_in_order = order,
@@ -203,8 +178,6 @@ pub noinline fn computeChunks(
             }
         }
     }
-    var file_entry_bits: []AutoBitSet = this.graph.files.items(.entry_bits);
-
     const Handler = struct {
         chunks: []Chunk,
         allocator: std.mem.Allocator,
@@ -224,24 +197,21 @@ pub noinline fn computeChunks(
         }
     };
 
-    const css_reprs = this.graph.ast.items(.css);
-
     // Figure out which JS files are in which chunk
     if (js_chunks.count() > 0) {
         for (this.graph.reachable_files) |source_index| {
             if (this.graph.files_live.isSet(source_index.get())) {
-                if (this.graph.ast.items(.css)[source_index.get()] == null) {
-                    const entry_bits: *const AutoBitSet = &file_entry_bits[source_index.get()];
-                    if (css_reprs[source_index.get()] != null) continue;
+                if (css_asts[source_index.get()] == null) {
+                    const entry_bits = reachability.row(source_index.get());
 
                     if (this.graph.code_splitting) {
-                        const js_chunk_key = try temp_allocator.dupe(u8, entry_bits.bytes(this.graph.entry_points.len));
+                        const js_chunk_key = JSChunkKey.forCodeSplitting(entry_bits);
                         var js_chunk_entry = try js_chunks.getOrPut(temp_allocator, js_chunk_key);
 
                         if (!js_chunk_entry.found_existing) {
                             const is_browser_chunk_from_server_build = could_be_browser_target_from_server_build and ast_targets[source_index.get()] == .browser;
                             js_chunk_entry.value_ptr.* = .{
-                                .entry_bits = entry_bits.*,
+                                .entry_bits = entry_bits,
                                 .entry_point = .{
                                     .source_index = source_index.get(),
                                 },
@@ -274,7 +244,8 @@ pub noinline fn computeChunks(
                             .source_id = source_index.get(),
                             .entry_point_to_js_chunk_idx = entry_point_to_js_chunk_idx,
                         };
-                        entry_bits.forEach(Handler, &handler, Handler.next);
+                        var iterator = entry_bits.iterator();
+                        while (iterator.next()) |entry_point_id| handler.next(entry_point_id);
                     }
                 }
             }
@@ -286,16 +257,16 @@ pub noinline fn computeChunks(
     const chunks: []Chunk = sort_chunks: {
         var sorted_chunks = try BabyList(Chunk).initCapacity(this.allocator(), js_chunks.count() + css_chunks.count() + html_chunks.count());
 
-        var sorted_keys = try BabyList(string).initCapacity(temp_allocator, js_chunks.count());
+        var sorted_keys = try BabyList(JSChunkKey).initCapacity(temp_allocator, js_chunks.count());
 
         sorted_keys.appendSliceAssumeCapacity(js_chunks.keys());
 
         // sort by entry_point_id to ensure the main entry point (id=0) comes first,
         // then by key for determinism among the rest.
         const ChunkSortContext = struct {
-            chunks: *const bun.StringArrayHashMap(Chunk),
+            chunks: *const JSChunkMap,
 
-            pub fn lessThan(ctx: @This(), a_key: string, b_key: string) bool {
+            pub fn lessThan(ctx: @This(), a_key: JSChunkKey, b_key: JSChunkKey) bool {
                 const a_chunk = ctx.chunks.get(a_key) orelse return true;
                 const b_chunk = ctx.chunks.get(b_key) orelse return false;
                 const a_id = a_chunk.entry_point.entry_point_id;
@@ -305,8 +276,7 @@ pub noinline fn computeChunks(
                 if (a_id == 0 and b_id != 0) return true;
                 if (b_id == 0 and a_id != 0) return false;
 
-                // Otherwise sort alphabetically by key for determinism
-                return bun.strings.order(a_key, b_key) == .lt;
+                return a_key.canonicalOrder(b_key) == .lt;
             }
         };
 
@@ -329,8 +299,8 @@ pub noinline fn computeChunks(
         }
 
         if (css_chunks.count() > 0) {
-            const sorted_css_keys = try temp_allocator.dupe(u64, css_chunks.keys());
-            std.sort.pdq(u64, sorted_css_keys, {}, std.sort.asc(u64));
+            const sorted_css_keys = try temp_allocator.dupe(CSSChunkKey, css_chunks.keys());
+            std.sort.pdq(CSSChunkKey, sorted_css_keys, CSSChunkSortContext{ .chunks = &css_chunks }, CSSChunkSortContext.lessThan);
 
             // A map from the index in `css_chunks` to it's final index in `sorted_chunks`
             const remapped_css_indexes = try temp_allocator.alloc(u32, css_chunks.count());
@@ -471,13 +441,70 @@ pub noinline fn computeChunks(
     return chunks;
 }
 
-const JSChunkKeyFormatter = struct {
-    has_html: bool,
-    entry_bits: []const u8,
+const JSChunkMap = std.array_hash_map.Custom(JSChunkKey, Chunk, JSChunkKey.Context, true);
 
-    pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        try writer.writeAll(&[_]u8{@intFromBool(!this.has_html)});
-        try writer.writeAll(this.entry_bits);
+const CSSChunkKey = struct {
+    identity: union(enum) {
+        entry_point: u32,
+        import_order: []const Chunk.CssImportOrder,
+    },
+    cached_hash: u64,
+
+    fn forEntry(entry_point_id: u32) CSSChunkKey {
+        return .{
+            .identity = .{ .entry_point = entry_point_id },
+            .cached_hash = std.hash.Wyhash.hash(5, std.mem.asBytes(&entry_point_id)),
+        };
+    }
+
+    fn forImportOrder(order: []const Chunk.CssImportOrder) CSSChunkKey {
+        var hasher = std.hash.Wyhash.init(5);
+        bun.writeAnyToHasher(&hasher, order.len);
+        for (order) |*item| item.hash(&hasher);
+        return .{
+            .identity = .{ .import_order = order },
+            .cached_hash = hasher.final(),
+        };
+    }
+
+    const Context = struct {
+        pub fn hash(_: Context, key: CSSChunkKey) u32 {
+            return @truncate(key.cached_hash);
+        }
+
+        pub fn eql(_: Context, a: CSSChunkKey, b: CSSChunkKey, _: usize) bool {
+            if (std.meta.activeTag(a.identity) != std.meta.activeTag(b.identity)) {
+                return false;
+            }
+            return switch (a.identity) {
+                .entry_point => |a_entry_point_id| switch (b.identity) {
+                    .entry_point => |b_entry_point_id| a_entry_point_id == b_entry_point_id,
+                    else => unreachable,
+                },
+                .import_order => |a_order| switch (b.identity) {
+                    .import_order => |b_order| {
+                        if (a_order.len != b_order.len) return false;
+                        for (a_order, b_order) |*a_item, *b_item| {
+                            if (!a_item.eql(b_item)) return false;
+                        }
+                        return true;
+                    },
+                    else => unreachable,
+                },
+            };
+        }
+    };
+};
+
+const CSSChunkMap = std.array_hash_map.Custom(CSSChunkKey, Chunk, CSSChunkKey.Context, true);
+
+const CSSChunkSortContext = struct {
+    chunks: *const CSSChunkMap,
+
+    fn lessThan(context: CSSChunkSortContext, a: CSSChunkKey, b: CSSChunkKey) bool {
+        if (a.cached_hash != b.cached_hash) return a.cached_hash < b.cached_hash;
+        if (CSSChunkKey.Context.eql(.{}, a, b, 0)) return false;
+        return context.chunks.getIndex(a).? < context.chunks.getIndex(b).?;
     }
 };
 
@@ -485,18 +512,16 @@ pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
 pub const ThreadPool = bun.bundle_v2.ThreadPool;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
-const string = []const u8;
-
 const std = @import("std");
 
 const bun = @import("bun");
 const BabyList = bun.BabyList;
 const SourceMap = bun.SourceMap;
 const options = bun.options;
-const AutoBitSet = bun.bit_set.AutoBitSet;
 
 const bundler = bun.bundle_v2;
 const Chunk = bundler.Chunk;
+const JSChunkKey = @import("../JSChunkKey.zig").JSChunkKey;
 const EntryPoint = bundler.EntryPoint;
 const Fs = bun.bundle_v2.Fs;
 const Index = bun.bundle_v2.Index;

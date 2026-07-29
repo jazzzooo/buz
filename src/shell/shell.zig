@@ -3949,8 +3949,8 @@ pub const ShellSrcBuilder = struct {
 
 /// Characters that need to escaped
 const SPECIAL_CHARS = [_]u8{ '~', '[', ']', '#', ';', '\n', '*', '{', ',', '}', '`', '$', '=', '(', ')', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '|', '>', '<', '&', '\'', '"', ' ', '\\', SPECIAL_JS_CHAR };
-const SPECIAL_CHARS_TABLE: bun.bit_set.IntegerBitSet(256) = brk: {
-    var table = bun.bit_set.IntegerBitSet(256).initEmpty();
+const SPECIAL_CHARS_TABLE: std.bit_set.Static(256) = brk: {
+    var table = std.bit_set.Static(256).empty;
     for (SPECIAL_CHARS) |c| {
         table.set(c);
     }

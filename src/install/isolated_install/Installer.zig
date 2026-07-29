@@ -3,7 +3,7 @@ pub const Installer = struct {
     // this is not const for `lockfile.trusted_dependencies`
     lockfile: *Lockfile,
 
-    summary: PackageInstall.Summary = .{ .successfully_installed = .empty },
+    summary: PackageInstall.Summary = .{ .successfully_installed = .{} },
     installed: Bitset,
     install_node: ?*Progress.Node,
     scripts_node: ?*Progress.Node,
@@ -2040,7 +2040,7 @@ const Progress = bun.Progress;
 const ThreadPool = bun.ThreadPool;
 const strings = bun.strings;
 const sys = bun.sys;
-const Bitset = bun.bit_set.DynamicBitSetUnmanaged;
+const Bitset = std.bit_set.Dynamic;
 const Command = bun.cli.Command;
 const Mutex = bun.threading.Mutex;
 const String = bun.Semver.String;

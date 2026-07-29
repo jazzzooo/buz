@@ -471,7 +471,7 @@ const Output = bun.Output;
 const Semver = bun.Semver;
 const assert = bun.assert;
 const default_allocator = bun.default_allocator;
-const Bitset = bun.bit_set.DynamicBitSetUnmanaged;
+const Bitset = std.bit_set.Dynamic;
 
 const install = bun.install;
 const Bin = bun.install.Bin;

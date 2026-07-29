@@ -63,7 +63,7 @@ pub fn generateCodeForLazyExport(this: *LinkerContext, source_index: Index.Int) 
                 allocator: std.mem.Allocator,
 
                 fn clearAll(visitor: *@This()) void {
-                    visitor.inner_visited.setAll(false);
+                    visitor.inner_visited.unsetAll();
                     visitor.composes_visited.clearRetainingCapacity();
                 }
 
@@ -400,7 +400,7 @@ const std = @import("std");
 const bun = @import("bun");
 const BabyList = bun.BabyList;
 const ImportRecord = bun.ImportRecord;
-const BitSet = bun.bit_set.DynamicBitSetUnmanaged;
+const BitSet = std.bit_set.Dynamic;
 
 const js_ast = bun.ast;
 const B = js_ast.B;

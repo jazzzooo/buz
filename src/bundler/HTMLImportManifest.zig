@@ -125,7 +125,7 @@ pub fn write(index: u32, graph: *const Graph, linker_graph: *const LinkerGraph, 
     const server_source_index = graph.html_imports.server_source_indices.slice()[index];
     const sources: []const bun.logger.Source = graph.input_files.items(.source);
     const bv2: *const BundleV2 = @alignCast(@fieldParentPtr("graph", graph));
-    var entry_point_bits = try bun.bit_set.AutoBitSet.initEmpty(bun.default_allocator, graph.entry_points.items.len);
+    var entry_point_bits = try std.bit_set.Dynamic.initEmpty(bun.default_allocator, graph.entry_points.items.len);
     defer entry_point_bits.deinit(bun.default_allocator);
 
     const root_dir = if (bv2.transpiler.options.root_dir.len > 0) bv2.transpiler.options.root_dir else bun.fs.FileSystem.instance.top_level_dir;
@@ -164,8 +164,7 @@ pub fn write(index: u32, graph: *const Graph, linker_graph: *const LinkerGraph, 
     var first = true;
 
     const additional_output_files = graph.additional_output_files.items;
-    const file_entry_bits: []const AutoBitSet = linker_graph.files.items(.entry_bits);
-    var already_visited_output_file = try bun.bit_set.AutoBitSet.initEmpty(bun.default_allocator, additional_output_files.len);
+    var already_visited_output_file = try std.bit_set.Dynamic.initEmpty(bun.default_allocator, additional_output_files.len);
     defer already_visited_output_file.deinit(bun.default_allocator);
 
     // Write all chunks that have files associated with this entry point.
@@ -174,7 +173,7 @@ pub fn write(index: u32, graph: *const Graph, linker_graph: *const LinkerGraph, 
     // When there are multiple HTML imports, only include chunks that intersect with this entry's bits.
     const has_single_html_import = graph.html_imports.html_source_indices.len == 1;
     for (chunks) |*ch| {
-        if (ch.entryBits().hasIntersection(&entry_point_bits) or
+        if (intersects(ch.entryBits(), entry_point_bits) or
             (has_single_html_import and ch.flags.is_browser_chunk_from_server_build))
         {
             if (!first) try writer.writeAll(",");
@@ -218,9 +217,9 @@ pub fn write(index: u32, graph: *const Graph, linker_graph: *const LinkerGraph, 
 
         if (output_file.source_index.unwrap()) |source_index| {
             if (source_index.get() == server_source_index) continue;
-            const bits: *const AutoBitSet = &file_entry_bits[source_index.get()];
+            const bits = linker_graph.entry_point_reachability.row(source_index.get());
 
-            if (bits.hasIntersection(&entry_point_bits)) {
+            if (intersects(bits, entry_point_bits)) {
                 already_visited_output_file.set(i);
                 if (!first) try writer.writeAll(",");
                 first = false;
@@ -265,10 +264,18 @@ const Loader = options.Loader;
 const bun = @import("bun");
 const default_allocator = bun.default_allocator;
 const strings = bun.strings;
-const AutoBitSet = bun.bit_set.AutoBitSet;
 
 const bundler = bun.bundle_v2;
 const BundleV2 = bundler.BundleV2;
 const Chunk = bundler.Chunk;
 const Graph = bundler.Graph;
 const LinkerGraph = bundler.LinkerGraph;
+const EntryPointReachability = bundler.EntryPointReachability;
+
+fn intersects(row: EntryPointReachability.ConstRow, set: std.bit_set.Dynamic) bool {
+    var iterator = set.iterator(.{});
+    while (iterator.next()) |index| {
+        if (row.isSet(index)) return true;
+    }
+    return false;
+}

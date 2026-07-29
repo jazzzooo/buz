@@ -215,7 +215,7 @@ pub fn generateChunksInParallel(
         };
         var duplicates_map: bun.StringArrayHashMap(DuplicateEntry) = .empty;
 
-        var chunk_visit_map = try AutoBitSet.initEmpty(c.allocator(), chunks.len);
+        var chunk_visit_map = try std.bit_set.Dynamic.initEmpty(c.allocator(), chunks.len);
         defer chunk_visit_map.deinit(c.allocator());
 
         // Compute the final hashes of each chunk, then use those to create the final
@@ -224,7 +224,7 @@ pub fn generateChunksInParallel(
         for (chunks, 0..) |*chunk, index| {
             var hash: ContentHasher = .{};
             c.appendIsolatedHashesForImportedChunks(&hash, chunks, @intCast(index), &chunk_visit_map);
-            chunk_visit_map.setAll(false);
+            chunk_visit_map.unsetAll();
             chunk.template.placeholder.hash = hash.digest();
 
             const rel_path = bun.handleOom(std.fmt.allocPrint(c.allocator(), "{f}", .{chunk.template}));
@@ -395,7 +395,7 @@ pub fn generateChunksInParallel(
     }
 
     const bundler = @as(*bun.bundle_v2.BundleV2, @fieldParentPtr("linker", c));
-    var static_route_visitor = StaticRouteVisitor{ .c = c, .visited = bun.handleOom(bun.bit_set.AutoBitSet.initEmpty(bun.default_allocator, c.graph.files.len)) };
+    var static_route_visitor = StaticRouteVisitor{ .c = c, .visited = bun.handleOom(std.bit_set.Dynamic.initEmpty(bun.default_allocator, c.graph.files.len)) };
     defer static_route_visitor.deinit();
 
     // For standalone mode, resolve JS/CSS chunks so we can inline their content into HTML.
@@ -797,7 +797,6 @@ const ThreadPoolLib = bun.ThreadPool;
 const base64 = bun.base64;
 const jsc = bun.jsc;
 const strings = bun.strings;
-const AutoBitSet = bun.bit_set.AutoBitSet;
 
 const Chunk = bun.bundle_v2.Chunk;
 const ContentHasher = bun.bundle_v2.ContentHasher;

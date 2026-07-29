@@ -66,7 +66,7 @@ pub fn installIsolatedPackages(
         }
         const peer_name_count: u32 = @intCast(peer_name_idx.count());
 
-        var leaking_peers: bun.bit_set.DynamicBitSetUnmanaged.List = try .initEmpty(
+        var leaking_peers = try DenseBitMatrix.initEmpty(
             lockfile.allocator,
             lockfile.packages.len,
             peer_name_count,
@@ -98,13 +98,13 @@ pub fn installIsolatedPackages(
             // Per-package bits computed once: own peer-dep names, and non-peer
             // dependency names that will appear in `node_dependencies` (i.e., not
             // filtered out by bundled/disabled/unresolved).
-            var own_peers: bun.bit_set.DynamicBitSetUnmanaged.List = try .initEmpty(
+            var own_peers = try DenseBitMatrix.initEmpty(
                 lockfile.allocator,
                 lockfile.packages.len,
                 peer_name_count,
             );
             defer own_peers.deinit(lockfile.allocator);
-            var provides: bun.bit_set.DynamicBitSetUnmanaged.List = try .initEmpty(
+            var provides = try DenseBitMatrix.initEmpty(
                 lockfile.allocator,
                 lockfile.packages.len,
                 peer_name_count,
@@ -118,7 +118,7 @@ pub fn installIsolatedPackages(
                     const dep = dependencies[dep_id];
                     const bit = peer_name_idx.getIndex(dep.name_hash) orelse continue;
                     if (dep.behavior.isPeer()) {
-                        own_peers.set(pkg_id, bit);
+                        own_peers.row(pkg_id).set(bit);
                     } else if (!Tree.isFilteredDependencyOrWorkspace(
                         dep_id,
                         pkg_id,
@@ -127,13 +127,14 @@ pub fn installIsolatedPackages(
                         manager,
                         lockfile,
                     )) {
-                        provides.set(pkg_id, bit);
+                        provides.row(pkg_id).set(bit);
                     }
                 }
             }
 
-            var scratch = try bun.bit_set.DynamicBitSetUnmanaged.initEmpty(lockfile.allocator, peer_name_count);
-            defer scratch.deinit(lockfile.allocator);
+            var scratch_matrix = try DenseBitMatrix.initEmpty(lockfile.allocator, 1, peer_name_count);
+            defer scratch_matrix.deinit(lockfile.allocator);
+            const scratch = scratch_matrix.row(0);
 
             var changed = true;
             while (changed) {
@@ -142,7 +143,7 @@ pub fn installIsolatedPackages(
                     const pkg_id: PackageID = @intCast(pkg_idx);
                     const deps = pkg_dependency_slices[pkg_id];
 
-                    scratch.copyInto(own_peers.at(pkg_id));
+                    scratch.copyFrom(own_peers.constRow(pkg_id));
 
                     for (deps.begin()..deps.end()) |_dep_id| {
                         const dep_id: DependencyID = @intCast(_dep_id);
@@ -150,21 +151,21 @@ pub fn installIsolatedPackages(
                         if (dep.behavior.isPeer()) {
                             if (peer_name_idx.getIndex(dep.name_hash)) |bit| {
                                 for (peer_targets[bit].items) |child| {
-                                    scratch.setUnion(leaking_peers.at(child));
+                                    scratch.unionWith(leaking_peers.constRow(child));
                                 }
                             }
                         } else {
                             const res_pkg = resolutions[dep_id];
                             if (res_pkg != invalid_package_id) {
-                                scratch.setUnion(leaking_peers.at(res_pkg));
+                                scratch.unionWith(leaking_peers.constRow(res_pkg));
                             }
                         }
                     }
-                    scratch.setExclude(provides.at(pkg_id));
+                    scratch.exclude(provides.constRow(pkg_id));
 
-                    var dst = leaking_peers.at(pkg_id);
-                    if (!scratch.eql(dst)) {
-                        dst.copyInto(scratch);
+                    const dst = leaking_peers.row(pkg_id);
+                    if (!scratch.eql(dst.asConst())) {
+                        dst.copyFrom(scratch.asConst());
                         changed = true;
                     }
                 }
@@ -178,7 +179,7 @@ pub fn installIsolatedPackages(
         var early_dedupe: std.AutoHashMap(EarlyDedupeKey, Store.Node.Id) = .init(lockfile.allocator);
         defer early_dedupe.deinit();
 
-        var root_declares_workspace = try bun.bit_set.DynamicBitSetUnmanaged.initEmpty(lockfile.allocator, lockfile.packages.len);
+        var root_declares_workspace = try std.bit_set.Dynamic.initEmpty(lockfile.allocator, lockfile.packages.len);
         defer root_declares_workspace.deinit(lockfile.allocator);
         for (pkg_dependency_slices[0].begin()..pkg_dependency_slices[0].end()) |_dep_idx| {
             const dep_idx: DependencyID = @intCast(_dep_idx);
@@ -287,12 +288,12 @@ pub fn installIsolatedPackages(
                     const ctx_hash: u64 = if (entry_dep.version.tag == .workspace or peer_name_count == 0)
                         0
                     else ctx: {
-                        const leaks = leaking_peers.at(entry.pkg_id);
+                        const leaks = leaking_peers.constRow(entry.pkg_id);
                         if (leaks.count() == 0) break :ctx 0;
 
                         const peer_names = peer_name_idx.keys();
                         var hasher = bun.Wyhash11.init(0);
-                        var it = leaks.iterator(.{});
+                        var it = leaks.iterator();
                         while (it.next()) |bit| {
                             const peer_name_hash = peer_names[bit];
                             const resolved: PackageID = resolved: {
@@ -1925,6 +1926,7 @@ const Global = bun.Global;
 const OOM = bun.OOM;
 const Output = bun.Output;
 const Progress = bun.Progress;
+const DenseBitMatrix = bun.collections.DenseBitMatrix;
 const sys = bun.sys;
 const Command = bun.cli.Command;
 

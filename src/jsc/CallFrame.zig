@@ -190,7 +190,7 @@ pub const CallFrame = opaque {
         arena: bun.ArenaAllocator = bun.ArenaAllocator.init(bun.default_allocator),
         all: []const jsc.JSValue,
         threw: bool = false,
-        protected: bun.bit_set.IntegerBitSet(32) = bun.bit_set.IntegerBitSet(32).initEmpty(),
+        protected: std.bit_set.Static(32) = std.bit_set.Static(32).empty,
         will_be_async: bool = false,
 
         pub fn unprotect(slice: *ArgumentsSlice) void {
@@ -198,7 +198,7 @@ pub const CallFrame = opaque {
             while (iter.next()) |i| {
                 slice.all[i].unprotect();
             }
-            slice.protected = bun.bit_set.IntegerBitSet(32).initEmpty();
+            slice.protected = std.bit_set.Static(32).empty;
         }
 
         pub fn deinit(slice: *ArgumentsSlice) void {

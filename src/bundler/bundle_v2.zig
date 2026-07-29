@@ -277,7 +277,7 @@ pub const BundleV2 = struct {
 
     const ReachableFileVisitor = struct {
         reachable: std.array_list.Managed(Index),
-        visited: bun.bit_set.DynamicBitSet,
+        visited: std.bit_set.Dynamic,
         all_import_records: []ImportRecord.List,
         all_loaders: []const Loader,
         all_urls_for_css: []const []const u8,
@@ -285,13 +285,13 @@ pub const BundleV2 = struct {
         dynamic_import_entry_points: *std.array_hash_map.Auto(Index.Int, void),
         allocator: std.mem.Allocator,
         /// Files which are Server Component Boundaries
-        scb_bitset: ?bun.bit_set.DynamicBitSetUnmanaged,
+        scb_bitset: ?std.bit_set.Dynamic,
         scb_list: ServerComponentBoundary.List.Slice,
 
         /// Files which are imported by JS and inlined in CSS
-        additional_files_imported_by_js_and_inlined_in_css: *bun.bit_set.DynamicBitSetUnmanaged,
+        additional_files_imported_by_js_and_inlined_in_css: *std.bit_set.Dynamic,
         /// Files which are imported by CSS and inlined in CSS
-        additional_files_imported_by_css_and_inlined: *bun.bit_set.DynamicBitSetUnmanaged,
+        additional_files_imported_by_css_and_inlined: *std.bit_set.Dynamic,
 
         const MAX_REDIRECTS: usize = 64;
 
@@ -395,8 +395,8 @@ pub const BundleV2 = struct {
             null;
         defer if (scb_bitset) |*b| b.deinit(stack_alloc);
 
-        var additional_files_imported_by_js_and_inlined_in_css = try bun.bit_set.DynamicBitSetUnmanaged.initEmpty(stack_alloc, this.graph.input_files.len);
-        var additional_files_imported_by_css_and_inlined = try bun.bit_set.DynamicBitSetUnmanaged.initEmpty(stack_alloc, this.graph.input_files.len);
+        var additional_files_imported_by_js_and_inlined_in_css = try std.bit_set.Dynamic.initEmpty(stack_alloc, this.graph.input_files.len);
+        var additional_files_imported_by_css_and_inlined = try std.bit_set.Dynamic.initEmpty(stack_alloc, this.graph.input_files.len);
         defer {
             additional_files_imported_by_js_and_inlined_in_css.deinit(stack_alloc);
             additional_files_imported_by_css_and_inlined.deinit(stack_alloc);
@@ -408,7 +408,7 @@ pub const BundleV2 = struct {
 
         var visitor = ReachableFileVisitor{
             .reachable = try std.array_list.Managed(Index).initCapacity(this.allocator(), this.graph.entry_points.items.len + 1),
-            .visited = try bun.bit_set.DynamicBitSet.initEmpty(this.allocator(), this.graph.input_files.len),
+            .visited = try std.bit_set.Dynamic.initEmpty(this.allocator(), this.graph.input_files.len),
             .redirects = this.graph.ast.items(.redirect_import_record_index),
             .all_import_records = this.graph.ast.items(.import_records),
             .all_loaders = this.graph.input_files.items(.loader),
@@ -423,7 +423,7 @@ pub const BundleV2 = struct {
             .additional_files_imported_by_js_and_inlined_in_css = &additional_files_imported_by_js_and_inlined_in_css,
             .additional_files_imported_by_css_and_inlined = &additional_files_imported_by_css_and_inlined,
         };
-        defer visitor.visited.deinit();
+        defer visitor.visited.deinit(this.allocator());
 
         // If we don't include the runtime, __toESM or __toCommonJS will not get
         // imported and weird things will happen
@@ -4451,7 +4451,6 @@ pub const S = js_ast.S;
 pub const G = js_ast.G;
 pub const B = js_ast.B;
 pub const Binding = js_ast.Binding;
-pub const AutoBitSet = bun.bit_set.AutoBitSet;
 pub const renamer = bun.renamer;
 pub const StableSymbolCount = renamer.StableSymbolCount;
 pub const MinifyRenamer = renamer.MinifyRenamer;
@@ -4459,7 +4458,6 @@ pub const Scope = js_ast.Scope;
 pub const jsc = bun.jsc;
 pub const debugTreeShake = Output.scoped(.TreeShake, .hidden);
 pub const debugPartRanges = Output.scoped(.PartRanges, .hidden);
-pub const BitSet = bun.bit_set.DynamicBitSetUnmanaged;
 pub const Async = bun.Async;
 pub const Loc = Logger.Loc;
 pub const bake = bun.bake;
@@ -4471,6 +4469,7 @@ pub const ThreadPool = @import("./ThreadPool.zig").ThreadPool;
 pub const ParseTask = @import("./ParseTask.zig").ParseTask;
 pub const LinkerContext = @import("./LinkerContext.zig").LinkerContext;
 pub const LinkerGraph = @import("./LinkerGraph.zig").LinkerGraph;
+pub const EntryPointReachability = @import("./EntryPointReachability.zig").EntryPointReachability;
 pub const Graph = @import("./Graph.zig");
 
 const string = []const u8;

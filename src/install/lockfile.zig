@@ -2121,7 +2121,7 @@ const assert = bun.assert;
 const default_allocator = bun.default_allocator;
 const logger = bun.logger;
 const strings = bun.strings;
-const Bitset = bun.bit_set.DynamicBitSetUnmanaged;
+const Bitset = std.bit_set.Dynamic;
 const File = bun.sys.File;
 
 const Semver = bun.Semver;

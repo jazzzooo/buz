@@ -7,7 +7,7 @@ const StaticRouteVisitor = @This();
 
 c: *LinkerContext,
 cache: std.array_hash_map.Auto(Index.Int, bool) = .empty,
-visited: bun.bit_set.AutoBitSet,
+visited: std.bit_set.Dynamic,
 
 pub fn deinit(this: *StaticRouteVisitor) void {
     this.cache.deinit(bun.default_allocator);

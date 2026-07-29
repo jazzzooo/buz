@@ -45,7 +45,7 @@ pub fn findImportedPartsInJSOrder(
     Chunk.Order.sort(chunk_order_array.items);
 
     const FindImportedPartsVisitor = struct {
-        entry_bits: *const AutoBitSet,
+        entry_bits: EntryPointReachability.ConstRow,
         flags: []const JSMeta.Flags,
         parts: []BabyList(Part),
         import_records: []BabyList(ImportRecord),
@@ -91,10 +91,10 @@ pub fn findImportedPartsInJSOrder(
 
             var is_file_in_chunk = if (with_code_splitting and v.c.graph.ast.items(.css)[source_index] == null)
                 // when code splitting, include the file in the chunk if ALL of the entry points overlap
-                v.entry_bits.eql(&v.c.graph.files.items(.entry_bits)[source_index])
+                v.entry_bits.eql(v.c.graph.entry_point_reachability.row(source_index))
             else
                 // when NOT code splitting, include the file in the chunk if ANY of the entry points overlap
-                v.entry_bits.hasIntersection(&v.c.graph.files.items(.entry_bits)[source_index]);
+                v.entry_bits.intersects(v.c.graph.entry_point_reachability.row(source_index));
 
             // Wrapped files can't be split because they are all inside the wrapper
             const can_be_split = v.flags[source_index].wrap == .none;
@@ -183,7 +183,7 @@ pub fn findImportedPartsInJSOrder(
     }
 
     switch (this.graph.code_splitting) {
-        inline else => |with_code_splitting| switch (this.graph.is_scb_bitset.bit_length > 0) {
+        inline else => |with_code_splitting| switch (this.graph.is_scb_bitset.capacity() > 0) {
             inline else => |with_scb| {
                 visitor.visit(Index.runtime.value, with_code_splitting, with_scb);
 
@@ -203,14 +203,12 @@ pub fn findImportedPartsInJSOrder(
     chunk.content.javascript.parts_in_chunk_in_order = parts_in_chunk_order;
 }
 
-pub const BitSet = bun.bit_set.DynamicBitSetUnmanaged;
-
 const std = @import("std");
 
 const bun = @import("bun");
 const BabyList = bun.BabyList;
 const ImportRecord = bun.ImportRecord;
-const AutoBitSet = bun.bit_set.AutoBitSet;
+const EntryPointReachability = bun.bundle_v2.EntryPointReachability;
 
 const Chunk = bun.bundle_v2.Chunk;
 const Index = bun.bundle_v2.Index;

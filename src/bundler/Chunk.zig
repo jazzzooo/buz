@@ -13,8 +13,8 @@ pub const Chunk = struct {
     /// The value is updated during chunk generation to track bytesInOutput.
     files_with_parts_in_chunk: std.array_hash_map.Auto(Index.Int, usize) = .empty,
 
-    /// We must not keep pointers to this type until all chunks have been allocated.
-    entry_bits: AutoBitSet = undefined,
+    /// Borrows immutable storage from the linker's entry-point reachability matrix.
+    entry_bits: EntryPointReachability.ConstRow = undefined,
 
     final_rel_path: string = "",
     /// The path template used to generate `final_rel_path`
@@ -68,7 +68,7 @@ pub const Chunk = struct {
     pub fn getJSChunkForHTML(this: *const Chunk, chunks: []Chunk) ?*Chunk {
         const entry_point_id = this.entry_point.entry_point_id;
         for (chunks) |*other| {
-            if (other.content == .javascript) {
+            if (other.content == .javascript and other.entry_point.is_entry_point) {
                 if (other.entry_point.entry_point_id == entry_point_id) {
                     return other;
                 }
@@ -90,7 +90,7 @@ pub const Chunk = struct {
         // Fallback: match by entry_point_id for cases without a JS chunk.
         const entry_point_id = this.entry_point.entry_point_id;
         for (chunks) |*other| {
-            if (other.content == .css) {
+            if (other.content == .css and other.entry_point.is_entry_point) {
                 if (other.entry_point.entry_point_id == entry_point_id) {
                     return other;
                 }
@@ -99,8 +99,8 @@ pub const Chunk = struct {
         return null;
     }
 
-    pub inline fn entryBits(this: *const Chunk) *const AutoBitSet {
-        return &this.entry_bits;
+    pub inline fn entryBits(this: *const Chunk) EntryPointReachability.ConstRow {
+        return this.entry_bits;
     }
 
     pub const Order = struct {
@@ -703,27 +703,53 @@ pub const Chunk = struct {
         });
 
         pub fn hash(this: *const CssImportOrder, hasher: anytype) void {
-            // TODO: conditions, condition_import_records
-
+            bun.writeAnyToHasher(hasher, this.conditions.len);
+            bun.writeAnyToHasher(hasher, this.condition_import_records.len);
             bun.writeAnyToHasher(hasher, std.meta.activeTag(this.kind));
             switch (this.kind) {
                 .layers => |layers| {
-                    for (layers.inner().sliceConst()) |layer| {
-                        for (layer.v.slice(), 0..) |layer_name, i| {
-                            const is_last = i == layers.inner().len - 1;
-                            if (is_last) {
-                                hasher.update(layer_name);
-                            } else {
-                                hasher.update(layer_name);
-                                hasher.update(".");
-                            }
-                        }
-                    }
-                    hasher.update("\x00");
+                    bun.writeAnyToHasher(hasher, layers.inner().len);
                 },
                 .external_path => |path| hasher.update(path.text),
                 .source_index => |idx| bun.writeAnyToHasher(hasher, idx),
             }
+        }
+
+        pub fn eql(this: *const CssImportOrder, other: *const CssImportOrder) bool {
+            if (this.conditions.len != other.conditions.len or
+                this.condition_import_records.len != other.condition_import_records.len or
+                std.meta.activeTag(this.kind) != std.meta.activeTag(other.kind))
+            {
+                return false;
+            }
+            for (this.conditions.sliceConst(), other.conditions.sliceConst()) |*a, *b| {
+                if (!a.eql(b)) return false;
+            }
+            if (!deepEql(
+                this.condition_import_records.sliceConst(),
+                other.condition_import_records.sliceConst(),
+            )) return false;
+
+            return switch (this.kind) {
+                .layers => |a| switch (other.kind) {
+                    .layers => |b| layers: {
+                        if (a.inner().len != b.inner().len) break :layers false;
+                        for (a.inner().sliceConst(), b.inner().sliceConst()) |*a_layer, *b_layer| {
+                            if (!a_layer.eql(b_layer)) break :layers false;
+                        }
+                        break :layers true;
+                    },
+                    else => unreachable,
+                },
+                .external_path => |a| switch (other.kind) {
+                    .external_path => |b| deepEql(a, b),
+                    else => unreachable,
+                },
+                .source_index => |a| switch (other.kind) {
+                    .source_index => |b| a == b,
+                    else => unreachable,
+                },
+            };
         }
 
         pub fn fmt(this: *const CssImportOrder, ctx: *LinkerContext) CssImportOrderDebug {
@@ -805,6 +831,43 @@ pub const ParseTask = bun.bundle_v2.ParseTask;
 
 const string = []const u8;
 
+fn deepEql(a: anytype, b: @TypeOf(a)) bool {
+    const T = @TypeOf(a);
+    return switch (@typeInfo(T)) {
+        .@"struct" => |info| if (info.layout == .@"packed")
+            a == b
+        else inline for (info.field_names) |field_name| {
+            if (!deepEql(@field(a, field_name), @field(b, field_name))) break false;
+        } else true,
+        .@"union" => |info| union_eql: {
+            const Tag = info.tag_type orelse @compileError("cannot compare untagged union " ++ @typeName(T));
+            const a_tag: Tag = a;
+            const b_tag: Tag = b;
+            if (a_tag != b_tag) break :union_eql false;
+            break :union_eql switch (a) {
+                inline else => |value, tag| deepEql(value, @field(b, @tagName(tag))),
+            };
+        },
+        .array => for (a, b) |a_item, b_item| {
+            if (!deepEql(a_item, b_item)) break false;
+        } else true,
+        .pointer => |info| switch (info.size) {
+            .slice => if (a.len != b.len)
+                false
+            else for (a, b) |a_item, b_item| {
+                if (!deepEql(a_item, b_item)) break false;
+            } else true,
+            .one => deepEql(a.*, b.*),
+            .many, .c => a == b,
+        },
+        .optional => if (a) |a_value|
+            if (b) |b_value| deepEql(a_value, b_value) else false
+        else
+            b == null,
+        else => a == b,
+    };
+}
+
 const HTMLImportManifest = @import("./HTMLImportManifest.zig");
 const analyze_transpiled_module = @import("./analyze_transpiled_module.zig");
 const std = @import("std");
@@ -822,7 +885,7 @@ const StringJoiner = bun.StringJoiner;
 const default_allocator = bun.default_allocator;
 const renamer = bun.renamer;
 const strings = bun.strings;
-const AutoBitSet = bun.bit_set.AutoBitSet;
+const EntryPointReachability = bun.bundle_v2.EntryPointReachability;
 const BabyList = bun.collections.BabyList;
 
 const js_ast = bun.ast;

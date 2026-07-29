@@ -73,7 +73,7 @@ pub const Stringifier = struct {
         // if we loaded from a binary lockfile and we're migrating it to a text lockfile, ensure
         // peer dependencies have resolutions, and mark them optional if they don't
         if (load_result.loadedFromBinaryLockfile()) {
-            while (pkgs_iter.next({})) |node| {
+            while (pkgs_iter.next()) |node| {
                 for (node.dependencies) |dep_id| {
                     const dep = deps_buf[dep_id];
 
@@ -197,7 +197,7 @@ pub const Stringifier = struct {
             defer tree_sort_buf.deinit(allocator);
 
             // find trusted and patched dependencies. also overrides
-            while (pkgs_iter.next({})) |node| {
+            while (pkgs_iter.next()) |node| {
                 try tree_sort_buf.append(allocator, .{
                     node.dependencies,
                     try allocator.dupe(u8, node.relative_path),

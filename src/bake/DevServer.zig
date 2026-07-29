@@ -2213,7 +2213,7 @@ pub const HotUpdateContext = struct {
     /// bundle_v2.Graph.input_files.items(.loader)
     loaders: []bun.options.Loader,
     /// Which files have a server-component boundary.
-    server_to_client_bitset: DynamicBitSetUnmanaged,
+    server_to_client_bitset: std.bit_set.Dynamic,
     /// Used to reduce calls to the IncrementalGraph hash table.
     ///
     /// Caller initializes a slice with `sources.len * 2` items
@@ -2224,7 +2224,7 @@ pub const HotUpdateContext = struct {
     /// `getCachedIndex`
     resolved_index_cache: []u32,
     /// Used to tell if the server should replace or append import records.
-    server_seen_bit_set: DynamicBitSetUnmanaged,
+    server_seen_bit_set: std.bit_set.Dynamic,
     gts: *GraphTraceState,
 
     pub fn getCachedIndex(
@@ -2312,7 +2312,7 @@ pub fn finalizeBundle(
     var sfa_buffer: [65536]u8 = undefined;
     var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, bv2.allocator());
     const stack_alloc = sfa.allocator();
-    var scb_bitset = try bun.bit_set.DynamicBitSetUnmanaged.initEmpty(stack_alloc, input_file_sources.len);
+    var scb_bitset = try std.bit_set.Dynamic.initEmpty(stack_alloc, input_file_sources.len);
     for (
         scbs.list.items(.source_index),
         scbs.list.items(.ssr_source_index),
@@ -2320,7 +2320,7 @@ pub fn finalizeBundle(
     ) |source_index, ssr_index, ref_index| {
         scb_bitset.set(source_index);
         scb_bitset.set(ref_index);
-        if (ssr_index < scb_bitset.bit_length)
+        if (ssr_index < scb_bitset.capacity())
             scb_bitset.set(ssr_index);
     }
 
@@ -2492,7 +2492,7 @@ pub fn finalizeBundle(
     );
     defer gts.deinit(bv2.allocator());
     ctx.gts = &gts;
-    ctx.server_seen_bit_set = try bun.bit_set.DynamicBitSetUnmanaged.initEmpty(bv2.allocator(), dev.server_graph.bundled_files.count());
+    ctx.server_seen_bit_set = try std.bit_set.Dynamic.initEmpty(bv2.allocator(), dev.server_graph.bundled_files.count());
 
     dev.incremental_result.had_adjusted_edges = false;
 
@@ -2621,9 +2621,9 @@ pub fn finalizeBundle(
         _ = errors; // TODO:
     }
 
-    var route_bits = try DynamicBitSetUnmanaged.initEmpty(stack_alloc, dev.route_bundles.items.len);
+    var route_bits = try std.bit_set.Dynamic.initEmpty(stack_alloc, dev.route_bundles.items.len);
     defer route_bits.deinit(stack_alloc);
-    var route_bits_client = try DynamicBitSetUnmanaged.initEmpty(stack_alloc, dev.route_bundles.items.len);
+    var route_bits_client = try std.bit_set.Dynamic.initEmpty(stack_alloc, dev.route_bundles.items.len);
     defer route_bits_client.deinit(stack_alloc);
 
     var has_route_bits_set = false;
@@ -3518,10 +3518,10 @@ pub const IncrementalResult = struct {
 /// are affected. Set for all `bundled_files` that have been visited
 /// by the dependency tracing logic.
 pub const GraphTraceState = struct {
-    client_bits: DynamicBitSetUnmanaged,
-    server_bits: DynamicBitSetUnmanaged,
+    client_bits: std.bit_set.Dynamic,
+    server_bits: std.bit_set.Dynamic,
 
-    pub fn bits(gts: *GraphTraceState, side: bake.Side) *DynamicBitSetUnmanaged {
+    pub fn bits(gts: *GraphTraceState, side: bake.Side) *std.bit_set.Dynamic {
         return switch (side) {
             .client => &gts.client_bits,
             .server => &gts.server_bits,
@@ -3534,8 +3534,8 @@ pub const GraphTraceState = struct {
     }
 
     pub fn clear(gts: *GraphTraceState) void {
-        gts.server_bits.setAll(false);
-        gts.client_bits.setAll(false);
+        gts.server_bits.unsetAll();
+        gts.client_bits.unsetAll();
     }
 
     pub fn resize(gts: *GraphTraceState, side: bake.Side, alloc: Allocator, new_size: usize) !void {
@@ -3543,7 +3543,7 @@ pub const GraphTraceState = struct {
             .client => &gts.client_bits,
             .server => &gts.server_bits,
         };
-        if (b.bit_length < new_size) {
+        if (b.capacity() < new_size) {
             try b.resize(alloc, new_size, false);
         }
     }
@@ -3566,9 +3566,9 @@ pub const TraceImportGoal = enum {
 /// increase in size while the bits are being used. This happens with CSS files,
 /// though [TODO] might not actually be necessary.
 fn initGraphTraceState(dev: *const DevServer, sfa: Allocator, extra_client_bits: usize) !GraphTraceState {
-    var server_bits = try DynamicBitSetUnmanaged.initEmpty(sfa, dev.server_graph.bundled_files.count());
+    var server_bits = try std.bit_set.Dynamic.initEmpty(sfa, dev.server_graph.bundled_files.count());
     errdefer server_bits.deinit(sfa);
-    const client_bits = try DynamicBitSetUnmanaged.initEmpty(sfa, dev.client_graph.bundled_files.count() + extra_client_bits);
+    const client_bits = try std.bit_set.Dynamic.initEmpty(sfa, dev.client_graph.bundled_files.count() + extra_client_bits);
     return .{ .server_bits = server_bits, .client_bits = client_bits };
 }
 
@@ -3760,7 +3760,7 @@ pub fn writeVisualizerMessage(dev: *DevServer, payload: *std.array_list.Managed(
             try w.writeInt(u32, @intCast(normalized_key.len), .little);
             if (k.len == 0) continue;
             try w.writeAll(normalized_key);
-            try w.writeByte(@intFromBool(g.stale_files.isSetAllowOutOfBound(i, true) or file.failed));
+            try w.writeByte(@intFromBool(i >= g.stale_files.capacity() or g.stale_files.isSet(i) or file.failed));
             try w.writeByte(@intFromBool(side == .server and file.is_rsc));
             try w.writeByte(@intFromBool(side == .server and file.is_ssr));
             try w.writeByte(@intFromBool(switch (side) {
@@ -4016,7 +4016,7 @@ const c = struct {
     }
 };
 
-fn markAllRouteChildren(router: *FrameworkRouter, comptime n: comptime_int, bits: [n]*DynamicBitSetUnmanaged, route_index: Route.Index) void {
+fn markAllRouteChildren(router: *FrameworkRouter, comptime n: comptime_int, bits: [n]*std.bit_set.Dynamic, route_index: Route.Index) void {
     var next = router.routePtr(route_index).first_child.unwrap();
     while (next) |child_index| {
         const route = router.routePtr(child_index);
@@ -4697,7 +4697,6 @@ const SourceMap = bun.SourceMap;
 const Watcher = bun.Watcher;
 const assert = bun.assert;
 const bake = bun.bake;
-const DynamicBitSetUnmanaged = bun.bit_set.DynamicBitSetUnmanaged;
 const Log = bun.logger.Log;
 const MimeType = bun.http.MimeType;
 const Response = bun.webcore.Response;

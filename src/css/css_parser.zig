@@ -2831,7 +2831,7 @@ pub const PropertyUsage = struct {
     }
 };
 
-pub const PropertyBitset = std.bit_set.ArrayBitSet(usize, std.math.ceilPowerOfTwo(u16, bun.meta.EnumInfo(PropertyIdTag).field_names.len) catch unreachable);
+pub const PropertyBitset = std.enums.EnumSet(PropertyIdTag);
 pub fn fillPropertyBitSet(allocator: Allocator, bitset: *PropertyBitset, block: *const DeclarationBlock, custom_properties: *bun.BabyList([]const u8)) void {
     for (block.declarations.items) |*prop| {
         const tag = switch (prop.*) {
@@ -2843,8 +2843,7 @@ pub fn fillPropertyBitSet(allocator: Allocator, bitset: *PropertyBitset, block: 
             .composes => continue,
             else => @as(PropertyIdTag, prop.*),
         };
-        const int: u16 = @backingInt(tag);
-        bitset.set(int);
+        bitset.insert(tag);
     }
     for (block.important_declarations.items) |*prop| {
         const tag = switch (prop.*) {
@@ -2856,8 +2855,7 @@ pub fn fillPropertyBitSet(allocator: Allocator, bitset: *PropertyBitset, block: 
             .composes => continue,
             else => @as(PropertyIdTag, prop.*),
         };
-        const int: u16 = @backingInt(tag);
-        bitset.set(int);
+        bitset.insert(tag);
     }
 }
 

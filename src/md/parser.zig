@@ -16,7 +16,7 @@ pub const Parser = struct {
     code_indent_offset: u32,
 
     // Mark character map — bitset of characters that need special handling
-    mark_char_map: bun.bit_set.StaticBitSet(256) = bun.bit_set.StaticBitSet(256).initEmpty(),
+    mark_char_map: std.bit_set.Static(256) = std.bit_set.Static(256).empty,
 
     // Dynamic arrays
     marks: std.ArrayListUnmanaged(Mark) = .empty,

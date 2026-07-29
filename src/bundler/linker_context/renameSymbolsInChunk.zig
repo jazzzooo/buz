@@ -245,7 +245,7 @@ pub fn renameSymbolsInChunk(
             for (part.scopes) |scope| {
                 r.assignNamesRecursiveWithNumberScope(&r.root, scope, source_index, sorted);
             }
-            r.number_scope_pool.hive.used = @TypeOf(r.number_scope_pool.hive.used).initEmpty();
+            r.number_scope_pool.hive.used = .empty;
         }
     }
 

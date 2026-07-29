@@ -237,7 +237,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
         /// re-bundled before being used. Resizing this is usually deferred
         /// until after a bundle, since resizing the bit-set requires an
         /// exact size, instead of the log approach that dynamic arrays use.
-        stale_files: DynamicBitSetUnmanaged,
+        stale_files: std.bit_set.Dynamic,
 
         // TODO: rename `dependencies` to something that clearly indicates direction.
         // such as "parent" or "consumer"
@@ -284,7 +284,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
 
         pub const empty: Self = .{
             .bundled_files = .empty,
-            .stale_files = .empty,
+            .stale_files = .{},
             .first_dep = .empty,
             .first_import = .empty,
 
@@ -418,7 +418,12 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
             var code: usize = 0;
             var source_maps: usize = 0;
             graph += DevServer.memoryCostArrayHashMap(g.bundled_files);
-            graph += g.stale_files.bytes().len;
+            const stale_file_word_count = std.math.divCeil(
+                usize,
+                g.stale_files.capacity(),
+                @bitSizeOf(usize),
+            ) catch unreachable;
+            graph += stale_file_word_count * @sizeOf(usize);
             graph += DevServer.memoryCostArrayList(g.first_dep);
             graph += DevServer.memoryCostArrayList(g.first_import);
             graph += DevServer.memoryCostArrayList(g.edges);
@@ -524,7 +529,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
                 try g.first_import.append(dev.allocator(), .none);
             }
 
-            if (g.stale_files.bit_length > gop.index) {
+            if (g.stale_files.capacity() > gop.index) {
                 g.stale_files.unset(gop.index);
             }
 
@@ -1312,7 +1317,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
                 try g.first_import.append(dev_alloc, .none);
             }
 
-            if (g.stale_files.bit_length > gop.index) {
+            if (g.stale_files.capacity() > gop.index) {
                 g.stale_files.set(gop.index);
             }
 
@@ -1571,7 +1576,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
                 g.allocator(),
                 std.mem.alignForward(
                     usize,
-                    @max(g.bundled_files.count(), g.stale_files.bit_length),
+                    @max(g.bundled_files.count(), g.stale_files.capacity()),
                     // allocate 8 in 8 usize chunks
                     std.mem.byte_size_in_bits * @sizeOf(usize) * 8,
                 ),
@@ -2040,7 +2045,6 @@ const Output = bun.Output;
 const assert = bun.assert;
 const assert_eql = bun.assert_eql;
 const bake = bun.bake;
-const DynamicBitSetUnmanaged = bun.bit_set.DynamicBitSetUnmanaged;
 const Log = bun.logger.Log;
 const useAllFields = bun.meta.useAllFields;
 

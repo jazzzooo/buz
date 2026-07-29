@@ -326,6 +326,7 @@ pub fn GlobWalker_(
         pathBuf: bun.PathBuffer = undefined,
         // iteration state
         workbuf: ArrayList(WorkItem) = .empty,
+        component_set_scratch: ArrayList(u32) = .empty,
 
         /// Array hashmap used as a set (values are the keys)
         /// to store matched paths and prevent duplicates
@@ -360,14 +361,114 @@ pub fn GlobWalker_(
             }
         }, true);
 
-        /// Set of active component indices during traversal. At `**/X`
-        /// boundaries the walker needs to both advance past X and keep the
-        /// outer `**` alive; rather than visiting the directory twice, both
-        /// states are tracked in one set and evaluated in a single readdir.
-        ///
-        /// Uses AutoBitSet (inline up to 127 bits, heap-backed beyond) so any
-        /// component count works.
-        const ComponentSet = bun.bit_set.AutoBitSet;
+        const ComponentSet = union(enum) {
+            small: Small,
+            spilled: []const u32,
+
+            const inline_capacity = 4;
+            const empty: ComponentSet = .{ .small = .{} };
+
+            const Small = struct {
+                items: [inline_capacity]u32 = @splat(0),
+                len: u8 = 0,
+            };
+
+            fn single(index: u32) ComponentSet {
+                var result: ComponentSet = empty;
+                result.small.items[0] = index;
+                result.small.len = 1;
+                return result;
+            }
+
+            fn count(self: ComponentSet) usize {
+                return switch (self) {
+                    .small => |small| small.len,
+                    .spilled => |items| items.len,
+                };
+            }
+
+            fn at(self: ComponentSet, index: usize) u32 {
+                return switch (self) {
+                    .small => |small| small.items[index],
+                    .spilled => |items| items[index],
+                };
+            }
+
+            fn first(self: ComponentSet) ?u32 {
+                return if (self.count() == 0) null else self.at(0);
+            }
+
+            fn iterator(self: ComponentSet) SparseIterator {
+                return .{ .set = self };
+            }
+
+            const SparseIterator = struct {
+                set: ComponentSet,
+                index: usize = 0,
+
+                fn next(self: *SparseIterator) ?u32 {
+                    if (self.index == self.set.count()) return null;
+                    defer self.index += 1;
+                    return self.set.at(self.index);
+                }
+            };
+
+            const Builder = struct {
+                walker: *GlobWalker,
+                small: Small = .{},
+                spilled: bool = false,
+
+                fn init(walker: *GlobWalker) Builder {
+                    return .{ .walker = walker };
+                }
+
+                fn insert(self: *Builder, value: u32) void {
+                    if (!self.spilled) {
+                        var insert_at: usize = 0;
+                        while (insert_at < self.small.len and self.small.items[insert_at] < value) : (insert_at += 1) {}
+                        if (insert_at < self.small.len and self.small.items[insert_at] == value) return;
+
+                        if (self.small.len < inline_capacity) {
+                            var index: usize = self.small.len;
+                            while (index > insert_at) : (index -= 1) {
+                                self.small.items[index] = self.small.items[index - 1];
+                            }
+                            self.small.items[insert_at] = value;
+                            self.small.len += 1;
+                            return;
+                        }
+
+                        self.walker.component_set_scratch.clearRetainingCapacity();
+                        bun.handleOom(self.walker.component_set_scratch.appendSlice(
+                            self.walker.arena.allocator(),
+                            self.small.items[0..self.small.len],
+                        ));
+                        self.spilled = true;
+                    }
+
+                    if (std.mem.indexOfScalar(u32, self.walker.component_set_scratch.items, value) == null) {
+                        bun.handleOom(self.walker.component_set_scratch.append(
+                            self.walker.arena.allocator(),
+                            value,
+                        ));
+                    }
+                }
+
+                fn finish(self: *Builder) ComponentSet {
+                    if (!self.spilled) return .{ .small = self.small };
+                    std.sort.pdq(
+                        u32,
+                        self.walker.component_set_scratch.items,
+                        {},
+                        std.sort.asc(u32),
+                    );
+                    return .{ .spilled = bun.handleOom(self.walker.arena.allocator().dupe(
+                        u32,
+                        self.walker.component_set_scratch.items,
+                    )) };
+                }
+            };
+        };
 
         /// The glob walker references the .directory.path so its not safe to
         /// copy/move this
@@ -429,7 +530,7 @@ pub fn GlobWalker_(
                         break :is_absolute std.fs.path.isAbsolutePosix(this.walker.pattern);
                     };
 
-                    if (!is_absolute) break :brk WorkItem.new(this.walker.cwd, this.walker.singleSet(0), .directory);
+                    if (!is_absolute) break :brk WorkItem.new(this.walker.cwd, ComponentSet.single(0), .directory);
 
                     was_absolute = true;
 
@@ -478,7 +579,7 @@ pub fn GlobWalker_(
 
                     break :brk WorkItem.new(
                         path_without_special_syntax,
-                        this.walker.singleSet(starting_component_idx),
+                        ComponentSet.single(starting_component_idx),
                         .directory,
                     );
                 };
@@ -599,7 +700,7 @@ pub fn GlobWalker_(
                 // after `**/X` boundaries and are already past any Dots.
                 const active: ComponentSet = set: {
                     if (work_item.active.count() == 1) {
-                        const single: u32 = @intCast(work_item.active.findFirstSet().?);
+                        const single = work_item.active.first().?;
                         const norm = switch (this.walker.skipSpecialComponents(single, &dir_path, &this.iter_state.directory.path, &had_dot_dot)) {
                             .err => |e| {
                                 if (work_item.fd) |fd| this.closeDisallowingCwd(fd);
@@ -612,7 +713,7 @@ pub fn GlobWalker_(
                             this.iter_state = .get_next;
                             return .success;
                         }
-                        break :set this.walker.singleSet(norm);
+                        break :set ComponentSet.single(norm);
                     }
                     // Multi-index sets are already normalized by evalDir.
                     break :set work_item.active;
@@ -650,7 +751,7 @@ pub fn GlobWalker_(
                 // component and it is a Literal, statat() instead of iterating.
                 // Skip for multi-index masks since each index has different needs.
                 if (active.count() == 1) {
-                    const idx: u32 = @intCast(active.findFirstSet().?);
+                    const idx = active.first().?;
                     if (idx == this.walker.patternComponents.items.len -| 1 and
                         this.walker.patternComponents.items[idx].syntax_hint == .Literal)
                     {
@@ -701,7 +802,7 @@ pub fn GlobWalker_(
                         // so skip it. The filter is purely an optimization;
                         // matchPatternImpl still runs for correctness.
                         const filter: ?[]const u16 = if (active.count() == 1)
-                            this.computeNtFilter(@intCast(active.findFirstSet().?))
+                            this.computeNtFilter(active.first().?)
                         else
                             null;
                         iterator.setNameFilter(filter);
@@ -775,7 +876,7 @@ pub fn GlobWalker_(
 
                                     var has_dot_dot = false;
                                     const active: ComponentSet = if (work_item.active.count() == 1) blk: {
-                                        const single: u32 = @intCast(work_item.active.findFirstSet().?);
+                                        const single = work_item.active.first().?;
                                         const norm = switch (this.walker.skipSpecialComponents(single, &symlink_full_path_z, scratch_path_buf, &has_dot_dot)) {
                                             .err => |e| return .{ .err = e },
                                             .result => |i| i,
@@ -784,7 +885,7 @@ pub fn GlobWalker_(
                                             this.iter_state = .get_next;
                                             continue;
                                         }
-                                        break :blk this.walker.singleSet(norm);
+                                        break :blk ComponentSet.single(norm);
                                     } else work_item.active;
 
                                     this.iter_state = .get_next;
@@ -976,7 +1077,7 @@ pub fn GlobWalker_(
 
         const WorkItem = struct {
             path: []const u8,
-            /// Bitmask of active component indices.
+            /// Sorted active component indices.
             active: ComponentSet,
             kind: Kind,
             entry_start: u32 = 0,
@@ -1381,53 +1482,39 @@ pub fn GlobWalker_(
             ).matches();
         }
 
-        /// Create an empty ComponentSet sized for this pattern.
-        fn makeSet(this: *GlobWalker) ComponentSet {
-            return bun.handleOom(ComponentSet.initEmpty(
-                this.arena.allocator(),
-                this.patternComponents.items.len,
-            ));
-        }
-
-        fn singleSet(this: *GlobWalker, idx: u32) ComponentSet {
-            var s = this.makeSet();
-            s.set(idx);
-            return s;
-        }
-
         /// Evaluate a directory entry against all active component indices.
         /// Returns the child's active set (union of all recursion targets).
         /// Sets `add` if any index says the directory itself is a match.
         fn evalDir(this: *GlobWalker, active: ComponentSet, entry_name: []const u8, add: *bool) ComponentSet {
-            var child = this.makeSet();
+            var child = ComponentSet.Builder.init(this);
             const comps = this.patternComponents.items;
             const len: u32 = @intCast(comps.len);
-            var it = active.iterator(.{});
+            var it = active.iterator();
             while (it.next()) |i| {
-                const idx: u32 = @intCast(i);
+                const idx = i;
                 const pattern = &comps[idx];
                 const next_pattern = if (idx + 1 < len) &comps[idx + 1] else null;
                 const is_last = idx == len - 1;
                 var add_this = false;
                 if (this.matchPatternDir(pattern, next_pattern, entry_name, idx, is_last, &add_this)) |bump| {
-                    child.set(this.normalizeIdx(idx + bump));
+                    child.insert(this.normalizeIdx(idx + bump));
                     // At `**/X` boundaries, keep the outer `**` alive unless
                     // idx+2 is itself `**` (whose recursion already covers it).
                     if (bump == 2 and comps[idx + 2].syntax_hint != .Double) {
-                        child.set(idx);
+                        child.insert(idx);
                     }
                 }
                 if (add_this) add.* = true;
             }
-            return child;
+            return child.finish();
         }
 
         fn evalFile(this: *GlobWalker, active: ComponentSet, entry_name: []const u8) bool {
             const comps = this.patternComponents.items;
             const len: u32 = @intCast(comps.len);
-            var it = active.iterator(.{});
+            var it = active.iterator();
             while (it.next()) |i| {
-                const idx: u32 = @intCast(i);
+                const idx = i;
                 const pattern = &comps[idx];
                 const next_pattern = if (idx + 1 < len) &comps[idx + 1] else null;
                 const is_last = idx == len - 1;
@@ -1437,7 +1524,7 @@ pub fn GlobWalker_(
         }
 
         fn evalImpl(this: *GlobWalker, active: ComponentSet, entry_name: []const u8) bool {
-            var it = active.iterator(.{});
+            var it = active.iterator();
             while (it.next()) |idx| {
                 if (this.matchPatternImpl(&this.patternComponents.items[idx], entry_name)) return true;
             }

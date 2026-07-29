@@ -123,17 +123,12 @@ pub fn Iterator(comptime path_style: IteratorPathStyle) type {
             depth: usize,
         };
 
-        pub fn next(this: *@This(), completed_trees: if (path_style == .node_modules) ?*Bitset else void) ?Next {
+        pub fn next(this: *@This()) ?Next {
             const trees = this.lockfile.buffers.trees.items;
 
             if (this.tree_id >= trees.len) return null;
 
             while (trees[this.tree_id].dependencies.len == 0) {
-                if (comptime path_style == .node_modules) {
-                    if (completed_trees) |_completed_trees| {
-                        _completed_trees.set(this.tree_id);
-                    }
-                }
                 this.tree_id += 1;
                 if (this.tree_id >= trees.len) return null;
             }
@@ -798,7 +793,6 @@ const Output = bun.Output;
 const Path = bun.path;
 const assert = bun.assert;
 const logger = bun.logger;
-const Bitset = bun.bit_set.DynamicBitSetUnmanaged;
 const String = bun.Semver.String;
 
 const install = bun.install;

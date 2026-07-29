@@ -96,7 +96,7 @@ pub const MultiPartUpload = struct {
     const MAX_QUEUE_SIZE = MultiPartUploadOptions.MAX_QUEUE_SIZE;
     const AWS = S3Credentials;
     queue: ?[]UploadPart = null,
-    available: bun.bit_set.IntegerBitSet(MAX_QUEUE_SIZE) = .initFull(),
+    available: std.bit_set.Static(MAX_QUEUE_SIZE) = .full,
 
     currentPartNumber: u16 = 1,
     ref_count: RefCount,
@@ -720,7 +720,7 @@ pub const MultiPartUpload = struct {
     }
 
     pub fn isQueueEmpty(this: *@This()) bool {
-        return this.available.mask == @TypeOf(this.available).initFull().mask;
+        return this.available.eql(.full);
     }
 
     pub const WriteEncoding = enum {

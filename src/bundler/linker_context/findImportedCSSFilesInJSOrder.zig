@@ -89,7 +89,7 @@ pub fn findImportedCSSFilesInJSOrder(this: *LinkerContext, temp_allocator: std.m
     return order;
 }
 
-pub const BitSet = bun.bit_set.DynamicBitSetUnmanaged;
+const BitSet = std.bit_set.Dynamic;
 
 const std = @import("std");
 

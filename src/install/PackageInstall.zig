@@ -1509,7 +1509,7 @@ const ThreadPool = bun.ThreadPool;
 const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;
-const Bitset = bun.bit_set.DynamicBitSetUnmanaged;
+const Bitset = std.bit_set.Dynamic;
 const FileSystem = bun.fs.FileSystem;
 const String = bun.Semver.String;
 

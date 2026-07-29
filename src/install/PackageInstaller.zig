@@ -25,12 +25,6 @@ pub const PackageInstaller = struct {
     command_ctx: Command.Context,
     current_tree_id: Lockfile.Tree.Id = Lockfile.Tree.invalid_id,
 
-    // fields used for running lifecycle scripts when it's safe
-    //
-    /// set of completed tree ids
-    completed_trees: Bitset,
-    /// the tree ids a tree depends on before it can run the lifecycle scripts of it's immediate dependencies
-    tree_ids_to_trees_the_id_depends_on: Bitset.List,
     pending_lifecycle_scripts: std.ArrayListUnmanaged(struct {
         list: Lockfile.Package.Scripts.List,
         tree_id: Lockfile.Tree.Id,
@@ -156,8 +150,8 @@ pub const PackageInstaller = struct {
 
         binaries: Bin.PriorityQueue,
 
-        /// Number of installed dependencies. Could be successful or failure.
-        install_count: usize = 0,
+        remaining_installs: usize,
+        unfinished_subtree_count: usize,
 
         pub const Id = Lockfile.Tree.Id;
 
@@ -166,6 +160,39 @@ pub const PackageInstaller = struct {
             this.binaries.deinit(allocator);
         }
     };
+
+    pub fn initTreeContexts(
+        allocator: std.mem.Allocator,
+        lockfile: *const Lockfile,
+    ) ![]TreeContext {
+        const lockfile_trees = lockfile.buffers.trees.items;
+        const trees = try allocator.alloc(TreeContext, lockfile_trees.len);
+        errdefer allocator.free(trees);
+
+        for (trees) |*tree| {
+            tree.* = .{
+                .binaries = Bin.PriorityQueue.initContext(.{
+                    .dependencies = &lockfile.buffers.dependencies,
+                    .string_buf = &lockfile.buffers.string_bytes,
+                }),
+                .remaining_installs = undefined,
+                .unfinished_subtree_count = undefined,
+            };
+        }
+
+        try TreeCompletion.initialize(
+            trees,
+            lockfile_trees,
+            Lockfile.Tree.invalid_id,
+        );
+
+        return trees;
+    }
+
+    pub fn deinitTreeContexts(trees: []TreeContext, allocator: std.mem.Allocator) void {
+        for (trees) |*tree| tree.deinit(allocator);
+        allocator.free(trees);
+    }
 
     pub const LazyPackageDestinationDir = union(enum) {
         dir: std.Io.Dir,
@@ -201,9 +228,7 @@ pub const PackageInstaller = struct {
         }
     };
 
-    /// Increments the number of installed packages for a tree id and runs available scripts
-    /// if the tree is finished.
-    pub fn incrementTreeInstallCount(
+    pub fn completeDependencyInstall(
         this: *PackageInstaller,
         tree_id: Lockfile.Tree.Id,
         comptime should_install_packages: bool,
@@ -214,23 +239,21 @@ pub const PackageInstaller = struct {
         }
 
         const tree = &this.trees[tree_id];
-        const current_count = tree.install_count;
-        const max = this.lockfile.buffers.trees.items[tree_id].dependencies.len;
-
-        if (current_count == std.math.maxInt(usize)) {
-            if (comptime Environment.allow_assert)
-                Output.panic("Installed more packages than expected for tree id: {d}. Expected: {d}", .{ tree_id, max });
-
-            return;
+        const expected = this.lockfile.buffers.trees.items[tree_id].dependencies.len;
+        switch (TreeCompletion.complete(
+            this.trees,
+            this.lockfile.buffers.trees.items,
+            tree_id,
+            Lockfile.Tree.invalid_id,
+        )) {
+            .already_completed => {
+                if (comptime Environment.allow_assert)
+                    Output.panic("Installed more packages than expected for tree id: {d}. Expected: {d}", .{ tree_id, expected });
+                return;
+            },
+            .pending => return,
+            .completed => {},
         }
-
-        const is_not_done = current_count + 1 < max;
-
-        this.trees[tree_id].install_count = if (is_not_done) current_count + 1 else std.math.maxInt(usize);
-
-        if (is_not_done) return;
-
-        this.completed_trees.set(tree_id);
 
         if (tree.binaries.count() > 0) {
             this.seen_bin_links.clearRetainingCapacity();
@@ -545,34 +568,29 @@ pub const PackageInstaller = struct {
 
     /// Check if a tree is ready to start running lifecycle scripts
     pub fn canRunScripts(this: *PackageInstaller, scripts_tree_id: Lockfile.Tree.Id) bool {
-        const deps = this.tree_ids_to_trees_the_id_depends_on.at(scripts_tree_id);
         // .monotonic is okay because this value isn't modified from any other thread.
-        return (deps.subsetOf(this.completed_trees) or
-            deps.eql(this.completed_trees)) and
+        return TreeCompletion.subtreeComplete(
+            this.trees,
+            scripts_tree_id,
+        ) and
             LifecycleScriptSubprocess.alive_count.load(.monotonic) < this.manager.options.max_concurrent_lifecycle_scripts;
     }
 
     /// A tree can start installing packages when the parent has installed all its packages. If the parent
     /// isn't finished, we need to wait because it's possible a package installed in this tree will be deleted by the parent.
     pub fn canInstallPackageForTree(this: *const PackageInstaller, trees: []Lockfile.Tree, package_tree_id: Lockfile.Tree.Id) bool {
-        var curr_tree_id = trees[package_tree_id].parent;
-        while (curr_tree_id != Lockfile.Tree.invalid_id) {
-            if (!this.completed_trees.isSet(curr_tree_id)) return false;
-            curr_tree_id = trees[curr_tree_id].parent;
-        }
-
-        return true;
+        return TreeCompletion.ancestorsComplete(
+            this.trees,
+            trees,
+            package_tree_id,
+            Lockfile.Tree.invalid_id,
+        );
     }
 
     pub fn deinit(this: *PackageInstaller) void {
         const allocator = this.manager.allocator;
         this.pending_lifecycle_scripts.deinit(this.manager.allocator);
-        this.completed_trees.deinit(allocator);
-        for (this.trees) |*node| {
-            node.deinit(allocator);
-        }
-        allocator.free(this.trees);
-        this.tree_ids_to_trees_the_id_depends_on.deinit(allocator);
+        deinitTreeContexts(this.trees, allocator);
         this.node_modules.deinit();
         this.trusted_dependencies_from_update_requests.deinit(allocator);
     }
@@ -589,12 +607,12 @@ pub const PackageInstaller = struct {
 
         // fixes an assertion failure where a transitive dependency is a git dependency newly added to the lockfile after the list of dependencies has been resized
         // this assertion failure would also only happen after the lockfile has been written to disk and the summary is being printed.
-        if (this.successfully_installed.bit_length < this.lockfile.packages.len) {
-            const new = bun.handleOom(Bitset.initEmpty(bun.default_allocator, this.lockfile.packages.len));
-            var old = this.successfully_installed;
-            defer old.deinit(bun.default_allocator);
-            old.copyInto(new);
-            this.successfully_installed = new;
+        if (this.successfully_installed.capacity() < this.lockfile.packages.len) {
+            bun.handleOom(this.successfully_installed.resize(
+                this.manager.allocator,
+                this.lockfile.packages.len,
+                false,
+            ));
         }
     }
 
@@ -951,7 +969,7 @@ pub const PackageInstaller = struct {
                 if (comptime Environment.allow_assert) {
                     @panic("Internal assertion failure: unexpected resolution tag");
                 }
-                this.incrementTreeInstallCount(this.current_tree_id, !is_pending_package_install, log_level);
+                this.completeDependencyInstall(this.current_tree_id, !is_pending_package_install, log_level);
                 return;
             },
         }
@@ -1058,7 +1076,7 @@ pub const PackageInstaller = struct {
                         if (comptime Environment.allow_assert) {
                             @panic("unreachable, handled above");
                         }
-                        this.incrementTreeInstallCount(this.current_tree_id, !is_pending_package_install, log_level);
+                        this.completeDependencyInstall(this.current_tree_id, !is_pending_package_install, log_level);
                         this.summary.fail += 1;
                     },
                 }
@@ -1104,7 +1122,7 @@ pub const PackageInstaller = struct {
                     });
                 }
                 this.summary.fail += 1;
-                this.incrementTreeInstallCount(this.current_tree_id, !is_pending_package_install, log_level);
+                this.completeDependencyInstall(this.current_tree_id, !is_pending_package_install, log_level);
                 return;
             };
 
@@ -1246,7 +1264,7 @@ pub const PackageInstaller = struct {
                         },
                     }
 
-                    this.incrementTreeInstallCount(this.current_tree_id, !is_pending_package_install, log_level);
+                    this.completeDependencyInstall(this.current_tree_id, !is_pending_package_install, log_level);
                 },
                 .failure => |cause| {
                     if (comptime Environment.allow_assert) {
@@ -1255,7 +1273,7 @@ pub const PackageInstaller = struct {
 
                     // even if the package failed to install, we still need to increment the install
                     // counter for this tree
-                    this.incrementTreeInstallCount(this.current_tree_id, !is_pending_package_install, log_level);
+                    this.completeDependencyInstall(this.current_tree_id, !is_pending_package_install, log_level);
 
                     if (cause.err == error.DanglingSymlink) {
                         Output.prettyErrorln(
@@ -1345,7 +1363,7 @@ pub const PackageInstaller = struct {
                 destination_dir.close(this.manager.io);
             }
 
-            defer this.incrementTreeInstallCount(this.current_tree_id, !is_pending_package_install, log_level);
+            defer this.completeDependencyInstall(this.current_tree_id, !is_pending_package_install, log_level);
 
             const dep = this.lockfile.buffers.dependencies.items[dependency_id];
             const truncated_dep_name_hash: TruncatedPackageNameHash = @truncate(dep.name_hash);
@@ -1419,7 +1437,7 @@ pub const PackageInstaller = struct {
         log_level: Options.LogLevel,
     ) void {
         this.summary.fail += 1;
-        this.incrementTreeInstallCount(this.current_tree_id, !is_pending_package_install, log_level);
+        this.completeDependencyInstall(this.current_tree_id, !is_pending_package_install, log_level);
     }
 
     // returns true if scripts are enqueued
@@ -1525,7 +1543,8 @@ const Path = bun.path;
 const Progress = bun.Progress;
 const Syscall = bun.sys;
 const strings = bun.strings;
-const Bitset = bun.bit_set.DynamicBitSetUnmanaged;
+const Bitset = std.bit_set.Dynamic;
+const TreeCompletion = @import("./tree_completion.zig");
 const Command = bun.cli.Command;
 const FileSystem = bun.fs.FileSystem;
 const String = bun.Semver.String;

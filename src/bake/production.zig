@@ -91,9 +91,10 @@ pub fn buildCommand(ctx: bun.cli.Command.Context) !void {
         .source_maps = .{},
 
         .vm = vm,
-        .loaded_files = bun.bit_set.AutoBitSet.initEmpty(vm.allocator, 0) catch unreachable,
+        .loaded_files = .{},
         .all_server_files = null,
     };
+    defer pt.deinit();
 
     buildWithVm(ctx, cwd, vm, &pt) catch |err| switch (err) {
         error.JSError => |e| {
@@ -952,7 +953,7 @@ pub const PerThread = struct {
     // Thread-local
     vm: *jsc.VirtualMachine,
     /// Indexed by entry point index (OpaqueFileId)
-    loaded_files: bun.bit_set.AutoBitSet,
+    loaded_files: std.bit_set.Dynamic,
     /// JSArray of JSString, indexed by entry point index (OpaqueFileId)
     all_server_files: ?*jsc.JSArray,
 
@@ -973,7 +974,7 @@ pub const PerThread = struct {
 
     /// After initializing, call `attach`
     pub fn init(vm: *VirtualMachine, opts: Options) !PerThread {
-        var loaded_files = try bun.bit_set.AutoBitSet.initEmpty(vm.allocator, opts.output_indexes.len);
+        var loaded_files = try std.bit_set.Dynamic.initEmpty(vm.allocator, opts.output_indexes.len);
         errdefer loaded_files.deinit(vm.allocator);
 
         const all_server_files = try jsc.JSArray.createEmpty(vm.global, opts.output_indexes.len);
@@ -998,7 +999,8 @@ pub const PerThread = struct {
 
     pub fn deinit(pt: *PerThread) void {
         BakeGlobalObject__attachPerThreadData(pt.vm.global, null);
-        pt.all_server_files.?.unprotect();
+        if (pt.all_server_files) |all_server_files| all_server_files.unprotect();
+        pt.loaded_files.deinit(pt.vm.allocator);
     }
 
     pub fn outputIndex(s: PerThread, id: OpaqueFileId) OutputFile.Index {

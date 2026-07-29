@@ -329,7 +329,7 @@ pub const PackageManagerCommand = struct {
 
             var directories = std.array_list.Managed(NodeModulesFolder).init(ctx.allocator);
             defer directories.deinit();
-            while (iterator.next(null)) |node_modules| {
+            while (iterator.next()) |node_modules| {
                 const path_len = node_modules.relative_path.len;
                 const path = try ctx.allocator.alloc(u8, path_len + 1);
                 bun.copy(u8, path, node_modules.relative_path);

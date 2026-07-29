@@ -6,7 +6,7 @@ pub fn HiveArray(comptime T: type, comptime capacity: u16) type {
         const Self = @This();
 
         buffer: [capacity]T,
-        used: bun.bit_set.IntegerBitSet(capacity),
+        used: std.bit_set.Static(capacity),
 
         pub const size = capacity;
 
@@ -16,18 +16,19 @@ pub fn HiveArray(comptime T: type, comptime capacity: u16) type {
         /// https://github.com/ziglang/zig/issues/21988
         pub var empty: Self = .{
             .buffer = undefined,
-            .used = .initEmpty(),
+            .used = .empty,
         };
 
         pub fn init() Self {
             return .{
                 .buffer = undefined,
-                .used = .initEmpty(),
+                .used = .empty,
             };
         }
 
         pub fn get(self: *Self) ?*T {
-            const index = self.used.findFirstUnset() orelse return null;
+            var iterator = self.used.iterator(.{ .kind = .unset });
+            const index = iterator.next() orelse return null;
             self.used.set(index);
             const ret = &self.buffer[index];
             bun.asan.unpoison(@ptrCast(ret), @sizeOf(T));
@@ -153,7 +154,7 @@ test "HiveArray" {
         try testing.expect(a.in(&d) == false);
     }
 
-    a.used = @TypeOf(a.used).initEmpty();
+    a.used = @TypeOf(a.used).empty;
     {
         for (0..size) |i| {
             const b = a.get().?;

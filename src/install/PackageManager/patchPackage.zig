@@ -859,7 +859,7 @@ fn overwritePackageInNodeModulesFolder(
 }
 
 fn nodeModulesFolderForDependencyIDs(iterator: *Lockfile.Tree.Iterator(.node_modules), ids: []const IdPair) !?Lockfile.Tree.Iterator(.node_modules).Next {
-    while (iterator.next(null)) |node_modules| {
+    while (iterator.next()) |node_modules| {
         for (ids) |id| {
             _ = std.mem.indexOfScalar(DependencyID, node_modules.dependencies, id[0]) orelse continue;
             return node_modules;
@@ -869,7 +869,7 @@ fn nodeModulesFolderForDependencyIDs(iterator: *Lockfile.Tree.Iterator(.node_mod
 }
 
 fn nodeModulesFolderForDependencyID(iterator: *Lockfile.Tree.Iterator(.node_modules), dependency_id: DependencyID) !?Lockfile.Tree.Iterator(.node_modules).Next {
-    while (iterator.next(null)) |node_modules| {
+    while (iterator.next()) |node_modules| {
         _ = std.mem.indexOfScalar(DependencyID, node_modules.dependencies, dependency_id) orelse continue;
         return node_modules;
     }

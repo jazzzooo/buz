@@ -599,16 +599,12 @@ pub const LinkerContext = struct {
             const trace2 = bun.perf.trace("Bundler.markFileReachableForCodeSplitting");
             defer trace2.end();
 
-            const file_entry_bits: []AutoBitSet = c.graph.files.items(.entry_bits);
-            // AutoBitSet needs to be initialized if it is dynamic
-            if (AutoBitSet.needsDynamic(entry_points.len)) {
-                for (file_entry_bits) |*bits| {
-                    bits.* = try AutoBitSet.initEmpty(c.allocator(), entry_points.len);
-                }
-            } else if (file_entry_bits.len > 0) {
-                // assert that the tag is correct
-                bun.assert(file_entry_bits[0] == .static);
-            }
+            var reachability_builder = try EntryPointReachability.Builder.init(
+                c.allocator(),
+                c.graph.files.len,
+                entry_points.len,
+            );
+            defer reachability_builder.deinit(c.allocator());
 
             // Code splitting: Determine which entry points can reach which files. This
             // has to happen after tree shaking because there is an implicit dependency
@@ -622,10 +618,15 @@ pub const LinkerContext = struct {
                     0,
                     parts,
                     import_records,
-                    file_entry_bits,
+                    &reachability_builder,
                     css_reprs,
                 );
             }
+
+            c.graph.entry_point_reachability = reachability_builder.finish(
+                entry_points,
+                c.graph.files_live,
+            );
         }
     }
 
@@ -1479,7 +1480,7 @@ pub const LinkerContext = struct {
         hash: *ContentHasher,
         chunks: []Chunk,
         index: u32,
-        chunk_visit_map: *AutoBitSet,
+        chunk_visit_map: *std.bit_set.Dynamic,
     ) void {
         // Only visit each chunk at most once. This is important because there may be
         // cycles in the chunk import graph. If there's a cycle, we want to include
@@ -1576,7 +1577,7 @@ pub const LinkerContext = struct {
         distance: u32,
         parts: []bun.BabyList(Part),
         import_records: []bun.BabyList(bun.ImportRecord),
-        file_entry_bits: []AutoBitSet,
+        reachability: *EntryPointReachability.Builder,
         css_reprs: []?*bun.css.BundlerStyleSheet,
     ) void {
         if (!c.graph.files_live.isSet(source_index))
@@ -1589,7 +1590,7 @@ pub const LinkerContext = struct {
         }
         const out_dist = distance + 1;
 
-        var bits = &file_entry_bits[source_index];
+        const bits = reachability.row(source_index);
 
         // Don't mark this file more than once
         if (bits.isSet(entry_points_count) and !traverse_again)
@@ -1618,7 +1619,7 @@ pub const LinkerContext = struct {
                         out_dist,
                         parts,
                         import_records,
-                        file_entry_bits,
+                        reachability,
                         css_reprs,
                     );
                 }
@@ -1635,7 +1636,7 @@ pub const LinkerContext = struct {
                     out_dist,
                     parts,
                     import_records,
-                    file_entry_bits,
+                    reachability,
                     css_reprs,
                 );
             }
@@ -1652,7 +1653,7 @@ pub const LinkerContext = struct {
                         out_dist,
                         parts,
                         import_records,
-                        file_entry_bits,
+                        reachability,
                         css_reprs,
                     );
                 }
@@ -2739,7 +2740,7 @@ const base64 = bun.base64;
 const renamer = bun.renamer;
 const strings = bun.strings;
 const sync = bun.threading;
-const AutoBitSet = bun.bit_set.AutoBitSet;
+const EntryPointReachability = bun.bundle_v2.EntryPointReachability;
 const BabyList = bun.collections.BabyList;
 
 const js_ast = bun.ast;

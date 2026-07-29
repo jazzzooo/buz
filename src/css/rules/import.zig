@@ -34,6 +34,12 @@ pub const ImportConditions = struct {
         return css.implementHash(@This(), this, hasher);
     }
 
+    pub fn eql(this: *const @This(), other: *const @This()) bool {
+        return this.layersEql(other) and
+            this.supportsEql(other) and
+            this.media.eql(&other.media);
+    }
+
     pub fn hasAnonymousLayer(this: *const @This()) bool {
         return this.layer != null and this.layer.?.v == null;
     }

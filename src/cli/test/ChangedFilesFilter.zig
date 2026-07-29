@@ -195,7 +195,7 @@ pub fn filter(
     }
 
     // BFS backward from every changed file that participates in the graph.
-    var affected = try bun.bit_set.DynamicBitSetUnmanaged.initEmpty(allocator, sources.len);
+    var affected = try std.bit_set.Dynamic.initEmpty(allocator, sources.len);
     defer affected.deinit(allocator);
     var queue: std.ArrayListUnmanaged(u32) = .empty;
     defer queue.deinit(allocator);

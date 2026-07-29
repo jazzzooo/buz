@@ -748,7 +748,7 @@ pub const Block = struct {
 const std = @import("std");
 
 const bun = @import("bun");
-const Bitset = bun.bit_set.DynamicBitSetUnmanaged;
+const Bitset = std.bit_set.Dynamic;
 const LineOffsetTable = bun.SourceMap.LineOffsetTable;
 
 const Output = bun.Output;

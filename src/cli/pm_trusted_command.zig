@@ -56,7 +56,7 @@ pub const UntrustedCommand = struct {
         var node_modules_path: bun.Path(.{}) = .initTopLevelDir();
         defer node_modules_path.deinit();
 
-        while (tree_iterator.next(null)) |node_modules| {
+        while (tree_iterator.next()) |node_modules| {
             const node_modules_path_save = node_modules_path.save();
             defer node_modules_path_save.restore();
 
@@ -219,7 +219,7 @@ pub const TrustCommand = struct {
 
         var scripts_count: usize = 0;
 
-        while (tree_iter.next(null)) |node_modules| {
+        while (tree_iter.next()) |node_modules| {
             const node_modules_path_save = node_modules_path.save();
             defer node_modules_path_save.restore();
             node_modules_path.append(node_modules.relative_path);

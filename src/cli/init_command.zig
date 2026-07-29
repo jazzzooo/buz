@@ -665,8 +665,8 @@ pub const InitCommand = struct {
             const all_dependencies = template.dependencies();
             const dependencies = all_dependencies.dependencies;
             const dev_dependencies = all_dependencies.devDependencies;
-            var needed_dependencies = bun.bit_set.IntegerBitSet(64).initEmpty();
-            var needed_dev_dependencies = bun.bit_set.IntegerBitSet(64).initEmpty();
+            var needed_dependencies = std.bit_set.Static(64).empty;
+            var needed_dev_dependencies = std.bit_set.Static(64).empty;
             needed_dependencies.setRangeValue(.{ .start = 0, .end = dependencies.len }, true);
             needed_dev_dependencies.setRangeValue(.{ .start = 0, .end = dev_dependencies.len }, true);
 

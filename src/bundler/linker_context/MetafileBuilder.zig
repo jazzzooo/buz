@@ -186,8 +186,8 @@ pub fn generate(
     const import_records_list = c.parse_graph.ast.items(.import_records);
 
     // Iterate through all files in chunks to collect unique source indices
-    var seen_sources = try std.DynamicBitSet.initEmpty(allocator, sources.len);
-    defer seen_sources.deinit();
+    var seen_sources = try std.bit_set.Dynamic.initEmpty(allocator, sources.len);
+    defer seen_sources.deinit(allocator);
 
     // Mark all files that appear in chunks
     for (chunks) |*chunk| {

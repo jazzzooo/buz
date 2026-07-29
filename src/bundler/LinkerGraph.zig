@@ -4,6 +4,7 @@ const debug = Output.scoped(.LinkerGraph, .visible);
 
 files: File.List = .{},
 files_live: BitSet = undefined,
+entry_point_reachability: EntryPointReachability = .empty,
 entry_points: EntryPoint.List = .{},
 symbols: js_ast.Symbol.Map = .{},
 
@@ -434,8 +435,6 @@ pub fn takeAstOwnership(this: *LinkerGraph) void {
 }
 
 pub const File = struct {
-    entry_bits: AutoBitSet = undefined,
-
     input_file: Index = Index.source(0),
 
     /// The minimum number of links in the module graph to get from an entry point
@@ -468,7 +467,7 @@ pub const File = struct {
 
 pub fn propagateAsyncDependencies(this: *LinkerGraph) !void {
     const State = struct {
-        visited: bun.collections.AutoBitSet,
+        visited: std.bit_set.Dynamic,
         import_records: []const ImportRecord.List,
         flags: []JSMeta.Flags,
 
@@ -543,10 +542,10 @@ const Owned = bun.ptr.Owned;
 const js_ast = bun.ast;
 const Symbol = js_ast.Symbol;
 
-const AutoBitSet = bun.bit_set.AutoBitSet;
-const BitSet = bun.bit_set.DynamicBitSetUnmanaged;
+const BitSet = std.bit_set.Dynamic;
 
 const EntryPoint = bun.bundle_v2.EntryPoint;
+const EntryPointReachability = bun.bundle_v2.EntryPointReachability;
 const Index = bun.bundle_v2.Index;
 const IndexStringMap = bun.bundle_v2.IndexStringMap;
 const JSAst = bun.bundle_v2.JSAst;

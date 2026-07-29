@@ -384,7 +384,7 @@ const Output = bun.Output;
 const assert = bun.assert;
 const logger = bun.logger;
 const strings = bun.strings;
-const Bitset = bun.bit_set.DynamicBitSetUnmanaged;
+const Bitset = std.bit_set.Dynamic;
 const String = bun.Semver.String;
 
 const install = bun.install;

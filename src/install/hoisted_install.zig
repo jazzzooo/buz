@@ -89,52 +89,7 @@ pub fn installHoistedPackages(
             Bin.Linker.ensureUmask();
         }
         var installer: PackageInstaller = brk: {
-            const completed_trees, const tree_ids_to_trees_the_id_depends_on = trees: {
-                const trees = this.lockfile.buffers.trees.items;
-                const completed_trees = try Bitset.initEmpty(this.allocator, trees.len);
-                var tree_ids_to_trees_the_id_depends_on = try Bitset.List.initEmpty(this.allocator, trees.len, trees.len);
-
-                {
-                    // For each tree id, traverse through it's parents and mark all visited tree
-                    // ids as dependents for the current tree parent
-                    var deps = try Bitset.initEmpty(this.allocator, trees.len);
-                    defer deps.deinit(this.allocator);
-                    for (trees) |_curr| {
-                        var curr = _curr;
-                        tree_ids_to_trees_the_id_depends_on.set(curr.id, curr.id);
-
-                        while (curr.parent != Lockfile.Tree.invalid_id) {
-                            deps.set(curr.id);
-                            tree_ids_to_trees_the_id_depends_on.setUnion(curr.parent, deps);
-                            curr = trees[curr.parent];
-                        }
-
-                        deps.setAll(false);
-                    }
-                }
-
-                if (comptime Environment.allow_assert) {
-                    if (trees.len > 0) {
-                        // last tree should only depend on one other
-                        bun.assertWithLocation(tree_ids_to_trees_the_id_depends_on.at(trees.len - 1).count() == 1, @src());
-                        // and it should be itself
-                        bun.assertWithLocation(tree_ids_to_trees_the_id_depends_on.at(trees.len - 1).isSet(trees.len - 1), @src());
-
-                        // root tree should always depend on all trees
-                        bun.assertWithLocation(tree_ids_to_trees_the_id_depends_on.at(0).count() == trees.len, @src());
-                    }
-
-                    // a tree should always depend on itself
-                    for (0..trees.len) |j| {
-                        bun.assertWithLocation(tree_ids_to_trees_the_id_depends_on.at(j).isSet(j), @src());
-                    }
-                }
-
-                break :trees .{
-                    completed_trees,
-                    tree_ids_to_trees_the_id_depends_on,
-                };
-            };
+            const trees = try PackageInstaller.initTreeContexts(this.allocator, this.lockfile);
 
             // These slices potentially get resized during iteration
             // so we want to make sure they're not accessible to the rest of this function
@@ -173,30 +128,16 @@ pub fn installHoistedPackages(
                     this.lockfile.packages.len,
                 ),
                 .command_ctx = ctx,
-                .tree_ids_to_trees_the_id_depends_on = tree_ids_to_trees_the_id_depends_on,
-                .completed_trees = completed_trees,
-                .trees = trees: {
-                    const trees = bun.handleOom(this.allocator.alloc(TreeContext, this.lockfile.buffers.trees.items.len));
-                    for (0..this.lockfile.buffers.trees.items.len) |i| {
-                        trees[i] = .{
-                            .binaries = Bin.PriorityQueue.initContext(.{
-                                .dependencies = &this.lockfile.buffers.dependencies,
-                                .string_buf = &this.lockfile.buffers.string_bytes,
-                            }),
-                        };
-                    }
-                    break :trees trees;
-                },
+                .trees = trees,
                 .trusted_dependencies_from_update_requests = this.findTrustedDependenciesFromUpdateRequests(),
                 .seen_bin_links = bun.StringHashMap(void).init(this.allocator),
             };
         };
 
+        defer installer.deinit();
         try installer.node_modules.path.append(std.fs.path.sep);
 
-        defer installer.deinit();
-
-        while (iterator.next(&installer.completed_trees)) |node_modules| {
+        while (iterator.next()) |node_modules| {
             installer.node_modules.path.items.len = strings.withoutTrailingSlash(FileSystem.instance.top_level_dir).len + 1;
             try installer.node_modules.path.appendSlice(node_modules.relative_path);
             installer.node_modules.tree_id = node_modules.tree_id;
@@ -362,7 +303,7 @@ const Global = bun.Global;
 const Output = bun.Output;
 const Progress = bun.Progress;
 const strings = bun.strings;
-const Bitset = bun.bit_set.DynamicBitSetUnmanaged;
+const Bitset = std.bit_set.Dynamic;
 const Command = bun.cli.Command;
 const FileSystem = bun.fs.FileSystem;
 

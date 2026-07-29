@@ -487,7 +487,6 @@ pub const MultiArrayList = bun.collections.MultiArrayList;
 pub const BabyList = collections.BabyList;
 pub const ByteList = collections.ByteList; // alias of BabyList(u8)
 pub const OffsetByteList = collections.OffsetByteList;
-pub const bit_set = collections.bit_set;
 pub const HiveArray = collections.HiveArray;
 pub const BoundedArray = collections.BoundedArray;
 
