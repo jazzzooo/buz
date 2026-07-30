@@ -32,6 +32,7 @@ pub fn buildCommand(ctx: bun.cli.Command.Context) !void {
     const vm = try VirtualMachine.initBake(.{
         .allocator = arena.allocator(),
         .io = ctx.io,
+        .pinned_threads = bun.cli.Cli.pinnedThreads(),
         .log = ctx.log,
         .args = ctx.args,
         .smol = ctx.runtime_options.smol,

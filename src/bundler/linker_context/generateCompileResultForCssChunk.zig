@@ -1,7 +1,7 @@
-pub fn generateCompileResultForCssChunk(task: *ThreadPoolLib.Task) void {
+pub fn generateCompileResultForCssChunk(task: *ExecutorTypes.Task) void {
     const part_range: *const PendingPartRange = @fieldParentPtr("task", task);
     const ctx = part_range.ctx;
-    var worker = ThreadPool.Worker.get(@fieldParentPtr("linker", ctx.c));
+    var worker = Executor.Worker.get(@fieldParentPtr("linker", ctx.c));
     defer worker.unget();
 
     const prev_action = if (Environment.show_crash_trace) bun.crash_handler.current_action;
@@ -17,7 +17,7 @@ pub fn generateCompileResultForCssChunk(task: *ThreadPoolLib.Task) void {
     ctx.chunk.compile_results_for_chunk[part_range.i] = generateCompileResultForCssChunkImpl(worker, ctx.c, ctx.chunk, part_range.i);
 }
 
-fn generateCompileResultForCssChunkImpl(worker: *ThreadPool.Worker, c: *LinkerContext, chunk: *Chunk, imports_in_chunk_index: u32) CompileResult {
+fn generateCompileResultForCssChunkImpl(worker: *Executor.Worker, c: *LinkerContext, chunk: *Chunk, imports_in_chunk_index: u32) CompileResult {
     const trace = bun.perf.trace("Bundler.generateCodeForFileInChunkCss");
     defer trace.end();
 
@@ -154,7 +154,7 @@ fn generateCompileResultForCssChunkImpl(worker: *ThreadPool.Worker, c: *LinkerCo
 }
 
 pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
-pub const ThreadPool = bun.bundle_v2.ThreadPool;
+pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
 const std = @import("std");
@@ -163,7 +163,7 @@ const bun = @import("bun");
 const BabyList = bun.BabyList;
 const Environment = bun.Environment;
 const ImportRecord = bun.ImportRecord;
-const ThreadPoolLib = bun.ThreadPool;
+const ExecutorTypes = bun.bundle_v2.Executor;
 const options = bun.options;
 
 const js_ast = bun.ast;

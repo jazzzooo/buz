@@ -194,10 +194,6 @@ pub const Transpiler = struct {
         // hide elapsed time when loglevel is warn or error
         env_loader.quiet = !log.level.atLeast(.info);
 
-        // var pool = try allocator.create(ThreadPool);
-        // try pool.init(ThreadPool.InitConfig{
-        //     .allocator = allocator,
-        // });
         const resolve_results = try allocator.create(ResolveResults);
         resolve_results.* = ResolveResults.init(allocator);
         return Transpiler{
@@ -208,7 +204,6 @@ pub const Transpiler = struct {
             .timer = SystemTimer.start() catch @panic("Timer fail"),
             .resolver = Resolver.init1(allocator, io, log, fs, bundle_options),
             .log = log,
-            // .thread_pool = pool,
             .linker = undefined,
             .result = options.TransformResult{ .outbase = bundle_options.output_dir },
             .resolve_results = resolve_results,

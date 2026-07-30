@@ -78,7 +78,7 @@ const Bits = struct {
 /// string + one byte"; we store `(prefix, suffix)` and reconstruct each string
 /// by walking `prefix` back to a root code (< clear). 4096 codes is the GIF
 /// hard cap (12-bit codes), so the table is fixed-size — heap-allocated in
-/// `decodeFrame` (12 KiB) to keep WorkPool stacks small.
+/// `decodeFrame` (12 KiB) to keep BackgroundWork stacks small.
 const Dict = struct {
     prefix: [4096]u16,
     suffix: [4096]u8,
@@ -139,7 +139,7 @@ pub fn decode(bytes: []const u8, max_pixels: u64) codecs.Error!codecs.Decoded {
                 // Skip sub-blocks regardless of label. Widen `n` first — a
                 // legal max-size 255-byte sub-block (XMP/ICC application
                 // extensions emit these) would overflow `1 + u8` and either
-                // panic or spin a WorkPool thread forever.
+                // panic or spin a BackgroundWork thread forever.
                 while (i < bytes.len) {
                     const n: usize = bytes[i];
                     i += 1 + n;

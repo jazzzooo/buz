@@ -13,12 +13,11 @@ const log = Output.scoped(.watcher, .visible);
 // as much as possible, then process the buffer in `max_count` chunks, since
 // `bun.Watcher` has the same hardcoded `max_count`.
 const eventlist_bytes_size = (Event.largest_size / 2) * max_count;
-const EventListBytes = [eventlist_bytes_size]u8;
 fd: bun.FD = bun.invalid_fd,
 loaded: bool = false,
 
 // Avoid statically allocating because it increases the binary size.
-eventlist_bytes: *EventListBytes align(@alignOf(Event)) = undefined,
+eventlist_bytes: []align(@alignOf(Event)) u8 = undefined,
 /// pointers into the next chunk of events
 eventlist_ptrs: [max_count]*align(1) Event = undefined,
 /// if defined, it means `read` should continue from this offset before asking
@@ -29,7 +28,6 @@ read_ptr: ?struct {
     len: u32,
 } = null,
 
-watch_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 /// nanoseconds
 coalesce_interval: isize = 100_000,
 
@@ -64,8 +62,6 @@ pub const Event = extern struct {
 
 pub fn watchPath(this: *INotifyWatcher, pathname: [:0]const u8) bun.sys.Maybe(EventListIndex) {
     bun.assert(this.loaded);
-    const old_count = this.watch_count.fetchAdd(1, .release);
-    defer if (old_count == 0) Futex.wake(&this.watch_count, 10);
     const watch_file_mask = IN.EXCL_UNLINK | IN.MOVE_SELF | IN.DELETE_SELF | IN.MOVED_TO | IN.MODIFY;
     const rc = system.inotify_add_watch(this.fd.cast(), pathname, watch_file_mask);
     log("inotify_add_watch({f}) = {}", .{ this.fd, rc });
@@ -75,8 +71,6 @@ pub fn watchPath(this: *INotifyWatcher, pathname: [:0]const u8) bun.sys.Maybe(Ev
 
 pub fn watchDir(this: *INotifyWatcher, pathname: [:0]const u8) bun.sys.Maybe(EventListIndex) {
     bun.assert(this.loaded);
-    const old_count = this.watch_count.fetchAdd(1, .release);
-    defer if (old_count == 0) Futex.wake(&this.watch_count, 10);
     const watch_dir_mask = IN.EXCL_UNLINK | IN.DELETE | IN.DELETE_SELF | IN.CREATE | IN.MOVE_SELF | IN.ONLYDIR | IN.MOVED_TO | IN.MODIFY;
     const rc = system.inotify_add_watch(this.fd.cast(), pathname, watch_dir_mask);
     log("inotify_add_watch({f}) = {}", .{ this.fd, rc });
@@ -86,24 +80,27 @@ pub fn watchDir(this: *INotifyWatcher, pathname: [:0]const u8) bun.sys.Maybe(Eve
 
 pub fn unwatch(this: *INotifyWatcher, wd: EventListIndex) void {
     bun.assert(this.loaded);
-    _ = this.watch_count.fetchSub(1, .release);
     _ = system.inotify_rm_watch(this.fd, wd);
 }
 
 pub fn init(this: *INotifyWatcher, _: []const u8) !void {
     bun.assert(!this.loaded);
-    this.loaded = true;
 
     this.coalesce_interval = std.math.cast(isize, bun.env_var.BUN_INOTIFY_COALESCE_INTERVAL.get()) orelse 100_000;
 
     const rc = bun.sys.syscall.inotify_init1(IN.CLOEXEC);
     if (bun.sys.Maybe(void).errnoSys(rc, .watch)) |err| return err.err.toZigErr();
     this.fd = .fromNative(@intCast(rc));
-    this.eventlist_bytes = &(try bun.default_allocator.alignedAlloc(EventListBytes, .of(Event), 1))[0];
+    errdefer {
+        this.fd.close();
+        this.fd = bun.invalid_fd;
+    }
+    this.eventlist_bytes = try bun.default_allocator.alignedAlloc(u8, .of(Event), eventlist_bytes_size);
+    this.loaded = true;
     log("{f} init", .{this.fd});
 }
 
-pub fn read(this: *INotifyWatcher) bun.sys.Maybe([]const *align(1) Event) {
+pub fn read(this: *INotifyWatcher, io: std.Io) std.Io.Cancelable!bun.sys.Maybe([]const *align(1) Event) {
     bun.assert(this.loaded);
     // This is what replit does as of Jaunary 2023.
     // 1) CREATE .http.ts.3491171321~
@@ -116,73 +113,41 @@ pub fn read(this: *INotifyWatcher) bun.sys.Maybe([]const *align(1) Event) {
     // We still don't correctly handle MOVED_FROM && MOVED_TO it seems.
     var i: u32 = 0;
     const read_eventlist_bytes = if (this.read_ptr) |ptr| brk: {
-        Futex.waitForever(&this.watch_count, 0);
         i = ptr.i;
         break :brk this.eventlist_bytes[0..ptr.len];
     } else outer: while (true) {
-        Futex.waitForever(&this.watch_count, 0);
+        const read_count = this.fd.stdFile().readStreaming(io, &.{this.eventlist_bytes}) catch |err| switch (err) {
+            error.Canceled => return error.Canceled,
+            else => return .{ .err = readError(err) },
+        };
+        var read_eventlist_bytes = this.eventlist_bytes[0..read_count];
+        log("{f} read {} bytes", .{ this.fd, read_eventlist_bytes.len });
 
-        const rc = std.posix.system.read(
-            this.fd.cast(),
-            this.eventlist_bytes,
-            this.eventlist_bytes.len,
-        );
-        const errno = std.posix.errno(rc);
-        switch (errno) {
-            .SUCCESS => {
-                var read_eventlist_bytes = this.eventlist_bytes[0..@intCast(rc)];
-                log("{f} read {} bytes", .{ this.fd, read_eventlist_bytes.len });
-                if (read_eventlist_bytes.len == 0) return .{ .result = &.{} };
+        const double_read_threshold = Event.largest_size * (max_count / 2);
+        if (read_eventlist_bytes.len < double_read_threshold and this.coalesce_interval > 0) {
+            try io.sleep(.fromNanoseconds(this.coalesce_interval), .awake);
 
-                // IN_MODIFY is very noisy
-                // we do a 0.1ms sleep to try to coalesce events better
-                const double_read_threshold = Event.largest_size * (max_count / 2);
-                if (read_eventlist_bytes.len < double_read_threshold) {
-                    var fds = [_]std.posix.pollfd{.{
-                        .fd = this.fd.cast(),
-                        .events = std.posix.POLL.IN | std.posix.POLL.ERR,
-                        .revents = 0,
-                    }};
-                    var timespec = std.posix.timespec{ .sec = 0, .nsec = this.coalesce_interval };
-                    if ((std.posix.ppoll(&fds, &timespec, null) catch 0) > 0) {
-                        inner: while (true) {
-                            const rest = this.eventlist_bytes[read_eventlist_bytes.len..];
-                            bun.assert(rest.len > 0);
-                            const new_rc = std.posix.system.read(this.fd.cast(), rest.ptr, rest.len);
-                            // Output.warn("wapa {} {} = {}", .{ this.fd, rest.len, new_rc });
-                            const e = std.posix.errno(new_rc);
-                            switch (e) {
-                                .SUCCESS => {
-                                    read_eventlist_bytes.len += @intCast(new_rc);
-                                    break :outer read_eventlist_bytes;
-                                },
-                                .AGAIN, .INTR => continue :inner,
-                                else => return .{ .err = .{
-                                    .errno = @truncate(@backingInt(e)),
-                                    .syscall = .read,
-                                } },
-                            }
-                        }
-                    }
-                }
+            var available: c_int = 0;
+            const ioctl_result = (try io.operate(.{ .device_io_control = .{
+                .file = this.fd.stdFile(),
+                .code = std.os.linux.T.FIONREAD,
+                .arg = &available,
+            } })).device_io_control;
+            if (ioctl_result < 0) {
+                return .{ .err = bun.sys.Error.fromCodeInt(-ioctl_result, .read) };
+            }
 
-                break :outer read_eventlist_bytes;
-            },
-            .AGAIN, .INTR => continue :outer,
-            .INVAL => {
-                if (Environment.isDebug) {
-                    bun.Output.err("EINVAL", "inotify read({f}, {d})", .{ this.fd, this.eventlist_bytes.len });
-                }
-                return .{ .err = .{
-                    .errno = @truncate(@backingInt(errno)),
-                    .syscall = .read,
-                } };
-            },
-            else => return .{ .err = .{
-                .errno = @truncate(@backingInt(errno)),
-                .syscall = .read,
-            } },
+            if (available > 0) {
+                const rest = this.eventlist_bytes[read_eventlist_bytes.len..];
+                bun.assert(rest.len > 0);
+                const extra_count = this.fd.stdFile().readStreaming(io, &.{rest}) catch |err| switch (err) {
+                    error.Canceled => return error.Canceled,
+                    else => return .{ .err = readError(err) },
+                };
+                read_eventlist_bytes.len += extra_count;
+            }
         }
+        break :outer read_eventlist_bytes;
     };
 
     var count: u32 = 0;
@@ -225,11 +190,21 @@ pub fn stop(this: *INotifyWatcher) void {
     }
 }
 
+pub fn requestStop(_: *INotifyWatcher) void {}
+
+pub fn deinit(this: *INotifyWatcher) void {
+    this.stop();
+    if (this.loaded) {
+        bun.default_allocator.free(this.eventlist_bytes);
+        this.loaded = false;
+    }
+}
+
 /// Repeatedly called by the main watcher until the watcher is terminated.
-pub fn watchLoopCycle(this: *bun.Watcher) bun.sys.Maybe(void) {
+pub fn watchLoopCycle(this: *bun.Watcher) std.Io.Cancelable!bun.sys.Maybe(void) {
     defer Output.flush();
 
-    const events = switch (this.platform.read()) {
+    const events = switch (try this.platform.read(this.io)) {
         .result => |result| result,
         .err => |err| return .{ .err = err },
     };
@@ -348,15 +323,29 @@ fn processINotifyEventBatch(this: *bun.Watcher, event_count: usize, temp_name_li
     }
     if (all_events.len == 0) return .success;
 
-    this.mutex.lockUncancelable(this.fs.io);
-    defer this.mutex.unlock(this.fs.io);
-    if (this.running) {
+    this.mutex.lockUncancelable(this.io);
+    defer this.mutex.unlock(this.io);
+    if (this.running.load(.acquire)) {
         // all_events.len == 0 is checked above, so last_event_index + 1 is safe
         this.writeTraceEvents(all_events[0 .. last_event_index + 1], this.changed_filepaths[0..name_off]);
         this.onFileUpdate(this.ctx, all_events[0 .. last_event_index + 1], this.changed_filepaths[0..name_off], this.watchlist);
     }
 
     return .success;
+}
+
+fn readError(err: std.Io.File.ReadStreamingError) bun.sys.Error {
+    return bun.sys.Error.fromCode(switch (err) {
+        error.InputOutput, error.LockViolation, error.Unexpected, error.EndOfStream => .IO,
+        error.SystemResources => .NOMEM,
+        error.IsDir => .ISDIR,
+        error.ConnectionResetByPeer => .CONNRESET,
+        error.NotOpenForReading => .BADF,
+        error.SocketUnconnected => .NOTCONN,
+        error.WouldBlock => .AGAIN,
+        error.AccessDenied => .ACCES,
+        error.Canceled => unreachable,
+    }, .read);
 }
 
 pub fn watchEventFromInotifyEvent(event: *align(1) const INotifyWatcher.Event, index: WatchItemIndex) WatchEvent {
@@ -378,7 +367,6 @@ const IN = std.os.linux.IN;
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const Futex = bun.Futex;
 const Output = bun.Output;
 
 const WatchEvent = bun.Watcher.Event;

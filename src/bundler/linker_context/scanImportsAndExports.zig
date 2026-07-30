@@ -1,4 +1,4 @@
-pub const ScanImportsAndExportsError = bun.OOM || error{ImportResolutionFailed};
+pub const ScanImportsAndExportsError = bun.OOM || error{ Canceled, ImportResolutionFailed };
 
 pub fn scanImportsAndExports(this: *LinkerContext) ScanImportsAndExportsError!void {
     const outer_trace = bun.perf.trace("Bundler.scanImportsAndExports");
@@ -368,8 +368,7 @@ pub fn scanImportsAndExports(this: *LinkerContext) ScanImportsAndExportsError!vo
         // for CommonJS files, and is also necessary for other files if they are
         // imported using an import star statement.
         // Note: `do` will wait for all to finish before moving forward
-        try this.parse_graph.pool.worker_pool.each(
-            this.allocator(),
+        try this.parse_graph.pool.each(
             this,
             LinkerContext.doStep5,
             this.graph.reachable_files,

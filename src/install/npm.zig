@@ -1180,10 +1180,10 @@ pub const PackageManifest = struct {
                 tmpdir: std.Io.Dir,
                 cache_dir: std.Io.Dir,
 
-                task: bun.ThreadPool.Task = .{ .callback = &run },
+                task: bun.BackgroundTaskGroup.Task = .{ .callback = &run },
                 pub const new = bun.TrivialNew(@This());
 
-                pub fn run(task: *bun.ThreadPool.Task) void {
+                pub fn run(task: *bun.BackgroundTaskGroup.Task) void {
                     const tracer = bun.perf.trace("PackageManifest.Serializer.save");
                     defer tracer.end();
 
@@ -1207,8 +1207,14 @@ pub const PackageManifest = struct {
                 .cache_dir = cache_dir,
             });
 
-            const batch = bun.ThreadPool.Batch.from(&task.task);
-            manager.thread_pool.schedule(batch);
+            const batch = bun.BackgroundTaskGroup.Batch.from(&task.task);
+            manager.background_tasks.schedule(batch) catch |err| {
+                if (PackageManager.verbose_install) {
+                    Output.warn("Error scheduling manifest cache write for {s}: {s}", .{ task.manifest.name(), @errorName(err) });
+                    Output.flush();
+                }
+                bun.destroy(task);
+            };
         }
 
         fn manifestFileName(buf: []u8, file_id: u64, scope: *const Registry.Scope) ![:0]const u8 {

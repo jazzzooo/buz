@@ -17,16 +17,16 @@
 ///    a <link rel="modulepreload" href="..." crossorigin> tag that
 ///    points to the module or chunk's unique key so that we tell the
 ///    browser to preload the user's code.
-pub fn generateCompileResultForHtmlChunk(task: *ThreadPoolLib.Task) void {
+pub fn generateCompileResultForHtmlChunk(task: *ExecutorTypes.Task) void {
     const part_range: *const PendingPartRange = @fieldParentPtr("task", task);
     const ctx = part_range.ctx;
-    var worker = ThreadPool.Worker.get(@fieldParentPtr("linker", ctx.c));
+    var worker = Executor.Worker.get(@fieldParentPtr("linker", ctx.c));
     defer worker.unget();
 
     ctx.chunk.compile_results_for_chunk[part_range.i] = generateCompileResultForHTMLChunkImpl(worker, ctx.c, ctx.chunk, ctx.chunks);
 }
 
-fn generateCompileResultForHTMLChunkImpl(worker: *ThreadPool.Worker, c: *LinkerContext, chunk: *Chunk, chunks: []Chunk) CompileResult {
+fn generateCompileResultForHTMLChunkImpl(worker: *Executor.Worker, c: *LinkerContext, chunk: *Chunk, chunks: []Chunk) CompileResult {
     const parse_graph = c.parse_graph;
     const input_files = parse_graph.input_files.slice();
     const sources = input_files.items(.source);
@@ -319,7 +319,7 @@ fn generateCompileResultForHTMLChunkImpl(worker: *ThreadPool.Worker, c: *LinkerC
 }
 
 pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
-pub const ThreadPool = bun.bundle_v2.ThreadPool;
+pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
 const std = @import("std");
@@ -331,7 +331,7 @@ const ImportRecord = bun.ImportRecord;
 const Loader = bun.Loader;
 const Logger = bun.logger;
 const Output = bun.Output;
-const ThreadPoolLib = bun.ThreadPool;
+const ExecutorTypes = bun.bundle_v2.Executor;
 const default_allocator = bun.default_allocator;
 const lol = bun.LOLHTML;
 const strings = bun.strings;

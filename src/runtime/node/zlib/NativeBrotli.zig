@@ -27,7 +27,7 @@ write_in_progress: bool = false,
 pending_close: bool = false,
 pending_reset: bool = false,
 closed: bool = false,
-task: jsc.WorkPoolTask = .{ .callback = undefined },
+task: jsc.BackgroundTask = .{ .callback = undefined },
 
 pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!*@This() {
     const arguments = callframe.argumentsUndef(1).ptr;

@@ -61,8 +61,8 @@ const string = []const u8;
 pub const Arena = std.heap.ArenaAllocator;
 pub const Braces = @import("../shell_parser/braces.zig");
 pub const Syscall = bun.sys;
-pub const WorkPoolTask = jsc.WorkPoolTask;
-pub const WorkPool = jsc.WorkPool;
+pub const BackgroundTask = jsc.BackgroundTask;
+pub const BackgroundWork = jsc.BackgroundWork;
 
 pub const Pipe = [2]bun.FD;
 pub const SmolList = shell.SmolList;
@@ -233,7 +233,7 @@ pub const Interpreter = struct {
     pub const fromJS = js.fromJS;
     pub const fromJSDirect = js.fromJSDirect;
 
-    command_ctx: bun.cli.Command.Context,
+    command_ctx: ?bun.cli.Command.Context,
     event_loop: jsc.EventLoopHandle,
     /// This is the allocator used to allocate interpreter state
     allocator: Allocator,
@@ -752,7 +752,7 @@ pub const Interpreter = struct {
         defer if (cwd_string) |c| c.deinit();
 
         const interpreter: *Interpreter = switch (ThisInterpreter.init(
-            undefined, // command_ctx, unused when event_loop is .js
+            null,
             .{ .js = globalThis.bunVM().event_loop },
             allocator,
             shargs,
@@ -845,7 +845,7 @@ pub const Interpreter = struct {
     /// If all initialization allocations succeed, the arena will be copied
     /// into the interpreter struct, so it is not a stale reference and safe to call `arena.deinit()` on error.
     pub fn init(
-        ctx: bun.cli.Command.Context,
+        ctx: ?bun.cli.Command.Context,
         event_loop: jsc.EventLoopHandle,
         allocator: Allocator,
         shargs: *ShellArgs,
@@ -881,7 +881,7 @@ pub const Interpreter = struct {
 
     fn initImpl(
         sys: *Catch,
-        ctx: bun.cli.Command.Context,
+        ctx: ?bun.cli.Command.Context,
         event_loop: jsc.EventLoopHandle,
         allocator: Allocator,
         shargs: *ShellArgs,
@@ -969,7 +969,7 @@ pub const Interpreter = struct {
             },
 
             .vm_args_utf8 = std.array_list.Managed(jsc.ZigString.Slice).init(bun.default_allocator),
-            .__alloc_scope = if (bun.Environment.enableAllocScopes) bun.AllocationScope.init(ctx.io, allocator) else {},
+            .__alloc_scope = if (bun.Environment.enableAllocScopes) bun.AllocationScope.init(event_loop.io(), allocator) else {},
             .globalThis = undefined,
         };
 
@@ -1661,14 +1661,14 @@ pub fn ShellTask(
     /// Function to be called when the thread pool starts the task, this could
     /// be on anyone of the thread pool threads so be mindful of concurrency
     /// nuances
-    comptime runFromThreadPool_: fn (*Ctx) void,
+    comptime runInBackground_: fn (*Ctx) void,
     /// Function that is called on the main thread, once the event loop
     /// processes that the task is done
     comptime runFromMainThread_: fn (*Ctx) void,
     comptime debug: bun.Output.LogFunction,
 ) type {
     return struct {
-        task: WorkPoolTask = .{ .callback = &runFromThreadPool },
+        task: BackgroundTask = .{ .callback = &runInBackground },
         event_loop: jsc.EventLoopHandle,
         // This is a poll because we want it to enter the uSockets loop
         ref: bun.Async.KeepAlive = .{},
@@ -1680,7 +1680,11 @@ pub fn ShellTask(
             debug("schedule", .{});
 
             this.ref.ref(this.event_loop);
-            WorkPool.schedule(&this.task);
+            BackgroundWork.schedule(this.event_loop.backgroundTasks(), &this.task) catch |err| {
+                const ctx: *Ctx = @fieldParentPtr("task", this);
+                ctx.onScheduleError(err);
+                this.onFinish();
+            };
         }
 
         pub fn onFinish(this: *@This()) void {
@@ -1694,11 +1698,11 @@ pub fn ShellTask(
             }
         }
 
-        pub fn runFromThreadPool(task: *WorkPoolTask) void {
-            debug("runFromThreadPool", .{});
+        pub fn runInBackground(task: *BackgroundTask) void {
+            debug("runInBackground", .{});
             var this: *@This() = @fieldParentPtr("task", task);
             const ctx: *Ctx = @fieldParentPtr("task", this);
-            runFromThreadPool_(ctx);
+            runInBackground_(ctx);
             this.onFinish();
         }
 

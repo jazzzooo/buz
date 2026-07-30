@@ -95,6 +95,7 @@ pub const JSErrorCode = @import("./JSErrorCode.zig").JSErrorCode;
 pub const ZigErrorType = @import("./ZigErrorType.zig").ZigErrorType;
 pub const Debugger = @import("./Debugger.zig");
 pub const SavedSourceMap = @import("./SavedSourceMap.zig");
+pub const PinnedThreadDomain = @import("./PinnedThreadDomain.zig");
 pub const VirtualMachine = @import("./VirtualMachine.zig");
 pub const ModuleLoader = @import("./ModuleLoader.zig");
 pub const RareData = @import("./rare_data.zig");
@@ -149,8 +150,8 @@ pub const PlatformEventLoop = if (bun.Environment.isPosix) bun.uws.Loop else bun
 pub const PosixSignalHandle = EventLoop.PosixSignalHandle;
 pub const PosixSignalTask = EventLoop.PosixSignalTask;
 pub const Task = EventLoop.Task;
-pub const WorkPool = EventLoop.WorkPool;
-pub const WorkPoolTask = EventLoop.WorkPoolTask;
+pub const BackgroundWork = EventLoop.BackgroundWork;
+pub const BackgroundTask = EventLoop.BackgroundTask;
 pub const WorkTask = EventLoop.WorkTask;
 
 /// Deprecated: Avoid using this in new code.

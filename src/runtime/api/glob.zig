@@ -155,6 +155,11 @@ pub const WalkTask = struct {
         }
     }
 
+    pub fn onScheduleError(this: *WalkTask, err: anyerror) void {
+        decrPendingActivityFlag(this.has_pending_activity);
+        this.err = .{ .unknown = err };
+    }
+
     pub fn then(this: *WalkTask, promise: *jsc.JSPromise) bun.JSTerminated!void {
         defer this.deinit();
 

@@ -692,7 +692,7 @@ fn expandVarArgv(this: *const Expansion, original_int: u8) []const u8 {
             return argv[int];
         },
         .mini => {
-            const ctx = this.base.interpreter.command_ctx;
+            const ctx = this.base.interpreter.command_ctx.?;
             if (int >= 1 + ctx.passthrough.len) return "";
             if (int == 0) return ctx.positionals[ctx.positionals.len - 1 - int];
             return ctx.passthrough[int - 1];
@@ -759,7 +759,7 @@ fn outEnsureUnusedCapacity(this: *Expansion, additional: usize) void {
 pub const ShellGlobTask = struct {
     const debug = bun.Output.scoped(.ShellGlobTask, .hidden);
 
-    task: WorkPoolTask = .{ .callback = &runFromThreadPool },
+    task: BackgroundTask = .{ .callback = &runInBackground },
 
     /// Not owned by this struct
     expansion: *Expansion,
@@ -790,7 +790,7 @@ pub const ShellGlobTask = struct {
 
     pub fn createOnMainThread(walker: *GlobWalker, expansion: *Expansion) *This {
         debug("createOnMainThread", .{});
-        var alloc_scope = bun.AllocationScope.init(expansion.base.interpreter.command_ctx.io, bun.default_allocator);
+        var alloc_scope = bun.AllocationScope.init(expansion.base.interpreter.event_loop.io(), bun.default_allocator);
         var this = bun.handleOom(alloc_scope.allocator().create(This));
         this.* = .{
             .alloc_scope = alloc_scope,
@@ -806,8 +806,8 @@ pub const ShellGlobTask = struct {
         return this;
     }
 
-    pub fn runFromThreadPool(task: *WorkPoolTask) void {
-        debug("runFromThreadPool", .{});
+    pub fn runInBackground(task: *BackgroundTask) void {
+        debug("runInBackground", .{});
         var this: *This = @fieldParentPtr("task", task);
         switch (this.walkImpl()) {
             .result => {},
@@ -850,7 +850,10 @@ pub const ShellGlobTask = struct {
 
     pub fn schedule(this: *This) void {
         debug("schedule", .{});
-        WorkPool.schedule(&this.task);
+        BackgroundWork.schedule(this.event_loop.backgroundTasks(), &this.task) catch |err| {
+            this.err = .{ .unknown = err };
+            this.onFinish();
+        };
     }
 
     pub fn onFinish(this: *This) void {
@@ -903,6 +906,6 @@ const GlobWalker = bun.shell.interpret.GlobWalker;
 const OOM = bun.shell.interpret.OOM;
 const StatePtrUnion = bun.shell.interpret.StatePtrUnion;
 const Syscall = bun.shell.interpret.Syscall;
-const WorkPool = bun.shell.interpret.WorkPool;
-const WorkPoolTask = bun.shell.interpret.WorkPoolTask;
+const BackgroundWork = bun.shell.interpret.BackgroundWork;
+const BackgroundTask = bun.shell.interpret.BackgroundTask;
 const log = bun.shell.interpret.log;

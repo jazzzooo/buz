@@ -9,7 +9,7 @@ pub const WriteFile = struct {
     opened_fd: bun.FD = invalid_fd,
     system_error: ?jsc.SystemError = null,
     errno: ?anyerror = null,
-    task: bun.ThreadPool.Task = undefined,
+    task: bun.BackgroundTaskGroup.Task = undefined,
     io_task: ?*WriteFileTask = null,
     io_poll: bun.io.Poll = .{},
     io_request: bun.io.Request = .{ .callback = &onRequestWritable },
@@ -38,7 +38,7 @@ pub const WriteFile = struct {
     pub fn onReady(this: *WriteFile) void {
         bloblog("WriteFile.onReady()", .{});
         this.task = .{ .callback = &doWriteLoopTask };
-        jsc.WorkPool.schedule(&this.task);
+        jsc.BackgroundWork.scheduleContinuation(&this.io_task.?.event_loop.virtual_machine.background_tasks, &this.task);
     }
 
     pub fn onIOError(this: *WriteFile, err: bun.sys.Error) void {
@@ -46,7 +46,7 @@ pub const WriteFile = struct {
         this.errno = bun.errnoToZigErr(err.errno);
         this.system_error = err.toSystemError();
         this.task = .{ .callback = &doWriteLoopTask };
-        jsc.WorkPool.schedule(&this.task);
+        jsc.BackgroundWork.scheduleContinuation(&this.io_task.?.event_loop.virtual_machine.background_tasks, &this.task);
     }
 
     pub fn onRequestWritable(request: *io.Request) io.Action {
@@ -187,6 +187,14 @@ pub const WriteFile = struct {
         this.runAsync();
     }
 
+    pub fn onScheduleError(this: *WriteFile, err: anyerror) void {
+        this.system_error = .{
+            .code = bun.String.static("ERR_CONCURRENCY_UNAVAILABLE"),
+            .message = bun.String.static(@errorName(err)),
+            .syscall = bun.String.static("write"),
+        };
+    }
+
     fn runAsync(this: *WriteFile) void {
         this.getFd(runWithFD);
     }
@@ -278,7 +286,7 @@ pub const WriteFile = struct {
         this.doWriteLoop();
     }
 
-    fn doWriteLoopTask(task: *jsc.WorkPoolTask) void {
+    fn doWriteLoopTask(task: *jsc.BackgroundTask) void {
         var this: *WriteFile = @fieldParentPtr("task", task);
         // On macOS, we use one-shot mode, so we don't need to unregister.
         if (comptime Environment.isMac) {
@@ -489,7 +497,7 @@ pub const WriteFileWindows = struct {
             .completion = @ptrCast(&onMkdirpCompleteConcurrent),
             .completion_ctx = this,
             .path = parent,
-        }).schedule();
+        }).schedule(&this.event_loop.virtual_machine.background_tasks);
     }
 
     fn onMkdirpComplete(this: *WriteFileWindows) void {

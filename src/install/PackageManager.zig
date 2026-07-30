@@ -42,8 +42,8 @@ root_package_id: struct {
     }
 } = .{},
 
-thread_pool: ThreadPool,
-task_batch: ThreadPool.Batch = .{},
+background_tasks: BackgroundTaskGroup,
+task_batch: BackgroundTaskGroup.Batch = .{},
 task_queue: TaskDependencyQueue = .{},
 
 manifests: PackageManifestMap = .{},
@@ -52,11 +52,11 @@ git_repositories: RepositoryMap = .{},
 
 network_dedupe_map: NetworkTask.DedupeMap = .init(bun.default_allocator),
 async_network_task_queue: AsyncNetworkTaskQueue = .{},
-network_tarball_batch: ThreadPool.Batch = .{},
-network_resolve_batch: ThreadPool.Batch = .{},
+network_tarball_batch: BackgroundTaskGroup.Batch = .{},
+network_resolve_batch: BackgroundTaskGroup.Batch = .{},
 network_task_fifo: NetworkQueue = undefined,
-patch_apply_batch: ThreadPool.Batch = .{},
-patch_calc_hash_batch: ThreadPool.Batch = .{},
+patch_apply_batch: BackgroundTaskGroup.Batch = .{},
+patch_calc_hash_batch: BackgroundTaskGroup.Batch = .{},
 patch_task_fifo: PatchTaskFifo = PatchTaskFifo.init(),
 patch_task_queue: PatchTaskQueue = .{},
 /// We actually need to calculate the patch file hashes
@@ -846,16 +846,17 @@ pub fn init(
         .root_dir = root_dir,
         .env = env,
         .cpu_count = cpu_count,
-        .thread_pool = ThreadPool.init(.{
-            .io = ctx.io,
-            .max_threads = cpu_count,
-        }),
+        .background_tasks = .init(bun.cli.Cli.pinnedThreads().backgroundExecutor()),
         .resolve_tasks = .{},
         .lockfile = undefined,
         .root_package_json_file = root_package_json_file,
         // .progress
         .event_loop = .{
-            .mini = jsc.MiniEventLoop.init(ctx.io, bun.default_allocator),
+            .mini = jsc.MiniEventLoop.init(
+                ctx.io,
+                bun.default_allocator,
+                bun.cli.Cli.pinnedThreads().backgroundExecutor(),
+            ),
         },
         .io = ctx.io,
         .original_package_json_path = original_package_json_path,
@@ -864,6 +865,8 @@ pub fn init(
         .subcommand = subcommand,
         .root_package_json_name_at_time_of_init = root_package_json_name_at_time_of_init,
     };
+    errdefer manager.background_tasks.deinit();
+    manager.event_loop.mini.attachBackgroundTasks(&manager.background_tasks);
     manager.event_loop.loop().internal_loop_data.setParentEventLoop(bun.jsc.EventLoopHandle.init(&manager.event_loop));
     manager.lockfile = try ctx.allocator.create(Lockfile);
 
@@ -1012,10 +1015,7 @@ pub fn initWithRuntime(
         .root_dir = root_dir,
         .env = env,
         .cpu_count = cpu_count,
-        .thread_pool = ThreadPool.init(.{
-            .io = io,
-            .max_threads = cpu_count,
-        }),
+        .background_tasks = .init(bun.cli.Cli.pinnedThreads().backgroundExecutor()),
         .lockfile = undefined,
         .root_package_json_file = undefined,
         .event_loop = .{
@@ -1024,6 +1024,7 @@ pub fn initWithRuntime(
         .original_package_json_path = original_package_json_path[0..original_package_json_path.len :0],
         .subcommand = .install,
     };
+    errdefer manager.background_tasks.deinit();
     manager.lockfile = bun.handleOom(allocator.create(Lockfile));
 
     if (Output.enable_ansi_colors_stderr) {
@@ -1254,7 +1255,7 @@ const Output = bun.Output;
 const Path = bun.path;
 const Progress = bun.Progress;
 const RunCommand = bun.RunCommand;
-const ThreadPool = bun.ThreadPool;
+const BackgroundTaskGroup = bun.BackgroundTaskGroup;
 const URL = bun.URL;
 const default_allocator = bun.default_allocator;
 const jsc = bun.jsc;

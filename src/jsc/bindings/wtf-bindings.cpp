@@ -5,6 +5,7 @@
 #include <wtf/StackTrace.h>
 #include <wtf/dtoa.h>
 #include <wtf/NumberOfCores.h>
+#include <wtf/RunLoop.h>
 #include <atomic>
 #include <cassert>
 
@@ -287,6 +288,12 @@ extern "C" int WTF__numberOfProcessorCores()
 
 extern "C" void WTF__releaseFastMallocFreeMemoryForThisThread()
 {
+    WTF::releaseFastMallocFreeMemoryForThisThread();
+}
+
+extern "C" void WTF__prepareForThreadExit()
+{
+    WTF::RunLoop::currentSingleton().threadWillExit();
     WTF::releaseFastMallocFreeMemoryForThisThread();
 }
 

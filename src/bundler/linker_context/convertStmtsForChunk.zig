@@ -528,7 +528,7 @@ pub fn convertStmtsForChunk(
 }
 
 pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
-pub const ThreadPool = bun.bundle_v2.ThreadPool;
+pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
 const std = @import("std");

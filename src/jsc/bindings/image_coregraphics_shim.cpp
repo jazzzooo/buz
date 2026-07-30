@@ -54,7 +54,7 @@ struct VFmt {
 // over an offset/name table. Ordering doesn't matter.
 struct Syms {
     // libobjc — ImageIO/vImage internally autorelease CF/NS objects; on a
-    // WorkPool thread there is no enclosing pool, so without an explicit one
+    // BackgroundWork thread there is no enclosing pool, so without an explicit one
     // every call leaks a few KB into the thread's never-drained top-level pool.
     void* (*objc_autoreleasePoolPush)();
     void (*objc_autoreleasePoolPop)(void*);
@@ -145,7 +145,7 @@ constexpr struct {
 };
 #undef SYM
 
-// Called from WorkPool threads. Function-local static init is thread-safe in
+// Called from BackgroundWork threads. Function-local static init is thread-safe in
 // C++11 (Itanium/MSVC ABI both guarantee it), so the dlopen/dlsym pass runs
 // exactly once with proper happens-before for the populated table.
 const Syms* load()
@@ -190,7 +190,7 @@ constexpr uint32_t kBunVImageDoNotTile = 16;
 constexpr uint32_t kBunVImageNoAllocate = 512;
 
 // RAII pool so every early-return drains. Declared first in each entry point —
-// the framework calls beneath autorelease into it, and the WorkPool thread has
+// the framework calls beneath autorelease into it, and the BackgroundWork thread has
 // no enclosing pool of its own.
 struct Pool {
     const Syms* s;
@@ -298,7 +298,7 @@ int32_t bun_coregraphics_decode(const uint8_t* bytes, size_t len, uint64_t max_p
         return CG_OK; // dimensions-only probe
     }
     // TOCTOU guard: the input is a borrowed-but-mutable JS slice and this runs
-    // on a WorkPool thread, so JS could rewrite it with a *larger* image
+    // on a BackgroundWork thread, so JS could rewrite it with a *larger* image
     // between the size probe and this render. The caller's `out` is sized for
     // *out_w × *out_h from phase 1; refuse to draw past it.
     if (w != *out_w || h != *out_h) return CG_DECODE_FAILED;
@@ -333,7 +333,7 @@ int32_t bun_coregraphics_encode(const uint8_t* rgba, uint32_t width, uint32_t he
     if (!s) return CG_UNAVAILABLE;
     Pool pool(s);
     // Thread-local pending result so the size-probe and the copy-out share one
-    // encode. Safe: each WorkPool thread runs at most one PipelineTask at a
+    // encode. Safe: each BackgroundWork thread runs at most one PipelineTask at a
     // time, and the two calls are back-to-back in codecs.zig.
     thread_local CFRef pending = nullptr;
     if (out && pending) {
@@ -430,7 +430,7 @@ int32_t bun_coregraphics_encode(const uint8_t* rgba, uint32_t width, uint32_t he
 // channel-order agnostic for 4×u8, so RGBA works without a permute. They run
 // on Apple's AMX units on M-series — typically 2-4× the Highway path — and we
 // already have Accelerate dlopened for decode, so the only cost is four more
-// dlsyms. kvImageDoNotTile: this is already a WorkPool thread, and the
+// dlsyms. kvImageDoNotTile: this is already a BackgroundWork thread, and the
 // pipeline stages run back-to-back in one task, so vImage's internal
 // libdispatch fan-out would oversubscribe (and dominates wall-clock for the
 // tiny images the test suite uses). tempBuffer = nullptr lets vImage manage
@@ -489,7 +489,7 @@ int32_t bun_coregraphics_reflect(const uint8_t* src, uint32_t w, uint32_t h,
 // the pasteboard hands back a container (PNG, TIFF, HEIC, …) and Bun.Image's
 // regular decode path handles it. NSPasteboard is documented as main-thread
 // safe to *read*; we still call it on the JS thread (via the static
-// `fromClipboard` accessor), not the WorkPool.
+// `fromClipboard` accessor), not the BackgroundWork.
 //
 // Two-phase like encode: `out=nullptr` → probe (returns length, 0 = no image),
 // stashes the matched NSData in a thread-local; second call copies and

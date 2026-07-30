@@ -1,28 +1,22 @@
 pub const ImportWatcher = union(enum) {
-    none: void,
-    hot: *Watcher,
-    watch: *Watcher,
+    none,
+    hot: *HotReloader,
+    watch: *WatchReloader,
 
-    pub fn start(this: ImportWatcher) !void {
-        switch (this) {
-            inline .hot => |w| try w.start(),
-            inline .watch => |w| try w.start(),
-            else => {},
+    pub fn deinit(this: *ImportWatcher) void {
+        switch (this.*) {
+            .none => {},
+            inline .hot, .watch => |reloader| reloader.deinit(Watcher.requires_file_descriptors),
         }
+        this.* = .none;
     }
 
     pub inline fn watchlist(this: ImportWatcher) Watcher.WatchList {
-        return switch (this) {
-            inline .hot, .watch => |w| w.watchlist,
-            else => .{},
-        };
+        return if (this.core()) |watcher| watcher.watchlist else .{};
     }
 
     pub inline fn indexOf(this: ImportWatcher, hash: Watcher.HashType) ?u32 {
-        return switch (this) {
-            inline .hot, .watch => |w| w.indexOf(hash),
-            else => null,
-        };
+        return if (this.core()) |watcher| watcher.indexOf(hash) else null;
     }
 
     pub inline fn addFileByPathSlow(
@@ -30,10 +24,10 @@ pub const ImportWatcher = union(enum) {
         file_path: string,
         loader: options.Loader,
     ) bool {
-        return switch (this) {
-            inline .hot, .watch => |w| w.addFileByPathSlow(file_path, loader),
-            else => true,
-        };
+        return if (this.core()) |watcher|
+            watcher.addFileByPathSlow(file_path, loader)
+        else
+            true;
     }
 
     pub inline fn addFile(
@@ -46,8 +40,8 @@ pub const ImportWatcher = union(enum) {
         package_json: ?*bun.PackageJSON,
         comptime copy_file_path: bool,
     ) bun.sys.Maybe(void) {
-        return switch (this) {
-            inline .hot, .watch => |watcher| watcher.addFile(
+        return if (this.core()) |watcher|
+            watcher.addFile(
                 fd,
                 file_path,
                 hash,
@@ -55,8 +49,15 @@ pub const ImportWatcher = union(enum) {
                 dir_fd,
                 package_json,
                 copy_file_path,
-            ),
-            .none => .success,
+            )
+        else
+            .success;
+    }
+
+    pub inline fn core(this: ImportWatcher) ?*Watcher {
+        return switch (this) {
+            inline .hot, .watch => |reloader| reloader.watcher,
+            .none => null,
         };
     }
 };
@@ -119,18 +120,37 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
         const Reloader = @This();
 
         ctx: *Ctx,
+        watcher: *Watcher,
         verbose: bool = false,
-        pending_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+        references: std.atomic.Value(u32) = .init(1),
+        stopping: std.atomic.Value(bool) = .init(false),
+        pending_count: std.atomic.Value(u32) = .init(0),
+        watch_event: std.Io.Event = .unset,
+        watch_outcome: std.atomic.Value(WatchOutcome) = .init(.waiting),
 
         main: MainFile = .{},
 
         tombstones: bun.StringHashMapUnmanaged(*bun.fs.FileSystem.RealFS.EntriesOption) = .{},
 
-        pub fn init(ctx: *Ctx, fs: *bun.fs.FileSystem, verbose: bool, clear_screen_flag: bool) *Watcher {
+        pub const WatchOutcome = enum(u8) {
+            waiting,
+            reload,
+            failed,
+        };
+
+        pub fn init(
+            ctx: *Ctx,
+            fs: *bun.fs.FileSystem,
+            verbose: bool,
+            clear_screen_flag: bool,
+            entry_path: ?[]const u8,
+        ) *Reloader {
             const reloader = bun.handleOom(bun.default_allocator.create(Reloader));
             reloader.* = .{
                 .ctx = ctx,
+                .watcher = undefined,
                 .verbose = Environment.enable_logs or verbose,
+                .main = MainFile.init(entry_path orelse ""),
             };
 
             clear_screen = clear_screen_flag;
@@ -138,11 +158,12 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
                 bun.handleErrorReturnTrace(err, @errorReturnTrace());
                 Output.panic("Failed to enable File Watcher: {s}", .{@errorName(err)});
             };
+            reloader.watcher = watcher;
             watcher.start() catch |err| {
                 bun.handleErrorReturnTrace(err, @errorReturnTrace());
                 Output.panic("Failed to start File Watcher: {s}", .{@errorName(err)});
             };
-            return watcher;
+            return reloader;
         }
 
         fn debug(comptime fmt: string, args: anytype) void {
@@ -232,6 +253,8 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
             }
 
             pub fn run(this: *Task) void {
+                if (this.reloader.stopping.load(.acquire)) return;
+
                 // Since we rely on the event loop for hot reloads, there can be
                 // a delay before the next reload begins. In the time between the
                 // last reload and the next one, we shouldn't schedule any more
@@ -242,16 +265,23 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
                 // get another hot reload request while we're reloading, we'll
                 // still enqueue it.
                 while (this.reloader.pending_count.swap(0, .monotonic) > 0) {
+                    if (this.reloader.stopping.load(.acquire)) return;
                     this.reloader.ctx.reload(this);
                 }
             }
 
             pub fn enqueue(this: *Task) void {
                 jsc.markBinding(@src());
-                if (this.count == 0)
+                if (this.count == 0 or this.reloader.stopping.load(.acquire))
                     return;
 
                 if (comptime reload_immediately) {
+                    if (comptime Ctx == bun.bundle_v2.BuildWatchSession) {
+                        if (this.reloader.watch_outcome.cmpxchgStrong(.waiting, .reload, .release, .acquire) == null) {
+                            this.reloader.watch_event.set(this.reloader.ctx.transpiler.io);
+                        }
+                        return;
+                    }
                     Output.flush();
                     if (comptime Ctx == ImportWatcher) {
                         if (this.reloader.ctx.rare_data) |rare|
@@ -272,75 +302,61 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
                     .hashes = this.hashes,
                     .concurrent_task = undefined,
                 });
+                _ = this.reloader.references.fetchAdd(1, .monotonic);
                 that.concurrent_task = .{ .task = jsc.Task.init(that) };
                 that.reloader.enqueueTaskConcurrent(&that.concurrent_task);
                 this.count = 0;
             }
 
             pub fn deinit(this: *Task) void {
+                const reloader = this.reloader;
                 bun.destroy(this);
+                reloader.release();
             }
         };
 
         pub fn enableHotModuleReloading(this: *Ctx, entry_path: ?[]const u8) void {
-            if (comptime @TypeOf(this.bun_watcher) == ImportWatcher) {
-                if (this.bun_watcher != .none)
-                    return;
+            comptime bun.assert(@TypeOf(this.bun_watcher) == ImportWatcher);
+            if (this.bun_watcher != .none)
+                return;
+
+            const reloader = Reloader.init(
+                this,
+                this.transpiler.fs,
+                if (@hasField(Ctx, "log")) this.log.level.atLeast(.info) else false,
+                !this.transpiler.env.hasSetNoClearTerminalOnReload(!Output.enable_ansi_colors_stdout),
+                entry_path,
+            );
+
+            if (comptime reload_immediately) {
+                this.bun_watcher = .{ .watch = reloader };
             } else {
-                if (this.bun_watcher != null)
-                    return;
+                this.bun_watcher = .{ .hot = reloader };
             }
+            this.transpiler.resolver.watcher = reloader.watcher.getResolveWatcher();
+        }
 
-            var reloader = bun.handleOom(bun.default_allocator.create(Reloader));
-            reloader.* = .{
-                .ctx = this,
-                .verbose = Environment.enable_logs or if (@hasField(Ctx, "log")) this.log.level.atLeast(.info) else false,
-                .main = MainFile.init(entry_path orelse ""),
-            };
+        pub fn deinit(this: *Reloader, close_descriptors: bool) void {
+            bun.assert(!this.stopping.swap(true, .release));
+            this.watcher.deinit(close_descriptors);
+            this.pending_count.store(0, .release);
+            this.release();
+        }
 
-            if (comptime @TypeOf(this.bun_watcher) == ImportWatcher) {
-                this.bun_watcher = if (reload_immediately)
-                    .{ .watch = Watcher.init(
-                        Reloader,
-                        reloader,
-                        this.transpiler.fs,
-                        bun.default_allocator,
-                    ) catch |err| {
-                        bun.handleErrorReturnTrace(err, @errorReturnTrace());
-                        Output.panic("Failed to enable File Watcher: {s}", .{@errorName(err)});
-                    } }
-                else
-                    .{ .hot = Watcher.init(
-                        Reloader,
-                        reloader,
-                        this.transpiler.fs,
-                        bun.default_allocator,
-                    ) catch |err| {
-                        bun.handleErrorReturnTrace(err, @errorReturnTrace());
-                        Output.panic("Failed to enable File Watcher: {s}", .{@errorName(err)});
-                    } };
-
-                if (reload_immediately) {
-                    this.transpiler.resolver.watcher = bun.resolver.ResolveWatcher(*Watcher, Watcher.onMaybeWatchDirectory).init(this.bun_watcher.watch);
-                } else {
-                    this.transpiler.resolver.watcher = bun.resolver.ResolveWatcher(*Watcher, Watcher.onMaybeWatchDirectory).init(this.bun_watcher.hot);
-                }
-            } else {
-                this.bun_watcher = Watcher.init(
-                    Reloader,
-                    reloader,
-                    this.transpiler.fs,
-                    bun.default_allocator,
-                ) catch |err| {
-                    bun.handleErrorReturnTrace(err, @errorReturnTrace());
-                    Output.panic("Failed to enable File Watcher: {s}", .{@errorName(err)});
-                };
-                this.transpiler.resolver.watcher = bun.resolver.ResolveWatcher(*Watcher, Watcher.onMaybeWatchDirectory).init(this.bun_watcher.?);
+        fn release(this: *Reloader) void {
+            const previous = this.references.fetchSub(1, .release);
+            bun.assert(previous > 0);
+            if (previous == 1) {
+                // Acquire the release sequence before destroying shared state.
+                _ = this.references.load(.acquire);
+                this.tombstones.deinit(bun.default_allocator);
+                bun.destroy(this);
             }
+        }
 
-            clear_screen = !this.transpiler.env.hasSetNoClearTerminalOnReload(!Output.enable_ansi_colors_stdout);
-
-            reloader.getContext().start() catch @panic("Failed to start File Watcher");
+        pub fn waitForReload(this: *Reloader, io: std.Io) WatchOutcome {
+            this.watch_event.waitUncancelable(io);
+            return this.watch_outcome.load(.acquire);
         }
 
         fn putTombstone(this: *@This(), key: []const u8, value: *bun.fs.FileSystem.RealFS.EntriesOption) void {
@@ -351,28 +367,20 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
             return this.tombstones.get(key);
         }
 
-        pub fn onError(
-            _: *@This(),
-            err: bun.sys.Error,
-        ) void {
+        pub fn onError(this: *@This(), err: bun.sys.Error) void {
             Output.err(@as(bun.sys.E, @fromBackingInt(@intCast(err.errno))), "Watcher crashed", .{});
+            if (comptime Ctx == bun.bundle_v2.BuildWatchSession) {
+                if (this.watch_outcome.cmpxchgStrong(.waiting, .failed, .release, .acquire) == null) {
+                    this.watch_event.set(this.ctx.transpiler.io);
+                }
+            }
             if (bun.Environment.isDebug) {
                 @panic("Watcher crash");
             }
         }
 
         pub fn getContext(this: *@This()) *Watcher {
-            if (comptime @TypeOf(this.ctx.bun_watcher) == ImportWatcher) {
-                if (reload_immediately) {
-                    return this.ctx.bun_watcher.watch;
-                } else {
-                    return this.ctx.bun_watcher.hot;
-                }
-            } else if (@typeInfo(@TypeOf(this.ctx.bun_watcher)) == .optional) {
-                return this.ctx.bun_watcher.?;
-            } else {
-                return this.ctx.bun_watcher;
-            }
+            return this.watcher;
         }
 
         pub noinline fn onFileUpdate(

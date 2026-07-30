@@ -1,5 +1,5 @@
 /// This runs after we've already populated the compile results
-pub fn postProcessCSSChunk(ctx: GenerateChunkCtx, worker: *ThreadPool.Worker, chunk: *Chunk) !void {
+pub fn postProcessCSSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk: *Chunk) !void {
     const c = ctx.c;
     var j = StringJoiner{
         .allocator = worker.allocator,
@@ -121,7 +121,7 @@ const options = bun.options;
 const Chunk = bun.bundle_v2.Chunk;
 const CompileResultForSourceMap = bun.bundle_v2.CompileResultForSourceMap;
 const Index = bun.bundle_v2.Index;
-const ThreadPool = bun.bundle_v2.ThreadPool;
+const Executor = bun.bundle_v2.Executor;
 
 const LinkerContext = bun.bundle_v2.LinkerContext;
 const GenerateChunkCtx = bun.bundle_v2.LinkerContext.GenerateChunkCtx;

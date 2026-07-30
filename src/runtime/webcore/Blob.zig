@@ -4989,10 +4989,10 @@ pub fn FileCloser(comptime This: type) type {
         fn onIORequestClosed(this: *This) void {
             this.io_poll.flags.remove(.was_ever_registered);
             this.task = .{ .callback = &onCloseIORequest };
-            bun.jsc.WorkPool.schedule(&this.task);
+            bun.jsc.BackgroundWork.scheduleContinuation(&this.io_task.?.event_loop.virtual_machine.background_tasks, &this.task);
         }
 
-        fn onCloseIORequest(task: *jsc.WorkPoolTask) void {
+        fn onCloseIORequest(task: *jsc.BackgroundTask) void {
             debug("onCloseIORequest()", .{});
             var this: *This = @alignCast(@fieldParentPtr("task", task));
             this.close_after_io = false;

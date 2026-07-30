@@ -47,7 +47,46 @@ pub const logPartDependencyTree = Output.scoped(.part_dep_tree, .visible);
 pub const MangledProps = std.array_hash_map.Auto(Ref, []const u8);
 pub const PathToSourceIndexMap = @import("./PathToSourceIndexMap.zig");
 
-pub const Watcher = bun.jsc.hot_reloader.NewHotReloader(BundleV2, EventLoop, true);
+pub const Watcher = bun.jsc.hot_reloader.NewHotReloader(BuildWatchSession, EventLoop, true);
+
+pub const BuildWatchSession = struct {
+    transpiler: *Transpiler,
+    reloader: *Watcher,
+
+    pub fn init(transpiler: *Transpiler) *BuildWatchSession {
+        const session = bun.new(BuildWatchSession, .{
+            .transpiler = transpiler,
+            .reloader = undefined,
+        });
+        session.reloader = Watcher.init(
+            session,
+            transpiler.fs,
+            transpiler.log.level.atLeast(.info),
+            !transpiler.env.hasSetNoClearTerminalOnReload(!Output.enable_ansi_colors_stdout),
+            null,
+        );
+        transpiler.resolver.watcher = session.reloader.watcher.getResolveWatcher();
+        return session;
+    }
+
+    pub fn deinit(this: *BuildWatchSession) void {
+        this.transpiler.resolver.watcher = null;
+        this.reloader.deinit(bun.Watcher.requires_file_descriptors);
+        bun.destroy(this);
+    }
+
+    pub fn waitForReload(this: *BuildWatchSession, io: std.Io) Watcher.WatchOutcome {
+        return this.reloader.waitForReload(io);
+    }
+
+    pub fn getLoaders(this: *BuildWatchSession) *bun.options.Loader.HashTable {
+        return &this.transpiler.options.loaders;
+    }
+
+    pub fn bustDirCache(this: *BuildWatchSession, path: []const u8) bool {
+        return this.transpiler.resolver.bustDirCache(path);
+    }
+};
 
 /// This assigns a concise, predictable, and unique `.pretty` attribute to a Path.
 /// DevServer relies on pretty paths for identifying modules, so they must be unique.
@@ -115,7 +154,7 @@ pub const BundleV2 = struct {
     framework: ?bake.Framework,
     graph: Graph,
     linker: LinkerContext,
-    bun_watcher: ?*bun.Watcher,
+    borrowed_watcher: ?*bun.Watcher,
     plugins: ?*jsc.API.JSBundler.Plugin,
     completion: ?*JSBundleCompletionTask,
     /// In-memory files that can be used as entrypoints or imported.
@@ -894,8 +933,6 @@ pub const BundleV2 = struct {
         bake_options: ?BakeOptions,
         alloc: std.mem.Allocator,
         event_loop: EventLoop,
-        cli_watch_flag: bool,
-        thread_pool: ?*ThreadPoolLib,
         heap: ThreadLocalArena,
     ) !*BundleV2 {
         const this = try alloc.create(BundleV2);
@@ -920,7 +957,7 @@ pub const BundleV2 = struct {
                     .allocator = heap.allocator(),
                 },
             },
-            .bun_watcher = null,
+            .borrowed_watcher = null,
             .plugins = null,
             .completion = null,
             .file_map = null,
@@ -981,16 +1018,12 @@ pub const BundleV2 = struct {
 
         this.linker.dev_server = transpiler.options.dev_server;
 
-        const pool = try this.allocator().create(ThreadPool);
-        if (cli_watch_flag) {
-            Watcher.enableHotModuleReloading(this, null);
-        }
+        const pool = try this.allocator().create(Executor);
         // errdefer pool.destroy();
         errdefer this.graph.heap.deinit();
 
-        pool.* = try .init(this, thread_pool);
+        try pool.init(this);
         this.graph.pool = pool;
-        pool.start();
         return this;
     }
 
@@ -1377,7 +1410,6 @@ pub const BundleV2 = struct {
         task.loader = loader;
         task.jsx = this.transpilerForTarget(known_target).options.jsx;
         task.task.node.next = null;
-        task.io_task.node.next = null;
         task.tree_shaking = this.linker.options.tree_shaking;
         task.known_target = known_target;
 
@@ -1433,7 +1465,6 @@ pub const BundleV2 = struct {
             .known_target = known_target,
         };
         task.task.node.next = null;
-        task.io_task.node.next = null;
 
         this.incrementScanCounter();
 
@@ -1476,7 +1507,7 @@ pub const BundleV2 = struct {
 
         this.incrementScanCounter();
 
-        this.graph.pool.worker_pool.schedule(.from(&task.task));
+        this.graph.pool.scheduleTask(&task.task);
 
         return @intCast(source_index);
     }
@@ -1542,16 +1573,22 @@ pub const BundleV2 = struct {
         minify_duration: *u64,
         source_code_size: *u64,
         fetcher: ?*DependenciesScanner,
+        watcher_out: *?*BuildWatchSession,
     ) !BuildResult {
+        watcher_out.* = null;
         var this = try BundleV2.init(
             transpiler,
             null,
             alloc,
             event_loop,
-            enable_reloading,
-            null,
             .init(),
         );
+        if (enable_reloading) {
+            const session = BuildWatchSession.init(transpiler);
+            watcher_out.* = session;
+            this.borrowed_watcher = session.reloader.watcher;
+        }
+        defer this.deinitWithoutFreeingArena();
         this.unique_key = generateUniqueKey();
 
         if (this.transpiler.log.hasErrors()) {
@@ -1646,8 +1683,6 @@ pub const BundleV2 = struct {
             null,
             alloc,
             event_loop,
-            false,
-            null,
             .init(),
         );
         this.unique_key = generateUniqueKey();
@@ -1684,10 +1719,9 @@ pub const BundleV2 = struct {
             bake_options,
             alloc,
             event_loop,
-            false,
-            null,
             .init(),
         );
+        defer this.deinitWithoutFreeingArena();
         this.unique_key = generateUniqueKey();
 
         if (this.transpiler.log.hasErrors()) {
@@ -1971,7 +2005,7 @@ pub const BundleV2 = struct {
                 };
                 this.graph.pool.schedule(parse_task);
 
-                if (this.bun_watcher) |watcher| add_watchers: {
+                if (this.borrowed_watcher) |watcher| add_watchers: {
                     if (!this.shouldAddWatcherPlugin(load.namespace, load.path)) break :add_watchers;
 
                     // TODO: support explicit watchFiles array. this is not done
@@ -2149,7 +2183,6 @@ pub const BundleV2 = struct {
                             .known_target = resolve.import_record.original_target,
                         };
                         task.task.node.next = null;
-                        task.io_task.node.next = null;
                         this.incrementScanCounter();
 
                         if (!this.enqueueOnLoadPluginIfNeeded(task)) {
@@ -2231,18 +2264,6 @@ pub const BundleV2 = struct {
             this.graph.entry_point_original_names.deinit(this.allocator());
         }
 
-        if (this.graph.pool.workers_assignments.count() > 0) {
-            {
-                this.graph.pool.workers_assignments_lock.lockUncancelable(this.transpiler.io);
-                defer this.graph.pool.workers_assignments_lock.unlock(this.transpiler.io);
-                for (this.graph.pool.workers_assignments.values()) |worker| {
-                    worker.deinitSoon();
-                }
-                this.graph.pool.workers_assignments.deinit(bun.default_allocator);
-            }
-
-            this.graph.pool.worker_pool.wakeForIdleEvents();
-        }
         this.graph.pool.deinit();
 
         for (this.free_list.items) |free| {
@@ -3106,7 +3127,7 @@ pub const BundleV2 = struct {
 
                 // Only perform directory busting when hot-reloading is enabled
                 if (err == error.ModuleNotFound) {
-                    if (this.bun_watcher != null) {
+                    if (this.borrowed_watcher != null) {
                         if (!had_busted_dir_cache) {
                             bun.Output.scoped(.watcher, .visible)("busting dir cache {s} -> {s}", .{ source.path.text, import_record.path.text });
                             // Only re-query if we previously had something cached.
@@ -3599,7 +3620,7 @@ pub const BundleV2 = struct {
         }
 
         // To minimize contention, watchers are appended on the bundle thread.
-        if (this.bun_watcher) |watcher| {
+        if (this.borrowed_watcher) |watcher| {
             if (parse_result.watcher_data.fd != bun.invalid_fd) {
                 const source = switch (parse_result.value) {
                     inline .empty, .err => |data| graph.input_files.items(.source)[data.source_index.get()],
@@ -3797,16 +3818,6 @@ pub const BundleV2 = struct {
                 }
             },
         }
-    }
-
-    /// To satisfy the interface from NewHotReloader()
-    pub fn getLoaders(vm: *BundleV2) *bun.options.Loader.HashTable {
-        return &vm.transpiler.options.loaders;
-    }
-
-    /// To satisfy the interface from NewHotReloader()
-    pub fn bustDirCache(vm: *BundleV2, path: []const u8) bool {
-        return vm.transpiler.resolver.bustDirCache(path);
     }
 };
 
@@ -4464,7 +4475,7 @@ pub const lol = bun.LOLHTML;
 pub const DataURL = @import("../resolver/resolver.zig").DataURL;
 pub const IndexStringMap = @import("./IndexStringMap.zig");
 pub const DeferredBatchTask = @import("./DeferredBatchTask.zig").DeferredBatchTask;
-pub const ThreadPool = @import("./ThreadPool.zig").ThreadPool;
+pub const Executor = @import("./Executor.zig").Executor;
 pub const ParseTask = @import("./ParseTask.zig").ParseTask;
 pub const LinkerContext = @import("./LinkerContext.zig").LinkerContext;
 pub const LinkerGraph = @import("./LinkerGraph.zig").LinkerGraph;
@@ -4483,7 +4494,6 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 const FeatureFlags = bun.FeatureFlags;
 const Output = bun.Output;
-const ThreadPoolLib = bun.ThreadPool;
 const Transpiler = bun.Transpiler;
 const default_allocator = bun.default_allocator;
 const strings = bun.strings;

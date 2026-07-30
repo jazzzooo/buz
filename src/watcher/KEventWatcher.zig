@@ -8,10 +8,24 @@ eventlist_index: EventListIndex = 0,
 fd: bun.FD.Optional = .none,
 
 const changelist_count = 128;
+const shutdown_ident = std.math.maxInt(usize);
 
 pub fn init(this: *KEventWatcher, _: []const u8) !void {
     const fd = try bun.sys.kqueue().unwrap();
+    errdefer fd.close();
     if (fd.cast() == 0) return error.KQueueError;
+
+    var change = [_]KEvent{.{
+        .ident = shutdown_ident,
+        .filter = std.c.EVFILT.USER,
+        .flags = std.c.EV.ADD | std.c.EV.CLEAR,
+        .fflags = 0,
+        .data = 0,
+        .udata = shutdown_ident,
+    }};
+    const result = std.posix.system.kevent(fd.native(), change[0..].ptr, change.len, change[0..].ptr, 0, null);
+    if (std.posix.errno(result) != .SUCCESS) return error.KQueueError;
+
     this.fd = .init(fd);
 }
 
@@ -19,6 +33,23 @@ pub fn stop(this: *KEventWatcher) void {
     if (this.fd.take()) |fd| {
         fd.close();
     }
+}
+
+pub fn requestStop(this: *KEventWatcher) void {
+    const fd = this.fd.unwrap() orelse return;
+    var change = [_]KEvent{.{
+        .ident = shutdown_ident,
+        .filter = std.c.EVFILT.USER,
+        .flags = 0,
+        .fflags = std.c.NOTE.TRIGGER,
+        .data = 0,
+        .udata = shutdown_ident,
+    }};
+    _ = std.posix.system.kevent(fd.native(), change[0..].ptr, change.len, change[0..].ptr, 0, null);
+}
+
+pub fn deinit(this: *KEventWatcher) void {
+    this.stop();
 }
 
 pub fn watchEventFromKEvent(kevent: KEvent) Watcher.Event {
@@ -33,71 +64,98 @@ pub fn watchEventFromKEvent(kevent: KEvent) Watcher.Event {
     };
 }
 
-pub fn watchLoopCycle(this: *Watcher) bun.sys.Maybe(void) {
+pub fn watchLoopCycle(this: *Watcher) std.Io.Cancelable!bun.sys.Maybe(void) {
     const fd: bun.FD = this.platform.fd.unwrap() orelse
         @panic("KEventWatcher has an invalid file descriptor");
 
-    // not initialized each time
     var changelist_array: [changelist_count]KEvent = undefined;
-    @memset(&changelist_array, std.mem.zeroes(KEvent));
-    var changelist = &changelist_array;
+    const changelist = &changelist_array;
 
     defer Output.flush();
 
-    var count = std.posix.system.kevent(
-        fd.native(),
+    var count = switch (try wait(
+        this.io,
+        fd,
         changelist,
-        0,
-        changelist,
-        changelist_count,
-        null, // timeout
-    );
+        null,
+    )) {
+        .result => |result| result,
+        .err => |err| return .{ .err = err },
+    };
 
-    // Give the events more time to coalesce
-    if (count < 128 / 2) {
-        const remain = 128 - count;
-        const extra = std.posix.system.kevent(
-            fd.native(),
-            changelist[@intCast(count)..].ptr,
-            0,
-            changelist[@intCast(count)..].ptr,
-            remain,
-            &.{ .sec = 0, .nsec = 100_000 }, // 0.0001 seconds
-        );
-
+    // Give the events more time to coalesce.
+    if (count < changelist_count / 2) {
+        try this.io.sleep(.fromNanoseconds(100_000), .awake);
+        const extra = switch (try wait(
+            this.io,
+            fd,
+            changelist[count..],
+            &.{ .sec = 0, .nsec = 0 },
+        )) {
+            .result => |result| result,
+            .err => |err| return .{ .err = err },
+        };
         count += extra;
     }
 
-    var changes = changelist[0..@intCast(@max(0, count))];
+    const changes = changelist[0..count];
     var watchevents = this.watch_events[0..changes.len];
     var out_len: usize = 0;
-    if (changes.len > 0) {
-        watchevents[0] = watchEventFromKEvent(changes[0]);
-        out_len = 1;
-        var prev_event = changes[0];
-        for (changes[1..]) |event| {
-            if (prev_event.udata == event.udata) {
-                const new = watchEventFromKEvent(event);
+    var previous_udata: ?usize = null;
+    for (changes) |event| {
+        if (event.filter == std.c.EVFILT.USER and event.ident == shutdown_ident) continue;
+
+        const new = watchEventFromKEvent(event);
+        if (previous_udata) |udata| {
+            if (udata == event.udata) {
                 watchevents[out_len - 1].merge(new);
                 continue;
             }
-
-            watchevents[out_len] = watchEventFromKEvent(event);
-            prev_event = event;
-            out_len += 1;
         }
 
-        watchevents = watchevents[0..out_len];
+        watchevents[out_len] = new;
+        previous_udata = event.udata;
+        out_len += 1;
     }
+    watchevents = watchevents[0..out_len];
 
-    this.mutex.lockUncancelable(this.fs.io);
-    defer this.mutex.unlock(this.fs.io);
-    if (this.running) {
+    this.mutex.lockUncancelable(this.io);
+    defer this.mutex.unlock(this.io);
+    if (this.running.load(.acquire)) {
         this.writeTraceEvents(watchevents, this.changed_filepaths[0..watchevents.len]);
         this.onFileUpdate(this.ctx, watchevents, this.changed_filepaths[0..watchevents.len], this.watchlist);
     }
 
     return .success;
+}
+
+fn wait(
+    io: std.Io,
+    fd: bun.FD,
+    events: []KEvent,
+    timeout: ?*const std.posix.timespec,
+) std.Io.Cancelable!bun.sys.Maybe(usize) {
+    while (true) {
+        const count = std.posix.system.kevent(
+            fd.native(),
+            events.ptr,
+            0,
+            events.ptr,
+            @intCast(events.len),
+            timeout,
+        );
+        switch (std.posix.errno(count)) {
+            .SUCCESS => return .{ .result = @intCast(count) },
+            .INTR => {
+                try io.checkCancel();
+                continue;
+            },
+            else => |err| return .{ .err = .{
+                .errno = @truncate(@backingInt(err)),
+                .syscall = .watch,
+            } },
+        }
+    }
 }
 
 const std = @import("std");

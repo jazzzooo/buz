@@ -300,6 +300,8 @@ pub const BuildCommand = struct {
         var reachable_file_count: usize = 0;
         var minify_duration: u64 = 0;
         var input_code_length: u64 = 0;
+        var build_watcher: ?*BuildWatchSession = null;
+        const watch_requested = ctx.debug.hot_reload == .watch;
 
         const output_files: []options.OutputFile = brk: {
             if (ctx.bundler_options.transform_only) {
@@ -319,7 +321,7 @@ pub const BuildCommand = struct {
 
                     if (result.errors.len > 0 or result.output_files.len == 0) {
                         Output.flush();
-                        exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
+                        exitOrWatch(ctx.io, 1, build_watcher, watch_requested);
                         unreachable;
                     }
                 }
@@ -339,12 +341,17 @@ pub const BuildCommand = struct {
             const build_result = BundleV2.generateFromCLI(
                 &this_transpiler,
                 allocator,
-                bun.jsc.AnyEventLoop.init(ctx.io, ctx.allocator),
-                ctx.debug.hot_reload == .watch,
+                bun.jsc.AnyEventLoop.init(
+                    ctx.io,
+                    ctx.allocator,
+                    bun.cli.Cli.pinnedThreads().backgroundExecutor(),
+                ),
+                watch_requested,
                 &reachable_file_count,
                 &minify_duration,
                 &input_code_length,
                 fetcher,
+                &build_watcher,
             ) catch |err| {
                 if (log.msgs.items.len > 0) {
                     try log.print(Output.errorWriter());
@@ -353,7 +360,7 @@ pub const BuildCommand = struct {
                 }
 
                 Output.flush();
-                exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
+                exitOrWatch(ctx.io, 1, build_watcher, watch_requested);
             };
 
             // Write metafile if requested
@@ -364,7 +371,7 @@ pub const BuildCommand = struct {
                         .result => |f| f,
                         .err => |err| {
                             Output.err(err, "could not open metafile {f}", .{bun.fmt.quote(ctx.bundler_options.metafile)});
-                            exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
+                            exitOrWatch(ctx.io, 1, build_watcher, watch_requested);
                             unreachable;
                         },
                     };
@@ -374,7 +381,7 @@ pub const BuildCommand = struct {
                         .result => {},
                         .err => |err| {
                             Output.err(err, "could not write metafile {f}", .{bun.fmt.quote(ctx.bundler_options.metafile)});
-                            exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
+                            exitOrWatch(ctx.io, 1, build_watcher, watch_requested);
                             unreachable;
                         },
                     }
@@ -392,7 +399,7 @@ pub const BuildCommand = struct {
                             .result => |f| f,
                             .err => |err| {
                                 Output.err(err, "could not open metafile-md {f}", .{bun.fmt.quote(ctx.bundler_options.metafile_md)});
-                                exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
+                                exitOrWatch(ctx.io, 1, build_watcher, watch_requested);
                                 unreachable;
                             },
                         };
@@ -402,7 +409,7 @@ pub const BuildCommand = struct {
                             .result => {},
                             .err => |err| {
                                 Output.err(err, "could not write metafile-md {f}", .{bun.fmt.quote(ctx.bundler_options.metafile_md)});
-                                exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
+                                exitOrWatch(ctx.io, 1, build_watcher, watch_requested);
                                 unreachable;
                             },
                         }
@@ -464,7 +471,7 @@ pub const BuildCommand = struct {
             else
                 bun.MakePath.makeOpenPath(ctx.io, std.Io.Dir.cwd(), root_path, .{}) catch |err| {
                     Output.err(err, "could not open output directory {f}", .{bun.fmt.quote(root_path)});
-                    exitOrWatch(ctx.io, 1, ctx.debug.hot_reload == .watch);
+                    exitOrWatch(ctx.io, 1, build_watcher, watch_requested);
                     unreachable;
                 };
 
@@ -707,14 +714,22 @@ pub const BuildCommand = struct {
         }
 
         try log.print(Output.errorWriter());
-        exitOrWatch(ctx.io, if (had_err) 1 else 0, ctx.debug.hot_reload == .watch);
+        exitOrWatch(ctx.io, if (had_err) 1 else 0, build_watcher, watch_requested);
     }
 };
 
-fn exitOrWatch(io: std.Io, code: u8, watch: bool) noreturn {
-    if (watch) {
-        // the watcher thread will exit the process
-        std.Io.sleep(io, .max, .awake) catch {};
+fn exitOrWatch(io: std.Io, code: u8, watcher: ?*BuildWatchSession, watch_requested: bool) noreturn {
+    if (watcher) |active| {
+        const outcome = active.waitForReload(io);
+        active.deinit();
+        switch (outcome) {
+            .reload => bun.reloadProcess(bun.default_allocator, BuildWatcher.clear_screen, false),
+            .failed => Global.exit(1),
+            .waiting => unreachable,
+        }
+    } else if (watch_requested) {
+        var event: std.Io.Event = .unset;
+        event.waitUncancelable(io);
     }
     Global.exit(code);
 }
@@ -797,6 +812,8 @@ const options = @import("../bundler/options.zig");
 const resolve_path = @import("../paths/resolve_path.zig");
 const std = @import("std");
 const BundleV2 = @import("../bundler/bundle_v2.zig").BundleV2;
+const BuildWatchSession = @import("../bundler/bundle_v2.zig").BuildWatchSession;
+const BuildWatcher = @import("../bundler/bundle_v2.zig").Watcher;
 const Command = @import("./cli.zig").Command;
 const Runtime = @import("../js_parser/runtime.zig").Runtime;
 

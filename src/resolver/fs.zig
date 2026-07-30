@@ -971,11 +971,9 @@ pub const FileSystem = struct {
                 return try fs.readDirectoryError(dir, err);
             });
 
-            defer {
-                if (maybe_handle == null and (!store_fd or fs.needToCloseFiles())) {
-                    bun.FD.fromStdDir(handle).close();
-                }
-            }
+            const close_handle = maybe_handle == null and (!store_fd or fs.needToCloseFiles());
+            defer if (close_handle) bun.FD.fromStdDir(handle).close();
+            const retain_fd = store_fd and !close_handle;
 
             // if we get this far, it's a real directory, so we can just store the dir name.
             if (maybe_handle == null) {
@@ -987,7 +985,7 @@ pub const FileSystem = struct {
 
             // Cache miss: read the directory entries
             var entries = fs.readdir(
-                store_fd,
+                retain_fd,
                 if (in_place) |existing| &existing.data else null,
                 dir,
                 generation,
@@ -1005,7 +1003,7 @@ pub const FileSystem = struct {
                 if (in_place) |original| {
                     original.data.clearAndFree(bun.default_allocator);
                 }
-                if (store_fd and !entries.fd.isValid())
+                if (retain_fd and !entries.fd.isValid())
                     entries.fd = .fromStdDir(handle);
 
                 entries_ptr.* = entries;

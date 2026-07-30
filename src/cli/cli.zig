@@ -8,10 +8,21 @@ pub const Cli = struct {
     pub const CompileTarget = @import("../options_types/CompileTarget.zig");
     pub var log_: logger.Log = undefined;
     pub var io: std.Io = undefined;
+    var pinned_thread_domain: ?bun.jsc.PinnedThreadDomain = null;
+
+    pub fn pinnedThreads() *bun.jsc.PinnedThreadDomain {
+        return if (pinned_thread_domain) |*domain| domain else @panic("runtime services are not initialized");
+    }
+
+    pub fn shutdownRuntimeServices() void {
+        if (pinned_thread_domain) |*domain| domain.deinit();
+        pinned_thread_domain = null;
+    }
+
     pub fn start(allocator: std.mem.Allocator, io_: std.Io) void {
         is_main_thread = true;
         io = io_;
-        bun.jsc.WorkPool.initialize(io);
+        pinned_thread_domain = .init(io);
         start_time = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
         log_ = logger.Log.init(allocator);
 

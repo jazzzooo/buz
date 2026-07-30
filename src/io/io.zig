@@ -4,6 +4,9 @@
 //! Most I/O happens on the main thread.
 
 pub const heap = @import("./heap.zig");
+pub const BackgroundTaskGroup = @import("./BackgroundTaskGroup.zig");
+pub const BackgroundExecutor = BackgroundTaskGroup.Executor;
+pub const BackgroundWork = @import("./BackgroundWork.zig").BackgroundWork;
 
 pub const openForWriting = @import("./openForWriting.zig").openForWriting;
 pub const openForWritingImpl = @import("./openForWriting.zig").openForWritingImpl;

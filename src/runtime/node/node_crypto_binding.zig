@@ -1,7 +1,7 @@
 fn ExternCryptoJob(comptime name: []const u8) type {
     return struct {
         vm: *jsc.VirtualMachine,
-        task: jsc.WorkPoolTask,
+        task: jsc.BackgroundTask,
         any_task: jsc.AnyTask,
         poll: Async.KeepAlive = .{},
         callback: jsc.Strong.Optional,
@@ -41,7 +41,7 @@ fn ExternCryptoJob(comptime name: []const u8) type {
             job.schedule();
         }
 
-        pub fn runTask(task: *jsc.WorkPoolTask) void {
+        pub fn runTask(task: *jsc.BackgroundTask) void {
             const job: *@This() = @fieldParentPtr("task", task);
             var vm = job.vm;
             defer vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
@@ -75,7 +75,17 @@ fn ExternCryptoJob(comptime name: []const u8) type {
 
         pub fn schedule(this: *@This()) callconv(.c) void {
             this.poll.ref(this.vm);
-            jsc.WorkPool.schedule(&this.task);
+            jsc.BackgroundWork.schedule(&this.vm.background_tasks, &this.task) catch |err| {
+                const global = this.vm.global;
+                if (this.callback.trySwap()) |function| {
+                    const error_value = if (global.createErrorInstance(
+                        "Failed to start crypto operation: {s}",
+                        .{@errorName(err)},
+                    )) |instance| instance.toJS() else |js_err| global.takeException(js_err);
+                    this.vm.eventLoop().runCallback(function, global, .js_undefined, &.{error_value});
+                }
+                this.deinit();
+            };
         }
 
         comptime {
@@ -116,7 +126,7 @@ comptime {
 fn CryptoJob(comptime Ctx: type) type {
     return struct {
         vm: *jsc.VirtualMachine,
-        task: jsc.WorkPoolTask,
+        task: jsc.BackgroundTask,
         any_task: jsc.AnyTask,
         poll: Async.KeepAlive = .{},
 
@@ -149,7 +159,7 @@ fn CryptoJob(comptime Ctx: type) type {
             job.schedule();
         }
 
-        pub fn runTask(task: *jsc.WorkPoolTask) void {
+        pub fn runTask(task: *jsc.BackgroundTask) void {
             const job: *@This() = @fieldParentPtr("task", task);
             var vm = job.vm;
             defer vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
@@ -181,7 +191,17 @@ fn CryptoJob(comptime Ctx: type) type {
 
         pub fn schedule(this: *@This()) callconv(.c) void {
             this.poll.ref(this.vm);
-            jsc.WorkPool.schedule(&this.task);
+            jsc.BackgroundWork.schedule(&this.vm.background_tasks, &this.task) catch |err| {
+                const global = this.vm.global;
+                if (this.callback.trySwap()) |function| {
+                    const error_value = if (global.createErrorInstance(
+                        "Failed to start crypto operation: {s}",
+                        .{@errorName(err)},
+                    )) |instance| instance.toJS() else |js_err| global.takeException(js_err);
+                    this.vm.eventLoop().runCallback(function, global, .js_undefined, &.{error_value});
+                }
+                this.deinit();
+            };
         }
     };
 }

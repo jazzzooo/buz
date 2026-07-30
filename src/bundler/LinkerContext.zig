@@ -98,28 +98,28 @@ pub const LinkerContext = struct {
         pub const Task = struct {
             ctx: *LinkerContext,
             source_index: Index.Int,
-            thread_task: ThreadPoolLib.Task = .{ .callback = &runLineOffset },
+            thread_task: ExecutorTypes.Task = .{ .callback = &runLineOffset },
 
-            pub fn runLineOffset(thread_task: *ThreadPoolLib.Task) void {
+            pub fn runLineOffset(thread_task: *ExecutorTypes.Task) void {
                 var task: *Task = @fieldParentPtr("thread_task", thread_task);
                 defer {
                     task.ctx.markPendingTaskDone();
                     task.ctx.source_maps.line_offset_countdown.finish(task.ctx.resolver.io);
                 }
 
-                const worker = ThreadPool.Worker.get(@fieldParentPtr("linker", task.ctx));
+                const worker = Executor.Worker.get(@fieldParentPtr("linker", task.ctx));
                 defer worker.unget();
                 SourceMapData.computeLineOffsets(task.ctx, worker.allocator, task.source_index);
             }
 
-            pub fn runQuotedSourceContents(thread_task: *ThreadPoolLib.Task) void {
+            pub fn runQuotedSourceContents(thread_task: *ExecutorTypes.Task) void {
                 var task: *Task = @fieldParentPtr("thread_task", thread_task);
                 defer {
                     task.ctx.markPendingTaskDone();
                     task.ctx.source_maps.quoted_contents_countdown.finish(task.ctx.resolver.io);
                 }
 
-                const worker = ThreadPool.Worker.get(@fieldParentPtr("linker", task.ctx));
+                const worker = Executor.Worker.get(@fieldParentPtr("linker", task.ctx));
                 defer worker.unget();
 
                 // Use the default allocator when using DevServer and the file
@@ -272,8 +272,8 @@ pub const LinkerContext = struct {
         this.source_maps.line_offset_tasks = this.allocator().alloc(SourceMapData.Task, reachable.len) catch unreachable;
         this.source_maps.quoted_contents_tasks = this.allocator().alloc(SourceMapData.Task, reachable.len) catch unreachable;
 
-        var batch = ThreadPoolLib.Batch{};
-        var second_batch = ThreadPoolLib.Batch{};
+        var batch = ExecutorTypes.Batch{};
+        var second_batch = ExecutorTypes.Batch{};
         for (reachable, this.source_maps.line_offset_tasks, this.source_maps.quoted_contents_tasks) |source_index, *line_offset, *quoted| {
             line_offset.* = .{
                 .ctx = this,
@@ -295,9 +295,9 @@ pub const LinkerContext = struct {
         this.scheduleTasks(batch);
     }
 
-    pub fn scheduleTasks(this: *LinkerContext, batch: ThreadPoolLib.Batch) void {
+    pub fn scheduleTasks(this: *LinkerContext, batch: ExecutorTypes.Batch) void {
         _ = this.pending_task_count.fetchAdd(@as(u32, @intCast(batch.len)), .monotonic);
-        this.parse_graph.pool.worker_pool.schedule(batch);
+        this.parse_graph.pool.scheduleBatch(batch);
     }
 
     pub fn markPendingTaskDone(this: *LinkerContext) void {
@@ -350,6 +350,7 @@ pub const LinkerContext = struct {
 
     const LinkError = OOM || error{
         BuildFailed,
+        Canceled,
         ImportResolutionFailed,
     };
 
@@ -650,7 +651,7 @@ pub const LinkerContext = struct {
     pub const postProcessCSSChunk = @import("./linker_context/postProcessCSSChunk.zig").postProcessCSSChunk;
     pub const postProcessHTMLChunk = @import("./linker_context/postProcessHTMLChunk.zig").postProcessHTMLChunk;
     pub fn generateChunk(ctx: GenerateChunkCtx, chunk: *Chunk, chunk_index: usize) void {
-        const worker = ThreadPool.Worker.get(@fieldParentPtr("linker", ctx.c));
+        const worker = Executor.Worker.get(@fieldParentPtr("linker", ctx.c));
         defer worker.unget();
         switch (chunk.content) {
             .javascript => postProcessJSChunk(ctx, worker, chunk, chunk_index) catch |err| Output.panic("TODO: handle error: {s}", .{@errorName(err)}),
@@ -662,7 +663,7 @@ pub const LinkerContext = struct {
     pub const renameSymbolsInChunk = @import("./linker_context/renameSymbolsInChunk.zig").renameSymbolsInChunk;
 
     pub fn generateJSRenamer(ctx: GenerateChunkCtx, chunk: *Chunk, chunk_index: usize) void {
-        var worker = ThreadPool.Worker.get(@fieldParentPtr("linker", ctx.c));
+        var worker = Executor.Worker.get(@fieldParentPtr("linker", ctx.c));
         defer worker.unget();
         switch (chunk.content) {
             .javascript => generateJSRenamer_(ctx, worker, chunk, chunk_index),
@@ -671,7 +672,7 @@ pub const LinkerContext = struct {
         }
     }
 
-    fn generateJSRenamer_(ctx: GenerateChunkCtx, worker: *ThreadPool.Worker, chunk: *Chunk, chunk_index: usize) void {
+    fn generateJSRenamer_(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk: *Chunk, chunk_index: usize) void {
         _ = chunk_index;
         chunk.renamer = ctx.c.renameSymbolsInChunk(
             worker.allocator,
@@ -691,7 +692,7 @@ pub const LinkerContext = struct {
     pub fn generateSourceMapForChunk(
         c: *LinkerContext,
         isolated_hash: u64,
-        worker: *ThreadPool.Worker,
+        worker: *Executor.Worker,
         results: std.MultiArrayList(CompileResultForSourceMap),
         chunk_abs_dir: string,
         can_have_shifts: bool,
@@ -1399,7 +1400,7 @@ pub const LinkerContext = struct {
 
     pub const PendingPartRange = struct {
         part_range: PartRange,
-        task: ThreadPoolLib.Task,
+        task: ExecutorTypes.Task,
         ctx: *GenerateChunkCtx,
         i: u32 = 0,
     };
@@ -2697,14 +2698,14 @@ pub const LinkerContext = struct {
 };
 
 pub const Ref = bun.ast.Ref;
-pub const ThreadPoolLib = bun.ThreadPool;
+pub const ExecutorTypes = bun.bundle_v2.Executor;
 pub const Fs = @import("../resolver/fs.zig");
 
 pub const Index = bun.ast.Index;
 const debugTreeShake = Output.scoped(.TreeShake, .hidden);
 
 pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
-pub const ThreadPool = bun.bundle_v2.ThreadPool;
+pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
 const string = []const u8;

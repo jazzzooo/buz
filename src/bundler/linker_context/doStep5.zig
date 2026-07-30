@@ -9,7 +9,7 @@ pub fn doStep5(c: *LinkerContext, source_index_: Index, _: usize) void {
     const id = source_index;
     if (id >= c.graph.meta.len) return;
 
-    const worker: *ThreadPool.Worker = ThreadPool.Worker.get(@fieldParentPtr("linker", c));
+    const worker: *Executor.Worker = Executor.Worker.get(@fieldParentPtr("linker", c));
     defer worker.unget();
 
     // we must use this allocator here
@@ -477,7 +477,7 @@ pub fn createExportsForFile(
     }
 }
 
-pub const ThreadPool = bun.bundle_v2.ThreadPool;
+pub const Executor = bun.bundle_v2.Executor;
 
 const string = []const u8;
 

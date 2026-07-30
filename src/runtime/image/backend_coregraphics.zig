@@ -127,7 +127,7 @@ pub fn flip(src: []const u8, w: u32, h: u32, horizontal: bool) BackendError![]u8
 // ── NSPasteboard ───────────────────────────────────────────────────────────
 // JS-thread only (NSPasteboard is documented main-thread-safe to *read*, and
 // the static `Bun.Image.fromClipboard()` accessor calls this synchronously
-// before constructing the Image — the heavy decode still goes to WorkPool).
+// before constructing the Image — the heavy decode still goes to BackgroundWork).
 
 extern fn bun_coregraphics_clipboard(out: ?[*]u8, out_len: *usize, probe_only: i32) i32;
 

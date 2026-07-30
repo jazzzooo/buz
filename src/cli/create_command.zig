@@ -1387,12 +1387,16 @@ pub const CreateCommand = struct {
         }
 
         var npm_client_: ?NPMClient = null;
+        var git_future: ?std.Io.Future(bool) = null;
+        defer {
+            if (git_future) |*future| _ = future.cancel(ctx.io);
+        }
 
         create_options.skip_install = create_options.skip_install or !has_dependencies;
 
         if (!create_options.skip_git) {
             if (!create_options.skip_install) {
-                GitHandler.spawn(ctx.io, destination, PATH, create_options.verbose);
+                git_future = ctx.io.async(GitHandler.runAsync, .{ ctx.io, destination, PATH, create_options.verbose });
             } else {
                 if (create_options.verbose) {
                     create_options.skip_git = GitHandler.run(ctx.io, destination, PATH, true) catch false;
@@ -1462,7 +1466,7 @@ pub const CreateCommand = struct {
         }
 
         if (!create_options.skip_install and !create_options.skip_git) {
-            create_options.skip_git = !GitHandler.wait();
+            create_options.skip_git = !git_future.?.await(ctx.io);
         }
 
         Output.printError("\n", .{});
@@ -2288,53 +2292,18 @@ pub const CreateListExamplesCommand = struct {
 };
 
 const GitHandler = struct {
-    var success: std.atomic.Value(u32) = undefined;
-    var thread: std.Thread = undefined;
-    pub fn spawn(
+    fn runAsync(
         io: std.Io,
         destination: string,
         PATH: string,
         verbose: bool,
-    ) void {
-        success = std.atomic.Value(u32).init(0);
-
-        thread = std.Thread.spawn(.{}, spawnThread, .{ io, destination, PATH, verbose }) catch |err| {
-            Output.prettyErrorln("<r><red>{s}<r>", .{@errorName(err)});
-            Global.exit(1);
-        };
-    }
-
-    fn spawnThread(
-        io: std.Io,
-        destination: string,
-        PATH: string,
-        verbose: bool,
-    ) void {
+    ) bool {
         Output.Source.configureNamedThread("git");
         defer Output.flush();
-        const outcome = if (verbose)
+        return if (verbose)
             run(io, destination, PATH, true) catch false
         else
             run(io, destination, PATH, false) catch false;
-
-        success.store(
-            if (outcome)
-                1
-            else
-                2,
-            .release,
-        );
-        Futex.wake(&success, 1);
-    }
-
-    pub fn wait() bool {
-        while (success.load(.acquire) == 0) {
-            Futex.wait(&success, 0, 1000) catch continue;
-        }
-
-        const outcome = success.load(.acquire) == 1;
-        thread.join();
-        return outcome;
     }
 
     pub fn run(
@@ -2418,7 +2387,6 @@ const which = @import("../which/which.zig").which;
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const Futex = bun.Futex;
 const Global = bun.Global;
 const JSON = bun.json;
 const JSPrinter = bun.js_printer;

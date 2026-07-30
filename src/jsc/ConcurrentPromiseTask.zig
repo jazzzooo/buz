@@ -9,7 +9,7 @@ pub fn ConcurrentPromiseTask(comptime Context: type) type {
     return struct {
         const This = @This();
         ctx: *Context,
-        task: WorkPoolTask = .{ .callback = &runFromThreadPool },
+        task: BackgroundTask = .{ .callback = &runInBackground },
         event_loop: *jsc.EventLoop,
         allocator: std.mem.Allocator,
         promise: jsc.JSPromise.Strong = .{},
@@ -34,7 +34,7 @@ pub fn ConcurrentPromiseTask(comptime Context: type) type {
             return this;
         }
 
-        pub fn runFromThreadPool(task: *WorkPoolTask) void {
+        pub fn runInBackground(task: *BackgroundTask) void {
             var this: *This = @fieldParentPtr("task", task);
             Context.run(this.ctx);
             this.onFinish();
@@ -50,7 +50,10 @@ pub fn ConcurrentPromiseTask(comptime Context: type) type {
         }
 
         pub fn schedule(this: *This) void {
-            WorkPool.schedule(&this.task);
+            BackgroundWork.schedule(&this.event_loop.virtual_machine.background_tasks, &this.task) catch |err| {
+                this.ctx.onScheduleError(err);
+                this.onFinish();
+            };
         }
 
         pub fn onFinish(this: *This) void {
@@ -72,5 +75,5 @@ const Async = bun.Async;
 const jsc = bun.jsc;
 const JSPromise = jsc.JSPromise;
 const VirtualMachine = jsc.VirtualMachine;
-const WorkPool = jsc.WorkPool;
-const WorkPoolTask = jsc.WorkPoolTask;
+const BackgroundWork = jsc.BackgroundWork;
+const BackgroundTask = jsc.BackgroundTask;

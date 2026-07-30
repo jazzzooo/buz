@@ -37,16 +37,17 @@ pub fn run(this: *PBKDF2, output: []u8) bool {
 pub const Job = struct {
     pbkdf2: PBKDF2,
     output: []u8 = &[_]u8{},
-    task: jsc.WorkPoolTask = .{ .callback = &runTask },
+    task: jsc.BackgroundTask = .{ .callback = &runTask },
     promise: jsc.JSPromise.Strong = .{},
     vm: *jsc.VirtualMachine,
     err: ?u32 = null,
+    schedule_error: ?anyerror = null,
     any_task: jsc.AnyTask = undefined,
     poll: Async.KeepAlive = .{},
 
     pub const new = bun.TrivialNew(@This());
 
-    pub fn runTask(task: *jsc.WorkPoolTask) void {
+    pub fn runTask(task: *jsc.BackgroundTask) void {
         const job: *PBKDF2.Job = @fieldParentPtr("task", task);
         defer job.vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
         job.output = bun.default_allocator.alloc(u8, @as(usize, @intCast(job.pbkdf2.length))) catch {
@@ -70,6 +71,14 @@ pub const Job = struct {
 
         const globalThis = this.vm.global;
         const promise = this.promise.swap();
+        if (this.schedule_error) |err| {
+            const error_value: bun.JSError!jsc.JSValue = if (globalThis.createErrorInstance(
+                "Failed to start PBKDF2 operation: {s}",
+                .{@errorName(err)},
+            )) |instance| instance.toJS() else |js_err| js_err;
+            try promise.rejectWithAsyncStack(globalThis, error_value);
+            return;
+        }
         if (this.err) |err| {
             try promise.rejectWithAsyncStack(globalThis, createCryptoError(globalThis, err));
             return;
@@ -100,7 +109,10 @@ pub const Job = struct {
         job.promise = jsc.JSPromise.Strong.init(globalThis);
         job.any_task = jsc.AnyTask.New(@This(), &runFromJS).init(job);
         job.poll.ref(vm);
-        jsc.WorkPool.schedule(&job.task);
+        jsc.BackgroundWork.schedule(&vm.background_tasks, &job.task) catch |err| {
+            job.schedule_error = err;
+            vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
+        };
 
         return job;
     }

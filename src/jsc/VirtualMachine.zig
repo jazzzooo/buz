@@ -27,8 +27,11 @@ comptime {
 global: *JSGlobalObject,
 allocator: std.mem.Allocator,
 io: std.Io,
+pinned_threads: *jsc.PinnedThreadDomain,
+background_tasks: bun.BackgroundTaskGroup,
+background_tasks_deinitialized: bool = false,
 transpiler: Transpiler,
-bun_watcher: ImportWatcher = .{ .none = {} },
+bun_watcher: ImportWatcher = .none,
 console: *ConsoleObject,
 log: *logger.Log,
 main: []const u8 = "",
@@ -180,11 +183,11 @@ module_loader: ModuleLoader = .{},
 
 gc_controller: jsc.GarbageCollectionController = .{},
 worker: ?*webcore.WebWorker = null,
+worker_children: webcore.WebWorker.Children = .{},
 ipc: ?IPCInstanceUnion = null,
 hot_reload_counter: u32 = 0,
 
 debugger: ?jsc.Debugger = null,
-has_started_debugger: bool = false,
 has_terminated: bool = false,
 
 body_value_hive_allocator: webcore.Body.Value.HiveAllocator = undefined,
@@ -927,6 +930,8 @@ pub fn onExit(this: *VirtualMachine) void {
 
     this.exit_handler.dispatchOnExit();
     this.is_shutting_down = true;
+    this.transpiler.resolver.watcher = null;
+    this.bun_watcher.deinit();
 
     const rare_data = this.rare_data orelse return;
     defer rare_data.cleanup_hooks.clearAndFree(bun.default_allocator);
@@ -949,22 +954,22 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
     //        causes like 50+ tests to break
     // this.eventLoop().tick();
 
+    jsc.Debugger.stopAndJoin(this);
     if (this.shouldDestructMainThreadOnExit()) {
         if (this.eventLoop().forever_timer) |t| t.deinit(true);
-        // Detached worker threads may still be in startVM()/spin() using the
-        // process-global resolver BSSMap singletons (dir_cache, dirname_store,
-        // etc.). transpiler.deinit() below frees those singletons, so request
-        // termination of every live worker and wait for each to reach
-        // shutdown() (past all resolver access) first. Node.js does the
-        // equivalent in Environment::stop_sub_worker_contexts().
-        webcore.WebWorker.terminateAllAndWait(this.io, 10_000);
+        // Closing registration before termination makes nested creation race
+        // deterministically: it either joins this tree or is rejected.
+        if (this.stopChildThreads(10_000) == .timed_out) {
+            Output.errGeneric("Timed out while stopping worker threads", .{});
+            bun.Global.exitWithoutCleanup(this.exit_handler.exit_code);
+        }
         // Embedded per-VM socket groups must drain while JSC is still alive
         // (closeAll() fires on_close → JS). After JSC teardown,
         // RareData.deinit() only deinit()s the groups (asserts empty).
         // Mirrors web_worker.zig — without this, every still-open Bun.connect
         // / postgres / etc. socket is an LSAN leak under
         // BUN_DESTRUCT_VM_ON_EXIT.
-        if (this.rare_data) |rare| rare.closeAllSocketGroups(this);
+        this.prepareForJSCDestruction();
         Zig__GlobalObject__destructOnExit(this.global);
         // lastChanceToFinalize() above runs Listener/Server finalize → their
         // own embedded group.closeAll() → sockets land in loop.closed_head.
@@ -1104,6 +1109,8 @@ pub fn initWithModuleGraph(
         .transpiler_store = RuntimeTranspilerStore.init(),
         .allocator = allocator,
         .io = opts.io,
+        .pinned_threads = opts.pinned_threads,
+        .background_tasks = .init(opts.pinned_threads.backgroundExecutor()),
         .entry_point = ServerEntryPoint{},
         .transpiler = transpiler,
         .console = console,
@@ -1121,6 +1128,7 @@ pub fn initWithModuleGraph(
         .standalone_module_graph = opts.graph.?,
         .initial_script_execution_context_identifier = if (opts.is_main_thread) 1 else std.math.maxInt(i32),
     };
+    errdefer vm.background_tasks.deinit();
     vm.source_mappings.init(vm.io, &vm.saved_source_map_table);
     vm.regular_event_loop.tasks = EventLoop.Queue.init(
         default_allocator,
@@ -1180,6 +1188,7 @@ export fn Bun__isMainThreadVM() callconv(.c) bool {
 pub const Options = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
+    pinned_threads: *jsc.PinnedThreadDomain,
     args: api.TransformOptions,
     log: ?*logger.Log = null,
     env_loader: ?*DotEnv.Loader = null,
@@ -1227,6 +1236,8 @@ pub fn init(opts: Options) !*VirtualMachine {
         .transpiler_store = RuntimeTranspilerStore.init(),
         .allocator = allocator,
         .io = opts.io,
+        .pinned_threads = opts.pinned_threads,
+        .background_tasks = .init(opts.pinned_threads.backgroundExecutor()),
         .entry_point = ServerEntryPoint{},
         .transpiler = transpiler,
         .console = console,
@@ -1246,6 +1257,7 @@ pub fn init(opts: Options) !*VirtualMachine {
         .ref_strings_mutex = .init,
         .initial_script_execution_context_identifier = if (opts.is_main_thread) 1 else std.math.maxInt(i32),
     };
+    errdefer vm.background_tasks.deinit();
     vm.source_mappings.init(vm.io, &vm.saved_source_map_table);
     vm.regular_event_loop.tasks = EventLoop.Queue.init(
         default_allocator,
@@ -1387,6 +1399,8 @@ pub fn initWorker(
         .global = undefined,
         .allocator = allocator,
         .io = opts.io,
+        .pinned_threads = opts.pinned_threads,
+        .background_tasks = .init(opts.pinned_threads.backgroundExecutor()),
         .transpiler_store = RuntimeTranspilerStore.init(),
         .entry_point = ServerEntryPoint{},
         .transpiler = transpiler,
@@ -1408,6 +1422,7 @@ pub fn initWorker(
         .worker = worker,
         .initial_script_execution_context_identifier = @as(i32, @intCast(worker.execution_context_id)),
     };
+    errdefer vm.background_tasks.deinit();
     vm.source_mappings.init(vm.io, &vm.saved_source_map_table);
     vm.regular_event_loop.tasks = EventLoop.Queue.init(
         default_allocator,
@@ -1487,6 +1502,8 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
         .transpiler_store = RuntimeTranspilerStore.init(),
         .allocator = allocator,
         .io = opts.io,
+        .pinned_threads = opts.pinned_threads,
+        .background_tasks = .init(opts.pinned_threads.backgroundExecutor()),
         .entry_point = ServerEntryPoint{},
         .transpiler = transpiler,
         .console = console,
@@ -1503,6 +1520,7 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
         .ref_strings_mutex = .init,
         .initial_script_execution_context_identifier = if (opts.is_main_thread) 1 else std.math.maxInt(i32),
     };
+    errdefer vm.background_tasks.deinit();
     vm.source_mappings.init(vm.io, &vm.saved_source_map_table);
     vm.regular_event_loop.tasks = EventLoop.Queue.init(
         default_allocator,
@@ -2067,6 +2085,9 @@ pub fn processFetchLog(globalThis: *JSGlobalObject, specifier: bun.String, refer
 }
 
 pub fn deinit(this: *VirtualMachine) void {
+    bun.assert(this.stopChildThreads(null) == .completed);
+    this.worker_children.deinit();
+    this.shutdownBackgroundTasks();
     this.auto_killer.deinit();
 
     if (source_code_printer) |print| {
@@ -2087,6 +2108,24 @@ pub fn deinit(this: *VirtualMachine) void {
     this.overridden_main.deinit();
     this.entry_point.deinit();
     this.has_terminated = true;
+}
+
+pub fn shutdownBackgroundTasks(this: *VirtualMachine) void {
+    if (this.background_tasks_deinitialized) return;
+    this.background_tasks_deinitialized = true;
+    this.background_tasks.deinit();
+}
+
+pub fn stopChildThreads(this: *VirtualMachine, timeout_ms: ?u64) webcore.WebWorker.Children.Shutdown {
+    jsc.Debugger.stopAndJoin(this);
+    return this.worker_children.closeAndJoin(this, timeout_ms);
+}
+
+pub fn prepareForJSCDestruction(this: *VirtualMachine) void {
+    this.shutdownBackgroundTasks();
+    jsc.API.cron.CronJob.clearAllForVM(this, .teardown);
+    // Socket close callbacks can run JavaScript, so they must precede JSC teardown.
+    if (this.rare_data) |rare| rare.closeAllSocketGroups(this);
 }
 
 pub const ExceptionList = std.array_list.Managed(api.JsException);
@@ -2245,7 +2284,7 @@ pub fn ensureDebugger(this: *VirtualMachine, block_until_connected: bool) !void 
         try jsc.Debugger.create(this, this.global);
 
         if (block_until_connected) {
-            jsc.Debugger.waitForDebuggerIfNecessary(this);
+            try jsc.Debugger.waitForDebuggerIfNecessary(this);
         }
     }
 }

@@ -24,8 +24,9 @@ pub const PatchTask = struct {
         calc_hash: CalcPatchHash,
         apply: ApplyPatch,
     },
-    task: ThreadPool.Task = .{
-        .callback = runFromThreadPool,
+    task: BackgroundTaskGroup.Task = .{
+        .callback = runInBackground,
+        .on_schedule_error = onScheduleError,
     },
     pre: bool = false,
     next: ?*PatchTask = null,
@@ -93,13 +94,29 @@ pub const PatchTask = struct {
         bun.destroy(this);
     }
 
-    pub fn runFromThreadPool(task: *ThreadPool.Task) void {
+    pub fn runInBackground(task: *BackgroundTaskGroup.Task) void {
         var patch_task: *PatchTask = @fieldParentPtr("task", task);
-        patch_task.runFromThreadPoolImpl();
+        patch_task.runInBackgroundImpl();
     }
 
-    pub fn runFromThreadPoolImpl(this: *PatchTask) void {
-        debug("runFromThreadPoolImpl {s}", .{@tagName(this.callback)});
+    pub fn onScheduleError(task: *BackgroundTaskGroup.Task, err: std.Io.ConcurrentError) void {
+        const this: *PatchTask = @fieldParentPtr("task", task);
+        const log = switch (this.callback) {
+            .calc_hash => |*ctx| &ctx.logger,
+            .apply => |*ctx| &ctx.logger,
+        };
+        log.addErrorFmt(
+            null,
+            logger.Loc.Empty,
+            this.manager.allocator,
+            "failed to start patch task: {s}",
+            .{@errorName(err)},
+        ) catch |oom| bun.handleOom(oom);
+        this.notify();
+    }
+
+    pub fn runInBackgroundImpl(this: *PatchTask) void {
+        debug("runInBackgroundImpl {s}", .{@tagName(this.callback)});
         defer {
             defer this.manager.wake();
             this.manager.patch_task_queue.push(this);
@@ -154,7 +171,7 @@ pub const PatchTask = struct {
                     Output.errGeneric("Failed to calculate hash for patch <b>{s}<r>", .{this.callback.calc_hash.patchfile_path});
                 }
             }
-            Global.crash();
+            return error.InstallFailed;
         };
 
         var gop = bun.handleOom(manager.lockfile.patched_dependencies.getOrPut(manager.allocator, calc_hash.name_and_version_hash));
@@ -506,8 +523,8 @@ pub const PatchTask = struct {
         this.manager.patch_task_queue.push(this);
     }
 
-    pub fn schedule(this: *PatchTask, batch: *ThreadPool.Batch) void {
-        batch.push(ThreadPool.Batch.from(&this.task));
+    pub fn schedule(this: *PatchTask, batch: *BackgroundTaskGroup.Batch) void {
+        batch.push(BackgroundTaskGroup.Batch.from(&this.task));
     }
 
     pub fn newCalcPatchHash(
@@ -593,7 +610,7 @@ const bun = @import("bun");
 const Global = bun.Global;
 const Output = bun.Output;
 const PackageManager = bun.PackageManager;
-const ThreadPool = bun.ThreadPool;
+const BackgroundTaskGroup = bun.BackgroundTaskGroup;
 const String = bun.Semver.String;
 const Task = bun.install.Task;
 

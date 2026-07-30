@@ -1,4 +1,4 @@
-pub fn postProcessHTMLChunk(ctx: GenerateChunkCtx, worker: *ThreadPool.Worker, chunk: *Chunk) !void {
+pub fn postProcessHTMLChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk: *Chunk) !void {
     // This is where we split output into pieces
     const c = ctx.c;
     var j = StringJoiner{
@@ -29,7 +29,7 @@ const bun = @import("bun");
 const StringJoiner = bun.StringJoiner;
 
 const Chunk = bun.bundle_v2.Chunk;
-const ThreadPool = bun.bundle_v2.ThreadPool;
+const Executor = bun.bundle_v2.Executor;
 
 const LinkerContext = bun.bundle_v2.LinkerContext;
 const GenerateChunkCtx = bun.bundle_v2.LinkerContext.GenerateChunkCtx;

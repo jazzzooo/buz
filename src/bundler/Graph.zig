@@ -1,6 +1,6 @@
 const Graph = @This();
 
-pool: *ThreadPool,
+pool: *Executor,
 heap: ThreadLocalArena,
 
 /// Mapping user-specified entry points to their Source Index
@@ -135,4 +135,4 @@ const AdditionalFile = bun.bundle_v2.AdditionalFile;
 const BundleV2 = bun.bundle_v2.BundleV2;
 const ParseTask = bun.bundle_v2.ParseTask;
 const PathToSourceIndexMap = bun.bundle_v2.PathToSourceIndexMap;
-const ThreadPool = bun.bundle_v2.ThreadPool;
+const Executor = bun.bundle_v2.Executor;

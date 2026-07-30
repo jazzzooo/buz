@@ -166,7 +166,10 @@ pub fn onMessage(s: *HmrSocket, ws: AnyWebSocket, msg: []const u8, opcode: uws.O
                     event.entry_points,
                     true,
                     bun.SystemTimer.start() catch @panic("timers unsupported"),
-                ) catch |err| bun.handleOom(err);
+                ) catch |err| switch (err) {
+                    error.OutOfMemory => bun.outOfMemory(),
+                    else => Output.err(err, "Failed to start bundler", .{}),
+                };
 
                 event.entry_points.deinit(s.dev.allocator());
             },

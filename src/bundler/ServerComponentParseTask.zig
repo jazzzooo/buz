@@ -3,7 +3,7 @@
 /// with the same logic that it runs though.
 pub const ServerComponentParseTask = @This();
 
-task: ThreadPoolLib.Task = .{ .callback = &taskCallbackWrap },
+task: ExecutorTypes.Task = .{ .callback = &taskCallbackWrap },
 data: Data,
 ctx: *BundleV2,
 source: Logger.Source,
@@ -25,9 +25,9 @@ pub const Data = union(enum) {
     };
 };
 
-fn taskCallbackWrap(thread_pool_task: *ThreadPoolLib.Task) void {
-    const task: *ServerComponentParseTask = @fieldParentPtr("task", thread_pool_task);
-    var worker = ThreadPool.Worker.get(task.ctx);
+fn taskCallbackWrap(executor_task: *ExecutorTypes.Task) void {
+    const task: *ServerComponentParseTask = @fieldParentPtr("task", executor_task);
+    var worker = Executor.Worker.get(task.ctx);
     defer worker.unget();
     var log = Logger.Log.init(worker.allocator);
 
@@ -214,7 +214,7 @@ pub const Ref = bun.ast.Ref;
 pub const Index = bun.ast.Index;
 
 pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
-pub const ThreadPool = bun.bundle_v2.ThreadPool;
+pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
 const options = @import("./options.zig");
@@ -225,7 +225,7 @@ const Loc = Logger.Loc;
 
 const bun = @import("bun");
 const OOM = bun.OOM;
-const ThreadPoolLib = bun.ThreadPool;
+const ExecutorTypes = bun.bundle_v2.Executor;
 const default_allocator = bun.default_allocator;
 const js_parser = bun.js_parser;
 const jsc = bun.jsc;

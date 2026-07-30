@@ -26,6 +26,9 @@ concurrent_tasks: ConcurrentTaskQueue = .{},
 io: std.Io,
 loop: *uws.Loop,
 allocator: std.mem.Allocator,
+background_tasks: ?bun.BackgroundTaskGroup = null,
+borrowed_background_tasks: ?*bun.BackgroundTaskGroup = null,
+background_executor: *bun.BackgroundExecutor,
 file_polls_: ?*Async.FilePoll.Store = null,
 env: ?*bun.DotEnv.Loader = null,
 top_level_dir: []const u8 = "",
@@ -43,7 +46,7 @@ pub const ConcurrentTaskQueue = UnboundedQueue(AnyTaskWithExtraContext, .next);
 
 pub fn initGlobal(io: std.Io, env: ?*bun.DotEnv.Loader, cwd: ?[]const u8) *MiniEventLoop {
     if (globalInitialized) return global;
-    const loop = MiniEventLoop.init(io, bun.default_allocator);
+    const loop = MiniEventLoop.init(io, bun.default_allocator, bun.cli.Cli.pinnedThreads().backgroundExecutor());
     global = bun.handleOom(bun.default_allocator.create(MiniEventLoop));
     global.* = loop;
     global.loop.internal_loop_data.setParentEventLoop(bun.jsc.EventLoopHandle.init(global));
@@ -115,18 +118,34 @@ pub fn filePolls(this: *MiniEventLoop) *Async.FilePoll.Store {
 pub fn init(
     io: std.Io,
     allocator: std.mem.Allocator,
+    background_executor: *bun.BackgroundExecutor,
 ) MiniEventLoop {
     return .{
         .tasks = Queue.init(allocator),
         .io = io,
         .allocator = allocator,
+        .background_executor = background_executor,
         .loop = uws.Loop.get(),
     };
 }
 
 pub fn deinit(this: *MiniEventLoop) void {
+    if (this.background_tasks) |*group| group.deinit();
     this.tasks.deinit();
     bun.assert(this.concurrent_tasks.isEmpty());
+}
+
+pub fn attachBackgroundTasks(this: *MiniEventLoop, group: *bun.BackgroundTaskGroup) void {
+    bun.assert(this.background_tasks == null);
+    bun.assert(this.borrowed_background_tasks == null);
+    this.borrowed_background_tasks = group;
+}
+
+pub fn backgroundTasks(this: *MiniEventLoop) *bun.BackgroundTaskGroup {
+    if (this.borrowed_background_tasks) |group| return group;
+    if (this.background_tasks == null)
+        this.background_tasks = .init(this.background_executor);
+    return &this.background_tasks.?;
 }
 
 pub fn tickConcurrentWithCount(this: *MiniEventLoop) usize {

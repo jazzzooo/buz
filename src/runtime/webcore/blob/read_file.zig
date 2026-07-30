@@ -55,7 +55,7 @@ pub const ReadFile = struct {
     read_eof: bool = false,
     size: SizeType = 0,
     buffer: std.ArrayListUnmanaged(u8) = .empty,
-    task: bun.ThreadPool.Task = undefined,
+    task: bun.BackgroundTaskGroup.Task = undefined,
     system_error: ?jsc.SystemError = null,
     errno: ?anyerror = null,
     onCompleteCtx: *anyopaque = undefined,
@@ -142,7 +142,7 @@ pub const ReadFile = struct {
             this.close_after_io = this.io_request.scheduled;
         }
 
-        jsc.WorkPool.schedule(&this.task);
+        jsc.BackgroundWork.scheduleContinuation(&this.io_task.?.event_loop.virtual_machine.background_tasks, &this.task);
     }
 
     pub fn onIOError(this: *ReadFile, err: bun.sys.Error) void {
@@ -157,7 +157,7 @@ pub const ReadFile = struct {
             // unless pending IO has been scheduled in-between.
             this.close_after_io = this.io_request.scheduled;
         }
-        jsc.WorkPool.schedule(&this.task);
+        jsc.BackgroundWork.scheduleContinuation(&this.io_task.?.event_loop.virtual_machine.background_tasks, &this.task);
     }
 
     pub fn onRequestReadable(request: *io.Request) io.Action {
@@ -276,6 +276,14 @@ pub const ReadFile = struct {
 
     pub fn run(this: *ReadFile, task: *ReadFileTask) void {
         this.runAsync(task);
+    }
+
+    pub fn onScheduleError(this: *ReadFile, err: anyerror) void {
+        this.system_error = .{
+            .code = bun.String.static("ERR_CONCURRENCY_UNAVAILABLE"),
+            .message = bun.String.static(@errorName(err)),
+            .syscall = bun.String.static("read"),
+        };
     }
 
     fn runAsync(this: *ReadFile, task: *ReadFileTask) void {
@@ -414,7 +422,7 @@ pub const ReadFile = struct {
         this.doReadLoop();
     }
 
-    fn doReadLoopTask(task: *jsc.WorkPoolTask) void {
+    fn doReadLoopTask(task: *jsc.BackgroundTask) void {
         var this: *ReadFile = @alignCast(@fieldParentPtr("task", task));
 
         this.update();

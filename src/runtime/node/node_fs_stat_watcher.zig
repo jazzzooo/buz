@@ -11,7 +11,7 @@ fn statToJSStats(globalThis: *jsc.JSGlobalObject, stats: *const bun.sys.PosixSta
 /// This is a singleton struct that contains the timer used to schedule re-stat calls.
 pub const StatWatcherScheduler = struct {
     current_interval: std.atomic.Value(i32) = .{ .raw = 0 },
-    task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
+    task: jsc.BackgroundTask = .{ .callback = &workPoolCallback },
     main_thread: std.Thread.Id,
     vm: *bun.jsc.VirtualMachine,
     watchers: WatcherQueue = WatcherQueue{},
@@ -120,10 +120,12 @@ pub const StatWatcherScheduler = struct {
             return;
         }
 
-        jsc.WorkPool.schedule(&this.task);
+        jsc.BackgroundWork.schedule(&this.vm.background_tasks, &this.task) catch {
+            workPoolCallback(&this.task);
+        };
     }
 
-    pub fn workPoolCallback(task: *jsc.WorkPoolTask) void {
+    pub fn workPoolCallback(task: *jsc.BackgroundTask) void {
         var this: *StatWatcherScheduler = @alignCast(@fieldParentPtr("task", task));
         // ref'd when the timer was scheduled
         defer this.deref();
@@ -352,15 +354,17 @@ pub const StatWatcher = struct {
 
     pub const InitialStatTask = struct {
         watcher: *StatWatcher,
-        task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
+        task: jsc.BackgroundTask = .{ .callback = &workPoolCallback },
 
         pub fn createAndSchedule(watcher: *StatWatcher) void {
             const task = bun.new(InitialStatTask, .{ .watcher = watcher });
             watcher.ref();
-            jsc.WorkPool.schedule(&task.task);
+            jsc.BackgroundWork.schedule(&watcher.ctx.background_tasks, &task.task) catch {
+                workPoolCallback(&task.task);
+            };
         }
 
-        fn workPoolCallback(task: *jsc.WorkPoolTask) void {
+        fn workPoolCallback(task: *jsc.BackgroundTask) void {
             const initial_stat_task: *InitialStatTask = @fieldParentPtr("task", task);
             defer bun.destroy(initial_stat_task);
             const this = initial_stat_task.watcher;

@@ -229,10 +229,13 @@ pub const ShellLsTask = struct {
 
     event_loop: jsc.EventLoopHandle,
     concurrent_task: jsc.EventLoopTask,
-    task: jsc.WorkPoolTask = .{ .callback = workPoolCallback },
+    task: jsc.BackgroundTask = .{ .callback = workPoolCallback },
 
     pub fn schedule(this: *@This()) void {
-        jsc.WorkPool.schedule(&this.task);
+        jsc.BackgroundWork.schedule(this.event_loop.backgroundTasks(), &this.task) catch {
+            this.err = Syscall.Error.fromCode(.AGAIN, .scandir);
+            this.doneLogic();
+        };
     }
 
     pub fn create(
@@ -535,7 +538,7 @@ pub const ShellLsTask = struct {
         return err.withPath(bun.handleOom(this.ls.alloc_scope.allocator().dupeSentinel(u8, path[0..path.len], 0)));
     }
 
-    pub fn workPoolCallback(task: *jsc.WorkPoolTask) void {
+    pub fn workPoolCallback(task: *jsc.BackgroundTask) void {
         var this: *@This() = @fieldParentPtr("task", task);
         this.run();
         this.doneLogic();

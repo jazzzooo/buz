@@ -111,6 +111,7 @@ pub fn exit(code: u32) noreturn {
 
     // If we are crashing, allow the crash handler to finish it's work.
     bun.crash_handler.sleepForeverIfAnotherThreadIsCrashing();
+    bun.cli.Cli.shutdownRuntimeServices();
 
     if (Environment.isDebug) {
         bun.assert(bun.debug_allocator_data.backing.?.deinit() == .ok);
@@ -135,6 +136,15 @@ pub fn exit(code: u32) noreturn {
             std.c.abort(); // quick_exit should be noreturn
         },
     }
+}
+
+pub fn exitWithoutCleanup(code: u32) noreturn {
+    is_exiting.store(true, .monotonic);
+    Output.flush();
+    if (Environment.isWindows) {
+        std.os.windows.ntdll.RtlExitUserProcess(code);
+    }
+    std.c._exit(@bitCast(code));
 }
 
 pub fn raiseIgnoringPanicHandler(sig: bun.SignalCode) noreturn {

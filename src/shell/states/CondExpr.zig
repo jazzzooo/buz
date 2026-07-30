@@ -23,14 +23,18 @@ state: union(enum) {
 args: std.array_list.Managed([:0]const u8),
 
 pub const ShellCondExprStatTask = struct {
-    task: ShellTask(@This(), runFromThreadPool, runFromMainThread, log),
+    task: ShellTask(@This(), runInBackground, runFromMainThread, log),
     condexpr: *CondExpr,
     result: ?Maybe(bun.Stat) = null,
     path: [:0]const u8,
     cwdfd: bun.FD,
 
-    pub fn runFromThreadPool(this: *ShellCondExprStatTask) void {
+    pub fn runInBackground(this: *ShellCondExprStatTask) void {
         this.result = ShellSyscall.statat(this.cwdfd, this.path);
+    }
+
+    pub fn onScheduleError(this: *ShellCondExprStatTask, _: anyerror) void {
+        this.result = .{ .err = bun.sys.Error.fromCode(.AGAIN, .stat) };
     }
 
     pub fn runFromMainThread(this: *ShellCondExprStatTask) void {

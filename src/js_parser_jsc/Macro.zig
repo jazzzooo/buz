@@ -180,6 +180,7 @@ pub fn init(
         var _vm = try JavaScript.VirtualMachine.init(.{
             .allocator = default_allocator,
             .io = io,
+            .pinned_threads = bun.cli.Cli.pinnedThreads(),
             .args = resolver.opts.transform_options,
             .log = log,
             .is_main_thread = false,

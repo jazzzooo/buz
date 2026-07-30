@@ -175,7 +175,7 @@ pub const ShellMkdirTask = struct {
     created_directories: ArrayList(u8),
 
     err: ?jsc.SystemError = null,
-    task: jsc.WorkPoolTask = .{ .callback = &runFromThreadPool },
+    task: jsc.BackgroundTask = .{ .callback = &runInBackground },
     event_loop: jsc.EventLoopHandle,
     concurrent_task: jsc.EventLoopTask,
 
@@ -216,7 +216,14 @@ pub const ShellMkdirTask = struct {
 
     pub fn schedule(this: *@This()) void {
         debug("{f} schedule", .{this});
-        WorkPool.schedule(&this.task);
+        BackgroundWork.schedule(this.event_loop.backgroundTasks(), &this.task) catch {
+            this.err = bun.sys.Error.fromCode(.AGAIN, .mkdir).toShellSystemError();
+            if (this.event_loop == .js) {
+                this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
+            } else {
+                this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
+            }
+        };
     }
 
     pub fn runFromMainThread(this: *@This()) void {
@@ -228,9 +235,9 @@ pub const ShellMkdirTask = struct {
         this.runFromMainThread();
     }
 
-    fn runFromThreadPool(task: *jsc.WorkPoolTask) void {
+    fn runInBackground(task: *jsc.BackgroundTask) void {
         var this: *ShellMkdirTask = @fieldParentPtr("task", task);
-        debug("{f} runFromThreadPool", .{this});
+        debug("{f} runInBackground", .{this});
 
         // We have to give an absolute path to our mkdir
         // implementation for it to work with cwd
@@ -390,7 +397,7 @@ const bun = @import("bun");
 const ResolvePath = bun.path;
 
 const jsc = bun.jsc;
-const WorkPool = bun.jsc.WorkPool;
+const BackgroundWork = bun.jsc.BackgroundWork;
 
 const shell = bun.shell;
 const ExitCode = shell.ExitCode;

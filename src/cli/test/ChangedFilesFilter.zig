@@ -113,7 +113,11 @@ pub fn filter(
     const bundle = BundleV2.scanModuleGraphFromCLI(
         &scan_transpiler,
         allocator,
-        jsc.AnyEventLoop.init(ctx.io, allocator),
+        jsc.AnyEventLoop.init(
+            ctx.io,
+            allocator,
+            bun.cli.Cli.pinnedThreads().backgroundExecutor(),
+        ),
         entry_points,
     ) catch |err| {
         // Fall back to running every test rather than aborting the run.
@@ -125,11 +129,7 @@ pub fn filter(
             .total_tests = test_files.len,
         };
     };
-    // The bundler's ThreadLocalArena and worker pool are intentionally
-    // left in place for the remainder of the process. `bun test --watch`
-    // exec()s a fresh process on each reload, so nothing accumulates
-    // across restarts; tearing the pool down here blocks on worker
-    // shutdown and competes with the runtime VM's own parse threads.
+    defer bundle.deinitWithoutFreeingArena();
 
     const sources = bundle.graph.input_files.items(.source);
     const import_records = bundle.graph.ast.items(.import_records);

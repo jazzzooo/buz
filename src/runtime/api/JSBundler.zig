@@ -1491,7 +1491,7 @@ pub const JSBundler = struct {
 
                 if (this.was_file) {
                     // Faster path: skip the extra threadpool dispatch
-                    this.bv2.graph.pool.worker_pool.schedule(bun.ThreadPool.Batch.from(&this.parse_task.task));
+                    this.bv2.graph.pool.scheduleTask(&this.parse_task.task);
                     this.deinit();
                     return;
                 }

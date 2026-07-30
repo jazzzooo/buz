@@ -147,7 +147,7 @@ pub fn enqueueTarballForReading(
 
     const integrity = this.lockfile.packages.items(.meta)[package_id].integrity;
 
-    this.task_batch.push(ThreadPool.Batch.from(enqueueLocalTarball(
+    this.task_batch.push(BackgroundTaskGroup.Batch.from(enqueueLocalTarball(
         this,
         task_id,
         dependency_id,
@@ -184,7 +184,7 @@ pub fn enqueueGitForCheckout(
     if (checkout_queue.found_existing) return;
 
     if (this.git_repositories.get(clone_id)) |repo_fd| {
-        this.task_batch.push(ThreadPool.Batch.from(this.enqueueGitCheckout(checkout_id, repo_fd, dependency_id, alias, resolution.*, resolved, patch_name_and_version_hash)));
+        this.task_batch.push(BackgroundTaskGroup.Batch.from(this.enqueueGitCheckout(checkout_id, repo_fd, dependency_id, alias, resolution.*, resolved, patch_name_and_version_hash)));
     } else {
         var clone_queue = this.task_queue.getOrPut(this.allocator, clone_id) catch unreachable;
         if (!clone_queue.found_existing) {
@@ -198,7 +198,7 @@ pub fn enqueueGitForCheckout(
 
         if (clone_queue.found_existing) return;
 
-        this.task_batch.push(ThreadPool.Batch.from(enqueueGitClone(
+        this.task_batch.push(BackgroundTaskGroup.Batch.from(enqueueGitClone(
             this,
             clone_id,
             alias,
@@ -216,7 +216,7 @@ pub fn enqueueParseNPMPackage(
     task_id: Task.Id,
     name: strings.StringOrTinyString,
     network_task: *NetworkTask,
-) *ThreadPool.Task {
+) *BackgroundTaskGroup.Task {
     var task = this.preallocated_resolve_tasks.get();
     task.* = Task{
         .package_manager = this,
@@ -231,7 +231,7 @@ pub fn enqueueParseNPMPackage(
         .id = task_id,
         .data = undefined,
     };
-    return &task.threadpool_task;
+    return &task.background_task;
 }
 
 pub fn enqueuePackageForDownload(
@@ -901,7 +901,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
 
                 if (this.hasCreatedNetworkTask(checkout_id, dependency.behavior.isRequired())) return;
 
-                this.task_batch.push(ThreadPool.Batch.from(this.enqueueGitCheckout(
+                this.task_batch.push(BackgroundTaskGroup.Batch.from(this.enqueueGitCheckout(
                     checkout_id,
                     repo_fd,
                     id,
@@ -924,7 +924,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
 
                 if (this.hasCreatedNetworkTask(clone_id, dependency.behavior.isRequired())) return;
 
-                this.task_batch.push(ThreadPool.Batch.from(enqueueGitClone(this, clone_id, alias, dep, id, dependency, &res, null)));
+                this.task_batch.push(BackgroundTaskGroup.Batch.from(enqueueGitClone(this, clone_id, alias, dep, id, dependency, &res, null)));
             }
         },
         .github => {
@@ -1164,7 +1164,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                 .local => {
                     if (this.hasCreatedNetworkTask(task_id, dependency.behavior.isRequired())) return;
 
-                    this.task_batch.push(ThreadPool.Batch.from(enqueueLocalTarball(
+                    this.task_batch.push(BackgroundTaskGroup.Batch.from(enqueueLocalTarball(
                         this,
                         task_id,
                         id,
@@ -1232,8 +1232,8 @@ pub fn enqueueExtractNPMPackage(
     this: *PackageManager,
     tarball: *const ExtractTarball,
     network_task: *NetworkTask,
-) *ThreadPool.Task {
-    return &initExtractTask(this, tarball, network_task).threadpool_task;
+) *BackgroundTaskGroup.Task {
+    return &initExtractTask(this, tarball, network_task).background_task;
 }
 
 /// Allocate the extract Task up front so the streaming extractor can
@@ -1259,7 +1259,7 @@ fn enqueueGitClone(
     res: *const Resolution,
     /// if patched then we need to do apply step after network task is done
     patch_name_and_version_hash: ?u64,
-) *ThreadPool.Task {
+) *BackgroundTaskGroup.Task {
     var task = this.preallocated_resolve_tasks.get();
     task.* = Task{
         .package_manager = this,
@@ -1296,7 +1296,7 @@ fn enqueueGitClone(
         } else null,
         .data = undefined,
     };
-    return &task.threadpool_task;
+    return &task.background_task;
 }
 
 pub fn enqueueGitCheckout(
@@ -1309,7 +1309,7 @@ pub fn enqueueGitCheckout(
     resolved: string,
     /// if patched then we need to do apply step after network task is done
     patch_name_and_version_hash: ?u64,
-) *ThreadPool.Task {
+) *BackgroundTaskGroup.Task {
     var task = this.preallocated_resolve_tasks.get();
     task.* = Task{
         .package_manager = this,
@@ -1352,7 +1352,7 @@ pub fn enqueueGitCheckout(
         .id = task_id,
         .data = undefined,
     };
-    return &task.threadpool_task;
+    return &task.background_task;
 }
 
 fn enqueueLocalTarball(
@@ -1363,9 +1363,9 @@ fn enqueueLocalTarball(
     path: string,
     resolution: Resolution,
     integrity: Integrity,
-) *ThreadPool.Task {
+) *BackgroundTaskGroup.Task {
     // Resolve the on-disk tarball path here on the main thread. The task
-    // callback runs on a ThreadPool worker and must not read
+    // callback runs on a BackgroundTaskGroup worker and must not read
     // `lockfile.packages` / `lockfile.buffers.string_bytes`: those buffers
     // can be reallocated concurrently by the main thread while processing
     // other dependencies (e.g. `appendPackage` / `StringBuilder.allocate`
@@ -1432,7 +1432,7 @@ fn enqueueLocalTarball(
         .id = task_id,
         .data = undefined,
     };
-    return &task.threadpool_task;
+    return &task.background_task;
 }
 
 fn updateNameAndNameHashFromVersionReplacement(
@@ -1978,7 +1978,7 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 const Output = bun.Output;
 const Path = bun.path;
-const ThreadPool = bun.ThreadPool;
+const BackgroundTaskGroup = bun.BackgroundTaskGroup;
 const logger = bun.logger;
 const strings = bun.strings;
 

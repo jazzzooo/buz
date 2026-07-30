@@ -132,6 +132,7 @@ public:
     void dispatchErrorWithMessage(WTF::String message);
     bool dispatchErrorWithValue(Zig::GlobalObject* workerGlobalObject, JSValue value);
     bool dispatchExit(int32_t exitCode);
+    void finishExit(int32_t exitCode, bool dispatchEvent);
 
     // Post a task to the parent's ScriptExecutionContext by stable identifier.
     // Returns false if the parent context no longer exists (nested worker whose
@@ -176,6 +177,7 @@ private:
 
     std::atomic<State> m_state { State::Pending };
     std::atomic<bool> m_terminateRequested { false };
+    std::atomic<bool> m_exitFinalized { false };
 
     // Stable for the process lifetime; used with ScriptExecutionContext::
     // postTaskTo() so the worker thread never dereferences the parent context

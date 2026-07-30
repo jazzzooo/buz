@@ -1,5 +1,5 @@
 /// This runs after we've already populated the compile results
-pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *ThreadPool.Worker, chunk: *Chunk, chunk_index: usize) !void {
+pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk: *Chunk, chunk_index: usize) !void {
     const trace = bun.perf.trace("Bundler.postProcessJSChunk");
     defer trace.end();
 
@@ -1106,7 +1106,7 @@ const JSMeta = bun.bundle_v2.JSMeta;
 const Part = bun.bundle_v2.Part;
 const RefImportData = bun.bundle_v2.RefImportData;
 const ResolvedExports = bun.bundle_v2.ResolvedExports;
-const ThreadPool = bun.bundle_v2.ThreadPool;
+const Executor = bun.bundle_v2.Executor;
 const js_printer = bun.bundle_v2.js_printer;
 const renamer = bun.bundle_v2.renamer;
 

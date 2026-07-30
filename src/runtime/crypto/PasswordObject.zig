@@ -183,7 +183,7 @@ pub const PasswordObject = struct {
         }
     };
 
-    pub const HashError = pwhash.Error || error{UnsupportedAlgorithm};
+    pub const HashError = pwhash.Error || error{ UnsupportedAlgorithm, ConcurrencyUnavailable };
 
     // This is purposely simple because nobody asked to make it more complicated
     pub fn hash(
@@ -343,7 +343,7 @@ pub const JSPasswordObject = struct {
         event_loop: *jsc.EventLoop,
         global: *jsc.JSGlobalObject,
         ref: Async.KeepAlive = .{},
-        task: jsc.WorkPoolTask = .{ .callback = &run },
+        task: jsc.BackgroundTask = .{ .callback = &run },
 
         pub const new = bun.TrivialNew(@This());
 
@@ -405,11 +405,14 @@ pub const JSPasswordObject = struct {
             return Result.Value{ .hash = value };
         }
 
-        pub fn run(task: *bun.ThreadPool.Task) void {
+        pub fn run(task: *bun.BackgroundTaskGroup.Task) void {
             var this: *HashJob = @fieldParentPtr("task", task);
+            this.finish(getValue(this.io, this.password, this.algorithm));
+        }
 
+        fn finish(this: *HashJob, value: Result.Value) void {
             var result = Result.new(.{
-                .value = getValue(this.io, this.password, this.algorithm),
+                .value = value,
                 .task = undefined,
                 .promise = this.promise,
                 .global = this.global,
@@ -454,7 +457,9 @@ pub const JSPasswordObject = struct {
             .global = globalObject,
         });
         job.ref.ref(globalObject.bunVM());
-        jsc.WorkPool.schedule(&job.task);
+        jsc.BackgroundWork.schedule(&globalObject.bunVM().background_tasks, &job.task) catch |err| {
+            job.finish(.{ .err = err });
+        };
 
         return promise.value();
     }
@@ -489,7 +494,9 @@ pub const JSPasswordObject = struct {
             .global = globalObject,
         });
         job.ref.ref(globalObject.bunVM());
-        jsc.WorkPool.schedule(&job.task);
+        jsc.BackgroundWork.schedule(&globalObject.bunVM().background_tasks, &job.task) catch |err| {
+            job.finish(.{ .err = err });
+        };
 
         return promise.value();
     }
@@ -560,7 +567,7 @@ pub const JSPasswordObject = struct {
         event_loop: *jsc.EventLoop,
         global: *jsc.JSGlobalObject,
         ref: Async.KeepAlive = .{},
-        task: jsc.WorkPoolTask = .{ .callback = &run },
+        task: jsc.BackgroundTask = .{ .callback = &run },
 
         pub const new = bun.TrivialNew(@This());
 
@@ -623,11 +630,14 @@ pub const JSPasswordObject = struct {
             return Result.Value{ .pass = pass };
         }
 
-        pub fn run(task: *bun.ThreadPool.Task) void {
+        pub fn run(task: *bun.BackgroundTaskGroup.Task) void {
             var this: *VerifyJob = @fieldParentPtr("task", task);
+            this.finish(getValue(this.io, this.password, this.prev_hash, this.algorithm));
+        }
 
+        fn finish(this: *VerifyJob, value: Result.Value) void {
             var result = Result.new(.{
-                .value = getValue(this.io, this.password, this.prev_hash, this.algorithm),
+                .value = value,
                 .task = undefined,
                 .promise = this.promise,
                 .global = this.global,

@@ -17,12 +17,11 @@ watchlist: WatchList,
 mutex: std.Io.Mutex,
 
 fs: *bun.fs.FileSystem,
+io: std.Io,
 allocator: std.mem.Allocator,
-watchloop_handle: ?std.Thread.Id = null,
 cwd: string,
-thread: std.Thread = undefined,
-running: bool = true,
-close_descriptors: bool = false,
+task: ?std.Io.Future(void) = null,
+running: std.atomic.Value(bool) = .init(false),
 
 evict_list: [max_eviction_count]WatchItemIndex = undefined,
 evict_list_i: WatchItemIndex = 0,
@@ -64,7 +63,7 @@ const no_watch_item: WatchItemIndex = std.math.maxInt(WatchItemIndex);
 ///
 /// To integrate a started watcher into bundle_v2:
 ///
-///     bundle_v2.bun_watcher = watcher;
+///     bundle_v2.borrowed_watcher = watcher;
 pub fn init(comptime T: type, ctx: *T, fs: *bun.fs.FileSystem, allocator: std.mem.Allocator) !*Watcher {
     const wrapped = struct {
         fn onFileUpdateWrapped(ctx_opaque: *anyopaque, events: []WatchEvent, changed_files: []?[:0]u8, watchlist: WatchList) void {
@@ -83,6 +82,7 @@ pub fn init(comptime T: type, ctx: *T, fs: *bun.fs.FileSystem, allocator: std.me
     errdefer allocator.destroy(watcher);
     watcher.* = .{
         .fs = fs,
+        .io = fs.io,
         .allocator = allocator,
         .watchlist = WatchList{},
         .mutex = .init,
@@ -94,6 +94,7 @@ pub fn init(comptime T: type, ctx: *T, fs: *bun.fs.FileSystem, allocator: std.me
         .watch_events = try allocator.alloc(WatchEvent, max_count),
         .changed_filepaths = @splat(null),
     };
+    errdefer allocator.free(watcher.watch_events);
 
     try Platform.init(&watcher.platform, fs.top_level_dir);
 
@@ -110,27 +111,40 @@ pub fn writeTraceEvents(this: *Watcher, events: []WatchEvent, changed_files: []?
 }
 
 pub fn start(this: *Watcher) !void {
-    bun.assert(this.watchloop_handle == null);
-    this.thread = try std.Thread.spawn(.{}, threadMain, .{this});
+    bun.assert(this.task == null);
+    this.running.store(true, .release);
+    errdefer this.running.store(false, .release);
+    this.task = try this.io.concurrent(threadMain, .{this});
 }
 
 pub fn deinit(this: *Watcher, close_descriptors: bool) void {
-    if (this.watchloop_handle != null) {
-        this.mutex.lockUncancelable(this.fs.io);
-        defer this.mutex.unlock(this.fs.io);
-        this.close_descriptors = close_descriptors;
-        this.running = false;
-    } else {
-        if (close_descriptors and this.running) {
-            const fds = this.watchlist.items(.fd);
-            for (fds) |fd| {
-                fd.close();
-            }
-        }
-        this.watchlist.deinit(this.allocator);
-        const allocator = this.allocator;
-        allocator.destroy(this);
+    this.mutex.lockUncancelable(this.io);
+    this.running.store(false, .release);
+    this.mutex.unlock(this.io);
+
+    if (this.task) |*task| {
+        this.platform.requestStop();
+        task.cancel(this.io);
+        this.task = null;
     }
+    this.platform.deinit();
+
+    if (close_descriptors) {
+        const fds = this.watchlist.items(.fd);
+        for (fds) |fd| {
+            if (fd.isValid()) fd.close();
+        }
+    }
+    this.watchlist.deinit(this.allocator);
+    WatcherTrace.deinit();
+
+    const allocator = this.allocator;
+    allocator.free(this.watch_events);
+    allocator.destroy(this);
+}
+
+pub fn isStarted(this: *const Watcher) bool {
+    return this.task != null;
 }
 
 pub fn getHash(filepath: string) HashType {
@@ -224,39 +238,22 @@ pub const WatchItem = struct {
     pub const Kind = enum { file, directory };
 };
 
-fn threadMain(this: *Watcher) !void {
-    this.watchloop_handle = std.Thread.getCurrentId();
+fn threadMain(this: *Watcher) void {
     this.thread_lock.lock();
-    Output.Source.configureNamedThread("File Watcher");
-
+    defer this.thread_lock.unlock();
     defer Output.flush();
     log("Watcher started", .{});
 
-    switch (this.watchLoop()) {
+    switch (this.watchLoop() catch return) {
         .err => |err| {
-            this.watchloop_handle = null;
+            const notify = this.running.swap(false, .acq_rel);
             this.platform.stop();
-            if (this.running) {
+            if (notify) {
                 this.onError(this.ctx, err);
             }
         },
         .result => {},
     }
-
-    // deinit and close descriptors if needed
-    if (this.close_descriptors) {
-        const fds = this.watchlist.items(.fd);
-        for (fds) |fd| {
-            fd.close();
-        }
-    }
-    this.watchlist.deinit(this.allocator);
-
-    // Close trace file if open
-    WatcherTrace.deinit();
-
-    const allocator = this.allocator;
-    allocator.destroy(this);
 }
 
 pub fn flushEvictions(this: *Watcher) void {
@@ -316,10 +313,10 @@ pub fn flushEvictions(this: *Watcher) void {
     }
 }
 
-fn watchLoop(this: *Watcher) bun.sys.Maybe(void) {
-    while (this.running) {
+fn watchLoop(this: *Watcher) std.Io.Cancelable!bun.sys.Maybe(void) {
+    while (this.running.load(.acquire)) {
         // individual platform implementation will call onFileUpdate
-        switch (Platform.watchLoopCycle(this)) {
+        switch (try Platform.watchLoopCycle(this)) {
             .err => |err| return .{ .err = err },
             .result => |iter| iter,
         }
@@ -441,13 +438,13 @@ fn appendDirectoryAssumeCapacity(
         }
     }
 
-    const fd = brk: {
+    const fd = if (Environment.isKqueue) brk: {
         if (stored_fd.isValid()) break :brk stored_fd;
         break :brk switch (bun.sys.openA(file_path, 0, 0)) {
             .err => |err| return .{ .err = err },
-            .result => |fd| fd,
+            .result => |opened| opened,
         };
-    };
+    } else bun.invalid_fd;
 
     const file_path_: string = if (comptime clone_file_path)
         bun.asByteSlice(bun.handleOom(this.allocator.dupeSentinel(u8, file_path, 0)))
@@ -543,8 +540,8 @@ pub fn appendFileMaybeLock(
     comptime clone_file_path: bool,
     comptime lock: bool,
 ) bun.sys.Maybe(void) {
-    if (comptime lock) this.mutex.lockUncancelable(this.fs.io);
-    defer if (comptime lock) this.mutex.unlock(this.fs.io);
+    if (comptime lock) this.mutex.lockUncancelable(this.io);
+    defer if (comptime lock) this.mutex.unlock(this.io);
     bun.assert(file_path.len > 1);
     const parent_dir = std.fs.path.dirname(file_path) orelse ".";
     const parent_dir_hash: HashType = getHash(parent_dir);
@@ -627,8 +624,8 @@ pub fn addDirectory(
     file_path: string,
     comptime clone_file_path: bool,
 ) bun.sys.Maybe(WatchItemIndex) {
-    this.mutex.lockUncancelable(this.fs.io);
-    defer this.mutex.unlock(this.fs.io);
+    this.mutex.lockUncancelable(this.io);
+    defer this.mutex.unlock(this.io);
 
     const directory = strings.withoutTrailingSlashWindowsPath(file_path);
     const hash = getHash(directory);
@@ -662,9 +659,9 @@ pub fn addFileByPathSlow(
 
     // Check if already watched (with lock to avoid race with removal)
     {
-        this.mutex.lockUncancelable(this.fs.io);
+        this.mutex.lockUncancelable(this.io);
         const already_watched = this.indexOf(hash) != null;
-        this.mutex.unlock(this.fs.io);
+        this.mutex.unlock(this.io);
 
         if (already_watched) {
             return true;
@@ -688,13 +685,13 @@ pub fn addFileByPathSlow(
             // watched (race) and returned success without using our fd.
             // Close it if unused.
             if ((comptime Environment.isKqueue) and fd.isValid()) {
-                this.mutex.lockUncancelable(this.fs.io);
+                this.mutex.lockUncancelable(this.io);
                 const maybe_idx = this.indexOf(hash);
                 const stored_fd = if (maybe_idx) |idx|
                     this.watchlist.items(.fd)[idx]
                 else
                     bun.invalid_fd;
-                this.mutex.unlock(this.fs.io);
+                this.mutex.unlock(this.io);
 
                 // Only close if entry exists and stored fd differs from ours.
                 // Race scenarios:
@@ -725,8 +722,8 @@ pub fn addFile(
     comptime clone_file_path: bool,
 ) bun.sys.Maybe(void) {
     // This must lock due to concurrent transpiler
-    this.mutex.lockUncancelable(this.fs.io);
-    defer this.mutex.unlock(this.fs.io);
+    this.mutex.lockUncancelable(this.io);
+    defer this.mutex.unlock(this.io);
 
     if (this.indexOf(hash)) |index| {
         if (comptime FeatureFlags.atomic_file_watcher) {
@@ -752,8 +749,8 @@ pub fn indexOf(this: *Watcher, hash: HashType) ?u32 {
 }
 
 pub fn remove(this: *Watcher, hash: HashType) void {
-    this.mutex.lockUncancelable(this.fs.io);
-    defer this.mutex.unlock(this.fs.io);
+    this.mutex.lockUncancelable(this.io);
+    defer this.mutex.unlock(this.io);
     if (this.indexOf(hash)) |index| {
         this.removeAtIndex(@truncate(index), hash, &[_]HashType{}, .file);
     }
@@ -790,6 +787,23 @@ pub fn onMaybeWatchDirectory(watch: *Watcher, file_path: string, dir_fd: bun.FD)
     }
 }
 
+pub const TestingAPIs = struct {
+    pub fn startWithUnavailableIo(global: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+        var threaded = std.Io.Threaded.init_single_threaded;
+        var watcher: Watcher = undefined;
+        watcher.io = threaded.io();
+        watcher.task = null;
+        watcher.running = .init(false);
+
+        watcher.start() catch |err| {
+            bun.assert(watcher.task == null);
+            bun.assert(!watcher.running.load(.acquire));
+            return jsc.ZigString.fromBytes(@errorName(err)).toJS(global);
+        };
+        @panic("single-threaded Io unexpectedly provided concurrency");
+    }
+};
+
 const string = []const u8;
 
 const WatcherTrace = @import("./WatcherTrace.zig");
@@ -799,6 +813,7 @@ const std = @import("std");
 const PackageJSON = @import("../resolver/package_json.zig").PackageJSON;
 
 const bun = @import("bun");
+const jsc = bun.jsc;
 const Environment = bun.Environment;
 const FeatureFlags = bun.FeatureFlags;
 const Output = bun.Output;

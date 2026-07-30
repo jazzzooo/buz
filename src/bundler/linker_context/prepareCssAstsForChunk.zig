@@ -1,12 +1,12 @@
 pub const PrepareCssAstTask = struct {
-    task: ThreadPoolLib.Task,
+    task: ExecutorTypes.Task,
     chunk: *Chunk,
     linker: *LinkerContext,
 };
 
-pub fn prepareCssAstsForChunk(task: *ThreadPoolLib.Task) void {
+pub fn prepareCssAstsForChunk(task: *ExecutorTypes.Task) void {
     const prepare_css_asts: *const PrepareCssAstTask = @fieldParentPtr("task", task);
-    var worker = ThreadPool.Worker.get(@fieldParentPtr("linker", prepare_css_asts.linker));
+    var worker = Executor.Worker.get(@fieldParentPtr("linker", prepare_css_asts.linker));
     defer worker.unget();
 
     prepareCssAstsForChunkImpl(prepare_css_asts.linker, prepare_css_asts.chunk, worker.allocator);
@@ -300,7 +300,7 @@ fn wrapRulesWithConditions(
 }
 
 pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
-pub const ThreadPool = bun.bundle_v2.ThreadPool;
+pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
 const std = @import("std");
@@ -308,7 +308,7 @@ const std = @import("std");
 const bun = @import("bun");
 const BabyList = bun.BabyList;
 const ImportRecord = bun.ImportRecord;
-const ThreadPoolLib = bun.ThreadPool;
+const ExecutorTypes = bun.bundle_v2.Executor;
 
 const bundler = bun.bundle_v2;
 const Chunk = bundler.Chunk;

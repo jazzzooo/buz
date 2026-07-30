@@ -987,7 +987,7 @@ pub extern fn napi_is_detached_arraybuffer(env: napi_env, value: napi_value, res
 
 /// must be globally allocated
 pub const napi_async_work = struct {
-    task: WorkPoolTask = .{ .callback = &runFromThreadPool },
+    task: BackgroundTask = .{ .callback = &runInBackground },
     concurrent_task: jsc.ConcurrentTask = .{},
     event_loop: *jsc.EventLoop,
     global: *jsc.JSGlobalObject,
@@ -1025,14 +1025,20 @@ pub const napi_async_work = struct {
         bun.destroy(this);
     }
 
-    pub fn schedule(this: *napi_async_work) void {
-        if (this.scheduled) return;
+    pub fn schedule(this: *napi_async_work) bool {
+        if (this.scheduled) return true;
         this.scheduled = true;
-        this.poll_ref.ref(this.global.bunVM());
-        WorkPool.schedule(&this.task);
+        const vm = this.global.bunVM();
+        this.poll_ref.ref(vm);
+        BackgroundWork.schedule(&vm.background_tasks, &this.task) catch {
+            this.poll_ref.unref(vm);
+            this.scheduled = false;
+            return false;
+        };
+        return true;
     }
 
-    pub fn runFromThreadPool(task: *WorkPoolTask) void {
+    pub fn runInBackground(task: *BackgroundTask) void {
         var this: *napi_async_work = @fieldParentPtr("task", task);
         this.run();
     }
@@ -1245,7 +1251,7 @@ pub export fn napi_queue_async_work(env_: napi_env, work_: ?*napi_async_work) na
         return env.invalidArg();
     };
     if (comptime bun.Environment.allow_assert) bun.assert(env.toJS() == work.global);
-    work.schedule();
+    if (!work.schedule()) return env.genericFailure();
     return env.ok();
 }
 pub export fn napi_cancel_async_work(env_: napi_env, work_: ?*napi_async_work) napi_status {
@@ -2490,8 +2496,8 @@ pub const NapiFinalizerTask = struct {
 
 const std = @import("std");
 
-const WorkPool = @import("../threading/work_pool.zig").WorkPool;
-const WorkPoolTask = @import("../threading/work_pool.zig").Task;
+const BackgroundWork = @import("../io/BackgroundWork.zig").BackgroundWork;
+const BackgroundTask = @import("../io/BackgroundWork.zig").Task;
 
 const bun = @import("bun");
 const Async = bun.Async;

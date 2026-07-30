@@ -5,7 +5,10 @@ tag: Tag,
 request: Request,
 data: Data,
 status: Status = Status.waiting,
-threadpool_task: ThreadPool.Task = ThreadPool.Task{ .callback = &callback },
+background_task: BackgroundTaskGroup.Task = .{
+    .callback = &callback,
+    .on_schedule_error = &onScheduleError,
+},
 log: logger.Log,
 id: Id,
 err: ?anyerror = null,
@@ -61,11 +64,11 @@ pub const Id = enum(u64) {
     }
 };
 
-pub fn callback(task: *ThreadPool.Task) void {
+pub fn callback(task: *BackgroundTaskGroup.Task) void {
     Output.Source.configureThread();
     defer Output.flush();
 
-    var this: *Task = @fieldParentPtr("threadpool_task", task);
+    var this: *Task = @fieldParentPtr("background_task", task);
     const manager = this.package_manager;
     defer {
         if (this.status == .success) {
@@ -244,7 +247,7 @@ pub fn callback(task: *ThreadPool.Task) void {
         },
         .local_tarball => {
             // `tarball_path` and `normalize` are computed on the main thread when the
-            // task is enqueued. This callback runs on a ThreadPool worker and must not
+            // task is enqueued. This callback runs on a BackgroundTaskGroup worker and must not
             // read `manager.lockfile.packages` / `manager.lockfile.buffers.string_bytes`:
             // the main thread may reallocate those buffers concurrently while processing
             // other dependencies.
@@ -271,6 +274,20 @@ pub fn callback(task: *ThreadPool.Task) void {
             this.status = Status.success;
         },
     }
+}
+
+pub fn onScheduleError(task: *BackgroundTaskGroup.Task, err: std.Io.ConcurrentError) void {
+    const this: *Task = @fieldParentPtr("background_task", task);
+    this.err = err;
+    this.status = .fail;
+    this.data = switch (this.tag) {
+        .package_manifest => .{ .package_manifest = .{} },
+        .extract, .local_tarball => .{ .extract = .{} },
+        .git_clone => .{ .git_clone = bun.invalid_fd },
+        .git_checkout => .{ .git_checkout = .{} },
+    };
+    this.package_manager.resolve_tasks.push(this);
+    this.package_manager.wake();
 }
 
 fn readAndExtract(
@@ -343,7 +360,7 @@ pub const Request = union {
         /// directory. Computed on the main thread in `enqueueLocalTarball` because
         /// resolving it requires reading `lockfile.packages` / `string_bytes`,
         /// which can be reallocated concurrently by the main thread while this
-        /// task runs on a ThreadPool worker.
+        /// task runs on a BackgroundTaskGroup worker.
         tarball_path: strings.StringOrTinyString,
         /// When true, `tarball_path` is a user-provided path resolved relative to
         /// cwd. When false, it is already an absolute path.
@@ -372,7 +389,7 @@ const bun = @import("bun");
 const DotEnv = bun.DotEnv;
 const Output = bun.Output;
 const Semver = bun.Semver;
-const ThreadPool = bun.ThreadPool;
+const BackgroundTaskGroup = bun.BackgroundTaskGroup;
 const logger = bun.logger;
 const strings = bun.strings;
 const File = bun.sys.File;

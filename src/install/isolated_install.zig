@@ -1480,7 +1480,10 @@ pub fn installIsolatedPackages(
                 .installer = &installer,
                 .result = .none,
 
-                .task = .{ .callback = &Store.Installer.Task.callback },
+                .task = .{
+                    .callback = &Store.Installer.Task.callback,
+                    .on_schedule_error = &Store.Installer.Task.onScheduleError,
+                },
                 .next = null,
             };
         }

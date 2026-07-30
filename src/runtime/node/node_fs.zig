@@ -82,11 +82,11 @@ pub const Async = struct {
         /// Memory is not owned by this struct
         path: []const u8,
 
-        task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
+        task: jsc.BackgroundTask = .{ .callback = &workPoolCallback },
 
         pub const new = bun.TrivialNew(@This());
 
-        pub fn workPoolCallback(task: *jsc.WorkPoolTask) void {
+        pub fn workPoolCallback(task: *jsc.BackgroundTask) void {
             var this: *AsyncMkdirp = @fieldParentPtr("task", task);
 
             var node_fs = NodeFS{};
@@ -106,8 +106,12 @@ pub const Async = struct {
             }
         }
 
-        pub fn schedule(this: *AsyncMkdirp) void {
-            jsc.WorkPool.schedule(&this.task);
+        pub fn schedule(this: *AsyncMkdirp, group: *bun.BackgroundTaskGroup) void {
+            jsc.BackgroundWork.schedule(group, &this.task) catch {
+                this.completion(this.completion_ctx, .{ .err = bun.sys.Error.fromCode(.AGAIN, .mkdir).withPath(
+                    bun.handleOom(bun.default_allocator.dupe(u8, this.path)),
+                ) });
+            };
         }
     };
 
@@ -340,7 +344,7 @@ pub const Async = struct {
             promise: jsc.JSPromise.Strong,
             args: ArgumentType,
             globalObject: *jsc.JSGlobalObject,
-            task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
+            task: jsc.BackgroundTask = .{ .callback = &workPoolCallback },
             result: bun.sys.Maybe(ReturnType),
             ref: bun.Async.KeepAlive = .{},
             tracker: jsc.Debugger.AsyncTaskTracker,
@@ -369,11 +373,14 @@ pub const Async = struct {
                 task.ref.ref(vm);
                 task.args.toThreadSafe();
                 task.tracker.didSchedule(globalObject);
-                jsc.WorkPool.schedule(&task.task);
+                jsc.BackgroundWork.schedule(&vm.background_tasks, &task.task) catch {
+                    task.result = .{ .err = bun.sys.Error.fromCode(.AGAIN, .TODO) };
+                    vm.eventLoop().enqueueTaskConcurrent(jsc.ConcurrentTask.createFrom(task));
+                };
                 return task.promise.value();
             }
 
-            fn workPoolCallback(task: *jsc.WorkPoolTask) void {
+            fn workPoolCallback(task: *jsc.BackgroundTask) void {
                 var this: *Task = @alignCast(@fieldParentPtr("task", task));
 
                 var node_fs = NodeFS{ .vm = this.globalObject.bunVMConcurrently() };
@@ -452,7 +459,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
         promise: jsc.JSPromise.Strong = .{},
         args: Arguments.Cp,
         evtloop: jsc.EventLoopHandle,
-        task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
+        task: jsc.BackgroundTask = .{ .callback = &workPoolCallback },
         result: bun.sys.Maybe(Return.Cp),
         /// If this task is called by the shell then we shouldn't call this as
         /// it is not threadsafe and is unnecessary as the process will be kept
@@ -479,7 +486,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             cp_task: *ThisAsyncCpTask,
             src: bun.OSPathSliceZ,
             dest: bun.OSPathSliceZ,
-            task: jsc.WorkPoolTask = .{ .callback = &SingleTask.workPoolCallback },
+            task: jsc.BackgroundTask = .{ .callback = &SingleTask.workPoolCallback },
 
             const ThisSingleTask = @This();
 
@@ -494,10 +501,10 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
                     .dest = dest,
                 });
 
-                jsc.WorkPool.schedule(&task.task);
+                jsc.BackgroundWork.scheduleContinuation(parent.evtloop.backgroundTasks(), &task.task);
             }
 
-            fn workPoolCallback(task: *jsc.WorkPoolTask) void {
+            fn workPoolCallback(task: *jsc.BackgroundTask) void {
                 var this: *ThisSingleTask = @fieldParentPtr("task", task);
                 const parent = this.cp_task;
 
@@ -591,7 +598,10 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             task.args.dest.toThreadSafe();
             task.tracker.didSchedule(globalObject);
 
-            jsc.WorkPool.schedule(&task.task);
+            jsc.BackgroundWork.schedule(task.evtloop.backgroundTasks(), &task.task) catch {
+                task.finishConcurrently(.{ .err = bun.sys.Error.fromCode(.AGAIN, .copyfile) });
+                task.onSubtaskDone();
+            };
 
             return task;
         }
@@ -619,12 +629,15 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             task.args.src.toThreadSafe();
             task.args.dest.toThreadSafe();
 
-            jsc.WorkPool.schedule(&task.task);
+            jsc.BackgroundWork.schedule(task.evtloop.backgroundTasks(), &task.task) catch {
+                task.finishConcurrently(.{ .err = bun.sys.Error.fromCode(.AGAIN, .copyfile) });
+                task.onSubtaskDone();
+            };
 
             return task;
         }
 
-        fn workPoolCallback(task: *jsc.WorkPoolTask) void {
+        fn workPoolCallback(task: *jsc.BackgroundTask) void {
             const this: *ThisAsyncCpTask = @alignCast(@fieldParentPtr("task", task));
 
             var node_fs = NodeFS{};
@@ -870,7 +883,7 @@ pub const AsyncReaddirRecursiveTask = struct {
     promise: jsc.JSPromise.Strong,
     args: Arguments.Readdir,
     globalObject: *jsc.JSGlobalObject,
-    task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
+    task: jsc.BackgroundTask = .{ .callback = &workPoolCallback },
     ref: bun.Async.KeepAlive = .{},
     tracker: jsc.Debugger.AsyncTaskTracker,
 
@@ -898,6 +911,7 @@ pub const AsyncReaddirRecursiveTask = struct {
 
     pending_err: ?Syscall.Error = null,
     pending_err_mutex: std.Io.Mutex = .init,
+    background_tasks: *bun.BackgroundTaskGroup,
 
     pub const new = bun.TrivialNew(@This());
 
@@ -940,11 +954,11 @@ pub const AsyncReaddirRecursiveTask = struct {
     pub const Subtask = struct {
         readdir_task: *AsyncReaddirRecursiveTask,
         basename: bun.PathString = bun.PathString.empty,
-        task: jsc.WorkPoolTask = .{ .callback = call },
+        task: jsc.BackgroundTask = .{ .callback = call },
 
         pub const new = bun.TrivialNew(@This());
 
-        pub fn call(task: *jsc.WorkPoolTask) void {
+        pub fn call(task: *jsc.BackgroundTask) void {
             var this: *Subtask = @alignCast(@fieldParentPtr("task", task));
             defer {
                 bun.default_allocator.free(this.basename.sliceAssumeZ());
@@ -966,7 +980,7 @@ pub const AsyncReaddirRecursiveTask = struct {
             },
         );
         bun.assert(readdir_task.subtask_count.fetchAdd(1, .monotonic) > 0);
-        jsc.WorkPool.schedule(&task.task);
+        jsc.BackgroundWork.scheduleContinuation(readdir_task.background_tasks, &task.task);
     }
 
     pub fn create(
@@ -981,6 +995,7 @@ pub const AsyncReaddirRecursiveTask = struct {
             .globalObject = globalObject,
             .tracker = jsc.Debugger.AsyncTaskTracker.init(vm),
             .subtask_count = .{ .raw = 1 },
+            .background_tasks = &vm.background_tasks,
             .root_path = PathString.init(bun.handleOom(bun.default_allocator.dupeSentinel(u8, args.path.slice(), 0))),
             .result_list = switch (args.tag()) {
                 .files => .{ .files = std.array_list.Managed(bun.String).init(bun.default_allocator) },
@@ -992,7 +1007,11 @@ pub const AsyncReaddirRecursiveTask = struct {
         task.args.toThreadSafe();
         task.tracker.didSchedule(globalObject);
 
-        jsc.WorkPool.schedule(&task.task);
+        jsc.BackgroundWork.schedule(task.background_tasks, &task.task) catch {
+            task.pending_err = bun.sys.Error.fromCode(.AGAIN, .scandir);
+            bun.assert(task.subtask_count.fetchSub(1, .monotonic) == 1);
+            task.finishConcurrently();
+        };
 
         return task.promise.value();
     }
@@ -1054,7 +1073,7 @@ pub const AsyncReaddirRecursiveTask = struct {
         }
     }
 
-    fn workPoolCallback(task: *jsc.WorkPoolTask) void {
+    fn workPoolCallback(task: *jsc.BackgroundTask) void {
         var this: *AsyncReaddirRecursiveTask = @alignCast(@fieldParentPtr("task", task));
         var buf: bun.PathBuffer = undefined;
         this.performWork(this.root_path.sliceAssumeZ(), &buf, true);

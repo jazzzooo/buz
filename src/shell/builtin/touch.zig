@@ -173,7 +173,7 @@ pub const ShellTouchTask = struct {
     cwd_path: [:0]const u8,
 
     err: ?jsc.SystemError = null,
-    task: jsc.WorkPoolTask = .{ .callback = &runFromThreadPool },
+    task: jsc.BackgroundTask = .{ .callback = &runInBackground },
     event_loop: jsc.EventLoopHandle,
     concurrent_task: jsc.EventLoopTask,
 
@@ -203,7 +203,14 @@ pub const ShellTouchTask = struct {
 
     pub fn schedule(this: *@This()) void {
         debug("{f} schedule", .{this});
-        WorkPool.schedule(&this.task);
+        BackgroundWork.schedule(this.event_loop.backgroundTasks(), &this.task) catch {
+            this.err = bun.sys.Error.fromCode(.AGAIN, .utime).toShellSystemError();
+            if (this.event_loop == .js) {
+                this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
+            } else {
+                this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
+            }
+        };
     }
 
     pub fn runFromMainThread(this: *@This()) void {
@@ -215,9 +222,9 @@ pub const ShellTouchTask = struct {
         this.runFromMainThread();
     }
 
-    fn runFromThreadPool(task: *jsc.WorkPoolTask) void {
+    fn runInBackground(task: *jsc.BackgroundTask) void {
         var this: *ShellTouchTask = @fieldParentPtr("task", task);
-        debug("{f} runFromThreadPool", .{this});
+        debug("{f} runInBackground", .{this});
 
         // We have to give an absolute path
         const filepath = bun.handleOom(std.fs.path.joinZ(bun.default_allocator, if (ResolvePath.Platform.auto.isAbsolute(this.filepath))
@@ -403,7 +410,7 @@ const ResolvePath = bun.path;
 const Syscall = bun.sys;
 
 const jsc = bun.jsc;
-const WorkPool = bun.jsc.WorkPool;
+const BackgroundWork = bun.jsc.BackgroundWork;
 
 const shell = bun.shell;
 const ExitCode = shell.ExitCode;

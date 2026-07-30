@@ -730,8 +730,8 @@ pub const EventLoopHandle = @import("./EventLoopHandle.zig").EventLoopHandle;
 pub const EventLoopTask = @import("./EventLoopHandle.zig").EventLoopTask;
 pub const EventLoopTaskPtr = @import("./EventLoopHandle.zig").EventLoopTaskPtr;
 
-pub const WorkPool = @import("../threading/work_pool.zig").WorkPool;
-pub const WorkPoolTask = @import("../threading/work_pool.zig").Task;
+pub const BackgroundWork = @import("../io/BackgroundWork.zig").BackgroundWork;
+pub const BackgroundTask = @import("../io/BackgroundWork.zig").Task;
 
 const std = @import("std");
 const tickQueueWithCount = @import("./Task.zig").tickQueueWithCount;

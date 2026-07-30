@@ -41,6 +41,7 @@ pub const ReplCommand = struct {
         const vm = try jsc.VirtualMachine.init(.{
             .allocator = arena.allocator(),
             .io = ctx.io,
+            .pinned_threads = bun.cli.Cli.pinnedThreads(),
             .log = ctx.log,
             .args = ctx.args,
             .store_fd = false,

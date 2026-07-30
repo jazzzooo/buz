@@ -204,7 +204,7 @@ pub const RuntimeTranspilerStore = struct {
         log: logger.Log,
         parse_error: ?anyerror = null,
         resolved_source: ResolvedSource = ResolvedSource{},
-        work_task: jsc.WorkPoolTask = .{ .callback = runFromWorkerThread },
+        work_task: jsc.BackgroundTask = .{ .callback = runFromWorkerThread },
         next: ?*TranspilerJob = null,
 
         pub const Store = bun.HiveArray(TranspilerJob, if (bun.heap_breakdown.enabled) 0 else 64).Fallback;
@@ -283,10 +283,13 @@ pub const RuntimeTranspilerStore = struct {
 
         pub fn schedule(this: *TranspilerJob) void {
             this.poll_ref.ref(this.vm);
-            jsc.WorkPool.schedule(&this.work_task);
+            jsc.BackgroundWork.schedule(&this.vm.background_tasks, &this.work_task) catch |err| {
+                this.parse_error = err;
+                this.dispatchToMainThread();
+            };
         }
 
-        pub fn runFromWorkerThread(work_task: *jsc.WorkPoolTask) void {
+        pub fn runFromWorkerThread(work_task: *jsc.BackgroundTask) void {
             @as(*TranspilerJob, @fieldParentPtr("work_task", work_task)).run();
         }
 

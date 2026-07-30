@@ -6,7 +6,7 @@
 
 namespace Bun {
 
-// Work queue which really uses CppTask.Concurrent in Bun's event loop (which enqueues into a WorkPool).
+// Work queue which really uses CppTask.Concurrent in Bun's event loop (which enqueues into a BackgroundWork).
 // Maintained so that SubtleCrypto functions can pretend they're using a WorkQueue, even though
 // WTF::WorkQueue doesn't work and we need to use Bun's equivalent.
 class PhonyWorkQueue : public WTF::RefCounted<PhonyWorkQueue> {

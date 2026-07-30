@@ -506,41 +506,30 @@ bool Worker::dispatchErrorWithValue(Zig::GlobalObject* workerGlobalObject, JSVal
 
 bool Worker::dispatchExit(int32_t exitCode)
 {
-    // Runs on the worker thread after its JSC VM has been torn down. Post the
-    // close event to the parent; that task additionally releases parent_poll_ref
-    // and drops the worker-thread-held ref (both parent-thread-only operations).
-    //
-    // If posting fails — parent context no longer exists (nested worker whose
-    // middle thread has already torn down) — the ref and poll are intentionally
-    // leaked: dropping the ref here would run ~Worker → ~EventTarget on the
-    // worker thread and trip EventListenerMap's single-thread assert. Parent
-    // teardown implies process shutdown (or at least that nothing observes the
-    // leak), so this is bounded. The proper fix is for a worker to stop+join
-    // its sub-workers before tearing down its own context.
     return postTaskToParent([exitCode, protectedThis = Ref { *this }](ScriptExecutionContext&) {
-        // Closing → dispatch 'close' → Closed. The split lets 'close'/'exit'
-        // handlers observe threadId == -1 and isOnline() == false while
-        // postMessage() (gated only on Closed) still accepts and drops the
-        // message, matching browser/Node and pre-refactor behaviour.
-        protectedThis->m_state.store(State::Closing);
-
-        if (protectedThis->hasEventListeners(eventNames().closeEvent)) {
-            auto event = CloseEvent::create(exitCode == 0, static_cast<unsigned short>(exitCode), exitCode == 0 ? "Worker terminated normally"_s : "Worker exited abnormally"_s);
-            protectedThis->EventTargetWithInlineData::dispatchEvent(event);
-        }
-
-        protectedThis->m_state.store(State::Closed);
-        WebWorker__releaseParentPollRef(protectedThis->impl_);
-        // Drop the ref taken in create(). protectedThis keeps us alive across
-        // this line; its own deref happens at lambda destruction on the parent
-        // thread, so ~Worker never runs on the worker thread.
-        protectedThis->deref();
+        protectedThis->finishExit(exitCode, true);
     });
+}
+
+void Worker::finishExit(int32_t exitCode, bool shouldDispatchEvent)
+{
+    if (m_exitFinalized.exchange(true))
+        return;
+
+    Ref protectedThis { *this };
+    m_state.store(State::Closing);
+    if (shouldDispatchEvent && hasEventListeners(eventNames().closeEvent)) {
+        auto event = CloseEvent::create(exitCode == 0, static_cast<unsigned short>(exitCode), exitCode == 0 ? "Worker terminated normally"_s : "Worker exited abnormally"_s);
+        EventTargetWithInlineData::dispatchEvent(event);
+    }
+    m_state.store(State::Closed);
+    WebWorker__releaseParentPollRef(impl_);
+    deref();
 }
 
 // ---- extern "C" shims (called from Zig) -------------------------------------
 
-extern "C" void WebWorker__teardownJSCVM(Zig::GlobalObject* globalObject)
+extern "C" void Bun__teardownThreadJSCVM(Zig::GlobalObject* globalObject)
 {
     auto& vm = JSC::getVM(globalObject);
     vm.setHasTerminationRequest();
@@ -561,9 +550,19 @@ extern "C" void WebWorker__teardownJSCVM(Zig::GlobalObject* globalObject)
     vm.derefSuppressingSaferCPPChecking(); // NOLINT
 }
 
+extern "C" void WebWorker__teardownJSCVM(Zig::GlobalObject* globalObject)
+{
+    Bun__teardownThreadJSCVM(globalObject);
+}
+
 extern "C" void WebWorker__dispatchExit(Worker* worker, int32_t exitCode)
 {
     worker->dispatchExit(exitCode);
+}
+
+extern "C" void WebWorker__finishExit(Worker* worker, int32_t exitCode, bool dispatchEvent)
+{
+    worker->finishExit(exitCode, dispatchEvent);
 }
 
 extern "C" void WebWorker__dispatchOnline(Worker* worker, Zig::GlobalObject* globalObject)

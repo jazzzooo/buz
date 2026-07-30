@@ -1378,24 +1378,13 @@ pub const KEventWaker = struct {
 };
 
 pub const Closer = struct {
-    fd: bun.FD,
-    task: jsc.WorkPoolTask = .{ .callback = &onClose },
-
-    pub const new = bun.TrivialNew(@This());
-
     pub fn close(
         fd: bun.FD,
         /// for compatibility with windows version
         _: void,
     ) void {
         bun.assert(fd.isValid());
-        jsc.WorkPool.schedule(&Closer.new(.{ .fd = fd }).task);
-    }
-
-    fn onClose(task: *jsc.WorkPoolTask) void {
-        const closer: *Closer = @fieldParentPtr("task", task);
-        defer bun.destroy(closer);
-        closer.fd.close();
+        fd.close();
     }
 };
 

@@ -1461,6 +1461,7 @@ pub const TestCommand = struct {
             .{
                 .allocator = ctx.allocator,
                 .io = ctx.io,
+                .pinned_threads = bun.cli.Cli.pinnedThreads(),
                 .args = ctx.args,
                 .log = ctx.log,
                 .env_loader = env_loader,

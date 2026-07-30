@@ -17,6 +17,13 @@ pub const WTF = struct {
         WTF__releaseFastMallocFreeMemoryForThisThread();
     }
 
+    extern fn WTF__prepareForThreadExit() void;
+
+    pub fn prepareForThreadExit() void {
+        jsc.markBinding(@src());
+        WTF__prepareForThreadExit();
+    }
+
     pub fn parseDouble(buf: []const u8) !f64 {
         jsc.markBinding(@src());
 

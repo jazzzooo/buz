@@ -18,13 +18,7 @@ side_effects: _resolver.SideEffects,
 loader: ?Loader = null,
 jsx: options.JSX.Pragma,
 source_index: Index = Index.invalid,
-task: ThreadPoolLib.Task = .{ .callback = &taskCallback },
-
-// Split this into a different task so that we don't accidentally run the
-// tasks for io on the threads that are meant for parsing.
-io_task: ThreadPoolLib.Task = .{ .callback = &ioTaskCallback },
-
-// Used for splitting up the work between the io and parse steps.
+task: Executor.Task = .{ .callback = &taskCallback },
 stage: ParseTaskStage = .needs_source_code,
 
 tree_shaking: bool = false,
@@ -1096,7 +1090,7 @@ const OnBeforeParsePlugin = struct {
 
 fn getSourceCode(
     task: *ParseTask,
-    this: *ThreadPool.Worker,
+    this: *Executor.Worker,
     log: *Logger.Log,
 ) anyerror!CacheEntry {
     const allocator = this.allocator;
@@ -1114,7 +1108,7 @@ fn getSourceCode(
 
 fn runWithSourceCode(
     task: *ParseTask,
-    this: *ThreadPool.Worker,
+    this: *Executor.Worker,
     step: *ParseTask.Result.Error.Step,
     log: *Logger.Log,
     entry: *CacheEntry,
@@ -1153,7 +1147,7 @@ fn runWithSourceCode(
     const will_close_file_descriptor = task.contents_or_fd == .fd and
         entry.fd.isValid() and
         entry.fd.stdioTag() == null and
-        this.ctx.bun_watcher == null;
+        this.ctx.borrowed_watcher == null;
     if (will_close_file_descriptor) {
         _ = entry.closeFD();
         task.contents_or_fd = .{ .fd = .{
@@ -1325,16 +1319,12 @@ fn runWithSourceCode(
     };
 }
 
-fn ioTaskCallback(task: *ThreadPoolLib.Task) void {
-    runFromThreadPool(@fieldParentPtr("io_task", task));
+fn taskCallback(task: *Executor.Task) void {
+    runInBackground(@fieldParentPtr("task", task));
 }
 
-fn taskCallback(task: *ThreadPoolLib.Task) void {
-    runFromThreadPool(@fieldParentPtr("task", task));
-}
-
-pub fn runFromThreadPool(this: *ParseTask) void {
-    var worker = ThreadPool.Worker.get(this.ctx);
+pub fn runInBackground(this: *ParseTask) void {
+    var worker = Executor.Worker.get(this.ctx);
     defer worker.unget();
     debug("ParseTask(0x{x}, {s}) callback", .{ @intFromPtr(this), this.path.text });
 
@@ -1366,8 +1356,8 @@ pub fn runFromThreadPool(this: *ParseTask) void {
                 } };
             }
 
-            if (ThreadPool.usesIOPool()) {
-                this.ctx.graph.pool.scheduleInsideThreadPool(this);
+            if (worker.lane == .read) {
+                this.ctx.graph.pool.schedule(this);
                 return;
             }
         }
@@ -1444,7 +1434,7 @@ pub const Ref = bun.ast.Ref;
 pub const Index = bun.ast.Index;
 
 pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
-pub const ThreadPool = bun.bundle_v2.ThreadPool;
+pub const Executor = bun.bundle_v2.Executor;
 
 const string = []const u8;
 
@@ -1472,7 +1462,6 @@ const FD = bun.FD;
 const FeatureFlags = bun.FeatureFlags;
 const ImportRecord = bun.ImportRecord;
 const Output = bun.Output;
-const ThreadPoolLib = bun.ThreadPool;
 const Transpiler = bun.Transpiler;
 const bake = bun.bake;
 const base64 = bun.base64;

@@ -14,7 +14,7 @@ http_proxy: ?URL = null,
 real: ?*AsyncHTTP = null,
 next: ?*AsyncHTTP = null,
 
-task: ThreadPool.Task = ThreadPool.Task{ .callback = &startAsyncHTTP },
+task: BackgroundTaskGroup.Task = BackgroundTaskGroup.Task{ .callback = &startAsyncHTTP },
 result_callback: HTTPClientResult.Callback = undefined,
 
 redirected: bool = false,
@@ -327,12 +327,13 @@ fn reset(this: *AsyncHTTP) !void {
     }
 }
 
-pub fn schedule(this: *AsyncHTTP, _: std.mem.Allocator, batch: *ThreadPool.Batch) void {
+pub fn schedule(this: *AsyncHTTP, _: std.mem.Allocator, batch: *BackgroundTaskGroup.Batch) void {
     this.state.store(.scheduled, .monotonic);
-    batch.push(ThreadPool.Batch.from(&this.task));
+    batch.push(BackgroundTaskGroup.Batch.from(&this.task));
 }
 
 fn sendSyncCallback(this: *SingleHTTPQueue, async_http: *AsyncHTTP, result: HTTPClientResult) void {
+    if (result.has_more) return;
     async_http.real.?.* = async_http.*;
     async_http.real.?.response_buffer = async_http.response_buffer;
     this.queue.putOneUncancelable(this.io, result) catch unreachable;
@@ -342,13 +343,14 @@ pub fn sendSync(this: *AsyncHTTP, io: std.Io) anyerror!picohttp.Response {
     HTTPThread.init(io, &.{});
 
     const ctx = try bun.default_allocator.create(SingleHTTPQueue);
+    defer bun.default_allocator.destroy(ctx);
     ctx.init(io);
     this.result_callback = HTTPClientResult.Callback.New(
         *SingleHTTPQueue,
         sendSyncCallback,
     ).init(ctx);
 
-    var batch = bun.ThreadPool.Batch{};
+    var batch = bun.BackgroundTaskGroup.Batch{};
     this.schedule(bun.default_allocator, &batch);
     bun.http.http_thread.schedule(batch);
 
@@ -356,8 +358,7 @@ pub fn sendSync(this: *AsyncHTTP, io: std.Io) anyerror!picohttp.Response {
     if (result.fail) |err| {
         return err;
     }
-    assert(result.metadata != null);
-    return result.metadata.?.response;
+    return this.response orelse error.InvalidHTTPResponse;
 }
 
 pub fn onAsyncHTTPCallback(this: *AsyncHTTP, async_http: *AsyncHTTP, result: HTTPClientResult) void {
@@ -464,9 +465,9 @@ const jsc = bun.jsc;
 const picohttp = bun.picohttp;
 const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
 
-const ThreadPool = bun.ThreadPool;
-const Batch = bun.ThreadPool.Batch;
-const Task = ThreadPool.Task;
+const BackgroundTaskGroup = bun.BackgroundTaskGroup;
+const Batch = bun.BackgroundTaskGroup.Batch;
+const Task = BackgroundTaskGroup.Task;
 
 const HTTPClient = bun.http;
 const FetchRedirect = HTTPClient.FetchRedirect;

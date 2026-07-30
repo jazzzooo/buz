@@ -26,7 +26,7 @@
 //!          → GetHGlobalFromStream → GlobalLock → dupe to default_allocator
 //!
 //! Thread-safety: WIC requires COM to be initialised on the calling thread.
-//! Bun's image work runs on `WorkPool` threads with no prior COM init, so we
+//! Bun's image work runs on `BackgroundWork` threads with no prior COM init, so we
 //! call `CoInitializeEx(COINIT_MULTITHREADED)` once per thread via a
 //! threadlocal flag; MTA is fine for WIC and means the factory pointer can be
 //! shared across pool threads.

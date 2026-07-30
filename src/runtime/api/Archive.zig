@@ -472,7 +472,7 @@ fn AsyncTask(comptime Context: type) type {
         ctx: Context,
         promise: jsc.JSPromise.Strong,
         vm: *jsc.VirtualMachine,
-        task: jsc.WorkPoolTask = .{ .callback = &run },
+        task: jsc.BackgroundTask = .{ .callback = &run },
         concurrent_task: jsc.ConcurrentTask = .{},
         ref: bun.Async.KeepAlive = .{},
 
@@ -488,10 +488,15 @@ fn AsyncTask(comptime Context: type) type {
         }
 
         fn schedule(this: *Self) void {
-            jsc.WorkPool.schedule(&this.task);
+            jsc.BackgroundWork.schedule(&this.vm.background_tasks, &this.task) catch |err| {
+                this.ctx.result = .{ .err = err };
+                this.vm.enqueueTaskConcurrent(
+                    this.concurrent_task.from(this, .manual_deinit),
+                );
+            };
         }
 
-        fn run(work_task: *jsc.WorkPoolTask) void {
+        fn run(work_task: *jsc.BackgroundTask) void {
             const this: *Self = @fieldParentPtr("task", work_task);
             const result = Context.run(&this.ctx);
             // Handle both error union and non-error union return types
@@ -532,7 +537,7 @@ fn AsyncTask(comptime Context: type) type {
 const ExtractContext = struct {
     const Result = union(enum) {
         success: u32,
-        err: error{ReadError},
+        err: error{ ReadError, ConcurrencyUnavailable },
     };
 
     store: *jsc.WebCore.Blob.Store,
@@ -608,7 +613,7 @@ fn startExtractTask(
 
 const BlobContext = struct {
     const OutputType = enum { blob, bytes };
-    const Error = error{ OutOfMemory, GzipInitFailed, GzipCompressFailed };
+    const Error = error{ OutOfMemory, GzipInitFailed, GzipCompressFailed, ConcurrencyUnavailable };
     const Result = union(enum) {
         compressed: []u8,
         uncompressed: void,
@@ -675,7 +680,7 @@ fn startBlobTask(globalThis: *jsc.JSGlobalObject, store: *jsc.WebCore.Blob.Store
 }
 
 const WriteContext = struct {
-    const Error = error{ OutOfMemory, GzipInitFailed, GzipCompressFailed };
+    const Error = error{ OutOfMemory, GzipInitFailed, GzipCompressFailed, ConcurrencyUnavailable };
     const Result = union(enum) {
         success: void,
         err: Error,
@@ -769,7 +774,7 @@ fn startWriteTask(
 const FilesContext = struct {
     const FileEntry = struct { path: []u8, data: []u8, mtime: i64 };
     const FileEntryList = std.ArrayList(FileEntry);
-    const Error = error{ OutOfMemory, ReadError };
+    const Error = error{ OutOfMemory, ReadError, ConcurrencyUnavailable };
     const Result = union(enum) {
         success: FileEntryList,
         libarchive_err: [*:0]u8,

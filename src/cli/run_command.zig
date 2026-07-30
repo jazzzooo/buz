@@ -1253,7 +1253,7 @@ pub const RunCommand = struct {
     }
 
     /// One pending remote-image download. Lives on the heap so its
-    /// `async_http.task` (embedded in ThreadPool.Task) has a stable
+    /// `async_http.task` (embedded in BackgroundTaskGroup.Task) has a stable
     /// address — HTTPThread.schedule does @fieldParentPtr on that task,
     /// so moving the struct would break the worker's callback.
     const RemoteImageDownload = struct {
@@ -1332,10 +1332,10 @@ pub const RunCommand = struct {
         var done_queue: std.Io.Queue(u32) = .init(&done_buffer);
 
         // Kick off every download in parallel. Accumulate tasks into a
-        // single ThreadPool.Batch, then ship the whole batch to the
+        // single BackgroundTaskGroup.Batch, then ship the whole batch to the
         // HTTP thread in one schedule() call — worker picks up and runs
         // them concurrently.
-        var batch = bun.ThreadPool.Batch{};
+        var batch = bun.BackgroundTaskGroup.Batch{};
         for (remote_urls.items) |raw_url| {
             const d = allocator.create(RemoteImageDownload) catch continue;
             d.* = .{

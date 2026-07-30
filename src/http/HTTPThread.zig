@@ -739,7 +739,7 @@ const Output = bun.Output;
 const jsc = bun.jsc;
 const strings = bun.strings;
 const Arena = bun.allocators.MimallocArena;
-const Batch = bun.ThreadPool.Batch;
+const Batch = bun.BackgroundTaskGroup.Batch;
 const UnboundedQueue = bun.threading.UnboundedQueue;
 const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
 

@@ -1136,7 +1136,7 @@ fn parkForever() noreturn {
     if (builtin.single_threaded) std.process.abort();
 
     var futex = std.atomic.Value(u32).init(0);
-    while (true) bun.Futex.waitForever(&futex, 0);
+    while (true) std.Options.debug_io.futexWaitUncancelable(u32, &futex.raw, 0);
 }
 
 /// This is to be called by any thread that is attempting to exit the process.

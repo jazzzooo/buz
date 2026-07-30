@@ -175,6 +175,7 @@ pub const HMODULE = win32.HMODULE;
 pub const NtCreateFile = @import("../../windows_sys/externs.zig").NtCreateFile;
 pub const GetStdHandle = @import("../../windows_sys/externs.zig").GetStdHandle;
 pub const GetQueuedCompletionStatus = @import("../../windows_sys/externs.zig").GetQueuedCompletionStatus;
+pub const PostQueuedCompletionStatus = @import("../../windows_sys/externs.zig").PostQueuedCompletionStatus;
 pub const ReadDirectoryChangesW = @import("../../windows_sys/externs.zig").ReadDirectoryChangesW;
 pub const CreateFileW = @import("../../windows_sys/externs.zig").CreateFileW;
 pub const SetFilePointerEx = @import("../../windows_sys/externs.zig").SetFilePointerEx;

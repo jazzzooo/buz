@@ -778,7 +778,7 @@ pub fn match(app: *Router, comptime Server: type, server: Server, comptime Reque
         bun.assert(route.path.len > 0);
 
         if (comptime @hasField(std.meta.Child(Server), "watcher")) {
-            if (server.watcher.watchloop_handle == null) {
+            if (!server.watcher.isStarted()) {
                 server.watcher.start() catch {};
             }
         }

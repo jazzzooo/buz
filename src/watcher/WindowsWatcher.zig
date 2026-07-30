@@ -6,6 +6,7 @@ iocp: w.HANDLE = undefined,
 watcher: DirWatcher = undefined,
 buf: bun.PathBuffer = undefined,
 base_idx: usize = 0,
+loaded: bool = false,
 
 pub const EventListIndex = c_int;
 
@@ -132,6 +133,7 @@ pub fn init(this: *WindowsWatcher, root: []const u8) !void {
         this.buf[root.len] = '\\';
     }
     this.base_idx = if (needs_slash) root.len + 1 else root.len;
+    this.loaded = true;
 }
 
 const Timeout = enum(w.DWORD) {
@@ -168,6 +170,10 @@ pub fn next(this: *WindowsWatcher, timeout: Timeout) bun.sys.Maybe(?EventIterato
             }
         }
 
+        if (key == shutdown_key) {
+            return .{ .result = null };
+        }
+
         if (overlapped) |ptr| {
             // ignore possible spurious events
             if (ptr != &this.watcher.overlapped) {
@@ -194,11 +200,23 @@ pub fn next(this: *WindowsWatcher, timeout: Timeout) bun.sys.Maybe(?EventIterato
 }
 
 pub fn stop(this: *WindowsWatcher) void {
+    if (!this.loaded) return;
     _ = w.CloseHandle(this.watcher.dirHandle);
     _ = w.CloseHandle(this.iocp);
+    this.loaded = false;
 }
 
-pub fn watchLoopCycle(this: *bun.Watcher) bun.sys.Maybe(void) {
+pub fn requestStop(this: *WindowsWatcher) void {
+    if (this.loaded) {
+        _ = w.PostQueuedCompletionStatus(this.iocp, 0, shutdown_key, null);
+    }
+}
+
+pub fn deinit(this: *WindowsWatcher) void {
+    this.stop();
+}
+
+pub fn watchLoopCycle(this: *bun.Watcher) std.Io.Cancelable!bun.sys.Maybe(void) {
     const buf = &this.platform.buf;
     const base_idx = this.platform.base_idx;
 
@@ -293,8 +311,12 @@ fn processWatchEventBatch(this: *bun.Watcher, event_count: usize) bun.sys.Maybe(
 
     log("calling onFileUpdate (all_events.len = {d})", .{all_events.len});
 
-    this.writeTraceEvents(all_events, this.changed_filepaths[0 .. last_event_index + 1]);
-    this.onFileUpdate(this.ctx, all_events, this.changed_filepaths[0 .. last_event_index + 1], this.watchlist);
+    this.mutex.lockUncancelable(this.io);
+    defer this.mutex.unlock(this.io);
+    if (this.running.load(.acquire)) {
+        this.writeTraceEvents(all_events, this.changed_filepaths[0 .. last_event_index + 1]);
+        this.onFileUpdate(this.ctx, all_events, this.changed_filepaths[0 .. last_event_index + 1], this.watchlist);
+    }
 
     return .success;
 }
@@ -320,3 +342,4 @@ const Output = bun.Output;
 
 const WatchEvent = bun.Watcher.WatchEvent;
 const WatchItemIndex = bun.Watcher.WatchItemIndex;
+const shutdown_key: w.ULONG_PTR = 1;

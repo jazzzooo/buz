@@ -726,7 +726,7 @@ pub const PackageInstall = struct {
 
     fn NewTaskQueue(comptime TaskType: type) type {
         return struct {
-            thread_pool: *ThreadPool,
+            background_tasks: *BackgroundTaskGroup,
             io: std.Io,
             errored_task: std.atomic.Value(?*TaskType) = .init(null),
             countdown: bun.threading.OneShotCountdown = .init(1),
@@ -738,7 +738,13 @@ pub const PackageInstall = struct {
 
             pub fn push(this: *@This(), task: *TaskType) void {
                 this.countdown.addOne();
-                this.thread_pool.schedule(bun.ThreadPool.Batch.from(&task.task));
+                this.background_tasks.schedule(bun.BackgroundTaskGroup.Batch.from(&task.task)) catch |err| {
+                    task.err = err;
+                    if (this.errored_task.cmpxchgStrong(null, task, .monotonic, .monotonic) != null) {
+                        task.deinit();
+                    }
+                    this.completeOne();
+                };
             }
 
             pub fn wait(this: *@This()) void {
@@ -757,7 +763,7 @@ pub const PackageInstall = struct {
         src: [:0]bun.OSPathChar,
         dest: [:0]bun.OSPathChar,
         basename: u16,
-        task: bun.jsc.WorkPoolTask = .{ .callback = &runFromThreadPool },
+        task: bun.jsc.BackgroundTask = .{ .callback = &runInBackground },
         err: ?anyerror = null,
 
         pub const Queue = NewTaskQueue(@This());
@@ -787,7 +793,7 @@ pub const PackageInstall = struct {
             });
         }
 
-        fn runFromThreadPool(task: *bun.jsc.WorkPoolTask) void {
+        fn runInBackground(task: *bun.jsc.BackgroundTask) void {
             var self: *@This() = @fieldParentPtr("task", task);
             const queue = self.queue;
             defer queue.completeOne();
@@ -888,10 +894,10 @@ pub const PackageInstall = struct {
                 head1: if (Environment.isWindows) []u16 else void,
                 to_copy_into2: if (Environment.isWindows) []u16 else void,
                 head2: if (Environment.isWindows) []u16 else void,
-                thread_pool: if (Environment.isWindows) *ThreadPool else void,
+                background_tasks: if (Environment.isWindows) *BackgroundTaskGroup else void,
             ) !u32 {
                 var real_file_count: u32 = 0;
-                var queue = if (Environment.isWindows) HardLinkWindowsInstallTask.Queue{ .thread_pool = thread_pool, .io = io };
+                var queue = if (Environment.isWindows) HardLinkWindowsInstallTask.Queue{ .background_tasks = background_tasks, .io = io };
                 defer if (comptime Environment.isWindows) {
                     queue.wait();
                     if (queue.errored_task.load(.monotonic)) |task| task.deinit();
@@ -961,7 +967,7 @@ pub const PackageInstall = struct {
             if (Environment.isWindows) &state.buf else {},
             state.to_copy_buf2,
             if (Environment.isWindows) &state.buf2 else {},
-            if (Environment.isWindows) &this.manager.thread_pool else {},
+            if (Environment.isWindows) &this.manager.background_tasks else {},
         ) catch |err| {
             bun.handleErrorReturnTrace(err, @errorReturnTrace());
 
@@ -1156,9 +1162,9 @@ pub const PackageInstall = struct {
 
                     manager: *PackageManager,
                     absolute_path: []const u8,
-                    task: jsc.WorkPoolTask = .{ .callback = &run },
+                    task: jsc.BackgroundTask = .{ .callback = &run },
 
-                    pub fn run(task: *jsc.WorkPoolTask) void {
+                    pub fn run(task: *jsc.BackgroundTask) void {
                         const uninstall_task: *@This() = @fieldParentPtr("task", task);
                         const manager = uninstall_task.manager;
                         var debug_timer = bun.Output.DebugTimer.start();
@@ -1204,7 +1210,11 @@ pub const PackageInstall = struct {
                     .absolute_path = bun.handleOom(std.fs.path.resolve(bun.default_allocator, &.{ FileSystem.instance.top_level_dir, this.node_modules.path.items, temp_path })),
                 });
                 this.manager.incrementPendingTasks(1);
-                this.manager.thread_pool.schedule(bun.ThreadPool.Batch.from(&task.task));
+                this.manager.background_tasks.schedule(bun.BackgroundTaskGroup.Batch.from(&task.task)) catch {
+                    task.deinit();
+                    this.manager.decrementPendingTasks();
+                    this.manager.wake();
+                };
             },
         }
     }
@@ -1511,7 +1521,7 @@ const Output = bun.Output;
 const Path = bun.path;
 const Progress = bun.Progress;
 const Syscall = bun.sys;
-const ThreadPool = bun.ThreadPool;
+const BackgroundTaskGroup = bun.BackgroundTaskGroup;
 const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;

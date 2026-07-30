@@ -1173,7 +1173,10 @@ fn ensureRouteIsBundled(
                 entry_points,
                 false,
                 bun.SystemTimer.start() catch @panic("timers unsupported"),
-            ) catch |err| bun.handleOom(err);
+            ) catch |err| switch (err) {
+                error.OutOfMemory => bun.outOfMemory(),
+                else => return dev.vm.global.throw("Failed to start bundler: {s}", .{@errorName(err)}),
+            };
         },
         .deferred_to_next_bundle => {
             bun.assert(dev.next_bundle.route_queue.get(route_bundle_index) != null);
@@ -1868,7 +1871,7 @@ pub fn startAsyncBundle(
     entry_points: EntryPointList,
     had_reload_event: bool,
     timer: bun.SystemTimer,
-) bun.OOM!void {
+) !void {
     assert(dev.current_bundle == null);
     assert(entry_points.set.count() > 0);
     dev.log.clearAndFree();
@@ -1912,11 +1915,9 @@ pub fn startAsyncBundle(
         },
         alloc,
         .{ .js = dev.vm.eventLoop() },
-        false, // watching is handled separately
-        jsc.WorkPool.get(),
         heap,
     );
-    bv2.bun_watcher = dev.bun_watcher;
+    bv2.borrowed_watcher = dev.bun_watcher;
     bv2.asynchronous = true;
 
     {
@@ -3070,7 +3071,10 @@ fn startNextBundleIfPresent(dev: *DevServer) void {
         }
 
         if (entry_points.set.count() > 0) {
-            bun.handleOom(dev.startAsyncBundle(entry_points, is_reload, timer));
+            dev.startAsyncBundle(entry_points, is_reload, timer) catch |err| switch (err) {
+                error.OutOfMemory => bun.outOfMemory(),
+                else => Output.err(err, "Failed to start bundler", .{}),
+            };
         }
 
         dev.next_bundle.route_queue.clearRetainingCapacity();

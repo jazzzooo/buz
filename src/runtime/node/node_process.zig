@@ -306,7 +306,7 @@ pub fn exit(globalObject: *jsc.JSGlobalObject, code: u8) callconv(.c) void {
         worker.exit();
     } else {
         vm.onExit();
-        vm.globalExit();
+        bun.Global.exitWithoutCleanup(code);
     }
 }
 

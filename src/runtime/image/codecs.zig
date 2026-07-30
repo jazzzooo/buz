@@ -34,7 +34,7 @@ else
 /// `.bun` skips the OS layer entirely (Highway geometry, heic/avif throw)
 /// so behaviour is byte-identical to a Linux build.
 ///
-/// Unsynchronised: written from JS, read from WorkPool — a torn read of a
+/// Unsynchronised: written from JS, read from BackgroundWork — a torn read of a
 /// 1-byte enum is fine and the worst case is one task using the previous
 /// mode.
 pub const Backend = enum {
@@ -174,6 +174,7 @@ pub const Error = error{
     /// HEIC/AVIF on a platform with no system backend (Linux), or the system
     /// backend declined and there's no static codec to fall back to.
     UnsupportedOnPlatform,
+    ConcurrencyUnavailable,
     OutOfMemory,
 };
 

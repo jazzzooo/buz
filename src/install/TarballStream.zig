@@ -2,7 +2,7 @@
 //!
 //! The HTTP thread hands each body chunk to `onChunk`, which appends to a
 //! small pending buffer and (if not already running) schedules
-//! `drain_task` on `PackageManager.thread_pool`. The drain task calls into
+//! `drain_task` on `PackageManager.background_tasks`. The drain task calls into
 //! libarchive to gunzip and untar whatever is available, writing files as
 //! their data arrives, until libarchive asks for more compressed bytes
 //! than are currently buffered. At that point the read callback returns
@@ -110,7 +110,7 @@ allocator: std.mem.Allocator,
 
 /// Thread-pool task that runs `drain`. Re-enqueued whenever new data
 /// arrives and no drain is currently in flight.
-drain_task: ThreadPool.Task = .{ .callback = &drainCallback },
+drain_task: BackgroundTaskGroup.Task = .{ .callback = &drainCallback },
 
 /// Completion task that carries the final result back to the main
 /// thread. Populated by `finish()` and pushed onto `resolve_tasks` there.
@@ -192,10 +192,17 @@ pub fn onChunk(this: *TarballStream, chunk: []const u8, is_last: bool, err: ?any
 
 fn scheduleDrain(this: *TarballStream) void {
     if (this.draining.swap(true, .acq_rel)) return;
-    this.package_manager.thread_pool.schedule(ThreadPool.Batch.from(&this.drain_task));
+    this.package_manager.background_tasks.schedule(BackgroundTaskGroup.Batch.from(&this.drain_task)) catch |err| {
+        this.mutex.lockUncancelable(this.package_manager.io);
+        if (this.fail == null) this.fail = err;
+        this.draining.store(false, .release);
+        const closed = this.closed;
+        this.mutex.unlock(this.package_manager.io);
+        if (closed) this.finish();
+    };
 }
 
-fn drainCallback(task: *ThreadPool.Task) void {
+fn drainCallback(task: *BackgroundTaskGroup.Task) void {
     const this: *TarballStream = @fieldParentPtr("drain_task", task);
     this.drain();
 }
@@ -922,7 +929,7 @@ const Task = install.Task;
 const bun = @import("bun");
 const Environment = bun.Environment;
 const Output = bun.Output;
-const ThreadPool = bun.ThreadPool;
+const BackgroundTaskGroup = bun.BackgroundTaskGroup;
 const logger = bun.logger;
 const strings = bun.strings;
 const FileSystem = bun.fs.FileSystem;

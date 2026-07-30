@@ -58,6 +58,13 @@ pub extern "kernel32" fn GetQueuedCompletionStatus(
     dwMilliseconds: DWORD,
 ) callconv(.winapi) BOOL;
 
+pub extern "kernel32" fn PostQueuedCompletionStatus(
+    CompletionPort: HANDLE,
+    dwNumberOfBytesTransferred: DWORD,
+    dwCompletionKey: windows.ULONG_PTR,
+    lpOverlapped: ?*anyopaque,
+) callconv(.winapi) BOOL;
+
 pub extern "kernel32" fn ReadDirectoryChangesW(
     hDirectory: HANDLE,
     lpBuffer: *anyopaque,

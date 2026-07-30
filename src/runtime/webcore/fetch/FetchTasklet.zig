@@ -1386,7 +1386,7 @@ pub const FetchTasklet = struct {
             promise,
         );
 
-        var batch = bun.ThreadPool.Batch{};
+        var batch = bun.BackgroundTaskGroup.Batch{};
         node.http.?.schedule(allocator, &batch);
         node.poll_ref.ref(global.bunVM());
 

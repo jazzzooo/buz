@@ -104,6 +104,13 @@ pub const EventLoopHandle = union(EventLoopKind) {
         };
     }
 
+    pub fn backgroundTasks(this: EventLoopHandle) *bun.BackgroundTaskGroup {
+        return switch (this) {
+            .js => &this.js.virtual_machine.background_tasks,
+            .mini => this.mini.backgroundTasks(),
+        };
+    }
+
     pub fn pipeReadBuffer(this: EventLoopHandle) []u8 {
         return switch (this) {
             .js => this.js.pipeReadBuffer(),

@@ -18,7 +18,7 @@ pub fn generateChunksInParallel(
         debug(" START {d} renamers", .{chunks.len});
         defer debug("  DONE {d} renamers", .{chunks.len});
         const ctx = GenerateChunkCtx{ .chunk = &chunks[0], .c = c, .chunks = chunks };
-        try c.parse_graph.pool.worker_pool.eachPtr(c.allocator(), ctx, LinkerContext.generateJSRenamer, chunks);
+        try c.parse_graph.pool.eachPtr(ctx, LinkerContext.generateJSRenamer, chunks);
     }
 
     if (c.source_maps.line_offset_tasks.len > 0) {
@@ -45,13 +45,13 @@ pub fn generateChunksInParallel(
             debug(" START {d} prepare CSS ast (total count)", .{total_count});
             defer debug("  DONE {d} prepare CSS ast (total count)", .{total_count});
 
-            var batch = ThreadPoolLib.Batch{};
+            var batch = ExecutorTypes.Batch{};
             const tasks = bun.handleOom(c.allocator().alloc(LinkerContext.PrepareCssAstTask, total_count));
             var i: usize = 0;
             for (chunks) |*chunk| {
                 if (chunk.content == .css) {
                     tasks[i] = LinkerContext.PrepareCssAstTask{
-                        .task = ThreadPoolLib.Task{
+                        .task = ExecutorTypes.Task{
                             .callback = &LinkerContext.prepareCssAstsForChunk,
                         },
                         .chunk = chunk,
@@ -61,8 +61,7 @@ pub fn generateChunksInParallel(
                     i += 1;
                 }
             }
-            c.parse_graph.pool.worker_pool.schedule(batch);
-            c.parse_graph.pool.worker_pool.waitForAll();
+            try c.parse_graph.pool.runBatch(c.allocator(), batch);
         } else if (Environment.isDebug) {
             for (chunks) |*chunk| {
                 bun.assert(chunk.content != .css);
@@ -105,7 +104,7 @@ pub fn generateChunksInParallel(
             const combined_part_ranges = bun.handleOom(c.allocator().alloc(PendingPartRange, total_count));
             defer c.allocator().free(combined_part_ranges);
             var remaining_part_ranges = combined_part_ranges;
-            var batch = ThreadPoolLib.Batch{};
+            var batch = ExecutorTypes.Batch{};
             for (chunks, chunk_contexts) |*chunk, *chunk_ctx| {
                 switch (chunk.content) {
                     .javascript => {
@@ -165,8 +164,7 @@ pub fn generateChunksInParallel(
                     },
                 }
             }
-            c.parse_graph.pool.worker_pool.schedule(batch);
-            c.parse_graph.pool.worker_pool.waitForAll();
+            try c.parse_graph.pool.runBatch(c.allocator(), batch);
         }
 
         if (c.source_maps.quoted_contents_tasks.len > 0) {
@@ -184,8 +182,7 @@ pub fn generateChunksInParallel(
             debug(" START {d} postprocess chunks", .{chunks_to_do.len});
             defer debug("  DONE {d} postprocess chunks", .{chunks_to_do.len});
 
-            try c.parse_graph.pool.worker_pool.eachPtr(
-                c.allocator(),
+            try c.parse_graph.pool.eachPtr(
                 chunk_contexts[0],
                 generateChunk,
                 chunks_to_do,
@@ -782,7 +779,7 @@ pub fn generateChunksInParallel(
     return output_files.take();
 }
 
-pub const ThreadPool = bun.bundle_v2.ThreadPool;
+pub const Executor = bun.bundle_v2.Executor;
 
 const debugPartRanges = Output.scoped(.PartRanges, .hidden);
 
@@ -793,7 +790,7 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 const Loader = bun.Loader;
 const Output = bun.Output;
-const ThreadPoolLib = bun.ThreadPool;
+const ExecutorTypes = bun.bundle_v2.Executor;
 const base64 = bun.base64;
 const jsc = bun.jsc;
 const strings = bun.strings;

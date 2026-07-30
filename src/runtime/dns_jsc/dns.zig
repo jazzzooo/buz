@@ -663,7 +663,7 @@ pub const GetAddrInfoRequest = struct {
     cache: CacheConfig = CacheConfig{},
     head: DNSLookup,
     tail: *DNSLookup = undefined,
-    task: bun.ThreadPool.Task = undefined,
+    task: bun.BackgroundTaskGroup.Task = undefined,
 
     pub fn init(
         cache: Resolver.CacheHit,
@@ -839,6 +839,10 @@ pub const GetAddrInfoRequest = struct {
     pub fn run(this: *GetAddrInfoRequest, task: *Task) void {
         this.backend.libc.run();
         task.onFinish();
+    }
+
+    pub fn onScheduleError(this: *GetAddrInfoRequest, _: anyerror) void {
+        this.backend.libc = .{ .err = libuv.UV_EAI_AGAIN };
     }
 
     pub fn then(this: *GetAddrInfoRequest, _: *jsc.JSGlobalObject) void {
@@ -1802,7 +1806,14 @@ pub const internal = struct {
 
         log("getaddrinfo({s}) = cache miss (libc)", .{host orelse ""});
         // schedule the request to be executed on the work pool
-        bun.handleOom(bun.jsc.WorkPool.go(bun.default_allocator, *Request, req, workPoolCallback));
+        bun.jsc.BackgroundWork.go(loop.internal_loop_data.getParent().backgroundTasks(), bun.default_allocator, *Request, req, workPoolCallback) catch |err| switch (err) {
+            error.OutOfMemory => bun.outOfMemory(),
+            error.ConcurrencyUnavailable => afterResult(
+                req,
+                null,
+                if (Environment.isWindows) libuv.UV_EAI_AGAIN else @backingInt(std.c.EAI.AGAIN),
+            ),
+        };
         return req;
     }
 

@@ -5,7 +5,7 @@
 //! `options.Loader`, `*PackageJSON`, a `*bun.fs.FileSystem`, and on Windows is pinned
 //! to `top_level_dir`. None of that applies to `fs.watch()`, and routing `fs.watch()`
 //! through it required a 1k-line shim (the old version of this file) full of
-//! lock-ordering workarounds, a WorkPool directory crawler, and a bolted-on FSEvents
+//! lock-ordering workarounds, a BackgroundWork directory crawler, and a bolted-on FSEvents
 //! side-channel.
 //!
 //! The Windows backend (`win_watcher.zig`, libuv `uv_fs_event`) never went through

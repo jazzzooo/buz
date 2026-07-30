@@ -228,6 +228,11 @@ export const decodeURIComponentSIMD = $newCppFunction(
 );
 
 export const getDevServerDeinitCount = $bindgenFn("DevServer.bind.ts", "getDeinitCountForTesting");
+export const fileWatcherStartWithUnavailableIo: () => string = $newZigFunction(
+  "watcher/Watcher.zig",
+  "TestingAPIs.startWithUnavailableIo",
+  0,
+);
 export const getCounters = $newZigFunction("Counters.zig", "createCountersObject", 0);
 export const hasNonReifiedStatic = $newCppFunction("InternalForTesting.cpp", "jsFunction_hasReifiedStatic", 1);
 

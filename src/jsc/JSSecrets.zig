@@ -1,6 +1,6 @@
 pub const SecretsJob = struct {
     vm: *jsc.VirtualMachine,
-    task: jsc.WorkPoolTask,
+    task: jsc.BackgroundTask,
     any_task: jsc.AnyTask,
     poll: Async.KeepAlive = .{},
     promise: jsc.Strong,
@@ -29,7 +29,7 @@ pub const SecretsJob = struct {
         return job;
     }
 
-    pub fn runTask(task: *jsc.WorkPoolTask) void {
+    pub fn runTask(task: *jsc.BackgroundTask) void {
         const job: *SecretsJob = @fieldParentPtr("task", task);
         var vm = job.vm;
         defer vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
@@ -60,7 +60,17 @@ pub const SecretsJob = struct {
 
     pub fn schedule(this: *SecretsJob) void {
         this.poll.ref(this.vm);
-        jsc.WorkPool.schedule(&this.task);
+        jsc.BackgroundWork.schedule(&this.vm.background_tasks, &this.task) catch |err| {
+            const global = this.vm.global;
+            const error_value: bun.JSError!jsc.JSValue = if (global.createErrorInstance(
+                "Failed to start secrets operation: {s}",
+                .{@errorName(err)},
+            )) |instance| instance.toJS() else |js_err| js_err;
+            if (this.promise.get().asPromise()) |promise| {
+                promise.rejectWithAsyncStack(global, error_value) catch {};
+            }
+            this.deinit();
+        };
     }
 };
 

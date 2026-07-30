@@ -317,7 +317,7 @@ pub const ShellCpTask = struct {
     verbose_output_lock: std.Io.Mutex = .init,
     verbose_output: ArrayList(u8) = ArrayList(u8).init(bun.default_allocator),
 
-    task: jsc.WorkPoolTask = .{ .callback = &runFromThreadPool },
+    task: jsc.BackgroundTask = .{ .callback = &runInBackground },
     event_loop: jsc.EventLoopHandle,
     concurrent_task: jsc.EventLoopTask,
     err: ?bun.shell.ShellErr = null,
@@ -341,7 +341,10 @@ pub const ShellCpTask = struct {
 
     pub fn schedule(this: *@This()) void {
         debug("schedule", .{});
-        WorkPool.schedule(&this.task);
+        BackgroundWork.schedule(this.event_loop.backgroundTasks(), &this.task) catch |err| {
+            this.err = .{ .custom = bun.handleOom(bun.default_allocator.dupe(u8, @errorName(err))) };
+            this.enqueueToEventLoop();
+        };
     }
 
     pub fn create(
@@ -420,17 +423,17 @@ pub const ShellCpTask = struct {
         this.runFromMainThread();
     }
 
-    pub fn runFromThreadPool(task: *WorkPoolTask) void {
-        debug("runFromThreadPool", .{});
+    pub fn runInBackground(task: *BackgroundTask) void {
+        debug("runInBackground", .{});
         var this: *@This() = @fieldParentPtr("task", task);
-        if (this.runFromThreadPoolImpl()) |e| {
+        if (this.runInBackgroundImpl()) |e| {
             this.err = e;
             this.enqueueToEventLoop();
             return;
         }
     }
 
-    fn runFromThreadPoolImpl(this: *ShellCpTask) ?bun.shell.ShellErr {
+    fn runInBackgroundImpl(this: *ShellCpTask) ?bun.shell.ShellErr {
         // We have to give an absolute path to our cp
         // implementation for it to work with cwd
         this.src_absolute = bun.handleOom(std.fs.path.joinZ(bun.default_allocator, if (ResolvePath.Platform.auto.isAbsolute(this.src))
@@ -750,8 +753,8 @@ const ResolvePath = bun.path;
 const assert = bun.assert;
 
 const jsc = bun.jsc;
-const WorkPool = jsc.WorkPool;
-const WorkPoolTask = jsc.WorkPoolTask;
+const BackgroundWork = jsc.BackgroundWork;
+const BackgroundTask = jsc.BackgroundTask;
 
 const shell = bun.shell;
 const ExitCode = shell.ExitCode;

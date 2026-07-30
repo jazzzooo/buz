@@ -11,6 +11,7 @@ pub const CopyFile = struct {
     source_fd: bun.FD = bun.invalid_fd,
 
     system_error: ?SystemError = null,
+    schedule_error: ?anyerror = null,
 
     read_len: SizeType = 0,
     read_off: SizeType = 0,
@@ -76,14 +77,21 @@ pub const CopyFile = struct {
         }
 
         const instance: bun.JSError!jsc.JSValue = if (system_error.toErrorInstanceWithAsyncStack(this.globalThis, promise)) |err| err.toJS() else |err| err;
-        if (this.store) |store| {
-            store.deref();
-        }
         try promise.reject(globalThis, instance);
     }
 
     pub fn then(this: *CopyFile, promise: *jsc.JSPromise) bun.JSTerminated!void {
+        defer this.deinit();
         this.source_store.?.deref();
+
+        if (this.schedule_error) |err| {
+            const value: bun.JSError!jsc.JSValue = if (this.globalThis.createErrorInstance(
+                "Failed to start background file copy: {s}",
+                .{@errorName(err)},
+            )) |instance| instance.toJS() else |js_err| js_err;
+            try promise.rejectWithAsyncStack(this.globalThis, value);
+            return;
+        }
 
         if (this.system_error != null) {
             try this.reject(promise);
@@ -91,6 +99,10 @@ pub const CopyFile = struct {
         }
 
         try promise.resolve(this.globalThis, .jsNumberFromUint64(this.read_len));
+    }
+
+    pub fn onScheduleError(this: *CopyFile, err: anyerror) void {
+        this.schedule_error = err;
     }
 
     pub fn run(this: *CopyFile) void {
@@ -1221,7 +1233,7 @@ pub const CopyFileWindows = struct {
             .completion = @ptrCast(&onMkdirpCompleteConcurrent),
             .completion_ctx = this,
             .path = parent,
-        }).schedule();
+        }).schedule(&this.event_loop.virtual_machine.background_tasks);
     }
 
     fn onMkdirpComplete(this: *CopyFileWindows) void {

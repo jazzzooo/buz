@@ -114,9 +114,11 @@ pub fn BundleThread(CompletionStruct: type) type {
                 transpiler,
                 null, // TODO: Kit
                 allocator,
-                jsc.AnyEventLoop.init(completion.io, allocator),
-                false,
-                jsc.WorkPool.get(),
+                jsc.AnyEventLoop.init(
+                    completion.io,
+                    allocator,
+                    bun.cli.Cli.pinnedThreads().backgroundExecutor(),
+                ),
                 heap,
             );
 
@@ -162,7 +164,7 @@ pub const Ref = bun.ast.Ref;
 pub const Index = bun.ast.Index;
 
 pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
-pub const ThreadPool = bun.bundle_v2.ThreadPool;
+pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
 const Logger = @import("../logger/logger.zig");

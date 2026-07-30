@@ -31,7 +31,7 @@ last_width: i32 = -1,
 last_height: i32 = -1,
 /// Strong while at least one PipelineTask is in flight, weak otherwise. The
 /// Strong→wrapper→sourceJS-slot chain is what keeps the borrowed ArrayBuffer
-/// alive across the WorkPool roundtrip; switching to weak when idle lets GC
+/// alive across the BackgroundWork roundtrip; switching to weak when idle lets GC
 /// collect the wrapper without polling `hasPendingActivity` every cycle.
 this_ref: jsc.JSRef = .empty(),
 pending_tasks: u32 = 0,
@@ -378,6 +378,7 @@ fn errorCode(e: codecs.Error) [:0]const u8 {
         error.EncodeFailed => "ERR_IMAGE_ENCODE_FAILED",
         error.TooManyPixels => "ERR_IMAGE_TOO_MANY_PIXELS",
         error.UnsupportedOnPlatform => "ERR_IMAGE_FORMAT_UNSUPPORTED",
+        error.ConcurrencyUnavailable => "ERR_CONCURRENCY_UNAVAILABLE",
         error.OutOfMemory => "ERR_OUT_OF_MEMORY",
     };
 }
@@ -389,6 +390,7 @@ fn errorMessage(e: codecs.Error) [:0]const u8 {
         error.EncodeFailed => "Image: encode failed",
         error.TooManyPixels => "Image: input exceeds maxPixels limit",
         error.UnsupportedOnPlatform => "Image: format not supported on this machine (HEIC/AVIF/TIFF require the OS codec; AVIF encode needs an AV1 encoder)",
+        error.ConcurrencyUnavailable => "Image: background concurrency unavailable",
         error.OutOfMemory => "Image: out of memory",
     };
 }
@@ -529,7 +531,7 @@ pub fn getHeight(this: *Image, _: *jsc.JSGlobalObject) jsc.JSValue {
 
 pub fn doMetadata(this: *Image, global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
     // Header-only probe is a few dozen byte reads — when the bytes are already
-    // in memory it's cheaper to do it inline than to bounce off the WorkPool
+    // in memory it's cheaper to do it inline than to bounce off the BackgroundWork
     // (~0.4 ms roundtrip). Path-backed sources still go async for the file I/O.
     if (this.jsThreadBytes(callframe.this(), global)) |buf| {
         if (codecs.probe(buf, this.max_pixels)) |p| {
@@ -894,7 +896,14 @@ pub const PipelineTask = struct {
         io_err: bun.sys.Error,
     };
 
-    /// Runs on a `WorkPool` thread. No JSC access.
+    pub fn onScheduleError(this: *PipelineTask, err: anyerror) void {
+        this.result = .{ .err = switch (err) {
+            error.ConcurrencyUnavailable => error.ConcurrencyUnavailable,
+            else => unreachable,
+        } };
+    }
+
+    /// Runs on a `BackgroundWork` thread. No JSC access.
     pub fn run(this: *PipelineTask) void {
         // `this.input` was prepared on the JS thread by `pinForTask`: either a
         // pinned ArrayBuffer slice (pin lives until `then()` unpins), an owned
@@ -907,7 +916,7 @@ pub const PipelineTask = struct {
             //   • !S_ISREG → ENODEV. `/dev/zero`/`/dev/urandom` would
             //     otherwise pread forever (st_size=0, never returns 0) until
             //     the doubling ArrayList OOMs the process; a FIFO with no
-            //     writer would park this WorkPool thread in-kernel forever.
+            //     writer would park this BackgroundWork thread in-kernel forever.
             //   • st_size cap → file-based decompression-bomb fails up
             //     front with a clear error instead of materialising a
             //     multi-GB encoded buffer before `maxPixels` even runs.
@@ -1097,7 +1106,7 @@ pub const PipelineTask = struct {
         // transfer/detach the source now.
         this.input.release();
         const global = this.global;
-        // Stash final dims here (JS thread) — `run()` is on a WorkPool thread
+        // Stash final dims here (JS thread) — `run()` is on a BackgroundWork thread
         // so writing `this.image.*` there would race the synchronous getters.
         switch (this.result) {
             inline .encoded, .meta => |r| {

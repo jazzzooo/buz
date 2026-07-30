@@ -32,10 +32,6 @@ pub fn createAndScheduleCompletionTask(
         plugin.setConfig(completion);
     }
 
-    // Ensure this exists before we spawn the thread to prevent any race
-    // conditions from creating two
-    _ = jsc.WorkPool.get();
-
     JSBundleThread.singleton.enqueue(completion);
 
     completion.poll_ref.ref(globalThis.bunVM());

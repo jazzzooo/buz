@@ -354,7 +354,7 @@ pub fn getCompletionCallback(this: *NetworkTask) HTTP.HTTPClientResult.Callback 
     return HTTP.HTTPClientResult.Callback.New(*NetworkTask, notify).init(this);
 }
 
-pub fn schedule(this: *NetworkTask, batch: *ThreadPool.Batch) void {
+pub fn schedule(this: *NetworkTask, batch: *BackgroundTaskGroup.Batch) void {
     this.unsafe_http_client.schedule(this.allocator, batch);
 }
 
@@ -423,7 +423,7 @@ pub fn forTarball(
         // Tell the HTTP client to invoke `notify` for every body chunk
         // instead of buffering the whole response. `notify` pushes each
         // chunk into `tarball_stream`, which schedules a drain task on
-        // `thread_pool`; the drain task calls into libarchive until it
+        // `background_tasks`; the drain task calls into libarchive until it
         // reports ARCHIVE_RETRY (out of input), then returns so the
         // worker can be reused for other install work. The next chunk
         // reschedules it and libarchive — whose state lives on the heap
@@ -493,7 +493,7 @@ const GlobalStringBuilder = bun.StringBuilder;
 const IdentityContext = bun.IdentityContext;
 const MutableString = bun.MutableString;
 const OOM = bun.OOM;
-const ThreadPool = bun.ThreadPool;
+const BackgroundTaskGroup = bun.BackgroundTaskGroup;
 const URL = bun.URL;
 const logger = bun.logger;
 const strings = bun.strings;

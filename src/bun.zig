@@ -773,7 +773,14 @@ pub const webcore = bun_js.webcore;
 pub const api = bun_js.api;
 
 pub const logger = @import("./logger/logger.zig");
-pub const default_thread_stack_size = ThreadPool.default_thread_stack_size;
+pub const default_thread_stack_size = brk: {
+    const default = 4 * 1024 * 1024;
+    if (!Environment.isMac) break :brk default;
+    const size = default - (default % std.heap.page_size_max);
+    if (size % std.heap.page_size_max != 0)
+        @compileError("Thread stack size is not a multiple of page size");
+    break :brk size;
+};
 pub const picohttp = @import("./picohttp/picohttp.zig");
 pub const uws = @import("./uws/uws.zig");
 pub const BoringSSL = @import("./boringssl/boringssl.zig");
@@ -1589,9 +1596,10 @@ pub const BundleV2 = bundle_v2.BundleV2;
 pub const ParseTask = bundle_v2.ParseTask;
 
 pub const threading = @import("./threading/threading.zig");
-pub const Futex = threading.Futex;
-pub const ThreadPool = threading.ThreadPool;
 pub const UnboundedQueue = threading.UnboundedQueue;
+pub const BackgroundTaskGroup = io.BackgroundTaskGroup;
+pub const BackgroundExecutor = io.BackgroundExecutor;
+pub const BackgroundWork = io.BackgroundWork;
 
 pub fn threadLocalAllocator() std.mem.Allocator {
     if (comptime use_mimalloc) {

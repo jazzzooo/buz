@@ -1930,7 +1930,7 @@ pub const JSZstd = struct {
         buffer: jsc.Node.StringOrBuffer = jsc.Node.StringOrBuffer.empty,
         is_compress: bool = true,
         level: i32 = 3,
-        task: jsc.WorkPoolTask = .{ .callback = &runTask },
+        task: jsc.BackgroundTask = .{ .callback = &runTask },
         promise: jsc.JSPromise.Strong = .{},
         vm: *jsc.VirtualMachine,
         output: []u8 = &[_]u8{},
@@ -1940,7 +1940,7 @@ pub const JSZstd = struct {
 
         pub const new = bun.TrivialNew(@This());
 
-        pub fn runTask(task: *jsc.WorkPoolTask) void {
+        pub fn runTask(task: *jsc.BackgroundTask) void {
             const job: *ZstdJob = @fieldParentPtr("task", task);
             defer job.vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
 
@@ -2025,7 +2025,10 @@ pub const JSZstd = struct {
             job.promise = jsc.JSPromise.Strong.init(globalThis);
             job.any_task = jsc.AnyTask.New(@This(), &runFromJS).init(job);
             job.poll.ref(vm);
-            jsc.WorkPool.schedule(&job.task);
+            jsc.BackgroundWork.schedule(&vm.background_tasks, &job.task) catch {
+                job.error_message = "Background concurrency unavailable";
+                vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
+            };
 
             return job;
         }

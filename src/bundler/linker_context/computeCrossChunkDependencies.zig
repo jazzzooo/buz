@@ -1,4 +1,4 @@
-pub fn computeCrossChunkDependencies(c: *LinkerContext, chunks: []Chunk) bun.OOM!void {
+pub fn computeCrossChunkDependencies(c: *LinkerContext, chunks: []Chunk) !void {
     if (!c.graph.code_splitting) {
         // No need to compute cross-chunk dependencies if there can't be any
         return;
@@ -42,12 +42,11 @@ pub fn computeCrossChunkDependencies(c: *LinkerContext, chunks: []Chunk) bun.OOM
             .symbols = &c.graph.symbols,
         };
 
-        c.parse_graph.pool.worker_pool.eachPtr(
-            c.allocator(),
+        try c.parse_graph.pool.eachPtr(
             cross_chunk_dependencies,
             CrossChunkDependencies.walk,
             chunks,
-        ) catch unreachable;
+        );
     }
 
     try computeCrossChunkDependenciesWithChunkMetas(c, chunks, chunk_metas);
@@ -421,7 +420,7 @@ fn computeCrossChunkDependenciesWithChunkMetas(c: *LinkerContext, chunks: []Chun
 }
 
 pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
-pub const ThreadPool = bun.bundle_v2.ThreadPool;
+pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
 const string = []const u8;

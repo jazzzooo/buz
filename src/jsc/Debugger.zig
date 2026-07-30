@@ -18,17 +18,29 @@ lifecycle_reporter_agent: LifecycleAgent = .{},
 frontend_dev_server_agent: BunFrontendDevServerAgent = .{},
 http_server_agent: HTTPServerAgent = .{},
 must_block_until_connected: bool = false,
+thread: ?std.Thread = null,
+startup_event: std.Io.Event = .unset,
+startup_result: StartupResult = .pending,
+stop_requested: std.atomic.Value(bool) = .init(false),
+thread_vm_mutex: std.Io.Mutex = .init,
+thread_vm: ?*VirtualMachine = null,
 
 pub const Wait = enum { off, shortly, forever };
+pub const StartupResult = union(enum) {
+    pending,
+    ready,
+    stopped,
+    failed: anyerror,
+};
 
 pub const log = Output.scoped(.debugger, .visible);
 
 extern "c" fn Bun__createJSDebugger(*JSGlobalObject) u32;
 extern "c" fn Bun__ensureDebugger(u32, bool) void;
 extern "c" fn Bun__startJSDebuggerThread(*JSGlobalObject, u32, *bun.String, c_int, bool) void;
-var futex_atomic: std.atomic.Value(u32) = .init(0);
+extern "c" fn Bun__teardownThreadJSCVM(*JSGlobalObject) void;
 
-pub fn waitForDebuggerIfNecessary(this: *VirtualMachine) void {
+pub fn waitForDebuggerIfNecessary(this: *VirtualMachine) !void {
     const debugger = &(this.debugger orelse return);
     bun.analytics.Features.debugger += 1;
     if (!debugger.must_block_until_connected) {
@@ -37,8 +49,12 @@ pub fn waitForDebuggerIfNecessary(this: *VirtualMachine) void {
     defer debugger.must_block_until_connected = false;
 
     Debugger.log("spin", .{});
-    while (futex_atomic.load(.monotonic) > 0) {
-        bun.Futex.waitForever(&futex_atomic, 1);
+    debugger.startup_event.waitUncancelable(this.pinned_threads.io());
+    switch (debugger.startup_result) {
+        .ready => {},
+        .failed => |err| return err,
+        .stopped => return error.DebuggerStopped,
+        .pending => unreachable,
     }
     if (comptime Environment.enable_logs)
         Debugger.log("waitForDebugger: {f}", .{Output.ElapsedFormatter{
@@ -119,18 +135,15 @@ pub fn create(this: *VirtualMachine, globalObject: *JSGlobalObject) !void {
     log("create", .{});
     jsc.markBinding(@src());
     if (!has_created_debugger) {
-        has_created_debugger = true;
         std.mem.doNotOptimizeAway(&TestReporterAgent.Bun__TestReporterAgentDisable);
         std.mem.doNotOptimizeAway(&LifecycleAgent.Bun__LifecycleAgentDisable);
         std.mem.doNotOptimizeAway(&TestReporterAgent.Bun__TestReporterAgentEnable);
         std.mem.doNotOptimizeAway(&LifecycleAgent.Bun__LifecycleAgentEnable);
         var debugger = &this.debugger.?;
         debugger.script_execution_context_id = Bun__createJSDebugger(globalObject);
-        if (!this.has_started_debugger) {
-            this.has_started_debugger = true;
-            var thread = try std.Thread.spawn(.{}, startJSDebuggerThread, .{this});
-            thread.detach();
-        }
+        has_created_debugger = true;
+        errdefer has_created_debugger = false;
+        debugger.thread = try std.Thread.spawn(.{}, startJSDebuggerThread, .{this});
         this.eventLoop().ensureWaker();
 
         if (debugger.wait_for_connection != .off) {
@@ -140,7 +153,14 @@ pub fn create(this: *VirtualMachine, globalObject: *JSGlobalObject) !void {
     }
 }
 
+fn signalStartup(debugger: *Debugger, owner: *VirtualMachine, result: StartupResult) void {
+    debugger.startup_result = result;
+    debugger.startup_event.set(owner.pinned_threads.io());
+    owner.eventLoop().wakeup();
+}
+
 pub fn startJSDebuggerThread(other_vm: *VirtualMachine) void {
+    const debugger = &other_vm.debugger.?;
     var arena = bun.MimallocArena.init();
     Output.Source.configureNamedThread("Debugger");
     log("startJSDebuggerThread", .{});
@@ -155,20 +175,79 @@ pub fn startJSDebuggerThread(other_vm: *VirtualMachine) void {
 
     var vm = VirtualMachine.init(.{
         .allocator = thread_allocator,
-        .io = other_vm.io,
+        .io = other_vm.pinned_threads.io(),
+        .pinned_threads = other_vm.pinned_threads,
         .args = std.mem.zeroes(bun.schema.api.TransformOptions),
         .store_fd = false,
         .env_loader = env_loader,
-    }) catch @panic("Failed to create Debugger VM");
+    }) catch |err| {
+        signalStartup(debugger, other_vm, .{ .failed = err });
+        jsc.wtf.prepareForThreadExit();
+        bun.deleteAllPoolsForThreadExit();
+        arena.deinit();
+        return;
+    };
     vm.allocator = arena.allocator();
     vm.arena = &arena;
 
-    vm.transpiler.configureDefines() catch @panic("Failed to configure defines");
+    vm.transpiler.configureDefines() catch |err| {
+        signalStartup(debugger, other_vm, .{ .failed = err });
+        // Publish the initialized VM so start() can use the normal teardown path.
+    };
     vm.is_main_thread = false;
     vm.eventLoop().ensureWaker();
 
+    const io = other_vm.pinned_threads.io();
+    debugger.thread_vm_mutex.lockUncancelable(io);
+    debugger.thread_vm = vm;
+    debugger.thread_vm_mutex.unlock(io);
+
     const callback = jsc.OpaqueWrap(VirtualMachine, start);
     vm.global.vm().holdAPILock(other_vm, callback);
+    unreachable;
+}
+
+fn teardownDebuggerVM(owner: *VirtualMachine, vm: *VirtualMachine) noreturn {
+    const debugger = &owner.debugger.?;
+    const io = owner.pinned_threads.io();
+    debugger.thread_vm_mutex.lockUncancelable(io);
+    debugger.thread_vm = null;
+    debugger.thread_vm_mutex.unlock(io);
+
+    const arena = vm.arena;
+    vm.is_shutting_down = true;
+    bun.assert(vm.stopChildThreads(null) == .completed);
+    vm.onExit();
+    vm.prepareForJSCDestruction();
+    const loop = vm.uwsLoop();
+    Bun__teardownThreadJSCVM(vm.global);
+    loop.internal_loop_data.jsc_vm = null;
+    vm.gc_controller.deinit();
+    if (comptime Environment.isWindows) {
+        bun.windows.libuv.Loop.shutdown();
+    }
+    vm.deinit();
+    jsc.wtf.prepareForThreadExit();
+    bun.deleteAllPoolsForThreadExit();
+    arena.deinit();
+    bun.exitThread();
+}
+
+pub fn stopAndJoin(owner: *VirtualMachine) void {
+    const debugger = &(owner.debugger orelse return);
+    const thread = debugger.thread orelse return;
+
+    debugger.stop_requested.store(true, .release);
+    const io = owner.pinned_threads.io();
+    debugger.thread_vm_mutex.lockUncancelable(io);
+    if (debugger.thread_vm) |vm| {
+        vm.eventLoop().wakeup();
+    }
+    debugger.thread_vm_mutex.unlock(io);
+
+    thread.join();
+    debugger.thread = null;
+    bun.assert(debugger.thread_vm == null);
 }
 
 pub export fn Debugger__didConnect() void {
@@ -184,8 +263,18 @@ fn start(other_vm: *VirtualMachine) void {
     jsc.markBinding(@src());
 
     var this = VirtualMachine.get();
-    const debugger = other_vm.debugger.?;
+    const debugger = &other_vm.debugger.?;
     const loop = this.eventLoop();
+
+    switch (debugger.startup_result) {
+        .failed => teardownDebuggerVM(other_vm, this),
+        else => {},
+    }
+
+    if (debugger.stop_requested.load(.acquire)) {
+        signalStartup(debugger, other_vm, .stopped);
+        teardownDebuggerVM(other_vm, this);
+    }
 
     if (debugger.from_environment_variable.len > 0) {
         var url = bun.String.cloneUTF8(debugger.from_environment_variable);
@@ -212,23 +301,26 @@ fn start(other_vm: *VirtualMachine) void {
     }
 
     log("wake", .{});
-    futex_atomic.store(0, .monotonic);
-    bun.Futex.wake(&futex_atomic, 1);
+    signalStartup(debugger, other_vm, .ready);
 
-    other_vm.eventLoop().wakeup();
-
+    if (debugger.stop_requested.load(.acquire)) {
+        teardownDebuggerVM(other_vm, this);
+    }
     this.eventLoop().tick();
 
     other_vm.eventLoop().wakeup();
 
-    while (true) {
-        while (this.isEventLoopAlive()) {
+    while (!debugger.stop_requested.load(.acquire)) {
+        while (!debugger.stop_requested.load(.acquire) and this.isEventLoopAlive()) {
             this.tick();
             this.eventLoop().autoTickActive();
         }
 
+        if (debugger.stop_requested.load(.acquire)) break;
         this.eventLoop().tickPossiblyForever();
     }
+
+    teardownDebuggerVM(other_vm, this);
 }
 
 pub const AsyncTaskTracker = struct {

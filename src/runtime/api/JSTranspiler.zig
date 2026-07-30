@@ -544,6 +544,10 @@ pub const TransformTask = struct {
         }
     }
 
+    pub fn onScheduleError(this: *TransformTask, err: anyerror) void {
+        this.err = err;
+    }
+
     pub fn then(this: *TransformTask, promise: *jsc.JSPromise) bun.JSTerminated!void {
         defer this.deinit();
 

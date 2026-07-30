@@ -478,7 +478,7 @@ pub const ShellRmTask = struct {
 
     event_loop: jsc.EventLoopHandle,
     concurrent_task: jsc.EventLoopTask,
-    task: jsc.WorkPoolTask = .{ .callback = workPoolCallback },
+    task: jsc.BackgroundTask = .{ .callback = workPoolCallback },
     const CwdPath = if (bun.Environment.isWindows) [:0]const u8 else u0;
 
     const ParentRmTask = @This();
@@ -492,7 +492,7 @@ pub const ShellRmTask = struct {
         need_to_wait: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         deleting_after_waiting_for_children: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         kind_hint: EntryKindHint,
-        task: jsc.WorkPoolTask = .{ .callback = runFromThreadPool },
+        task: jsc.BackgroundTask = .{ .callback = runInBackground },
         deleted_entries: std.array_list.Managed(u8),
         concurrent_task: jsc.EventLoopTask,
 
@@ -514,12 +514,12 @@ pub const ShellRmTask = struct {
             this.runFromMainThread();
         }
 
-        pub fn runFromThreadPool(task: *jsc.WorkPoolTask) void {
+        pub fn runInBackground(task: *jsc.BackgroundTask) void {
             var this: *DirTask = @fieldParentPtr("task", task);
-            this.runFromThreadPoolImpl();
+            this.runInBackgroundImpl();
         }
 
-        fn runFromThreadPoolImpl(this: *DirTask) void {
+        fn runInBackgroundImpl(this: *DirTask) void {
             defer {
                 if (!this.deleting_after_waiting_for_children.load(.seq_cst)) {
                     this.postRun();
@@ -533,7 +533,7 @@ pub const ShellRmTask = struct {
                     const cwd_path = switch (Syscall.getFdPath(this.task_manager.cwd, &buf)) {
                         .result => |p| bun.handleOom(bun.default_allocator.dupeSentinel(u8, p, 0)),
                         .err => |err| {
-                            debug("[runFromThreadPoolImpl:getcwd] DirTask({x}) failed: {s}: {s}", .{ @intFromPtr(this), @tagName(err.getErrno()), err.path });
+                            debug("[runInBackgroundImpl:getcwd] DirTask({x}) failed: {s}: {s}", .{ @intFromPtr(this), @tagName(err.getErrno()), err.path });
                             const io = this.task_manager.event_loop.io();
                             this.task_manager.err_mutex.lockUncancelable(io);
                             defer this.task_manager.err_mutex.unlock(io);
@@ -552,7 +552,7 @@ pub const ShellRmTask = struct {
             this.is_absolute = ResolvePath.Platform.auto.isAbsolute(this.path[0..this.path.len]);
             switch (this.task_manager.removeEntry(this, this.is_absolute)) {
                 .err => |err| {
-                    debug("[runFromThreadPoolImpl] DirTask({x}) failed: {s}: {s}", .{ @intFromPtr(this), @tagName(err.getErrno()), err.path });
+                    debug("[runInBackgroundImpl] DirTask({x}) failed: {s}: {s}", .{ @intFromPtr(this), @tagName(err.getErrno()), err.path });
                     const io = this.task_manager.event_loop.io();
                     this.task_manager.err_mutex.lockUncancelable(io);
                     defer this.task_manager.err_mutex.unlock(io);
@@ -695,7 +695,11 @@ pub const ShellRmTask = struct {
     }
 
     pub fn schedule(this: *@This()) void {
-        jsc.WorkPool.schedule(&this.task);
+        jsc.BackgroundWork.schedule(this.event_loop.backgroundTasks(), &this.task) catch {
+            this.err = Syscall.Error.fromCode(.AGAIN, .rm);
+            this.error_signal.store(true, .seq_cst);
+            this.root_task.postRun();
+        };
     }
 
     pub fn enqueue(this: *ShellRmTask, parent_dir: *DirTask, path: [:0]const u8, kind_hint: DirTask.EntryKindHint) void {
@@ -737,7 +741,16 @@ pub const ShellRmTask = struct {
             assert(count > 0);
         }
 
-        jsc.WorkPool.schedule(&subtask.task);
+        jsc.BackgroundWork.schedule(this.event_loop.backgroundTasks(), &subtask.task) catch {
+            const io = this.event_loop.io();
+            this.err_mutex.lockUncancelable(io);
+            if (this.err == null) {
+                this.err = Syscall.Error.fromCode(.AGAIN, .rm);
+            }
+            this.err_mutex.unlock(io);
+            this.error_signal.store(true, .seq_cst);
+            subtask.postRun();
+        };
     }
 
     pub fn getcwd(this: *ShellRmTask) bun.FD {
@@ -1125,9 +1138,9 @@ pub const ShellRmTask = struct {
         return err.withPath(bun.handleOom(bun.default_allocator.dupeSentinel(u8, path[0..path.len], 0)));
     }
 
-    pub fn workPoolCallback(task: *jsc.WorkPoolTask) void {
+    pub fn workPoolCallback(task: *jsc.BackgroundTask) void {
         var this: *ShellRmTask = @alignCast(@fieldParentPtr("task", task));
-        this.root_task.runFromThreadPoolImpl();
+        this.root_task.runInBackgroundImpl();
     }
 
     pub fn runFromMainThread(this: *ShellRmTask) void {

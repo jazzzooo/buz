@@ -120,13 +120,19 @@ pub fn CompressionStream(comptime T: type) type {
             const vm = globalThis.bunVM();
             this.task = .{ .callback = &AsyncJob.runTask };
             this.poll_ref.ref(vm);
-            jsc.WorkPool.schedule(&this.task);
+            jsc.BackgroundWork.schedule(&vm.background_tasks, &this.task) catch |err| {
+                this.poll_ref.unref(vm);
+                this.this_value.deinit();
+                this.write_in_progress = false;
+                this.deref();
+                return globalThis.throwError(err, "Failed to start compression work");
+            };
 
             return .js_undefined;
         }
 
         const AsyncJob = struct {
-            pub fn runTask(task: *jsc.WorkPoolTask) void {
+            pub fn runTask(task: *jsc.BackgroundTask) void {
                 const this: *T = @fieldParentPtr("task", task);
                 AsyncJob.run(this);
             }
@@ -306,7 +312,7 @@ pub fn CompressionStream(comptime T: type) type {
         pub fn emitError(this: *T, globalThis: *jsc.JSGlobalObject, this_value: jsc.JSValue, err_: Error) void {
             // Clear write_in_progress *before* invoking the onerror callback.
             // The callback may re-enter write(), which sets write_in_progress=true
-            // and schedules a WorkPool task. If we cleared the flag after the
+            // and schedules a BackgroundWork task. If we cleared the flag after the
             // callback, we would clobber that state and closeInternal()/resetInternal()
             // below could free the native zlib/brotli/zstd state while a task is
             // still queued, leading to a use-after-free when the worker thread

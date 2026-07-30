@@ -37,9 +37,9 @@ pub const ShellMvCheckTargetTask = struct {
     target: [:0]const u8,
     result: ?Maybe(?bun.FD) = null,
 
-    task: ShellTask(@This(), runFromThreadPool, runFromMainThread, debug),
+    task: ShellTask(@This(), runInBackground, runFromMainThread, debug),
 
-    pub fn runFromThreadPool(this: *@This()) void {
+    pub fn runInBackground(this: *@This()) void {
         const fd = switch (ShellSyscall.openat(this.cwd, this.target, bun.O.RDONLY | bun.O.DIRECTORY, 0)) {
             .err => |e| {
                 switch (e.getErrno()) {
@@ -55,6 +55,10 @@ pub const ShellMvCheckTargetTask = struct {
             .result => |fd| fd,
         };
         this.result = .{ .result = fd };
+    }
+
+    pub fn onScheduleError(this: *@This(), _: anyerror) void {
+        this.result = .{ .err = Syscall.Error.fromCode(.AGAIN, .open) };
     }
 
     pub fn runFromMainThread(this: *@This()) void {
@@ -81,10 +85,10 @@ pub const ShellMvBatchedTask = struct {
     /// it borrows this.target / argv or is empty.
     err_path_owned: bool = false,
 
-    task: ShellTask(@This(), runFromThreadPool, runFromMainThread, debug),
+    task: ShellTask(@This(), runInBackground, runFromMainThread, debug),
     event_loop: jsc.EventLoopHandle,
 
-    pub fn runFromThreadPool(this: *@This()) void {
+    pub fn runInBackground(this: *@This()) void {
         // Moving multiple entries into a directory
         if (this.sources.len > 1) return this.moveMultipleIntoDir();
 
@@ -106,6 +110,11 @@ pub const ShellMvBatchedTask = struct {
             },
             else => {},
         }
+    }
+
+    pub fn onScheduleError(this: *@This(), _: anyerror) void {
+        this.error_signal.store(true, .seq_cst);
+        this.err = Syscall.Error.fromCode(.AGAIN, .rename);
     }
 
     pub fn moveInDir(this: *@This(), src: [:0]const u8, buf: *bun.PathBuffer) bool {

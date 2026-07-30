@@ -11,7 +11,7 @@ pub const ConcurrentCppTask = struct {
     pub const new = bun.TrivialNew(@This());
 
     cpp_task: *EventLoopTaskNoContext,
-    workpool_task: jsc.WorkPoolTask = .{ .callback = &runFromWorkpool },
+    workpool_task: jsc.BackgroundTask = .{ .callback = &runFromWorkpool },
 
     const EventLoopTaskNoContext = opaque {
         extern fn Bun__EventLoopTaskNoContext__performTask(task: *EventLoopTaskNoContext) void;
@@ -28,7 +28,7 @@ pub const ConcurrentCppTask = struct {
         }
     };
 
-    pub fn runFromWorkpool(task: *jsc.WorkPoolTask) void {
+    pub fn runFromWorkpool(task: *jsc.BackgroundTask) void {
         const this: *ConcurrentCppTask = @fieldParentPtr("workpool_task", task);
         // Extract all the info we need from `this` and `cpp_task` before we call functions that
         // free them
@@ -43,11 +43,15 @@ pub const ConcurrentCppTask = struct {
 
     pub export fn ConcurrentCppTask__createAndRun(cpp_task: *EventLoopTaskNoContext) void {
         jsc.markBinding(@src());
-        if (cpp_task.getVM()) |vm| {
-            vm.event_loop.refConcurrently();
-        }
+        const vm = cpp_task.getVM() orelse {
+            cpp_task.run();
+            return;
+        };
+        vm.event_loop.refConcurrently();
         const cpp = ConcurrentCppTask.new(.{ .cpp_task = cpp_task });
-        jsc.WorkPool.schedule(&cpp.workpool_task);
+        jsc.BackgroundWork.schedule(&vm.background_tasks, &cpp.workpool_task) catch {
+            runFromWorkpool(&cpp.workpool_task);
+        };
     }
 };
 

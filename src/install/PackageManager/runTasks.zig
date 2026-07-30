@@ -327,7 +327,7 @@ pub fn runTasks(
                     }
                 }
 
-                manager.task_batch.push(ThreadPool.Batch.from(manager.enqueueParseNPMPackage(task.task_id, name, task)));
+                manager.task_batch.push(BackgroundTaskGroup.Batch.from(manager.enqueueParseNPMPackage(task.task_id, name, task)));
             },
             .extract => |*extract| {
                 // Streaming extraction never pushes its NetworkTask to
@@ -574,7 +574,7 @@ pub fn runTasks(
                     }
                 }
 
-                manager.task_batch.push(ThreadPool.Batch.from(manager.enqueueExtractNPMPackage(extract, task)));
+                manager.task_batch.push(BackgroundTaskGroup.Batch.from(manager.enqueueExtractNPMPackage(extract, task)));
             },
             else => unreachable,
         }
@@ -925,7 +925,7 @@ pub fn runTasks(
 
                     if (manager.hasCreatedNetworkTask(checkout_id, dep.behavior.isRequired())) continue;
 
-                    manager.task_batch.push(ThreadPool.Batch.from(manager.enqueueGitCheckout(
+                    manager.task_batch.push(BackgroundTaskGroup.Batch.from(manager.enqueueGitCheckout(
                         checkout_id,
                         repo_fd,
                         dep_id,
@@ -1130,9 +1130,12 @@ pub fn scheduleTasks(manager: *PackageManager) usize {
     const count = manager.task_batch.len + manager.network_resolve_batch.len + manager.network_tarball_batch.len + manager.patch_apply_batch.len + manager.patch_calc_hash_batch.len;
 
     manager.incrementPendingTasks(@intCast(count));
-    manager.thread_pool.schedule(manager.patch_apply_batch);
-    manager.thread_pool.schedule(manager.patch_calc_hash_batch);
-    manager.thread_pool.schedule(manager.task_batch);
+    var patch_apply_batch = manager.patch_apply_batch;
+    manager.background_tasks.schedule(patch_apply_batch) catch |err| patch_apply_batch.fail(err);
+    var patch_calc_hash_batch = manager.patch_calc_hash_batch;
+    manager.background_tasks.schedule(patch_calc_hash_batch) catch |err| patch_calc_hash_batch.fail(err);
+    var task_batch = manager.task_batch;
+    manager.background_tasks.schedule(task_batch) catch |err| task_batch.fail(err);
     manager.network_resolve_batch.push(manager.network_tarball_batch);
     HTTP.http_thread.schedule(manager.network_resolve_batch);
     manager.task_batch = .{};
@@ -1274,7 +1277,7 @@ const std = @import("std");
 const bun = @import("bun");
 const Environment = bun.Environment;
 const Output = bun.Output;
-const ThreadPool = bun.ThreadPool;
+const BackgroundTaskGroup = bun.BackgroundTaskGroup;
 const default_allocator = bun.default_allocator;
 const logger = bun.logger;
 const strings = bun.strings;

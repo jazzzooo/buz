@@ -1,7 +1,7 @@
-pub fn generateCompileResultForJSChunk(task: *ThreadPoolLib.Task) void {
+pub fn generateCompileResultForJSChunk(task: *ExecutorTypes.Task) void {
     const part_range: *const PendingPartRange = @fieldParentPtr("task", task);
     const ctx = part_range.ctx;
-    var worker = ThreadPool.Worker.get(@fieldParentPtr("linker", ctx.c));
+    var worker = Executor.Worker.get(@fieldParentPtr("linker", ctx.c));
     defer worker.unget();
 
     const prev_action = if (Environment.show_crash_trace) bun.crash_handler.current_action;
@@ -24,7 +24,7 @@ pub fn generateCompileResultForJSChunk(task: *ThreadPoolLib.Task) void {
     ctx.chunk.compile_results_for_chunk[part_range.i] = generateCompileResultForJSChunkImpl(worker, ctx.c, ctx.chunk, part_range.part_range);
 }
 
-fn generateCompileResultForJSChunkImpl(worker: *ThreadPool.Worker, c: *LinkerContext, chunk: *Chunk, part_range: PartRange) CompileResult {
+fn generateCompileResultForJSChunkImpl(worker: *Executor.Worker, c: *LinkerContext, chunk: *Chunk, part_range: PartRange) CompileResult {
     const trace = bun.perf.trace("Bundler.generateCodeForFileInChunkJS");
     defer trace.end();
 
@@ -91,7 +91,7 @@ const DeclCollector = @import("./generateCodeForFileInChunkJS.zig").DeclCollecto
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const ThreadPoolLib = bun.ThreadPool;
+const ExecutorTypes = bun.bundle_v2.Executor;
 const default_allocator = bun.default_allocator;
 const js_printer = bun.js_printer;
 const renamer = bun.renamer;
@@ -104,7 +104,7 @@ const Chunk = bundler.Chunk;
 const CompileResult = bundler.CompileResult;
 const Index = bun.bundle_v2.Index;
 const PartRange = bundler.PartRange;
-const ThreadPool = bun.bundle_v2.ThreadPool;
+const Executor = bun.bundle_v2.Executor;
 
 const LinkerContext = bun.bundle_v2.LinkerContext;
 const PendingPartRange = LinkerContext.PendingPartRange;

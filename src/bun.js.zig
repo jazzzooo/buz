@@ -43,6 +43,7 @@ pub const Run = struct {
             .vm = try VirtualMachine.initWithModuleGraph(.{
                 .allocator = arena.allocator(),
                 .io = ctx.io,
+                .pinned_threads = bun.cli.Cli.pinnedThreads(),
                 .log = ctx.log,
                 .args = ctx.args,
                 .graph = graph_ptr,
@@ -183,6 +184,7 @@ pub const Run = struct {
                 .{
                     .allocator = arena.allocator(),
                     .io = ctx.io,
+                    .pinned_threads = bun.cli.Cli.pinnedThreads(),
                     .log = ctx.log,
                     .args = ctx.args,
                     .store_fd = ctx.debug.hot_reload != .none,

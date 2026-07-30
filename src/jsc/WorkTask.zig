@@ -13,11 +13,11 @@
 /// - Context receives a reference to the WorkTask itself in the `run` method
 pub fn WorkTask(comptime Context: type) type {
     return struct {
-        const TaskType = WorkPoolTask;
+        const TaskType = BackgroundTask;
 
         const This = @This();
         ctx: *Context,
-        task: TaskType = .{ .callback = &runFromThreadPool },
+        task: TaskType = .{ .callback = &runInBackground },
         event_loop: *jsc.EventLoop,
         allocator: std.mem.Allocator,
         globalThis: *jsc.JSGlobalObject,
@@ -46,7 +46,7 @@ pub fn WorkTask(comptime Context: type) type {
             bun.destroy(this);
         }
 
-        pub fn runFromThreadPool(task: *TaskType) void {
+        pub fn runInBackground(task: *TaskType) void {
             jsc.markBinding(@src());
             const this: *This = @fieldParentPtr("task", task);
             Context.run(this.ctx, this);
@@ -68,7 +68,10 @@ pub fn WorkTask(comptime Context: type) type {
             const vm = this.event_loop.virtual_machine;
             this.ref.ref(vm);
             this.async_task_tracker.didSchedule(this.globalThis);
-            WorkPool.schedule(&this.task);
+            BackgroundWork.schedule(&vm.background_tasks, &this.task) catch |err| {
+                this.ctx.onScheduleError(err);
+                this.onFinish();
+            };
         }
 
         pub fn onFinish(this: *This) void {
@@ -84,5 +87,5 @@ const Async = bun.Async;
 
 const jsc = bun.jsc;
 const ConcurrentTask = jsc.ConcurrentTask;
-const WorkPool = jsc.WorkPool;
-const WorkPoolTask = jsc.WorkPoolTask;
+const BackgroundWork = jsc.BackgroundWork;
+const BackgroundTask = jsc.BackgroundTask;

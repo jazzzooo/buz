@@ -54,7 +54,10 @@ pub const Installer = struct {
         });
 
         task.result = .none;
-        this.manager.thread_pool.schedule(.from(&task.task));
+        var batch = BackgroundTaskGroup.Batch.from(&task.task);
+        this.manager.background_tasks.schedule(batch) catch |err| {
+            batch.fail(err);
+        };
     }
 
     pub fn onPackageExtracted(this: *Installer, task_id: install.Task.Id) void {
@@ -215,6 +218,12 @@ pub const Installer = struct {
             },
             .binaries => |bin_err| {
                 Output.err(bin_err, "failed to link binaries for package: {s}@{f}", .{
+                    pkg_name.slice(string_buf),
+                    pkg_res.fmt(string_buf, .auto),
+                });
+            },
+            .scheduling => |schedule_err| {
+                Output.err(schedule_err, "failed to start package install task: {s}@{f}", .{
                     pkg_name.slice(string_buf),
                     pkg_res.fmt(string_buf, .auto),
                 });
@@ -426,7 +435,7 @@ pub const Installer = struct {
         entry_id: Store.Entry.Id,
         installer: *Installer,
 
-        task: ThreadPool.Task,
+        task: BackgroundTaskGroup.Task,
         next: ?*Task,
 
         result: Result,
@@ -444,6 +453,7 @@ pub const Installer = struct {
             symlink_dependencies: sys.Error,
             run_scripts: anyerror,
             binaries: anyerror,
+            scheduling: anyerror,
             patching: bun.logger.Log,
             download: struct { err: anyerror, url: []const u8 },
 
@@ -453,6 +463,7 @@ pub const Installer = struct {
                     .symlink_dependencies => |err| .{ .symlink_dependencies = err.clone(allocator) },
                     .binaries => |err| .{ .binaries = err },
                     .run_scripts => |err| .{ .run_scripts = err },
+                    .scheduling => |err| .{ .scheduling = err },
                     .patching => |log| .{ .patching = log },
                     .download => |dl| .{ .download = dl },
                 };
@@ -1346,7 +1357,7 @@ pub const Installer = struct {
         }
 
         /// Called from task thread
-        pub fn callback(task: *ThreadPool.Task) void {
+        pub fn callback(task: *BackgroundTaskGroup.Task) void {
             const this: *Task = @fieldParentPtr("task", task);
 
             const res = this.run() catch |err| switch (err) {
@@ -1392,6 +1403,14 @@ pub const Installer = struct {
                     this.installer.manager.wake();
                 },
             }
+        }
+
+        pub fn onScheduleError(task: *BackgroundTaskGroup.Task, err: std.Io.ConcurrentError) void {
+            const this: *Task = @fieldParentPtr("task", task);
+            this.installer.store.entries.items(.step)[this.entry_id.get()].store(.done, .release);
+            this.result = .{ .err = .{ .scheduling = err } };
+            this.installer.task_queue.push(this);
+            this.installer.manager.wake();
         }
     };
 
@@ -2037,7 +2056,7 @@ const Global = bun.Global;
 const OOM = bun.OOM;
 const Output = bun.Output;
 const Progress = bun.Progress;
-const ThreadPool = bun.ThreadPool;
+const BackgroundTaskGroup = bun.BackgroundTaskGroup;
 const strings = bun.strings;
 const sys = bun.sys;
 const Bitset = std.bit_set.Dynamic;
