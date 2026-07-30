@@ -1498,6 +1498,9 @@ fn readAbsFile(b: *Build, abs: []const u8) []u8 {
 fn addDynamicExports(b: *Build, run: *Step.Run) void {
     const path = "src/symbols.dyn";
     const text = readRootFile(b, path);
+    const arena = b.graph.arena;
+    var version_script: std.ArrayList(u8) = .empty;
+    version_script.appendSlice(arena, "BUN_1.2 {\n    global:\n") catch @panic("OOM");
     var lines = std.mem.splitScalar(u8, text, '\n');
     var opened = false;
     var closed = false;
@@ -1518,9 +1521,13 @@ fn addDynamicExports(b: *Build, run: *Step.Run) void {
         const symbol = line[0 .. line.len - 1];
         // Mold otherwise ignores stale entries, so keep this file an exact ABI manifest.
         run.addArg(b.fmt("--require-defined={s}", .{symbol}));
+        version_script.print(arena, "        {s}\n", .{line}) catch @panic("OOM");
     }
     if (!opened or !closed) @panic("invalid dynamic export list");
     run.addPrefixedFileArg("--export-dynamic-symbol-list=", b.path(path));
+    version_script.appendSlice(arena, "    local:\n        *;\n};\n") catch @panic("OOM");
+    const write_files = b.addWriteFiles();
+    run.addPrefixedFileArg("--version-script=", write_files.add("linker.lds", version_script.items));
 }
 
 // ───────────────────────────────────────────────────────────────────────────
