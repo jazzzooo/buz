@@ -9,14 +9,14 @@ pub fn initializeStore() void {
     js_ast.Stmt.Data.Store.create();
 }
 
-const skip_dirs = &[_]bun.OSPathSlice{
-    bun.OSPathLiteral("node_modules"),
-    bun.OSPathLiteral(".git"),
+const skip_dirs: []const []const u8 = &.{
+    "node_modules",
+    ".git",
 };
-const skip_files = &[_]bun.OSPathSlice{
-    bun.OSPathLiteral("package-lock.json"),
-    bun.OSPathLiteral("yarn.lock"),
-    bun.OSPathLiteral("pnpm-lock.yaml"),
+const skip_files: []const []const u8 = &.{
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
 };
 
 const never_conflict = &[_]string{
@@ -439,29 +439,34 @@ pub const CreateCommand = struct {
 
                 var destination_buf: if (Environment.isWindows) bun.WPathBuffer else void = undefined;
                 const dst_without_trailing_slash: if (Environment.isWindows) string else void = if (comptime Environment.isWindows) strings.withoutTrailingSlash(destination);
-                if (comptime Environment.isWindows) {
-                    strings.copyU8IntoU16(&destination_buf, dst_without_trailing_slash);
-                    destination_buf[dst_without_trailing_slash.len] = std.fs.path.sep;
-                }
+                const destination_base_len: if (Environment.isWindows) usize else void = if (comptime Environment.isWindows) brk: {
+                    const base = try strings.toWPathWtf8(&destination_buf, dst_without_trailing_slash);
+                    destination_buf[base.len] = std.fs.path.sep;
+                    break :brk base.len + 1;
+                };
 
                 var template_path_buf: if (Environment.isWindows) bun.WPathBuffer else void = undefined;
                 const src_without_trailing_slash: if (Environment.isWindows) string else void = if (comptime Environment.isWindows) strings.withoutTrailingSlash(abs_template_path);
-                if (comptime Environment.isWindows) {
-                    strings.copyU8IntoU16(&template_path_buf, src_without_trailing_slash);
-                    template_path_buf[src_without_trailing_slash.len] = std.fs.path.sep;
-                }
+                const template_base_len: if (Environment.isWindows) usize else void = if (comptime Environment.isWindows) brk: {
+                    const base = try strings.toWPathWtf8(&template_path_buf, src_without_trailing_slash);
+                    template_path_buf[base.len] = std.fs.path.sep;
+                    break :brk base.len + 1;
+                };
 
                 const destination_dir = destination_dir__;
                 defer destination_dir.close(ctx.io);
-                const Walker = @import("../sys/walker_skippable.zig");
-                var walker_ = try Walker.walk(.fromStdDir(template_dir), ctx.allocator, skip_files, skip_dirs);
-                defer walker_.deinit();
+                const DirectoryWalker = @import("../sys/DirectoryWalker.zig");
+                var walker = try DirectoryWalker.init(template_dir, ctx.allocator, .{
+                    .excluded_files = skip_files,
+                    .excluded_directories = skip_dirs,
+                });
+                defer walker.deinit(ctx.io);
 
                 const FileCopier = struct {
                     pub fn copy(
                         io: std.Io,
                         destination_dir_: std.Io.Dir,
-                        walker: *Walker,
+                        walker_: *DirectoryWalker,
                         node_: *Progress.Node,
                         progress_: *Progress,
                         dst_base_len: if (Environment.isWindows) usize else void,
@@ -469,58 +474,39 @@ pub const CreateCommand = struct {
                         src_base_len: if (Environment.isWindows) usize else void,
                         src_buf: if (Environment.isWindows) *bun.WPathBuffer else void,
                     ) !void {
-                        while (try walker.next().unwrap()) |entry| {
-                            if (comptime Environment.isWindows) {
-                                if (entry.kind != .file and entry.kind != .directory) continue;
-
-                                @memcpy(dst_buf[dst_base_len..][0..entry.path.len], entry.path);
-                                dst_buf[dst_base_len + entry.path.len] = 0;
-                                const dst = dst_buf[0 .. dst_base_len + entry.path.len :0];
-
-                                @memcpy(src_buf[src_base_len..][0..entry.path.len], entry.path);
-                                src_buf[src_base_len + entry.path.len] = 0;
-                                const src = src_buf[0 .. src_base_len + entry.path.len :0];
-
-                                switch (entry.kind) {
-                                    .directory => {
-                                        if (!bun.windows.CreateDirectoryExW(src.ptr, dst.ptr, null).toBool()) {
-                                            bun.MakePath.makePath(io, u16, destination_dir_, entry.path) catch {};
-                                        }
-                                    },
-                                    .file => {
-                                        defer node_.completeOne();
-                                        if (!bun.windows.CopyFileW(src.ptr, dst.ptr, .FALSE).toBool()) {
-                                            if (bun.path.dirnameWindowsWtf16(entry.path)) |entry_dirname| {
-                                                bun.MakePath.makePath(io, u16, destination_dir_, entry_dirname) catch {};
-                                                if (bun.windows.CopyFileW(src.ptr, dst.ptr, .FALSE).toBool()) {
-                                                    continue;
-                                                }
-                                            }
-
-                                            const err = bun.sys.SystemErrno.fromWin32(bun.windows.GetLastError());
-                                            Output.err(err, "failed to copy file {f}", .{
-                                                bun.fmt.fmtOSPath(entry.path, .{}),
-                                            });
-                                            node_.end();
-                                            progress_.refresh();
-                                            Global.crash();
-                                        }
-                                    },
-                                    else => unreachable,
-                                }
-
-                                continue;
+                        while (try walker_.next(io)) |entry| {
+                            switch (entry.kind) {
+                                .directory => {
+                                    try destination_dir_.createDirPath(io, entry.path);
+                                    continue;
+                                },
+                                .file => {},
+                                else => continue,
                             }
-                            if (entry.kind != .file) continue;
 
                             defer node_.completeOne();
 
-                            entry.dir.stdDir().copyFile(entry.basename, destination_dir_, entry.path, io, .{ .make_path = true }) catch |err| {
-                                node_.end();
-                                progress_.refresh();
-                                Output.err(err, "failed to copy file {f}", .{bun.fmt.fmtOSPath(entry.path, .{})});
-                                Global.crash();
-                            };
+                            if (comptime Environment.isWindows) {
+                                const dst_relative = try strings.toWPathWtf8(dst_buf[dst_base_len..], entry.path);
+                                const dst = dst_buf[0 .. dst_base_len + dst_relative.len :0];
+                                const src_relative = try strings.toWPathWtf8(src_buf[src_base_len..], entry.path);
+                                const src = src_buf[0 .. src_base_len + src_relative.len :0];
+
+                                if (!bun.windows.CopyFileW(src.ptr, dst.ptr, .FALSE).toBool()) {
+                                    const err = bun.sys.SystemErrno.fromWin32(bun.windows.GetLastError());
+                                    Output.err(err, "failed to copy file {f}", .{bun.fmt.fmtOSPath(dst, .{})});
+                                    node_.end();
+                                    progress_.refresh();
+                                    Global.crash();
+                                }
+                            } else {
+                                entry.dir.copyFile(entry.basename, destination_dir_, entry.path, io, .{}) catch |err| {
+                                    node_.end();
+                                    progress_.refresh();
+                                    Output.err(err, "failed to copy file {f}", .{bun.fmt.fmtOSPath(entry.path, .{})});
+                                    Global.crash();
+                                };
+                            }
                         }
                     }
                 };
@@ -528,12 +514,12 @@ pub const CreateCommand = struct {
                 try FileCopier.copy(
                     ctx.io,
                     destination_dir,
-                    &walker_,
+                    &walker,
                     node,
                     &progress,
-                    if (comptime Environment.isWindows) dst_without_trailing_slash.len + 1,
+                    destination_base_len,
                     if (comptime Environment.isWindows) &destination_buf,
-                    if (comptime Environment.isWindows) src_without_trailing_slash.len + 1,
+                    template_base_len,
                     if (comptime Environment.isWindows) &template_path_buf,
                 );
 
@@ -1870,7 +1856,7 @@ pub const Example = struct {
                         switch (entry.kind) {
                             .directory => {
                                 inline for (skip_dirs) |skip_dir| {
-                                    if (strings.eqlComptime(entry.name, comptime bun.pathLiteral(skip_dir))) {
+                                    if (strings.eqlComptime(entry.name, skip_dir)) {
                                         continue :loop;
                                     }
                                 }

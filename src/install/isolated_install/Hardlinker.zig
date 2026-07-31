@@ -1,38 +1,29 @@
 const Hardlinker = @This();
 
 io: std.Io,
-src_dir: FD,
 src: *bun.Path(.{ .unit = .os }),
 dest: *bun.Path(.{ .unit = .os }),
-walker: Walker,
+walker: DirectoryWalker,
 
 pub fn init(
     io: std.Io,
     folder_dir: FD,
     src: *bun.Path(.{ .unit = .os }),
     dest: *bun.Path(.{ .unit = .os }),
-    skip_dirnames: []const bun.OSPathSlice,
+    skip_dirnames: []const []const u8,
 ) OOM!Hardlinker {
     return .{
         .io = io,
-        .src_dir = folder_dir,
         .src = src,
         .dest = dest,
-        .walker = walker: {
-            var w = try Walker.walk(
-                folder_dir,
-                bun.default_allocator,
-                &.{},
-                skip_dirnames,
-            );
-            w.resolve_unknown_entry_types = true;
-            break :walker w;
-        },
+        .walker = try DirectoryWalker.init(folder_dir.stdDir(), bun.default_allocator, .{
+            .excluded_directories = skip_dirnames,
+        }),
     };
 }
 
 pub fn deinit(this: *Hardlinker) void {
-    this.walker.deinit();
+    this.walker.deinit(this.io);
 }
 
 pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
@@ -48,150 +39,110 @@ pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
         bun.Output.flush();
     }
 
+    const destination_dir = bun.MakePath.makeOpenPath(this.io, std.Io.Dir.cwd(), this.dest.sliceZ(), .{}) catch |err| {
+        return .initErr(bun.sys.Error.fromStdIo(err, .link));
+    };
+    defer destination_dir.close(this.io);
+
     if (comptime Environment.isWindows) {
         const cwd_buf = bun.w_path_buffer_pool.get();
         defer bun.w_path_buffer_pool.put(cwd_buf);
+        const relative_path_buf = bun.w_path_buffer_pool.get();
+        defer bun.w_path_buffer_pool.put(relative_path_buf);
         const dest_cwd = FD.cwd().getFdPathW(cwd_buf) catch {
             return .initErr(bun.sys.Error.fromCode(bun.sys.E.ACCES, .link));
         };
 
-        while (switch (this.walker.next()) {
-            .result => |res| res,
-            .err => |err| return .initErr(err),
+        while (this.walker.next(this.io) catch |err| {
+            return .initErr(bun.sys.Error.fromStdIo(err, .link));
         }) |entry| {
+            switch (entry.kind) {
+                .directory => {
+                    destination_dir.createDirPath(this.io, entry.path) catch |err| {
+                        return .initErr(bun.sys.Error.fromStdIo(err, .link));
+                    };
+                    continue;
+                },
+                .file => {},
+                else => continue,
+            }
+
+            const relative_path = bun.strings.toWPathWtf8(relative_path_buf, entry.path) catch |err| {
+                return .initErr(bun.sys.Error.fromStdIo(err, .link));
+            };
+
             var src_save = this.src.save();
             defer src_save.restore();
 
-            this.src.append(entry.path);
+            this.src.append(relative_path);
 
             var dest_save = this.dest.save();
             defer dest_save.restore();
 
-            this.dest.append(entry.path);
+            this.dest.append(relative_path);
 
-            switch (entry.kind) {
-                .directory => {
-                    FD.cwd().makePath(this.io, u16, this.dest.slice()) catch {};
+            const destfile_path_buf = bun.w_path_buffer_pool.get();
+            defer bun.w_path_buffer_pool.put(destfile_path_buf);
+            const dest_is_absolute = this.dest.len() > 0 and bun.path.Platform.windows.isAbsoluteT(u16, this.dest.slice());
+            var dest_abs: bun.Path(.{ .unit = .os }) = .fromLongPath(dest_cwd);
+            defer dest_abs.deinit();
+            if (!dest_is_absolute) dest_abs.append(this.dest.slice());
+            const dest_path = if (dest_is_absolute)
+                this.dest.sliceZ()
+            else
+                dest_abs.sliceZ();
+            const destfile_path = bun.strings.addNTPathPrefixIfNeeded(destfile_path_buf, dest_path);
+
+            switch (sys.link(u16, this.src.sliceZ(), destfile_path)) {
+                .result => {},
+                .err => |link_err1| switch (link_err1.getErrno()) {
+                    .UV_EEXIST,
+                    .EXIST,
+                    => {
+                        if (bun.install.PackageManager.verbose_install) {
+                            bun.Output.prettyErrorln(
+                                \\Hardlinking {f} to a path that already exists: {f}
+                            ,
+                                .{
+                                    bun.fmt.fmtOSPath(this.src.slice(), .{ .path_sep = .auto }),
+                                    bun.fmt.fmtOSPath(destfile_path, .{ .path_sep = .auto }),
+                                },
+                            );
+                        }
+
+                        destination_dir.deleteTree(this.io, entry.path) catch {};
+                        switch (sys.link(u16, this.src.sliceZ(), destfile_path)) {
+                            .result => {},
+                            .err => |link_err2| return .initErr(link_err2),
+                        }
+                    },
+                    else => return .initErr(link_err1),
                 },
-                .file => {
-                    const destfile_path_buf = bun.w_path_buffer_pool.get();
-                    defer bun.w_path_buffer_pool.put(destfile_path_buf);
-                    const dest_is_absolute = this.dest.len() > 0 and bun.path.Platform.windows.isAbsoluteT(u16, this.dest.slice());
-                    var dest_abs: bun.Path(.{ .unit = .os }) = .fromLongPath(dest_cwd);
-                    defer dest_abs.deinit();
-                    if (!dest_is_absolute) dest_abs.append(this.dest.slice());
-                    const dest_path = if (dest_is_absolute)
-                        this.dest.sliceZ()
-                    else
-                        dest_abs.sliceZ();
-                    const destfile_path = bun.strings.addNTPathPrefixIfNeeded(destfile_path_buf, dest_path);
-
-                    switch (sys.link(u16, this.src.sliceZ(), destfile_path)) {
-                        .result => {},
-                        .err => |link_err1| switch (link_err1.getErrno()) {
-                            .UV_EEXIST,
-                            .EXIST,
-                            => {
-                                if (bun.install.PackageManager.verbose_install) {
-                                    bun.Output.prettyErrorln(
-                                        \\Hardlinking {f} to a path that already exists: {f}
-                                    ,
-                                        .{
-                                            bun.fmt.fmtOSPath(this.src.slice(), .{ .path_sep = .auto }),
-                                            bun.fmt.fmtOSPath(destfile_path, .{ .path_sep = .auto }),
-                                        },
-                                    );
-                                }
-
-                                try_delete: {
-                                    const delete_tree_buf = bun.path_buffer_pool.get();
-                                    defer bun.path_buffer_pool.put(delete_tree_buf);
-
-                                    const delete_tree_path = bun.strings.convertUTF16toUTF8InBuffer(delete_tree_buf, this.dest.slice()) catch {
-                                        break :try_delete;
-                                    };
-                                    FD.cwd().deleteTree(this.io, delete_tree_path) catch {};
-                                }
-                                switch (sys.link(u16, this.src.sliceZ(), destfile_path)) {
-                                    .result => {},
-                                    .err => |link_err2| return .initErr(link_err2),
-                                }
-                            },
-                            .UV_ENOENT,
-                            .NOENT,
-                            => {
-                                if (bun.install.PackageManager.verbose_install) {
-                                    bun.Output.prettyErrorln(
-                                        \\Hardlinking {f} to a path that doesn't exist: {f}
-                                    ,
-                                        .{
-                                            bun.fmt.fmtOSPath(this.src.slice(), .{ .path_sep = .auto }),
-                                            bun.fmt.fmtOSPath(destfile_path, .{ .path_sep = .auto }),
-                                        },
-                                    );
-                                }
-                                const dest_parent = bun.path.dirnameWindowsWtf16(this.dest.slice()) orelse {
-                                    return .initErr(link_err1);
-                                };
-
-                                FD.cwd().makePath(this.io, u16, dest_parent) catch {};
-
-                                switch (sys.link(u16, this.src.sliceZ(), destfile_path)) {
-                                    .result => {},
-                                    .err => |link_err2| return .initErr(link_err2),
-                                }
-                            },
-                            else => return .initErr(link_err1),
-                        },
-                    }
-                },
-                else => {},
             }
         }
 
         return .success;
     }
 
-    while (switch (this.walker.next()) {
-        .result => |res| res,
-        .err => |err| return .initErr(err),
+    while (this.walker.next(this.io) catch |err| {
+        return .initErr(bun.sys.Error.fromStdIo(err, .link));
     }) |entry| {
-        var dest_save = this.dest.save();
-        defer dest_save.restore();
-
-        this.dest.append(entry.path);
-
         switch (entry.kind) {
             .directory => {
-                FD.cwd().makePath(this.io, u8, this.dest.sliceZ()) catch {};
+                destination_dir.createDirPath(this.io, entry.path) catch |err| {
+                    return .initErr(bun.sys.Error.fromStdIo(err, .link));
+                };
             },
             .file => {
-                switch (sys.linkatZ(entry.dir, entry.basename, FD.cwd(), this.dest.sliceZ())) {
-                    .result => {},
-                    .err => |link_err1| {
-                        switch (link_err1.getErrno()) {
-                            .EXIST => {
-                                FD.cwd().deleteTree(this.io, this.dest.slice()) catch {};
-                                switch (sys.linkatZ(entry.dir, entry.basename, FD.cwd(), this.dest.sliceZ())) {
-                                    .result => {},
-                                    .err => |link_err2| return .initErr(link_err2),
-                                }
-                            },
-                            .NOENT => {
-                                const dest_parent = std.fs.path.dirname(this.dest.slice()) orelse {
-                                    return .initErr(link_err1);
-                                };
-
-                                FD.cwd().makePath(this.io, u8, dest_parent) catch {};
-                                switch (sys.linkatZ(entry.dir, entry.basename, FD.cwd(), this.dest.sliceZ())) {
-                                    .result => {},
-                                    .err => |link_err2| return .initErr(link_err2),
-                                }
-                            },
-                            else => return .initErr(link_err1),
-                        }
+                entry.dir.hardLink(entry.basename, destination_dir, entry.path, this.io, .{}) catch |err| switch (err) {
+                    error.PathAlreadyExists => {
+                        destination_dir.deleteTree(this.io, entry.path) catch {};
+                        entry.dir.hardLink(entry.basename, destination_dir, entry.path, this.io, .{}) catch |retry_err| {
+                            return .initErr(bun.sys.Error.fromStdIo(retry_err, .link));
+                        };
                     },
-                }
+                    else => return .initErr(bun.sys.Error.fromStdIo(err, .link)),
+                };
             },
             else => {},
         }
@@ -200,7 +151,7 @@ pub fn link(this: *Hardlinker) OOM!sys.Maybe(void) {
     return .success;
 }
 
-const Walker = @import("../../sys/walker_skippable.zig");
+const DirectoryWalker = @import("../../sys/DirectoryWalker.zig");
 const std = @import("std");
 
 const bun = @import("bun");

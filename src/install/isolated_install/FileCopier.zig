@@ -2,68 +2,32 @@ pub const FileCopier = struct {
     io: std.Io,
     src_path: *bun.Path(.{ .unit = .os }),
     dest_subpath: *bun.Path(.{ .unit = .os }),
-    walker: Walker,
+    walker: DirectoryWalker,
 
     pub fn init(
         io: std.Io,
         src_dir: FD,
         src_path: *bun.Path(.{ .unit = .os }),
         dest_subpath: *bun.Path(.{ .unit = .os }),
-        skip_dirnames: []const bun.OSPathSlice,
+        skip_dirnames: []const []const u8,
     ) OOM!FileCopier {
         return .{
             .io = io,
             .src_path = src_path,
             .dest_subpath = dest_subpath,
-            .walker = walker: {
-                var w = try Walker.walk(
-                    src_dir,
-                    bun.default_allocator,
-                    &.{},
-                    skip_dirnames,
-                );
-                w.resolve_unknown_entry_types = true;
-                break :walker w;
-            },
+            .walker = try DirectoryWalker.init(src_dir.stdDir(), bun.default_allocator, .{
+                .excluded_directories = skip_dirnames,
+            }),
         };
     }
 
     pub fn deinit(this: *FileCopier) void {
-        this.walker.deinit();
+        this.walker.deinit(this.io);
     }
 
     pub fn copy(this: *FileCopier) sys.Maybe(void) {
         const dest_dir = bun.MakePath.makeOpenPath(this.io, FD.cwd().stdDir(), this.dest_subpath.sliceZ(), .{}) catch |err| {
-            // TODO: remove the need for this and implement openDir makePath makeOpenPath in bun
-            var errno: bun.sys.E = switch (@as(anyerror, err)) {
-                error.AccessDenied => .PERM,
-                error.FileTooBig => .FBIG,
-                error.SymLinkLoop => .LOOP,
-                error.ProcessFdQuotaExceeded => .NFILE,
-                error.NameTooLong => .NAMETOOLONG,
-                error.SystemFdQuotaExceeded => .MFILE,
-                error.SystemResources => .NOMEM,
-                error.ReadOnlyFileSystem => .ROFS,
-                error.FileSystem => .IO,
-                error.FileBusy => .BUSY,
-                error.DeviceBusy => .BUSY,
-
-                // One of the path components was not a directory.
-                // This error is unreachable if `sub_path` does not contain a path separator.
-                error.NotDir => .NOTDIR,
-                // On Windows, file paths must be valid Unicode.
-                error.InvalidUtf8 => .INVAL,
-                error.InvalidWtf8 => .INVAL,
-
-                // On Windows, file paths cannot contain these characters:
-                // '/', '*', '?', '"', '<', '>', '|'
-                error.BadPathName => .INVAL,
-
-                error.FileNotFound => .NOENT,
-                error.IsDir => .ISDIR,
-
-                else => .FAULT,
-            };
+            var errno = bun.sys.Error.errnoFromStdIo(err, .PERM);
             if (Environment.isWindows and errno == .NOTDIR) {
                 errno = .NOENT;
             }
@@ -73,97 +37,62 @@ pub const FileCopier = struct {
         defer dest_dir.close(this.io);
 
         var copy_file_state: bun.CopyFileState = .{};
+        var relative_path_buf: if (Environment.isWindows) bun.WPathBuffer else void = undefined;
 
-        while (switch (this.walker.next()) {
-            .result => |res| res,
-            .err => |err| return .initErr(err),
+        while (this.walker.next(this.io) catch |err| {
+            return .initErr(bun.sys.Error.fromStdIo(err, .copyfile));
         }) |entry| {
+            switch (entry.kind) {
+                .directory => {
+                    dest_dir.createDirPath(this.io, entry.path) catch |err| {
+                        return .initErr(bun.sys.Error.fromStdIo(err, .copyfile));
+                    };
+                    continue;
+                },
+                .file => {},
+                else => continue,
+            }
+
             if (comptime Environment.isWindows) {
-                switch (entry.kind) {
-                    .directory, .file => {},
-                    else => continue,
-                }
+                const relative_path = bun.strings.toWPathWtf8(&relative_path_buf, entry.path) catch |err| {
+                    return .initErr(bun.sys.Error.fromStdIo(err, .copyfile));
+                };
 
                 var src_path_save = this.src_path.save();
                 defer src_path_save.restore();
 
-                this.src_path.append(entry.path);
+                this.src_path.append(relative_path);
 
                 var dest_subpath_save = this.dest_subpath.save();
                 defer dest_subpath_save.restore();
 
-                this.dest_subpath.append(entry.path);
+                this.dest_subpath.append(relative_path);
 
-                switch (entry.kind) {
-                    .directory => {
-                        if (!bun.windows.CreateDirectoryExW(this.src_path.sliceZ(), this.dest_subpath.sliceZ(), null).toBool()) {
-                            bun.MakePath.makePath(this.io, u16, dest_dir, entry.path) catch {};
-                        }
-                    },
-                    .file => {
-                        switch (bun.copyFile(this.src_path.sliceZ(), this.dest_subpath.sliceZ())) {
-                            .result => {},
-                            .err => |first_err| {
-                                // Retry after creating the parent directory.
-                                // For root-level files (`index.js`,
-                                // `package.json`, `LICENSE`) `dirname` is
-                                // null and there is no missing parent to
-                                // create — `dest_dir` itself was already
-                                // opened above — so the original error is the
-                                // real failure and must propagate. Silently
-                                // continuing here would let a staged
-                                // global-store entry be renamed into place
-                                // with files missing.
-                                const entry_dirname = bun.path.dirnameWindowsWtf16(entry.path) orelse {
-                                    return .initErr(first_err);
-                                };
-                                bun.MakePath.makePath(this.io, u16, dest_dir, entry_dirname) catch {};
-                                switch (bun.copyFile(this.src_path.sliceZ(), this.dest_subpath.sliceZ())) {
-                                    .result => {},
-                                    .err => |err| {
-                                        return .initErr(err);
-                                    },
-                                }
-                            },
-                        }
-                    },
-                    else => unreachable,
-                }
-            } else {
-                if (entry.kind != .file) {
-                    continue;
-                }
-
-                const src = switch (entry.dir.openat(entry.basename, bun.O.RDONLY, 0)) {
-                    .result => |fd| fd,
+                switch (bun.copyFile(this.src_path.sliceZ(), this.dest_subpath.sliceZ())) {
+                    .result => {},
                     .err => |err| {
                         return .initErr(err);
                     },
+                }
+            } else {
+                const src = entry.dir.openFile(this.io, entry.basename, .{}) catch |err| {
+                    return .initErr(bun.sys.Error.fromStdIo(err, .copyfile));
                 };
-                defer src.close();
+                defer src.close(this.io);
+                const stat = src.stat(this.io) catch |err| {
+                    return .initErr(bun.sys.Error.fromStdIo(err, .copyfile));
+                };
 
-                const dest = dest_dir.createFile(this.io, entry.path, .{}) catch dest: {
-                    const entry_dirname = if (comptime Environment.isWindows)
-                        bun.path.dirnameWindowsWtf16(entry.path)
-                    else
-                        std.fs.path.dirname(entry.path);
-                    if (entry_dirname) |dirname| {
-                        bun.MakePath.makePath(this.io, bun.OSPathChar, dest_dir, dirname) catch {};
-                    }
-
-                    break :dest dest_dir.createFile(this.io, entry.path, .{}) catch |err| {
-                        Output.prettyErrorln("<r><red>{s}<r>: copy file {f}", .{ @errorName(err), bun.fmt.fmtOSPath(entry.path, .{}) });
-                        Global.exit(1);
-                    };
+                const dest = dest_dir.createFile(this.io, entry.path, .{}) catch |err| {
+                    return .initErr(bun.sys.Error.fromStdIo(err, .copyfile));
                 };
                 defer dest.close(this.io);
 
-                if (comptime Environment.isPosix) {
-                    const stat = src.stat().unwrap() catch continue;
-                    _ = bun.c.fchmod(dest.handle, @intCast(stat.mode));
-                }
+                dest.setPermissions(this.io, stat.permissions) catch |err| {
+                    return .initErr(bun.sys.Error.fromStdIo(err, .copyfile));
+                };
 
-                switch (bun.copyFileWithState(src, .fromStdFile(dest), &copy_file_state)) {
+                switch (bun.copyFileWithState(.fromStdFile(src), .fromStdFile(dest), &copy_file_state)) {
                     .result => {},
                     .err => |err| {
                         return .initErr(err);
@@ -176,13 +105,11 @@ pub const FileCopier = struct {
     }
 };
 
-const Walker = @import("../../sys/walker_skippable.zig");
+const DirectoryWalker = @import("../../sys/DirectoryWalker.zig");
 const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
 const FD = bun.FD;
-const Global = bun.Global;
 const OOM = bun.OOM;
-const Output = bun.Output;
 const sys = bun.sys;

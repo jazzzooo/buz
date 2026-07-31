@@ -5667,7 +5667,7 @@ pub const NodeFS = struct {
     pub fn rmdir(this: *NodeFS, args: Arguments.RmDir, _: Flavor) Maybe(Return.Rmdir) {
         if (args.recursive) {
             zigDeleteTree(this.vm.?.io, std.Io.Dir.cwd(), args.path.slice(), .directory) catch |err| {
-                var errno = errnoFromStdIo(err, .PERM);
+                var errno = bun.sys.Error.errnoFromStdIo(err, .PERM);
                 if (Environment.isWindows and errno == .NOTDIR) {
                     errno = .NOENT;
                 }
@@ -5696,7 +5696,7 @@ pub const NodeFS = struct {
         if (args.recursive) {
             zigDeleteTree(this.vm.?.io, std.Io.Dir.cwd(), args.path.slice(), .file) catch |err| {
                 bun.handleErrorReturnTrace(err, @errorReturnTrace());
-                const errno = errnoFromStdIo(err, .ACCES);
+                const errno = bun.sys.Error.errnoFromStdIo(err, .ACCES);
                 if (errno == .NOENT and args.force) {
                     return .success;
                 }
@@ -6233,7 +6233,7 @@ pub const NodeFS = struct {
         if (base_len + rel.len + 2 > buf.len) return null;
         buf[base_len] = std.fs.path.sep;
         if (Environment.isWindows) {
-            const converted = bun.strings.toWPath(buf[base_len + 1 ..], rel);
+            const converted = bun.strings.toWPathWtf8(buf[base_len + 1 ..], rel) catch return null;
             return buf[0 .. base_len + 1 + converted.len :0];
         }
         @memcpy(buf[base_len + 1 ..][0..rel.len], rel);
@@ -6242,7 +6242,7 @@ pub const NodeFS = struct {
     }
 
     fn cpWalkError(this: *NodeFS, err: anyerror, path: []const bun.OSPathChar) Syscall.Error {
-        return bun.sys.Error.fromCode(errnoFromStdIo(err, .ACCES), .copyfile).withPath(this.osPathIntoSyncErrorBuf(path));
+        return bun.sys.Error.fromStdIo(err, .copyfile).withPath(this.osPathIntoSyncErrorBuf(path));
     }
 
     fn cpNameTooLong(this: *NodeFS, path: []const bun.OSPathChar) Syscall.Error {
@@ -7052,39 +7052,6 @@ pub export fn Bun__mkdirp(globalThis: *jsc.JSGlobalObject, path: [*:0]const u8) 
 
 comptime {
     _ = Bun__mkdirp;
-}
-
-/// Maps the error sets of `std.Io` filesystem calls onto the errno the caller
-/// reports. `access_denied` is a parameter because `rmdir` answers EPERM where
-/// everything else answers EACCES.
-pub fn errnoFromStdIo(err: anyerror, access_denied: E) E {
-    return switch (err) {
-        error.AccessDenied, error.PermissionDenied => access_denied,
-        error.FileTooBig => .FBIG,
-        error.SymLinkLoop => .LOOP,
-        error.ProcessFdQuotaExceeded => .NFILE,
-        error.NameTooLong => .NAMETOOLONG,
-        error.SystemFdQuotaExceeded => .MFILE,
-        error.SystemResources, error.OutOfMemory => .NOMEM,
-        error.ReadOnlyFileSystem => .ROFS,
-        error.FileSystem => .IO,
-        error.FileBusy, error.DeviceBusy => .BUSY,
-        error.NoDevice => .NXIO,
-        error.Canceled => .INTR,
-
-        // One of the path components was not a directory. Unreachable when the
-        // path holds no separator.
-        error.NotDir => .NOTDIR,
-
-        // On Windows a path must be valid WTF-8, and cannot contain any of
-        // '/', '*', '?', '"', '<', '>', '|'.
-        error.InvalidUtf8, error.InvalidWtf8, error.BadPathName => .INVAL,
-
-        error.FileNotFound => .NOENT,
-        error.IsDir => .ISDIR,
-
-        else => .FAULT,
-    };
 }
 
 /// Copied from std.Io.Dir.deleteTree. This function returns `FileNotFound` instead of ignoring it, which

@@ -1941,6 +1941,7 @@ pub const toWPathMaybeDir = paths_.toWPathMaybeDir;
 pub const toWPathNormalizeAutoExtend = paths_.toWPathNormalizeAutoExtend;
 pub const toWPathNormalized = paths_.toWPathNormalized;
 pub const toWPathNormalized16 = paths_.toWPathNormalized16;
+pub const toWPathWtf8 = paths_.toWPathWtf8;
 pub const withoutLeadingPathSeparator = paths_.withoutLeadingPathSeparator;
 pub const withoutLeadingSlash = paths_.withoutLeadingSlash;
 pub const withoutNTPrefix = paths_.withoutNTPrefix;

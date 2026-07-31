@@ -626,7 +626,7 @@ pub const Installer = struct {
                                         folder_dir,
                                         &src,
                                         &dest,
-                                        &.{comptime bun.OSPathLiteral("node_modules")},
+                                        &.{"node_modules"},
                                     );
                                     defer hardlinker.deinit();
 
@@ -692,7 +692,7 @@ pub const Installer = struct {
                                         folder_dir,
                                         &src_path,
                                         &dest,
-                                        &.{comptime bun.OSPathLiteral("node_modules")},
+                                        &.{"node_modules"},
                                     );
                                     defer file_copier.deinit();
 

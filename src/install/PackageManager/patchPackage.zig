@@ -840,10 +840,10 @@ fn overwritePackageInNodeModulesFolder(
     const cached_package_folder = try cache_dir.openDir(io, cache_dir_subpath, .{ .iterate = true });
     defer cached_package_folder.close(io);
 
-    const ignore_directories: []const bun.OSPathSlice = &.{
-        comptime bun.OSPathLiteral("node_modules"),
-        comptime bun.OSPathLiteral(".git"),
-        comptime bun.OSPathLiteral("CMakeFiles"),
+    const ignore_directories: []const []const u8 = &.{
+        "node_modules",
+        ".git",
+        "CMakeFiles",
     };
 
     var copier: bun.install.FileCopier = try .init(

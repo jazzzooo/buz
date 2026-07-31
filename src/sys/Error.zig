@@ -47,6 +47,40 @@ pub fn fromCodeInt(errno: anytype, syscall_tag: sys.Tag) Error {
     };
 }
 
+/// `access_denied` varies because some APIs expose permission failures as
+/// `EACCES` while others, such as `rmdir`, require `EPERM` compatibility.
+pub fn errnoFromStdIo(err: anyerror, access_denied: E) E {
+    return switch (err) {
+        error.AccessDenied, error.PermissionDenied => access_denied,
+        error.FileTooBig => .FBIG,
+        error.SymLinkLoop => .LOOP,
+        error.NameTooLong => .NAMETOOLONG,
+        error.ProcessFdQuotaExceeded => .MFILE,
+        error.SystemFdQuotaExceeded => .NFILE,
+        error.SystemResources, error.OutOfMemory => .NOMEM,
+        error.ReadOnlyFileSystem => .ROFS,
+        error.FileSystem, error.InputOutput, error.HardwareFailure => .IO,
+        error.FileBusy, error.DeviceBusy => .BUSY,
+        error.NoDevice => .NXIO,
+        error.Canceled => .INTR,
+        error.NotDir => .NOTDIR,
+        error.InvalidUtf8, error.InvalidWtf8, error.BadPathName => .INVAL,
+        error.FileNotFound => .NOENT,
+        error.PathAlreadyExists => .EXIST,
+        error.IsDir => .ISDIR,
+        error.CrossDevice => .XDEV,
+        error.NoSpaceLeft => .NOSPC,
+        error.DiskQuota => .DQUOT,
+        error.LinkQuotaExceeded => .MLINK,
+        error.OperationUnsupported => if (comptime Environment.isWindows) .NOTSUP else .OPNOTSUPP,
+        else => .FAULT,
+    };
+}
+
+pub fn fromStdIo(err: anyerror, syscall_tag: sys.Tag) Error {
+    return fromCode(errnoFromStdIo(err, .ACCES), syscall_tag);
+}
+
 pub fn format(self: Error, writer: *std.Io.Writer) std.Io.Writer.Error!void {
     // We want to reuse the code from SystemError for formatting.
     // But, we do not want to call String.createUTF8 on the path/dest strings

@@ -196,6 +196,14 @@ pub fn toWPath(wbuf: []u16, utf8: []const u8) [:0]u16 {
     return toWPathMaybeDir(wbuf, utf8, false);
 }
 
+pub fn toWPathWtf8(wbuf: []u16, wtf8: []const u8) error{ BadPathName, NameTooLong }![:0]u16 {
+    if (wbuf.len == 0) return error.NameTooLong;
+    const len = try std.os.windows.wtf8ToWtf16Le(wbuf[0 .. wbuf.len - 1], wtf8);
+    bun.path.dangerouslyConvertPathToWindowsInPlace(u16, wbuf[0..len]);
+    wbuf[len] = 0;
+    return wbuf[0..len :0];
+}
+
 pub fn toPath(buf: []u8, utf8: []const u8) [:0]u8 {
     return toPathMaybeDir(buf, utf8, false);
 }
