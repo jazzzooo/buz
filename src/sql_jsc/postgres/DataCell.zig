@@ -607,6 +607,7 @@ pub fn fromBytes(binary: bool, bigint: bool, oid: types.Tag, bytes: []const u8, 
                 return SQLDataCell{ .tag = .bool, .value = .{ .bool = @intFromBool(bytes.len > 0 and bytes[0] == 't') } };
             }
         },
+        // TODO: Audit PostgreSQL infinity handling across scalar text, binary, and array date decoding.
         .date, .timestamp, .timestamptz => |tag| {
             if (bytes.len == 0) {
                 return SQLDataCell{ .tag = .null, .value = .{ .null = 0 } };

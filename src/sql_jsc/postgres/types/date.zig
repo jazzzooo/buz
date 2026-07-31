@@ -12,6 +12,7 @@ pub fn fromBinary(bytes: []const u8) f64 {
 }
 
 pub fn fromJS(globalObject: *jsc.JSGlobalObject, value: JSValue) bun.JSError!i64 {
+    // TODO: Audit binding numeric infinities as PostgreSQL DT_NOBEGIN and DT_NOEND.
     const double_value = if (value.isDate())
         value.getUnixTimestamp()
     else if (value.isNumber())

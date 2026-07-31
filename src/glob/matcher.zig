@@ -377,6 +377,7 @@ fn matchBraceBranch(state: *State, glob: []const u8, path: []const u8, open_brac
 }
 
 fn skipBranch(state: *State, glob: []const u8) void {
+    // TODO: Audit bracket-class scanning and depth overflow while skipping brace branches.
     var in_brackets = false;
     const end_brace_depth = state.brace_depth - 1;
     while (state.glob_index < glob.len) {

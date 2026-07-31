@@ -4554,6 +4554,7 @@ CPP_DECL double Bun__JSValue__toNumber(JSC::EncodedJSValue JSValue0, JSC::JSGlob
         return static_cast<int64_t>(value.asDouble());
     }
 
+    // TODO: Audit non-number coercion; string values are narrowed to int32 before being widened here.
     return value.toInt32(arg1);
 }
 
