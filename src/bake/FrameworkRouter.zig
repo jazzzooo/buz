@@ -264,7 +264,7 @@ pub const EncodedPattern = struct {
     }
 
     fn matches(p: EncodedPattern, path: []const u8, params: *MatchedParams) bool {
-        var param_num: usize = 0;
+        params.len = 0;
         var it = p.iterate();
         var i: usize = 1;
         while (it.next()) |part| {
@@ -279,17 +279,7 @@ pub const EncodedPattern = struct {
                 },
                 .param => |name| {
                     const end = strings.indexOfCharPos(path, '/', i) orelse path.len;
-                    // Check if we're about to exceed the maximum number of parameters
-                    if (param_num >= MatchedParams.max_count) {
-                        // TODO: ideally we should throw a nice user message
-                        bun.Output.panic("Route pattern matched more than {d} parameters. Path: {s}", .{ MatchedParams.max_count, path });
-                    }
-                    params.params.len = @intCast(param_num + 1);
-                    params.params.buffer[param_num] = .{
-                        .key = name,
-                        .value = path[i..end],
-                    };
-                    param_num += 1;
+                    params.append(name, path[i..end], path);
                     i = if (end == path.len) end else end + 1;
                 },
                 .catch_all_optional, .catch_all => |name| {
@@ -299,17 +289,7 @@ pub const EncodedPattern = struct {
                         while (segment_start < path.len) {
                             const segment_end = strings.indexOfCharPos(path, '/', segment_start) orelse path.len;
                             if (segment_start < segment_end) {
-                                // Check if we're about to exceed the maximum number of parameters
-                                if (param_num >= MatchedParams.max_count) {
-                                    // TODO: ideally we should throw a nice user message
-                                    bun.Output.panic("Route pattern matched more than {d} parameters. Path: {s}", .{ MatchedParams.max_count, path });
-                                }
-                                params.params.len = @intCast(param_num + 1);
-                                params.params.buffer[param_num] = .{
-                                    .key = name,
-                                    .value = path[segment_start..segment_end],
-                                };
-                                param_num += 1;
+                                params.append(name, path[segment_start..segment_end], path);
                             }
                             segment_start = if (segment_end == path.len) segment_end else segment_end + 1;
                         }
@@ -805,17 +785,26 @@ pub fn insert(
 pub const MatchedParams = struct {
     pub const max_count = 64;
 
-    params: bun.BoundedArray(Entry, max_count),
+    entries: [max_count]Entry = undefined,
+    len: u8 = 0,
 
     pub const Entry = struct {
         key: []const u8,
         value: []const u8,
     };
 
+    fn append(self: *MatchedParams, key: []const u8, value: []const u8, path: []const u8) void {
+        if (self.len >= max_count) {
+            bun.Output.panic("Route pattern matched more than {d} parameters. Path: {s}", .{ max_count, path });
+        }
+        self.entries[self.len] = .{ .key = key, .value = value };
+        self.len += 1;
+    }
+
     /// Convert the matched params to a JavaScript object
     /// Returns null if there are no params
     pub fn toJS(self: *const MatchedParams, global: *jsc.JSGlobalObject) JSValue {
-        const params_array = self.params.slice();
+        const params_array = self.entries[0..self.len];
 
         if (params_array.len == 0) {
             return JSValue.null;
@@ -839,7 +828,7 @@ pub const MatchedParams = struct {
 /// complicated data structure that production uses to efficiently map
 /// urls to routes instead of this tree-traversal algorithm.
 pub fn matchSlow(fr: *FrameworkRouter, path: []const u8, params: *MatchedParams) ?Route.Index {
-    params.* = .{ .params = .{} };
+    params.len = 0;
 
     bun.assert(path[0] == '/');
     if (fr.static_routes.get(path)) |static| {
@@ -885,11 +874,18 @@ const PatternParseError = error{InvalidRoutePattern};
 /// Non-allocating single message log, specialized for the messages from the route pattern parsers.
 /// DevServer uses this to special-case the printing of these messages to highlight the offending part of the filename
 pub const TinyLog = struct {
-    msg: bun.BoundedArray(u8, 512 + @min(std.fs.max_path_bytes, 4096)),
+    const max_message_len = 512 + @min(std.fs.max_path_bytes, 4096);
+
+    message_buffer: [max_message_len]u8 = undefined,
+    message_len: u16,
     cursor_at: u32,
     cursor_len: u32,
 
-    pub const empty: TinyLog = .{ .cursor_at = std.math.maxInt(u32), .cursor_len = 0, .msg = .{} };
+    pub const empty: TinyLog = .{
+        .message_len = 0,
+        .cursor_at = std.math.maxInt(u32),
+        .cursor_len = 0,
+    };
 
     pub fn fail(log: *TinyLog, comptime fmt: []const u8, args: anytype, cursor_at: usize, cursor_len: usize) PatternParseError {
         log.write(fmt, args);
@@ -899,11 +895,15 @@ pub const TinyLog = struct {
     }
 
     pub fn write(log: *TinyLog, comptime fmt: []const u8, args: anytype) void {
-        log.msg.len = @intCast(if (std.fmt.bufPrint(&log.msg.buffer, fmt, args)) |slice| slice.len else |_| brk: {
+        log.message_len = @intCast(if (std.fmt.bufPrint(&log.message_buffer, fmt, args)) |slice| slice.len else |_| brk: {
             // truncation should never happen because the buffer is HUGE. handle it anyways
-            @memcpy(log.msg.buffer[log.msg.buffer.len - 3 ..], "...");
-            break :brk log.msg.buffer.len;
+            @memcpy(log.message_buffer[log.message_buffer.len - 3 ..], "...");
+            break :brk log.message_buffer.len;
         });
+    }
+
+    pub fn message(log: *const TinyLog) []const u8 {
+        return log.message_buffer[0..log.message_len];
     }
 
     pub fn print(log: *const TinyLog, rel_path: []const u8) void {
@@ -930,7 +930,7 @@ pub const TinyLog = struct {
         }
         w.writeByte('\n') catch return;
         w.splatByteAll(' ', "error: \"".len + log.cursor_at) catch return;
-        w.writeAll(log.msg.slice()) catch return;
+        w.writeAll(log.message()) catch return;
         bun.Output.prettyError("<r>\n", .{});
         bun.Output.flush();
     }
@@ -1208,7 +1208,7 @@ pub const JSFrameworkRouter = struct {
                     @intCast(i),
                     (try global.createErrorInstance("Invalid route {f}: {s}", .{
                         bun.fmt.quote(item.rel_path),
-                        item.log.msg.slice(),
+                        item.log.message(),
                     })).toJS(),
                 );
             }
@@ -1230,15 +1230,7 @@ pub const JSFrameworkRouter = struct {
             const alloc = sfb.allocator();
 
             return (try jsc.JSObject.create(.{
-                .params = if (params_out.params.len > 0) params: {
-                    const obj = jsc.JSObject.createEmpty(global, params_out.params.len);
-                    for (params_out.params.slice()) |param| {
-                        const value = bun.String.cloneUTF8(param.value);
-                        defer value.deref();
-                        obj.putDirect(global, param.key, try value.toJS(global));
-                    }
-                    break :params obj.toJS();
-                } else .null,
+                .params = params_out.toJS(global),
                 .route = try jsfr.routeToJsonInverse(global, index, alloc),
             }, global)).toJS();
         }
@@ -1319,7 +1311,7 @@ pub const JSFrameworkRouter = struct {
         var log = TinyLog.empty;
         const parsed = style.parse(filepath.slice(), std.fs.path.extension(filepath.slice()), &log, true, alloc) catch |err| switch (err) {
             error.InvalidRoutePattern => {
-                return global.throw("{s} ({d}:{d})", .{ log.msg.slice(), log.cursor_at, log.cursor_len });
+                return global.throw("{s} ({d}:{d})", .{ log.message(), log.cursor_at, log.cursor_len });
             },
             else => |e| return e,
         } orelse

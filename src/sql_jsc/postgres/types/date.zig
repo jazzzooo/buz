@@ -38,7 +38,7 @@ pub fn toJS(
         },
         *Data => {
             defer value.deinit();
-            return JSValue.fromDateString(globalObject, value.sliceZ().ptr);
+            return JSValue.fromDateString(globalObject, value.slice());
         },
         else => @compileError("unsupported type " ++ @typeName(@TypeOf(value))),
     }

@@ -617,6 +617,16 @@ pub const CommandLineReporter = struct {
         break :brk map;
     };
 
+    fn parentScopes(test_entry: *bun_test.ExecutionEntry, buffer: []*bun_test.DescribeScope) []*bun_test.DescribeScope {
+        var scopes = std.ArrayList(*bun_test.DescribeScope).initBuffer(buffer);
+        var parent = test_entry.base.parent;
+        while (parent) |scope| {
+            scopes.appendBounded(scope) catch break;
+            parent = scope.base.parent;
+        }
+        return scopes.items;
+    }
+
     fn printTestLine(
         comptime status: bun_test.Execution.Result,
         sequence: *bun_test.Execution.ExecutionSequence,
@@ -629,15 +639,8 @@ pub const CommandLineReporter = struct {
         const attempts = (initial_retry_count - sequence.remaining_retry_count) + 1;
         const initial_repeat_count = test_entry.repeat_count;
         const repeats = (initial_repeat_count - sequence.remaining_repeat_count) + 1;
-        var scopes_stack = bun.BoundedArray(*bun_test.DescribeScope, 64).init(0) catch unreachable;
-        var parent_: ?*bun_test.DescribeScope = test_entry.base.parent;
-
-        while (parent_) |scope| {
-            scopes_stack.append(scope) catch break;
-            parent_ = scope.base.parent;
-        }
-
-        const scopes: []*bun_test.DescribeScope = scopes_stack.slice();
+        var scopes_buffer: [64]*bun_test.DescribeScope = undefined;
+        const scopes = parentScopes(test_entry, &scopes_buffer);
         const display_label = test_entry.base.name orelse "(unnamed)";
 
         // Quieter output when claude code is in use.
@@ -748,19 +751,13 @@ pub const CommandLineReporter = struct {
     ) void {
         if (buntest.reporter) |cmd_reporter| {
             if (cmd_reporter.reporters.junit) |junit| {
-                var scopes_stack = bun.BoundedArray(*bun_test.DescribeScope, 64).init(0) catch unreachable;
-                var parent_: ?*bun_test.DescribeScope = test_entry.base.parent;
+                var scopes_buffer: [64]*bun_test.DescribeScope = undefined;
                 const assertions = sequence.expect_call_count;
                 const line_number = test_entry.base.line_no;
 
                 const file: []const u8 = if (bun.jsc.Jest.Jest.runner) |runner| runner.files.get(buntest.file_id).source.path.text else "";
 
-                while (parent_) |scope| {
-                    scopes_stack.append(scope) catch break;
-                    parent_ = scope.base.parent;
-                }
-
-                const scopes: []*bun_test.DescribeScope = scopes_stack.slice();
+                const scopes = parentScopes(test_entry, &scopes_buffer);
                 const display_label = test_entry.base.name orelse "(unnamed)";
 
                 {

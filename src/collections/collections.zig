@@ -4,7 +4,6 @@ pub const ByteList = baby_list.ByteList; // alias of BabyList(u8)
 pub const OffsetByteList = baby_list.OffsetByteList;
 pub const DenseBitMatrix = @import("./bit_matrix.zig").DenseBitMatrix;
 pub const HiveArray = @import("./hive_array.zig").HiveArray;
-pub const BoundedArray = @import("./bounded_array.zig").BoundedArray;
 
 pub const array_list = @import("./array_list.zig");
 pub const ArrayList = array_list.ArrayList; // any `std.mem.Allocator`

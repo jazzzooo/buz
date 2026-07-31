@@ -162,7 +162,7 @@ pub const ErrorLocation = struct {
             .namespace = source.path.namespace,
             .line = @intCast(this.line + 1),
             .column = @intCast(this.column),
-            .line_text = if (bun.strings.getLinesInText(source.contents, this.line, 1)) |lines| try allocator.dupe(u8, lines.buffer[0]) else null,
+            .line_text = if (bun.strings.getLineInText(source.contents, this.line)) |line| try allocator.dupe(u8, line) else null,
         };
     }
 };

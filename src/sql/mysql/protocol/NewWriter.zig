@@ -17,7 +17,8 @@ pub fn NewWriterWrap(
         pub const WrappedWriter = @This();
 
         pub inline fn writeLengthEncodedInt(this: @This(), data: u64) AnyMySQLError.Error!void {
-            try writeFn(this.wrapped, encodeLengthInt(data).slice());
+            var buffer: [9]u8 = undefined;
+            try writeFn(this.wrapped, encodeLengthInt(data, &buffer));
         }
 
         pub inline fn writeLengthEncodedString(this: @This(), data: []const u8) AnyMySQLError.Error!void {

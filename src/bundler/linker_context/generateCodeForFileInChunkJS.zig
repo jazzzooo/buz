@@ -50,14 +50,16 @@ pub fn generateCodeForFileInChunkJS(
 
         const inner = stmts.all_stmts.items[0..main_stmts_len];
 
-        var clousure_args = bun.BoundedArray(G.Arg, 3).fromSlice(&.{
-            .{ .binding = Binding.alloc(temp_allocator, B.Identifier{
+        var closure_args_buffer: [3]G.Arg = undefined;
+        var closure_args = std.ArrayList(G.Arg).initBuffer(&closure_args_buffer);
+        closure_args.appendAssumeCapacity(.{
+            .binding = Binding.alloc(temp_allocator, B.Identifier{
                 .ref = hmr_api_ref,
-            }, Logger.Loc.Empty) },
-        }) catch unreachable; // is within bounds
+            }, Logger.Loc.Empty),
+        });
 
         if (ast.flags.uses_module_ref or ast.flags.uses_exports_ref) {
-            clousure_args.appendSliceAssumeCapacity(&.{
+            closure_args.appendSliceAssumeCapacity(&.{
                 .{
                     .binding = Binding.alloc(temp_allocator, B.Identifier{
                         .ref = ast.module_ref,
@@ -72,7 +74,7 @@ pub fn generateCodeForFileInChunkJS(
         }
 
         stmts.all_stmts.appendAssumeCapacity(Stmt.allocateExpr(temp_allocator, Expr.init(E.Function, .{ .func = .{
-            .args = bun.handleOom(temp_allocator.dupe(G.Arg, clousure_args.slice())),
+            .args = bun.handleOom(temp_allocator.dupe(G.Arg, closure_args.items)),
             .body = .{
                 .stmts = inner,
                 .loc = Logger.Loc.Empty,

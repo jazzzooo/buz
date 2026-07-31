@@ -743,36 +743,33 @@ pub const BunxCommand = struct {
             package_json.writeStreamingAll(this_transpiler.io, "{}\n") catch {};
         }
 
-        var args = bun.BoundedArray([]const u8, 8).fromSlice(&.{
+        var args_buffer: [8][]const u8 = undefined;
+        var args = std.ArrayList([]const u8).initBuffer(&args_buffer);
+        args.appendSliceAssumeCapacity(&.{
             try bun.selfExePath(),
             "add",
             install_param,
             "--no-summary",
-        }) catch
-            unreachable; // upper bound is known
+        });
 
         if (do_cache_bust) {
             // disable the manifest cache when a tag is specified
             // so that @latest is fetched from the registry
-            args.append("--no-cache") catch
-                unreachable; // upper bound is known
+            args.appendAssumeCapacity("--no-cache");
 
             // forcefully re-install packages in this mode too
-            args.append("--force") catch
-                unreachable; // upper bound is known
+            args.appendAssumeCapacity("--force");
         }
 
         if (opts.verbose_install) {
-            args.append("--verbose") catch
-                unreachable; // upper bound is known
+            args.appendAssumeCapacity("--verbose");
         }
 
         if (opts.silent_install) {
-            args.append("--silent") catch
-                unreachable; // upper bound is known
+            args.appendAssumeCapacity("--silent");
         }
 
-        const argv_to_use = args.slice();
+        const argv_to_use = args.items;
 
         debug("installing package: {f}", .{bun.fmt.fmtSlice(argv_to_use, " ")});
         bun.handleOom(this_transpiler.env.map.put("BUN_INTERNAL_BUNX_INSTALL", "true"));

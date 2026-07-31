@@ -358,8 +358,8 @@ pub const LoadResult = struct {
 var resolver_mutex: std.Io.Mutex = .init;
 var package_manager_init_mutex: std.Io.Mutex = .init;
 
-const BinFolderArray = bun.BoundedArray(string, 128);
-var bin_folders: BinFolderArray = .{};
+var bin_folders_buffer: [128]string = undefined;
+var bin_folders = std.ArrayList(string).initBuffer(&bin_folders_buffer);
 var bin_folders_lock: std.Io.Mutex = .init;
 
 pub const AnyResolveWatcher = struct {
@@ -2529,7 +2529,7 @@ pub const Resolver = struct {
     }
 
     pub fn binDirs(_: *const ThisResolver) []const string {
-        return bin_folders.constSlice();
+        return bin_folders.items;
     }
 
     pub fn parsePackageJSON(
@@ -3926,13 +3926,13 @@ pub const Resolver = struct {
                         bin_folders_lock.lockUncancelable(r.io);
                         defer bin_folders_lock.unlock(r.io);
 
-                        for (bin_folders.constSlice()) |existing_folder| {
+                        for (bin_folders.items) |existing_folder| {
                             if (strings.eql(existing_folder, bin_path)) {
                                 break :append_bin_dir;
                             }
                         }
 
-                        bin_folders.append(r.fs.dirname_store.append([]u8, bin_path) catch break :append_bin_dir) catch {};
+                        bin_folders.appendBounded(r.fs.dirname_store.append([]u8, bin_path) catch break :append_bin_dir) catch {};
                     }
                 }
 
@@ -3945,13 +3945,13 @@ pub const Resolver = struct {
                             bin_folders_lock.lockUncancelable(r.io);
                             defer bin_folders_lock.unlock(r.io);
 
-                            for (bin_folders.constSlice()) |existing_folder| {
+                            for (bin_folders.items) |existing_folder| {
                                 if (strings.eql(existing_folder, bin_path)) {
                                     break :append_bin_dir;
                                 }
                             }
 
-                            bin_folders.append(r.fs.dirname_store.append([]u8, bin_path) catch break :append_bin_dir) catch {};
+                            bin_folders.appendBounded(r.fs.dirname_store.append([]u8, bin_path) catch break :append_bin_dir) catch {};
                         }
                     }
                 }
@@ -4083,8 +4083,9 @@ pub const Resolver = struct {
                     break :brk null;
                 };
                 if (info.tsconfig_json) |tsconfig_json| {
-                    var parent_configs = try bun.BoundedArray(*TSConfigJSON, 64).init(0);
-                    try parent_configs.append(tsconfig_json);
+                    var parent_configs_buffer: [64]*TSConfigJSON = undefined;
+                    var parent_configs = std.ArrayList(*TSConfigJSON).initBuffer(&parent_configs_buffer);
+                    try parent_configs.appendBounded(tsconfig_json);
                     var current = tsconfig_json;
                     while (current.extends.len > 0) {
                         const ts_dir_name = Dirname.dirname(current.abs_path);
@@ -4099,7 +4100,7 @@ pub const Resolver = struct {
                             break;
                         };
                         if (parent_config_maybe) |parent_config| {
-                            try parent_configs.append(parent_config);
+                            try parent_configs.appendBounded(parent_config);
                             current = parent_config;
                         } else {
                             break;

@@ -249,7 +249,8 @@ pub fn crashHandler(
     if (bun.Environment.isDebug)
         bun.Output.disableScopedDebugWriter();
 
-    var trace_str_buf = bun.BoundedArray(u8, 1024){};
+    var trace_str_buffer: [1024]u8 = undefined;
+    var trace_str_writer: std.Io.Writer = .fixed(&trace_str_buffer);
 
     nosuspend switch (panic_stage) {
         0 => {
@@ -412,7 +413,7 @@ pub fn crashHandler(
 
                     dumpTrace(trace, .{});
 
-                    trace_str_buf.writer().print("{f}", .{TraceString{
+                    trace_str_writer.print("{f}", .{TraceString{
                         .trace = trace,
                         .reason = reason,
                         .action = .view_trace,
@@ -477,13 +478,13 @@ pub fn crashHandler(
 
                     writer.writeAll(" ") catch std.process.abort();
 
-                    trace_str_buf.writer().print("{f}", .{TraceString{
+                    trace_str_writer.print("{f}", .{TraceString{
                         .trace = trace,
                         .reason = reason,
                         .action = .open_issue,
                     }}) catch std.process.abort();
 
-                    writer.writeAll(trace_str_buf.slice()) catch std.process.abort();
+                    writer.writeAll(trace_str_writer.buffered()) catch std.process.abort();
 
                     writer.writeAll("\n") catch std.process.abort();
                 }
@@ -495,7 +496,7 @@ pub fn crashHandler(
                 }
             }
 
-            report(trace_str_buf.slice());
+            report(trace_str_writer.buffered());
 
             // At this point, the crash handler has performed it's job. Reset the segfault handler
             // so that a crash will actually crash. We need this because we want the process to
@@ -1545,15 +1546,16 @@ fn report(url: []const u8) void {
                 // .hStdOutput = bun.FD.stdout().native(),
                 // .hStdError = bun.FD.stderr().native(),
             };
-            var cmd_line = bun.BoundedArray(u16, 4096){};
+            var cmd_line_buffer: [4096]u16 = undefined;
+            var cmd_line = std.ArrayList(u16).initBuffer(&cmd_line_buffer);
             cmd_line.appendSliceAssumeCapacity(std.unicode.utf8ToUtf16LeStringLiteral("powershell -ExecutionPolicy Bypass -Command \"try{Invoke-RestMethod -Uri '"));
             {
                 const encoded = bun.strings.convertUTF8toUTF16InBuffer(cmd_line.unusedCapacitySlice(), url);
-                cmd_line.len += @intCast(encoded.len);
+                cmd_line.items.len += encoded.len;
             }
-            cmd_line.appendSlice(std.unicode.utf8ToUtf16LeStringLiteral("/ack'|out-null}catch{}\"")) catch return;
-            cmd_line.append(0) catch return;
-            const cmd_line_slice = cmd_line.buffer[0 .. cmd_line.len - 1 :0];
+            cmd_line.appendSliceBounded(std.unicode.utf8ToUtf16LeStringLiteral("/ack'|out-null}catch{}\"")) catch return;
+            cmd_line.appendBounded(0) catch return;
+            const cmd_line_slice = cmd_line.items[0 .. cmd_line.items.len - 1 :0];
             const spawn_result = std.os.windows.kernel32.CreateProcessW(
                 null,
                 cmd_line_slice,
@@ -1579,15 +1581,16 @@ fn report(url: []const u8) void {
                 bun.getcwd(&buf2) catch return,
                 "curl",
             ) orelse return;
-            var cmd_line = bun.BoundedArray(u8, 4096){};
-            cmd_line.appendSlice(url) catch return;
-            cmd_line.appendSlice("/ack") catch return;
-            cmd_line.append(0) catch return;
+            var cmd_line_buffer: [4096]u8 = undefined;
+            var cmd_line_writer: std.Io.Writer = .fixed(&cmd_line_buffer);
+            cmd_line_writer.writeAll(url) catch return;
+            cmd_line_writer.writeAll("/ack\x00") catch return;
+            const cmd_line = cmd_line_writer.buffered();
 
             var argv = [_:null]?[*:0]const u8{
                 curl,
                 "-fsSL",
-                cmd_line.buffer[0 .. cmd_line.len - 1 :0],
+                cmd_line[0 .. cmd_line.len - 1 :0],
             };
             const result = std.c.fork();
             switch (result) {

@@ -172,7 +172,7 @@ pub const Value = union(enum) {
             .bytes => |b| return if (b.slice.len > 0) Data{ .temporary = b.slice.slice() } else Data{ .empty = {} },
         }
 
-        return try Data.create(writer.buffered(), bun.default_allocator);
+        return try Data.create(writer.buffered());
     }
 
     pub fn fromJS(value: JSC.JSValue, globalObject: *JSC.JSGlobalObject, field_type: FieldType, unsigned: bool, roots: *JSC.MarkedArgumentBuffer) AnyMySQLError.Error!Value {

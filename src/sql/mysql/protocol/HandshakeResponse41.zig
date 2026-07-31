@@ -72,9 +72,9 @@ pub fn writeInternal(this: *HandshakeResponse41, comptime Context: type, writer:
         var total_length: usize = 0;
         var it = this.connect_attrs.iterator();
         while (it.next()) |entry| {
-            total_length += encodeLengthInt(entry.key_ptr.len).len;
+            total_length += encodedLengthIntSize(entry.key_ptr.len);
             total_length += entry.key_ptr.len;
-            total_length += encodeLengthInt(entry.value_ptr.len).len;
+            total_length += encodedLengthIntSize(entry.value_ptr.len);
             total_length += entry.value_ptr.len;
         }
 
@@ -103,7 +103,7 @@ const Capabilities = @import("../Capabilities.zig");
 const bun = @import("bun");
 const CharacterSet = @import("./CharacterSet.zig").CharacterSet;
 const Data = @import("../../shared/Data.zig").Data;
-const encodeLengthInt = @import("./EncodeInt.zig").encodeLengthInt;
+const encodedLengthIntSize = @import("./EncodeInt.zig").encodedLengthIntSize;
 
 const NewWriter = @import("./NewWriter.zig").NewWriter;
 const writeWrap = @import("./NewWriter.zig").writeWrap;

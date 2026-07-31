@@ -3208,12 +3208,13 @@ pub fn remapZigException(
         top.remapped = true;
 
         const last_line = @max(top.position.line.zeroBased(), 0);
+        var lines_buffer: [ZigException.Holder.source_lines_count][]const u8 = undefined;
         if (strings.getLinesInText(
             code.slice(),
             @intCast(last_line),
-            ZigException.Holder.source_lines_count,
-        )) |lines_buf| {
-            var lines = lines_buf.slice();
+            &lines_buffer,
+        )) |lines_| {
+            var lines = lines_;
             var source_lines = exception.stack.source_lines_ptr[0..ZigException.Holder.source_lines_count];
             var source_line_numbers = exception.stack.source_lines_numbers[0..ZigException.Holder.source_lines_count];
             @memset(source_lines, String.empty);

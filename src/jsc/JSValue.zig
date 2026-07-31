@@ -367,10 +367,10 @@ pub const JSValue = enum(i64) {
         }
     }
 
-    extern fn JSC__JSValue__dateInstanceFromNullTerminatedString(*JSGlobalObject, [*:0]const u8) JSValue;
-    pub fn fromDateString(globalObject: *JSGlobalObject, str: [*:0]const u8) JSValue {
+    extern fn JSC__JSValue__dateInstanceFromString(*JSGlobalObject, [*]const u8, usize) JSValue;
+    pub fn fromDateString(globalObject: *JSGlobalObject, str: []const u8) JSValue {
         jsc.markBinding(@src());
-        return JSC__JSValue__dateInstanceFromNullTerminatedString(globalObject, str);
+        return JSC__JSValue__dateInstanceFromString(globalObject, str.ptr, str.len);
     }
 
     extern fn JSC__JSValue__dateInstanceFromNumber(*JSGlobalObject, f64) JSValue;

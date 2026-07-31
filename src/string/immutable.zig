@@ -1379,147 +1379,8 @@ pub fn trimSuffixComptime(buffer: []const u8, comptime suffix: anytype) []const 
         buffer;
 }
 
-/// Get the line number and the byte offsets of `line_range_count` above the desired line number
-/// The final element is the end index of the desired line
-const LineRange = struct {
-    start: u32,
-    end: u32,
-};
-pub fn indexOfLineRanges(text: []const u8, target_line: u32, comptime line_range_count: usize) bun.BoundedArray(LineRange, line_range_count) {
-    const remaining = text;
-    if (remaining.len == 0) return .{};
-
-    var ranges = bun.BoundedArray(LineRange, line_range_count){};
-
-    var current_line: u32 = 0;
-    const first_newline_or_nonascii_i = strings.indexOfNewlineOrNonASCIICheckStart(text, 0, true) orelse {
-        if (target_line == 0) {
-            ranges.appendAssumeCapacity(.{
-                .start = 0,
-                .end = @truncate(text.len),
-            });
-        }
-
-        return ranges;
-    };
-
-    var iter = CodepointIterator.init(text);
-    var cursor = CodepointIterator.Cursor{
-        .i = first_newline_or_nonascii_i,
-    };
-    const first_newline_range: LineRange = brk: {
-        while (iter.next(&cursor)) {
-            const codepoint = cursor.c;
-            switch (codepoint) {
-                '\n' => {
-                    current_line += 1;
-                    break :brk .{
-                        .start = 0,
-                        .end = cursor.i,
-                    };
-                },
-                '\r' => {
-                    if (iter.next(&cursor)) {
-                        const codepoint2 = cursor.c;
-                        if (codepoint2 == '\n') {
-                            current_line += 1;
-                            break :brk .{
-                                .start = 0,
-                                .end = cursor.i,
-                            };
-                        }
-                    }
-                },
-                else => {},
-            }
-        }
-
-        ranges.appendAssumeCapacity(.{
-            .start = 0,
-            .end = @truncate(text.len),
-        });
-        return ranges;
-    };
-
-    ranges.appendAssumeCapacity(first_newline_range);
-
-    if (target_line == 0) {
-        return ranges;
-    }
-
-    var prev_end = first_newline_range.end;
-    while (strings.indexOfNewlineOrNonASCIICheckStart(text, cursor.i + @as(u32, cursor.width), true)) |current_i| {
-        cursor.i = current_i;
-        cursor.width = 0;
-        const current_line_range: LineRange = brk: {
-            bun.assert(iter.next(&cursor)); // cursor points to current_i where we know there is some character
-            const codepoint = cursor.c;
-            switch (codepoint) {
-                '\n' => {
-                    const start = prev_end;
-                    prev_end = cursor.i;
-                    break :brk .{
-                        .start = start,
-                        .end = cursor.i + 1,
-                    };
-                },
-                '\r' => {
-                    const current_end = cursor.i;
-                    if (iter.next(&cursor) and cursor.c == '\n') {
-                        defer prev_end = cursor.i;
-                        break :brk .{
-                            .start = prev_end,
-                            .end = current_end,
-                        };
-                    } else {
-                        break :brk .{
-                            .start = prev_end,
-                            .end = cursor.i + 1,
-                        };
-                    }
-                },
-                else => continue,
-            }
-        };
-
-        if (ranges.len == line_range_count and current_line <= target_line) {
-            var new_ranges = bun.BoundedArray(LineRange, line_range_count){};
-            new_ranges.appendSliceAssumeCapacity(ranges.slice()[1..]);
-            ranges = new_ranges;
-        }
-        ranges.appendAssumeCapacity(current_line_range);
-
-        if (current_line >= target_line) {
-            return ranges;
-        }
-
-        current_line += 1;
-    }
-
-    if (ranges.len == line_range_count and current_line <= target_line) {
-        var new_ranges = bun.BoundedArray(LineRange, line_range_count){};
-        new_ranges.appendSliceAssumeCapacity(ranges.slice()[1..]);
-        ranges = new_ranges;
-    }
-
-    return ranges;
-}
-
-/// Get N lines from the start of the text
-pub fn getLinesInText(text: []const u8, line: u32, comptime line_range_count: usize) ?bun.BoundedArray([]const u8, line_range_count) {
-    const ranges = indexOfLineRanges(text, line, line_range_count);
-    if (ranges.len == 0) return null;
-    var results = bun.BoundedArray([]const u8, line_range_count){};
-    results.len = ranges.len;
-
-    for (results.slice()[0..ranges.len], ranges.slice()) |*chunk, range| {
-        chunk.* = text[range.start..range.end];
-    }
-
-    std.mem.reverse([]const u8, results.slice());
-
-    return results;
-}
+pub const getLinesInText = lines_.getLinesInText;
+pub const getLineInText = lines_.getLineInText;
 
 pub fn firstNonASCII16(slice: []const u16) ?u32 {
     var remaining = slice;
@@ -2130,6 +1991,7 @@ pub const ANSIIterator = extern struct {
 
 const escapeHTML_ = @import("./immutable/escapeHTML.zig");
 const escapeRegExp_ = @import("./escapeRegExp.zig");
+const lines_ = @import("./immutable/lines.zig");
 const paths_ = @import("./immutable/paths.zig");
 const std = @import("std");
 const unicode = @import("./immutable/unicode.zig");

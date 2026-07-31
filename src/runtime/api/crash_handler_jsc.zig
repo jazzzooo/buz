@@ -63,12 +63,10 @@ pub const js_bindings = struct {
 
     pub fn jsGetFeaturesAsVLQ(global: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
         const bits = bun.analytics.packedFeatures();
-        var buf = bun.BoundedArray(u8, 16){};
-        crash_handler.writeU64AsTwoVLQs(buf.writer(), @bitCast(bits)) catch {
-            // there is definitely enough space in the bounded array
-            unreachable;
-        };
-        var str = bun.String.cloneLatin1(buf.slice());
+        var buffer: [16]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buffer);
+        crash_handler.writeU64AsTwoVLQs(&writer, @bitCast(bits)) catch unreachable;
+        var str = bun.String.cloneLatin1(writer.buffered());
         return str.transferToJS(global);
     }
 

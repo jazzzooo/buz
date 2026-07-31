@@ -5800,9 +5800,9 @@ extern "C" EncodedJSValue JSC__JSValue__dateInstanceFromNumber(JSC::JSGlobalObje
     return JSValue::encode(date);
 }
 
-extern "C" EncodedJSValue JSC__JSValue__dateInstanceFromNullTerminatedString(JSC::JSGlobalObject* globalObject, const Latin1Character* nullTerminatedChars)
+extern "C" EncodedJSValue JSC__JSValue__dateInstanceFromString(JSC::JSGlobalObject* globalObject, const Latin1Character* chars, size_t length)
 {
-    double dateSeconds = WTF::parseDate(std::span<const Latin1Character>(nullTerminatedChars, strlen(reinterpret_cast<const char*>(nullTerminatedChars))));
+    double dateSeconds = WTF::parseDate(std::span<const Latin1Character>(chars, length));
     JSC::DateInstance* date = JSC::DateInstance::create(globalObject->vm(), globalObject->dateStructure(), dateSeconds);
 
     return JSValue::encode(date);

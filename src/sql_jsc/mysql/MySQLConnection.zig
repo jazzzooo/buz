@@ -933,7 +933,7 @@ pub fn handlePreparedStatement(this: *MySQLConnection, comptime Context: type, r
             // stmt.error_response.toJS(), so we must own a copy of the message bytes.
             statement.error_response.deinit();
             statement.error_response = err;
-            statement.error_response.error_message = bun.handleOom(Data.create(err.error_message.slice(), bun.default_allocator));
+            statement.error_response.error_message = bun.handleOom(Data.create(err.error_message.slice()));
             this.queue.markAsReadyForQuery();
             this.queue.markCurrentRequestAsFinished(request);
 

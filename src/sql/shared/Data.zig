@@ -5,23 +5,34 @@ pub const Data = union(enum) {
     inline_storage: InlineStorage,
     empty: void,
 
-    pub const InlineStorage = bun.BoundedArray(u8, 15);
+    pub const InlineStorage = struct {
+        pub const capacity = 15;
+
+        bytes: [capacity]u8 = undefined,
+        len: u8 = 0,
+
+        pub fn init(bytes: []const u8) InlineStorage {
+            bun.assert(bytes.len <= capacity);
+            var storage: InlineStorage = .{ .len = @intCast(bytes.len) };
+            @memcpy(storage.bytes[0..bytes.len], bytes);
+            return storage;
+        }
+
+        pub fn slice(storage: *const InlineStorage) []const u8 {
+            return storage.bytes[0..storage.len];
+        }
+    };
 
     pub const Empty: Data = .{ .empty = {} };
 
-    pub fn create(possibly_inline_bytes: []const u8, allocator: std.mem.Allocator) !Data {
-        if (possibly_inline_bytes.len == 0) {
-            return .{ .empty = {} };
-        }
+    pub fn create(bytes: []const u8) !Data {
+        if (bytes.len == 0) return Empty;
 
-        if (possibly_inline_bytes.len <= 15) {
-            var inline_storage = InlineStorage{};
-            @memcpy(inline_storage.buffer[0..possibly_inline_bytes.len], possibly_inline_bytes);
-            inline_storage.len = @truncate(possibly_inline_bytes.len);
-            return .{ .inline_storage = inline_storage };
+        if (bytes.len <= InlineStorage.capacity) {
+            return .{ .inline_storage = .init(bytes) };
         }
         return .{
-            .owned = bun.ByteList.fromOwnedSlice(try allocator.dupe(u8, possibly_inline_bytes)),
+            .owned = bun.ByteList.fromOwnedSlice(try bun.default_allocator.dupe(u8, bytes)),
         };
     }
 
@@ -52,13 +63,12 @@ pub const Data = union(enum) {
     pub fn zdeinit(this: *@This()) void {
         switch (this.*) {
             .owned => |*owned| {
-                // Zero bytes before deinit
                 bun.freeSensitive(bun.default_allocator, owned.slice());
                 owned.deinit(bun.default_allocator);
             },
             .temporary => {},
             .empty => {},
-            .inline_storage => {},
+            .inline_storage => |*storage| @memset(&storage.bytes, 0),
         }
     }
 
@@ -79,16 +89,6 @@ pub const Data = union(enum) {
             .inline_storage => .{ .temporary = this.inline_storage.slice()[start_index..end_index] },
         };
     }
-
-    pub fn sliceZ(this: *const @This()) [:0]const u8 {
-        return switch (this.*) {
-            .owned => this.owned.slice()[0..this.owned.len :0],
-            .temporary => this.temporary[0..this.temporary.len :0],
-            .empty => "",
-            .inline_storage => this.inline_storage.slice()[0..this.inline_storage.len :0],
-        };
-    }
 };
 
 const bun = @import("bun");
-const std = @import("std");

@@ -232,8 +232,9 @@ pub fn HTMLProcessor(
             var builder = lol.HTMLRewriter.Builder.init();
             defer builder.deinit();
 
-            var selectors: bun.BoundedArray(*lol.HTMLSelector, tag_handlers.len + if (visit_document_tags) 3 else 0) = .{};
-            defer for (selectors.slice()) |selector| {
+            var selectors_buffer: [tag_handlers.len + if (visit_document_tags) 3 else 0]*lol.HTMLSelector = undefined;
+            var selectors = std.ArrayList(*lol.HTMLSelector).initBuffer(&selectors_buffer);
+            defer for (selectors.items) |selector| {
                 selector.deinit();
             };
 

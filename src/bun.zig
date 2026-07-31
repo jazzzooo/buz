@@ -487,7 +487,6 @@ pub const BabyList = collections.BabyList;
 pub const ByteList = collections.ByteList; // alias of BabyList(u8)
 pub const OffsetByteList = collections.OffsetByteList;
 pub const HiveArray = collections.HiveArray;
-pub const BoundedArray = collections.BoundedArray;
 
 pub fn DebugOnly(comptime Type: type) type {
     if (comptime Environment.isDebug) {
