@@ -1062,13 +1062,13 @@ pub const Formatter = struct {
                 self.formatter.remaining_values = &[_]JSValue{};
             }
             self.formatter.format(
-                Tag.get(self.value, self.formatter.globalThis) catch |e| return bun.deprecated.jsErrorToWriteError(e),
+                Tag.get(self.value, self.formatter.globalThis) catch |e| return self.formatter.globalThis.formatErrorToWriterError(e),
                 @TypeOf(writer),
                 writer,
                 self.value,
                 self.formatter.globalThis,
                 false,
-            ) catch |e| return bun.deprecated.jsErrorToWriteError(e);
+            ) catch |e| return self.formatter.globalThis.formatErrorToWriterError(e);
         }
     };
 
@@ -2299,7 +2299,9 @@ pub const Formatter = struct {
                 });
                 // Strings are printed directly, otherwise we recurse. It is possible to end up in an infinite loop.
                 if (result.isString()) {
-                    writer.print("{f}", .{result.fmtString(this.globalThis)});
+                    const result_string = try result.toBunString(this.globalThis);
+                    defer result_string.deref();
+                    writer.print("{f}", .{result_string});
                 } else {
                     try this.format(try ConsoleObject.Formatter.Tag.get(result, this.globalThis), Writer, writer_, result, this.globalThis, enable_ansi_colors);
                 }

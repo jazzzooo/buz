@@ -1,238 +1,109 @@
-fn SinglyLinkedList(comptime T: type, comptime Parent: type) type {
-    return struct {
-        const Self = @This();
-
-        /// Node inside the linked list wrapping the actual data.
-        pub const Node = struct {
-            next: ?*Node = null,
-            allocator: std.mem.Allocator,
-            data: T,
-
-            pub const Data = T;
-
-            /// Insert a new node after the current one.
-            ///
-            /// Arguments:
-            ///     new_node: Pointer to the new node to insert.
-            pub fn insertAfter(node: *Node, new_node: *Node) void {
-                new_node.next = node.next;
-                node.next = new_node;
-            }
-
-            /// Remove a node from the list.
-            ///
-            /// Arguments:
-            ///     node: Pointer to the node to be removed.
-            /// Returns:
-            ///     node removed
-            pub fn removeNext(node: *Node) ?*Node {
-                const next_node = node.next orelse return null;
-                node.next = next_node.next;
-                return next_node;
-            }
-
-            /// Iterate over each next node, returning the count of all nodes except the starting one.
-            /// This operation is O(N).
-            pub fn countChildren(node: *const Node) usize {
-                var count: usize = 0;
-                var it: ?*const Node = node.next;
-                while (it) |n| : (it = n.next) {
-                    count += 1;
-                }
-                return count;
-            }
-
-            pub inline fn release(node: *Node) void {
-                Parent.release(node);
-            }
-        };
-
-        first: ?*Node = null,
-
-        /// Insert a new node at the head.
-        ///
-        /// Arguments:
-        ///     new_node: Pointer to the new node to insert.
-        pub fn prepend(list: *Self, new_node: *Node) void {
-            new_node.next = list.first;
-            list.first = new_node;
-        }
-
-        /// Remove a node from the list.
-        ///
-        /// Arguments:
-        ///     node: Pointer to the node to be removed.
-        pub fn remove(list: *Self, node: *Node) void {
-            if (list.first == node) {
-                list.first = node.next;
-            } else {
-                var current_elm = list.first.?;
-                while (current_elm.next != node) {
-                    current_elm = current_elm.next.?;
-                }
-                current_elm.next = node.next;
-            }
-        }
-
-        /// Remove and return the first node in the list.
-        ///
-        /// Returns:
-        ///     A pointer to the first node in the list.
-        pub fn popFirst(list: *Self) ?*Node {
-            const first = list.first orelse return null;
-            list.first = first.next;
-            return first;
-        }
-
-        /// Iterate over all nodes, returning the count.
-        /// This operation is O(N).
-        pub fn len(list: Self) usize {
-            if (list.first) |n| {
-                return 1 + n.countChildren();
-            } else {
-                return 0;
-            }
-        }
-    };
-}
-
-const log_allocations = false;
-
 pub fn ObjectPool(
     comptime Type: type,
-    comptime Init: (?fn (allocator: std.mem.Allocator) anyerror!Type),
-    comptime threadsafe: bool,
+    comptime Init: ?fn (allocator: std.mem.Allocator) anyerror!Type,
+    comptime thread_local: bool,
     comptime max_count: comptime_int,
 ) type {
     return struct {
         const Pool = @This();
-        const LinkedList = SinglyLinkedList(Type, Pool);
-        pub const List = LinkedList;
-        pub const Node = LinkedList.Node;
-        const MaxCountInt = std.math.IntFittingRange(0, max_count);
-        const DataStruct = struct {
-            list: LinkedList = undefined,
-            loaded: bool = false,
-            count: MaxCountInt = 0,
+        const LinkedList = std.SinglyLinkedList;
+
+        pub const Node = struct {
+            link: LinkedList.Node = .{},
+            allocator: std.mem.Allocator,
+            data: Type,
+
+            pub inline fn release(node: *Node) void {
+                Pool.release(node);
+            }
         };
 
-        // We want this to be global
-        // but we don't want to create 3 global variables per pool
-        // instead, we create one global variable per pool
-        const DataStructNonThreadLocal = if (threadsafe) void else DataStruct;
-        const DataStructThreadLocal = if (!threadsafe) void else DataStruct;
-        threadlocal var data_threadlocal: DataStructThreadLocal = DataStructThreadLocal{};
-        var data__: DataStructNonThreadLocal = DataStructNonThreadLocal{};
-        inline fn data() *DataStruct {
-            if (comptime threadsafe) {
-                return &data_threadlocal;
+        const MaxCountInt = std.math.IntFittingRange(0, max_count);
+        const State = struct {
+            list: LinkedList = .{},
+            count: MaxCountInt = 0,
+        };
+        const Storage = if (thread_local)
+            struct {
+                threadlocal var value: State = .{};
             }
+        else
+            struct {
+                var value: State = .{};
+            };
 
-            if (comptime !threadsafe) {
-                return &data__;
-            }
+        inline fn state() *State {
+            return &Storage.value;
+        }
 
-            unreachable;
+        inline fn fromLink(link: *LinkedList.Node) *Node {
+            return @fieldParentPtr("link", link);
+        }
+
+        fn pop() ?*Node {
+            const pool_state = state();
+            const node = fromLink(pool_state.list.popFirst() orelse return null);
+            if (comptime std.meta.hasMethod(Type, "reset")) node.data.reset();
+            if (comptime max_count > 0) pool_state.count -= 1;
+            return node;
         }
 
         pub fn full() bool {
             if (comptime max_count == 0) return false;
-            return data().loaded and data().count >= max_count;
+            return state().count >= max_count;
         }
 
-        pub fn has() bool {
-            return data().loaded and data().list.first != null;
+        pub fn getIfExists() ?*Node {
+            return pop();
         }
 
-        pub fn push(allocator: std.mem.Allocator, pooled: Type) void {
-            if (comptime @import("../bun_core/env.zig").allow_assert)
-                bun.assert(!full());
+        pub fn get(allocator: std.mem.Allocator) *Node {
+            if (pop()) |node| return node;
 
-            const new_node = allocator.create(LinkedList.Node) catch unreachable;
-            new_node.* = LinkedList.Node{
+            const new_node = bun.handleOom(allocator.create(Node));
+            new_node.* = .{
                 .allocator = allocator,
-                .data = pooled,
-            };
-            release(new_node);
-        }
-
-        pub fn getIfExists() ?*LinkedList.Node {
-            if (!data().loaded) {
-                return null;
-            }
-
-            var node = data().list.popFirst() orelse return null;
-            if (std.meta.hasFn(Type, "reset")) node.data.reset();
-            if (comptime max_count > 0) data().count -|= 1;
-
-            return node;
-        }
-
-        pub fn first(allocator: std.mem.Allocator) *Type {
-            return &get(allocator).data;
-        }
-
-        pub fn get(allocator: std.mem.Allocator) *LinkedList.Node {
-            if (data().loaded) {
-                if (data().list.popFirst()) |node| {
-                    if (comptime std.meta.hasFn(Type, "reset")) node.data.reset();
-                    if (comptime max_count > 0) data().count -|= 1;
-                    return node;
-                }
-            }
-
-            if (comptime log_allocations) std.Io.File.stderr().writeAll(comptime std.fmt.comptimePrint("Allocate {s} - {d} bytes\n", .{ @typeName(Type), @sizeOf(Type) })) catch {};
-
-            const new_node = allocator.create(LinkedList.Node) catch unreachable;
-            new_node.* = LinkedList.Node{
-                .allocator = allocator,
-                .data = if (comptime Init) |init_|
-                    (init_(
-                        allocator,
-                    ) catch unreachable)
+                .data = if (comptime Init) |init|
+                    init(allocator) catch unreachable
                 else
                     undefined,
             };
-
             return new_node;
         }
 
-        pub fn release(node: *LinkedList.Node) void {
+        pub fn push(allocator: std.mem.Allocator, pooled: Type) void {
+            if (comptime bun.Environment.allow_assert) bun.assert(!full());
+
+            const node = bun.handleOom(allocator.create(Node));
+            node.* = .{
+                .allocator = allocator,
+                .data = pooled,
+            };
+            release(node);
+        }
+
+        pub fn release(node: *Node) void {
+            const pool_state = state();
             if (comptime max_count > 0) {
-                if (data().count >= max_count) {
-                    if (comptime log_allocations) std.Io.File.stderr().writeAll(comptime std.fmt.comptimePrint("Free {s} - {d} bytes\n", .{ @typeName(Type), @sizeOf(Type) })) catch {};
+                if (pool_state.count >= max_count) {
                     destroyNode(node);
                     return;
                 }
+                pool_state.count += 1;
             }
 
-            if (comptime max_count > 0) data().count +|= 1;
-
-            if (data().loaded) {
-                data().list.prepend(node);
-                return;
-            }
-
-            data().list = LinkedList{ .first = node };
-            data().loaded = true;
+            pool_state.list.prepend(&node.link);
         }
 
         pub fn deleteAll() void {
-            var dat = data();
-            if (!dat.loaded) {
-                return;
-            }
-            dat.loaded = false;
-            dat.count = 0;
-            var next = dat.list.first;
-            dat.list.first = null;
-            while (next) |node| {
-                next = node.next;
-                destroyNode(node);
+            const pool_state = state();
+            pool_state.count = 0;
+            while (pool_state.list.popFirst()) |link| {
+                destroyNode(fromLink(link));
             }
         }
 
-        fn destroyNode(node: *LinkedList.Node) void {
+        fn destroyNode(node: *Node) void {
             // TODO: Once a generic-allocator version of `BabyList` is added, change
             // `ByteListPool` in `bun.js/webcore.zig` to use a managed default-allocator
             // `ByteList` instead, and then get rid of the special-casing for `ByteList`

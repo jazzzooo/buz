@@ -218,7 +218,7 @@ next_bundle: struct {
 
     promise: DeferredPromise,
 },
-deferred_request_pool: bun.HiveArray(DeferredRequest.Node, DeferredRequest.max_preallocated).Fallback,
+deferred_request_pool: bun.HiveArray(DeferredRequest, DeferredRequest.max_preallocated).Fallback,
 /// UWS can handle closing the websocket connections themselves
 active_websocket_connections: std.AutoHashMapUnmanaged(*HmrSocket, void),
 
@@ -700,13 +700,12 @@ pub fn deinit(dev: *DevServer) void {
             }
         },
         .next_bundle = {
-            var r = dev.next_bundle.requests.first;
-            while (r) |request| {
+            var requests = dev.next_bundle.requests.iterator();
+            while (requests.next()) |request| {
                 // TODO: deinitializing in this state is almost certainly an assertion failure.
-                // This code is shipped in release because it is only reachable by experimenntal server components.
-                bun.debugAssert(request.data.handler != .server_handler);
-                defer request.data.deref();
-                r = request.next;
+                // This code is shipped in release because it is only reachable by experimental server components.
+                bun.debugAssert(request.handler != .server_handler);
+                request.deref();
             }
             dev.next_bundle.route_queue.deinit(alloc);
             dev.next_bundle.promise.deinitIdempotently();
@@ -1228,19 +1227,19 @@ fn deferRequest(
     resp: AnyResponse,
 ) !void {
     const deferred = dev.deferred_request_pool.get();
-    debug.log("DeferredRequest(0x{x}).init", .{@intFromPtr(&deferred.data)});
+    debug.log("DeferredRequest(0x{x}).init", .{@intFromPtr(deferred)});
 
     const method = switch (req) {
         .req => |r| bun.http.Method.which(r.method()) orelse .GET,
         .saved => |saved| saved.request.method,
     };
 
-    deferred.data = .{
+    deferred.* = .{
         .route_bundle_index = route_bundle_index,
         .dev = dev,
         .handler = switch (kind) {
             .bundled_html_page => brk: {
-                resp.onAborted(*DeferredRequest, DeferredRequest.onAbort, &deferred.data);
+                resp.onAborted(*DeferredRequest, DeferredRequest.onAbort, deferred);
                 break :brk .{ .bundled_html_page = .{ .response = resp, .method = method } };
             },
             .server_handler => brk: {
@@ -1254,7 +1253,7 @@ fn deferRequest(
                 server_handler.ctx.ref();
                 server_handler.ctx.setAdditionalOnAbortCallback(.{
                     .cb = DeferredRequest.onAbortWrapper,
-                    .data = &deferred.data,
+                    .data = deferred,
                     .deref_fn = struct {
                         fn deref_fn(ptr: *anyopaque) void {
                             var self: *DeferredRequest = @ptrCast(@alignCast(ptr));
@@ -1269,8 +1268,8 @@ fn deferRequest(
         },
     };
 
-    if (deferred.data.handler == .server_handler) {
-        deferred.data.weakRef();
+    if (deferred.handler == .server_handler) {
+        deferred.weakRef();
     }
 
     requests_array.prepend(deferred);
@@ -1735,12 +1734,55 @@ pub const DeferredRequest = struct {
     /// acquire much load, so allocating a ton at the start for no reason
     /// is very silly. This contributes to ~6kb of the initial DevServer allocation.
     const max_preallocated = 16;
+    const LinkedList = std.SinglyLinkedList;
 
-    pub const List = bun.deprecated.SinglyLinkedList(DeferredRequest);
-    pub const Node = List.Node;
+    pub const List = struct {
+        inner: LinkedList = .{},
 
-    const debugLog = bun.Output.Scoped("DlogeferredRequest", .hidden).log;
+        inline fn fromNode(node: *LinkedList.Node) *DeferredRequest {
+            return @fieldParentPtr("list_node", node);
+        }
 
+        pub fn prepend(list: *List, request: *DeferredRequest) void {
+            list.inner.prepend(&request.list_node);
+        }
+
+        pub fn popFirst(list: *List) ?*DeferredRequest {
+            return fromNode(list.inner.popFirst() orelse return null);
+        }
+
+        pub fn first(list: *const List) ?*DeferredRequest {
+            return fromNode(list.inner.first orelse return null);
+        }
+
+        pub fn isEmpty(list: *const List) bool {
+            return list.inner.first == null;
+        }
+
+        pub fn take(list: *List) List {
+            const owned = list.*;
+            list.* = .{};
+            return owned;
+        }
+
+        pub fn iterator(list: *const List) Iterator {
+            return .{ .node = list.inner.first };
+        }
+
+        pub const Iterator = struct {
+            node: ?*LinkedList.Node,
+
+            pub fn next(iterator_: *Iterator) ?*DeferredRequest {
+                const node = iterator_.node orelse return null;
+                iterator_.node = node.next;
+                return fromNode(node);
+            }
+        };
+    };
+
+    const debugLog = bun.Output.Scoped("DeferredRequest", .hidden).log;
+
+    list_node: LinkedList.Node = .{},
     route_bundle_index: RouteBundle.Index,
     handler: Handler,
     dev: *DevServer,
@@ -1763,9 +1805,9 @@ pub const DeferredRequest = struct {
     pub fn deref(this: *DeferredRequest) void {
         this.referenced_by_devserver = false;
         const should_free = !this.weakly_referenced_by_requestcontext;
-        this.__deinit();
+        this.deinitHandler();
         if (should_free) {
-            this.__free();
+            this.releaseStorage();
         }
     }
 
@@ -1777,7 +1819,7 @@ pub const DeferredRequest = struct {
     pub fn weakDeref(this: *DeferredRequest) void {
         this.weakly_referenced_by_requestcontext = false;
         if (!this.referenced_by_devserver) {
-            this.__free();
+            this.releaseStorage();
         }
     }
 
@@ -1823,18 +1865,12 @@ pub const DeferredRequest = struct {
         assert(this.handler == .aborted);
     }
 
-    /// Actually free the underlying allocation for the node, does not deinitialize children
-    fn __free(this: *DeferredRequest) void {
-        this.dev.deferred_request_pool.put(@fieldParentPtr("data", this));
+    fn releaseStorage(this: *DeferredRequest) void {
+        this.dev.deferred_request_pool.put(this);
     }
 
-    /// *WARNING*: Do not call this directly, instead call `.deref()`
-    ///
-    /// Calling this is only required if the desired handler is going to be avoided,
-    /// such as for bundling failures or aborting the server.
-    /// Does not free the underlying `DeferredRequest.Node`
-    fn __deinit(this: *DeferredRequest) void {
-        debugLog("DeferredRequest(0x{x}) deinitImpl", .{@intFromPtr(this)});
+    fn deinitHandler(this: *DeferredRequest) void {
+        debugLog("DeferredRequest(0x{x}) deinitHandler", .{@intFromPtr(this)});
 
         switch (this.handler) {
             .server_handler => |*saved| saved.deinit(),
@@ -1934,13 +1970,12 @@ pub fn startAsyncBundle(
         .timer = timer,
         .start_data = start_data,
         .had_reload_event = had_reload_event,
-        .requests = dev.next_bundle.requests,
+        .requests = dev.next_bundle.requests.take(),
         .promise = dev.next_bundle.promise,
         .resolution_failure_entries = .{},
     };
 
     dev.next_bundle.promise = .{};
-    dev.next_bundle.requests = .{};
     dev.next_bundle.route_queue.clearRetainingCapacity();
 }
 
@@ -2289,14 +2324,13 @@ pub fn finalizeBundle(
     }
     const current_bundle = &dev.current_bundle.?;
     defer {
-        if (current_bundle.requests.first != null) {
+        if (!current_bundle.requests.isEmpty()) {
             // cannot be an assertion because in the case of error.OutOfMemory, the request list was not drained.
             Output.debug("current_bundle.requests.first != null. this leaves pending requests without an error page!", .{});
         }
-        while (current_bundle.requests.popFirst()) |node| {
-            const req = &node.data;
-            defer req.deref();
+        while (current_bundle.requests.popFirst()) |req| {
             req.abort();
+            req.deref();
         }
     }
 
@@ -2881,8 +2915,7 @@ pub fn finalizeBundle(
             );
         }
 
-        while (current_bundle.requests.popFirst()) |node| {
-            const req = &node.data;
+        while (current_bundle.requests.popFirst()) |req| {
             defer req.deref();
 
             const rb = dev.routeBundlePtr(req.route_bundle_index);
@@ -2959,7 +2992,7 @@ pub fn finalizeBundle(
                     null // TODO: How does this happen
             else brk: {
                 const route_bundle_index = route_bundle_index: {
-                    if (current_bundle.requests.first != null) break :route_bundle_index current_bundle.requests.first.?.data.route_bundle_index;
+                    if (current_bundle.requests.first()) |request| break :route_bundle_index request.route_bundle_index;
                     const route_bundle_indices = current_bundle.promise.route_bundle_indices.keys();
                     if (route_bundle_indices.len == 0) break :brk null;
                     break :route_bundle_index route_bundle_indices[0];
@@ -3002,11 +3035,10 @@ pub fn finalizeBundle(
 
     // Set all the deferred routes to the .loaded state up front
     {
-        var node: ?*DeferredRequest.Node = current_bundle.requests.first;
-        while (node) |n| {
-            const rb = dev.routeBundlePtr(n.data.route_bundle_index);
+        var requests = current_bundle.requests.iterator();
+        while (requests.next()) |request| {
+            const rb = dev.routeBundlePtr(request.route_bundle_index);
             rb.server_state = .loaded;
-            node = n.next;
         }
     }
 
@@ -3018,8 +3050,7 @@ pub fn finalizeBundle(
         try current_bundle.promise.strong.resolve(dev.vm.global, .true);
     }
 
-    while (current_bundle.requests.popFirst()) |node| {
-        const req = &node.data;
+    while (current_bundle.requests.popFirst()) |req| {
         defer req.deref();
 
         const rb = dev.routeBundlePtr(req.route_bundle_index);
@@ -3040,7 +3071,7 @@ fn startNextBundleIfPresent(dev: *DevServer) void {
     dev.emitVisualizerMessageIfNeeded();
 
     // If there were pending requests, begin another bundle.
-    if (dev.next_bundle.reload_event != null or dev.next_bundle.requests.first != null or dev.next_bundle.promise.strong.hasValue()) {
+    if (dev.next_bundle.reload_event != null or !dev.next_bundle.requests.isEmpty() or dev.next_bundle.promise.strong.hasValue()) {
         var sfb_buffer: [4096]u8 = undefined;
         var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, dev.allocator());
         const temp_alloc = sfb.allocator();
@@ -4377,8 +4408,8 @@ pub fn onPluginsResolved(dev: *DevServer, plugins: ?*Plugin) !void {
 pub fn onPluginsRejected(dev: *DevServer) !void {
     dev.plugin_state = .err;
     while (dev.next_bundle.requests.popFirst()) |item| {
-        defer item.data.deref();
-        item.data.abort();
+        item.abort();
+        item.deref();
     }
     dev.next_bundle.route_queue.clearRetainingCapacity();
     // TODO: allow recovery from this state

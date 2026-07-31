@@ -330,10 +330,16 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
         }
 
         pub fn format(this: @This(), writer: *std.Io.Writer) !void {
-            return switch (this) {
+            switch (this) {
                 .result => try writer.print("Result(...)", .{}),
-                .err => |e| try writer.print("Error(" ++ bun.deprecated.autoFormatLabelFallback(ErrorType, "{any}") ++ ")", .{e}),
-            };
+                .err => |e| {
+                    if (comptime std.meta.hasMethod(ErrorType, "format")) {
+                        try writer.print("Error({f})", .{e});
+                    } else {
+                        try writer.print("Error({any})", .{e});
+                    }
+                },
+            }
         }
     };
 }

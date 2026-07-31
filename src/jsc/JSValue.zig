@@ -1679,24 +1679,6 @@ pub const JSValue = enum(i64) {
         return JSC__JSValue__getUnixTimestamp(this);
     }
 
-    pub const StringFormatter = struct {
-        value: jsc.JSValue,
-        globalObject: *jsc.JSGlobalObject,
-
-        pub fn format(this: StringFormatter, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-            const str = this.value.toBunString(this.globalObject) catch |e| return bun.deprecated.jsErrorToWriteError(e);
-            defer str.deref();
-            try str.format(writer);
-        }
-    };
-
-    pub fn fmtString(this: JSValue, globalObject: *jsc.JSGlobalObject) StringFormatter {
-        return .{
-            .value = this,
-            .globalObject = globalObject,
-        };
-    }
-
     pub fn toFmt(
         this: JSValue,
         formatter: *jsc.ConsoleObject.Formatter,

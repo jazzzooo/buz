@@ -44,7 +44,7 @@ pub const xxHash3 = hashWrap(struct {
 pub const murmur32v2 = hashWrap(std.hash.murmur.Murmur2_32);
 pub const murmur32v3 = hashWrap(std.hash.murmur.Murmur3_32);
 pub const murmur64v2 = hashWrap(std.hash.murmur.Murmur2_64);
-pub const rapidhash = hashWrap(bun.deprecated.RapidHash);
+pub const rapidhash = hashWrap(@import("../../hash/rapidhash.zig"));
 
 pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
     const function = jsc.JSFunction.create(globalThis, "hash", wyhash, 1, .{});

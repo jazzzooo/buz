@@ -581,7 +581,9 @@ fn initRedirections(
                     }
                 } else {
                     const jsval = cmd.base.interpreter.jsobjs[val.idx];
-                    cmd.base.interpreter.event_loop.js.global.throw("Unknown JS value used in shell: {f}", .{jsval.fmtString(globalObject)}) catch {};
+                    const string_value = jsval.toBunString(globalObject) catch return .failed;
+                    defer string_value.deref();
+                    cmd.base.interpreter.event_loop.js.global.throw("Unknown JS value used in shell: {f}", .{string_value}) catch {};
                     return .failed;
                 }
             },

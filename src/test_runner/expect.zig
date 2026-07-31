@@ -109,8 +109,8 @@ pub const Expect = struct {
                 switch (!custom_label.isEmpty()) {
                     inline else => |use_default_label| {
                         if (use_default_label) {
-                            const fmt = comptime Output.prettyFmt("<d>expect(<r><red>received<r><d>).<r>" ++ bun.deprecated.autoFormatLabel(@TypeOf(chain)) ++ bun.deprecated.autoFormatLabel(@TypeOf(matcher_name)) ++ "<d>(<r>" ++ bun.deprecated.autoFormatLabel(@TypeOf(matcher_params)) ++ "<d>)<r>\n\n" ++ message_fmt, colors);
-                            return globalThis.throwPretty(fmt, .{ chain, matcher_name, matcher_params } ++ message_args);
+                            const fmt = comptime Output.prettyFmt("<d>expect(<r><red>received<r><d>).<r>{f}{f}<d>(<r>{f}<d>)<r>\n\n" ++ message_fmt, colors);
+                            return globalThis.throwPretty(fmt, .{ matcherLabelPart(chain), matcherLabelPart(matcher_name), matcherLabelPart(matcher_params) } ++ message_args);
                         } else {
                             const fmt = comptime Output.prettyFmt("{f}\n\n" ++ message_fmt, colors);
                             return globalThis.throwPretty(fmt, .{custom_label} ++ message_args);
@@ -2010,7 +2010,7 @@ pub const mock = struct {
         pub fn format(self: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
             var printed_once = false;
 
-            const calls_count = @as(u32, @intCast(self.calls.getLength(self.globalThis) catch |e| return bun.deprecated.jsErrorToWriteError(e)));
+            const calls_count = @as(u32, @intCast(self.calls.getLength(self.globalThis) catch |e| return self.globalThis.formatErrorToWriterError(e)));
             if (calls_count == 0) {
                 try writer.writeAll("(no calls)");
                 return;
@@ -2021,7 +2021,7 @@ pub const mock = struct {
                 printed_once = true;
 
                 try writer.print("           {d: >4}: ", .{i + 1});
-                const call_args = self.calls.getIndex(self.globalThis, @intCast(i)) catch |e| return bun.deprecated.jsErrorToWriteError(e);
+                const call_args = self.calls.getIndex(self.globalThis, @intCast(i)) catch |e| return self.globalThis.formatErrorToWriterError(e);
                 try writer.print("{f}", .{call_args.toFmt(self.formatter)});
             }
         }
@@ -2047,16 +2047,16 @@ pub const mock = struct {
             var num_returns: i32 = 0;
             var num_calls: i32 = 0;
 
-            var iter = self.returns.arrayIterator(self.globalThis) catch |e| return bun.deprecated.jsErrorToWriteError(e);
-            while (iter.next() catch |e| return bun.deprecated.jsErrorToWriteError(e)) |item| {
+            var iter = self.returns.arrayIterator(self.globalThis) catch |e| return self.globalThis.formatErrorToWriterError(e);
+            while (iter.next() catch |e| return self.globalThis.formatErrorToWriterError(e)) |item| {
                 if (printed_once) try writer.writeAll("\n");
                 printed_once = true;
 
                 num_calls += 1;
                 try writer.print("           {d: >2}: ", .{num_calls});
 
-                const value = jestMockReturnObject_value(self.globalThis, item) catch |e| return bun.deprecated.jsErrorToWriteError(e);
-                switch (jestMockReturnObject_type(self.globalThis, item) catch |e| return bun.deprecated.jsErrorToWriteError(e)) {
+                const value = jestMockReturnObject_value(self.globalThis, item) catch |e| return self.globalThis.formatErrorToWriterError(e);
+                switch (jestMockReturnObject_type(self.globalThis, item) catch |e| return self.globalThis.formatErrorToWriterError(e)) {
                     .@"return" => {
                         try writer.print("{f}", .{value.toFmt(self.formatter)});
                         num_returns += 1;
@@ -2093,6 +2093,22 @@ pub const mock = struct {
         }
     };
 };
+
+fn MatcherLabelPart(comptime T: type) type {
+    return std.fmt.Alt(T, struct {
+        fn format(value: T, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+            if (comptime std.meta.hasMethod(T, "format")) {
+                try value.format(writer);
+            } else {
+                try writer.print("{s}", .{value});
+            }
+        }
+    }.format);
+}
+
+fn matcherLabelPart(value: anytype) MatcherLabelPart(@TypeOf(value)) {
+    return .{ .data = value };
+}
 
 // Extract the matcher_fn from a JSCustomExpectMatcherFunction instance
 inline fn getCustomMatcherFn(thisValue: JSValue, globalThis: *JSGlobalObject) ?JSValue {

@@ -2,43 +2,13 @@ pub const Expr = js_ast.Expr;
 
 const LEXER_DEBUGGER_WORKAROUND = false;
 
-const HashMapPool = struct {
-    const HashMap = std.HashMap(u64, void, IdentityContext, 80);
-    const LinkedList = bun.deprecated.SinglyLinkedList(HashMap);
-    threadlocal var list: LinkedList = undefined;
-    threadlocal var loaded: bool = false;
-
-    const IdentityContext = struct {
-        pub fn eql(_: @This(), a: u64, b: u64) bool {
-            return a == b;
-        }
-
-        pub fn hash(_: @This(), a: u64) u64 {
-            return a;
-        }
-    };
-
-    pub fn get(_: std.mem.Allocator) *LinkedList.Node {
-        if (loaded) {
-            if (list.popFirst()) |node| {
-                node.data.clearRetainingCapacity();
-                return node;
-            }
-        }
-
-        const new_node = default_allocator.create(LinkedList.Node) catch unreachable;
-        new_node.* = LinkedList.Node{ .data = HashMap.initContext(default_allocator, IdentityContext{}) };
-        return new_node;
+const DuplicateKeyContext = struct {
+    pub fn eql(_: @This(), a: E.String, b: E.String) bool {
+        return a.eql(E.String, b);
     }
 
-    pub fn release(node: *LinkedList.Node) void {
-        if (loaded) {
-            list.prepend(node);
-            return;
-        }
-
-        list = LinkedList{ .first = node };
-        loaded = true;
+    pub fn hash(_: @This(), key: E.String) u64 {
+        return key.hash();
     }
 };
 
@@ -104,6 +74,14 @@ fn JSONLikeParser_(
         allocator: std.mem.Allocator,
         list_allocator: std.mem.Allocator,
         stack_check: bun.StackCheck,
+        duplicate_key_sets: std.ArrayList(DuplicateKeySet) = .empty,
+
+        const DuplicateKeySet = std.HashMapUnmanaged(
+            E.String,
+            void,
+            DuplicateKeyContext,
+            std.hash_map.default_max_load_percentage,
+        );
 
         pub fn init(allocator: std.mem.Allocator, source_: *const logger.Source, log: *logger.Log) !Parser {
             return initWithListAllocator(allocator, allocator, source_, log);
@@ -119,6 +97,25 @@ fn JSONLikeParser_(
                 .log = log,
                 .list_allocator = list_allocator,
                 .stack_check = bun.StackCheck.init(),
+            };
+        }
+
+        pub fn deinit(p: *Parser) void {
+            for (p.duplicate_key_sets.items) |*set| {
+                set.deinit(p.allocator);
+            }
+            p.duplicate_key_sets.deinit(p.allocator);
+        }
+
+        fn acquireDuplicateKeySet(p: *Parser) DuplicateKeySet {
+            return p.duplicate_key_sets.pop() orelse .empty;
+        }
+
+        fn releaseDuplicateKeySet(p: *Parser, released: DuplicateKeySet) void {
+            var set = released;
+            set.clearRetainingCapacity();
+            p.duplicate_key_sets.append(p.allocator, set) catch {
+                set.deinit(p.allocator);
             };
         }
 
@@ -212,19 +209,10 @@ fn JSONLikeParser_(
                     var properties = std.array_list.Managed(G.Property).init(p.list_allocator);
                     errdefer properties.deinit();
 
-                    const DuplicateNodeType = comptime if (opts.json_warn_duplicate_keys) *HashMapPool.LinkedList.Node else void;
-                    const HashMapType = comptime if (opts.json_warn_duplicate_keys) HashMapPool.HashMap else void;
-
-                    var duplicates_node: DuplicateNodeType = if (comptime opts.json_warn_duplicate_keys) HashMapPool.get(p.allocator);
-
-                    var duplicates: HashMapType = if (comptime opts.json_warn_duplicate_keys) duplicates_node.data;
-
-                    defer {
-                        if (comptime opts.json_warn_duplicate_keys) {
-                            duplicates_node.data = duplicates;
-                            HashMapPool.release(duplicates_node);
-                        }
-                    }
+                    var duplicates = if (comptime opts.json_warn_duplicate_keys)
+                        p.acquireDuplicateKeySet()
+                    else {};
+                    defer if (comptime opts.json_warn_duplicate_keys) p.releaseDuplicateKeySet(duplicates);
 
                     while (p.lexer.token != .t_close_brace) {
                         if (properties.items.len > 0) {
@@ -249,9 +237,7 @@ fn JSONLikeParser_(
                         try p.lexer.expect(.t_string_literal);
 
                         if (comptime opts.json_warn_duplicate_keys) {
-                            const hash_key = str.hash();
-                            const duplicate_get_or_put = duplicates.getOrPut(hash_key) catch unreachable;
-                            duplicate_get_or_put.key_ptr.* = hash_key;
+                            const duplicate_get_or_put = try duplicates.getOrPut(p.allocator, str);
 
                             // Warn about duplicate keys
                             if (duplicate_get_or_put.found_existing) {
@@ -673,6 +659,7 @@ pub fn parse(
     if (parseFastPath(source.contents)) |result| return result.expr;
 
     var parser = try JSONParser.init(allocator, source, log);
+    defer parser.deinit();
     return try parser.parseExpr(false, force_utf8);
 }
 
@@ -693,6 +680,7 @@ pub fn parsePackageJSONUTF8(
         .allow_comments = true,
         .allow_trailing_commas = true,
     }).init(allocator, source, log);
+    defer parser.deinit();
     bun.assert(parser.source().contents.len > 0);
 
     return try parser.parseExpr(false, true);
@@ -712,6 +700,7 @@ pub fn parsePackageJSONUTF8WithOpts(
     if (parseFastPath(source.contents)) |result| return .{ .root = result.expr };
 
     var parser = try JSONLikeParser(opts).init(allocator, source, log);
+    defer parser.deinit();
     bun.assert(parser.source().contents.len > 0);
 
     const root = try parser.parseExpr(false, true);
@@ -744,6 +733,7 @@ pub fn parseUTF8Impl(
     if (parseFastPath(source.contents)) |result| return result.expr;
 
     var parser = try JSONParser.init(allocator, source, log);
+    defer parser.deinit();
     bun.assert(parser.source().contents.len > 0);
 
     const result = try parser.parseExpr(false, true);
@@ -758,16 +748,16 @@ pub fn parseForMacro(source: *const logger.Source, log: *logger.Log, allocator: 
     if (parseFastPath(source.contents)) |result| return result.expr;
 
     var parser = try JSONParserForMacro.init(allocator, source, log);
+    defer parser.deinit();
 
     return try parser.parseExpr(false, false);
 }
 
-// threadlocal var env_json_auto_quote_buffer: MutableString = undefined;
-// threadlocal var env_json_auto_quote_buffer_loaded: bool = false;
 pub fn parseEnvJSON(source: *const logger.Source, log: *logger.Log, allocator: std.mem.Allocator) !Expr {
     if (parseFastPath(source.contents)) |result| return result.expr;
 
     var parser = try DotEnvJSONParser.init(allocator, source, log);
+    defer parser.deinit();
 
     switch (source.contents[0]) {
         '{', '[', '0'...'9', '"', '\'' => {
@@ -803,6 +793,7 @@ pub fn parseTSConfig(source: *const logger.Source, log: *logger.Log, allocator: 
     if (parseFastPath(source.contents)) |result| return result.expr;
 
     var parser = try TSConfigParser.init(allocator, source, log);
+    defer parser.deinit();
 
     return parser.parseExpr(false, force_utf8);
 }
@@ -810,14 +801,9 @@ pub fn parseTSConfig(source: *const logger.Source, log: *logger.Log, allocator: 
 const string = []const u8;
 
 const std = @import("std");
-const expect = std.testing.expect;
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const MutableString = bun.MutableString;
-const Output = bun.Output;
-const assert = bun.assert;
-const default_allocator = bun.default_allocator;
 const js_printer = bun.js_printer;
 const logger = bun.logger;
 const strings = bun.strings;

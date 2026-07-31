@@ -1095,15 +1095,28 @@ pub const String = struct {
     }
 
     pub fn hash(s: *const String) u64 {
-        if (s.isBlank()) return 0;
-
         if (s.isUTF8()) {
-            // hash utf-8
-            return bun.hash(s.data);
-        } else {
-            // hash utf-16
-            return bun.hash(@as([*]const u8, @ptrCast(s.slice16().ptr))[0 .. s.slice16().len * 2]);
+            return std.hash.Wyhash.hash(0, s.data);
         }
+
+        var hasher = std.hash.Wyhash.init(0);
+        const utf16 = s.slice16();
+        var i: usize = 0;
+        while (i < utf16.len) : (i += 1) {
+            var code_point: u21 = utf16[i];
+            if (std.unicode.utf16IsHighSurrogate(utf16[i]) and
+                i + 1 < utf16.len and
+                std.unicode.utf16IsLowSurrogate(utf16[i + 1]))
+            {
+                code_point = std.unicode.utf16DecodeSurrogatePair(utf16[i..]) catch unreachable;
+                i += 1;
+            }
+
+            var encoded: [4]u8 = undefined;
+            const width = std.unicode.wtf8Encode(code_point, &encoded) catch unreachable;
+            hasher.update(encoded[0..width]);
+        }
+        return hasher.final();
     }
 
     pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").stringToJS;

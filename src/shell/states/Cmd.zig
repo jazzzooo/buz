@@ -597,7 +597,9 @@ fn initRedirections(this: *Cmd, spawn_args: *Subprocess.SpawnArgs) bun.JSError!?
                     }
                 } else {
                     const jsval = this.base.interpreter.jsobjs[val.idx];
-                    return global.throw("Unknown JS value used in shell: {f}", .{jsval.fmtString(global)});
+                    const string_value = try jsval.toBunString(global);
+                    defer string_value.deref();
+                    return global.throw("Unknown JS value used in shell: {f}", .{string_value});
                 }
             },
             .atom => {

@@ -3830,7 +3830,9 @@ pub fn handleTemplateValue(
             return;
         }
 
-        return globalThis.throw("Invalid JS object used in shell: {f}, you might need to call `.toString()` on it", .{template_value.fmtString(globalThis)});
+        const string_value = try template_value.toBunString(globalThis);
+        defer string_value.deref();
+        return globalThis.throw("Invalid JS object used in shell: {f}, you might need to call `.toString()` on it", .{string_value});
     }
 
     return;

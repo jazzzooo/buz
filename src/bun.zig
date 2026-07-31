@@ -2749,7 +2749,6 @@ pub inline fn assert_eql(a: anytype, b: anytype) void {
         @compileError(std.fmt.comptimePrint("Assertion failure: {f} != {f}", .{ a, b }));
     }
     if (!Environment.allow_assert) return;
-    // Output.panic("Assertion failure: " ++ bun.deprecated.autoFormatLabelFallback(@TypeOf(a), "{f}") ++ " != " ++ bun.deprecated.autoFormatLabelFallback(@TypeOf(b), "{f}"), .{ a, b });
     // TODO
     Output.panic("Assertion failure.", .{});
 }
@@ -3402,7 +3401,6 @@ pub fn contains(item: anytype, list: *const std.ArrayListUnmanaged(@TypeOf(item)
 }
 
 pub const safety = @import("./safety/safety.zig");
-pub const deprecated = @import("./bun_core/deprecated.zig");
 
 // Export function to check if --use-system-ca flag is set
 pub fn getUseSystemCA(globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) error{ JSError, OutOfMemory }!jsc.JSValue {

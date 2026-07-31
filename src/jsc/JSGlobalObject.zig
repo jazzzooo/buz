@@ -284,7 +284,7 @@ pub const JSGlobalObject = opaque {
             writer.print(fmt, args) catch {
                 // if an exception occurs in the middle of formatting the error message, it's better to just return the formatting string than an error about an error.
                 // Clear any pending JS exception (e.g. from Symbol.toPrimitive) so that throwValue doesn't hit assertNoException.
-                _ = this.clearExceptionExceptTermination();
+                if (!this.clearExceptionExceptTermination()) return error.JSTerminated;
                 return ZigString.static(fmt).toErrorInstance(this);
             };
 
@@ -309,7 +309,7 @@ pub const JSGlobalObject = opaque {
             defer buf.deinit();
             var writer = buf.writer();
             writer.print(fmt, args) catch {
-                _ = this.clearExceptionExceptTermination();
+                if (!this.clearExceptionExceptTermination()) return error.JSTerminated;
                 return ZigString.static(fmt).toTypeErrorInstance(this);
             };
             var str = ZigString.fromUTF8(buf.slice());
@@ -342,7 +342,7 @@ pub const JSGlobalObject = opaque {
             defer buf.deinit();
             var writer = buf.writer();
             writer.print(fmt, args) catch {
-                _ = this.clearExceptionExceptTermination();
+                if (!this.clearExceptionExceptTermination()) return error.JSTerminated;
                 return ZigString.static(fmt).toSyntaxErrorInstance(this);
             };
             var str = ZigString.fromUTF8(buf.slice());
@@ -360,7 +360,7 @@ pub const JSGlobalObject = opaque {
             defer buf.deinit();
             var writer = buf.writer();
             writer.print(fmt, args) catch {
-                _ = this.clearExceptionExceptTermination();
+                if (!this.clearExceptionExceptTermination()) return error.JSTerminated;
                 return ZigString.static(fmt).toRangeErrorInstance(this);
             };
             var str = ZigString.fromUTF8(buf.slice());
@@ -527,6 +527,18 @@ pub const JSGlobalObject = opaque {
     /// It is safe to call this function when no exception is present.
     pub fn clearExceptionExceptTermination(this: *JSGlobalObject) bool {
         return JSGlobalObject__clearExceptionExceptTermination(this);
+    }
+
+    /// Adapts a JavaScript-aware formatter to Zig's `std.Io.Writer` formatter contract.
+    /// Ordinary exceptions are cleared because the caller can only produce fallback text;
+    /// termination exceptions remain pending for the surrounding JSC boundary to observe.
+    pub fn formatErrorToWriterError(this: *JSGlobalObject, err: bun.JSError) std.Io.Writer.Error {
+        switch (err) {
+            error.JSError => _ = this.clearExceptionExceptTermination(),
+            error.JSTerminated => {},
+            error.OutOfMemory => bun.handleOom(error.OutOfMemory),
+        }
+        return error.WriteFailed;
     }
 
     /// Clears the current exception and returns that value. Requires compile-time

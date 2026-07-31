@@ -151,15 +151,15 @@ pub fn memoryCostDetailed(dev: *DevServer) MemoryCost {
         },
         // All entries are owned by the bundler arena, not DevServer, except for `requests`
         .current_bundle = if (dev.current_bundle) |bundle| {
-            var r = bundle.requests.first;
-            while (r) |request| : (r = request.next) {
-                other_bytes += @sizeOf(DeferredRequest.Node);
+            var requests = bundle.requests.iterator();
+            while (requests.next()) |_| {
+                other_bytes += @sizeOf(DeferredRequest);
             }
         },
         .next_bundle = {
-            var r = dev.next_bundle.requests.first;
-            while (r) |request| : (r = request.next) {
-                other_bytes += @sizeOf(DeferredRequest.Node);
+            var requests = dev.next_bundle.requests.iterator();
+            while (requests.next()) |_| {
+                other_bytes += @sizeOf(DeferredRequest);
             }
             other_bytes += memoryCostArrayHashMap(dev.next_bundle.route_queue);
         },
