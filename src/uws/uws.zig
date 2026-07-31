@@ -152,11 +152,6 @@ pub const SendStatus = enum(c_uint) {
     dropped = 2,
 };
 
-extern fn bun_clear_loop_at_thread_exit() void;
-pub fn onThreadExit() void {
-    bun_clear_loop_at_thread_exit();
-}
-
 export fn BUN__warn__extra_ca_load_failed(filename: [*c]const u8, error_msg: [*c]const u8) void {
     bun.Output.warn("ignoring extra certs from {s}, load failed: {s}", .{ filename, error_msg });
 }

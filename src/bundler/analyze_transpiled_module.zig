@@ -384,15 +384,8 @@ comptime {
     }
 }
 
-export fn zig__ModuleInfo__destroy(info: *ModuleInfo) void {
-    info.destroy();
-}
 export fn zig__ModuleInfoDeserialized__deinit(info: *ModuleInfoDeserialized) void {
     info.deinit();
-}
-
-export fn zig_log(msg: [*:0]const u8) void {
-    bun.Output.errorWriter().print("{s}\n", .{std.mem.span(msg)}) catch {};
 }
 
 const bun = @import("bun");

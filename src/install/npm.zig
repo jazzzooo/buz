@@ -722,8 +722,6 @@ pub const Libc = enum(u8) {
 
     // TODO:
     pub const current: Libc = @backingInt(glibc);
-
-    pub const jsFunctionLibcIsMatch = @import("../install_jsc/npm_jsc.zig").libcIsMatch;
 };
 
 /// https://docs.npmjs.com/cli/v8/configuring-npm/package-json#cpu

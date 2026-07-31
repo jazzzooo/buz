@@ -18,10 +18,6 @@ script_execution_context_id: bun.webcore.ScriptExecutionContext.Identifier,
 
 const new = bun.TrivialNew(WTFTimer);
 
-pub export fn WTFTimer__runIfImminent(vm: *VirtualMachine) void {
-    vm.eventLoop().runImminentGCTimer();
-}
-
 pub fn run(this: *WTFTimer, vm: *VirtualMachine) void {
     if (this.event_loop_timer.state == .ACTIVE) {
         vm.timer.remove(&this.event_loop_timer);

@@ -38,7 +38,6 @@ pub const ContainerName = struct {
     }
 };
 
-pub const ContainerNameFns = ContainerName;
 pub const ContainerSizeFeature = QueryFeature(ContainerSizeFeatureId);
 
 pub const ContainerSizeFeatureId = enum {

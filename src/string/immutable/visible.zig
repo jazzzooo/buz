@@ -660,12 +660,6 @@ pub const visible = struct {
 
 // C exports for wrapAnsi.cpp
 
-/// Calculate visible width of UTF-8 string excluding ANSI escape codes
-export fn Bun__visibleWidthExcludeANSI_utf8(ptr: [*]const u8, len: usize, ambiguous_as_wide: bool) usize {
-    const input = ptr[0..len];
-    return visible.width.exclude_ansi_colors.utf8(input, ambiguous_as_wide);
-}
-
 /// Calculate visible width of UTF-16 string excluding ANSI escape codes
 export fn Bun__visibleWidthExcludeANSI_utf16(ptr: [*]const u16, len: usize, ambiguous_as_wide: bool) usize {
     const input = ptr[0..len];

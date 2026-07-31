@@ -350,17 +350,6 @@ pub const Transpiler = struct {
         js_ast.Stmt.Data.Store.reset();
     }
 
-    pub noinline fn dumpEnvironmentVariables(transpiler: *const Transpiler) void {
-        @branchHint(.cold);
-        const opts = std.json.Stringify.Options{
-            .whitespace = .indent_2,
-        };
-        Output.flush();
-        var w: std.json.Stringify = .{ .writer = Output.writer(), .options = opts };
-        w.write(transpiler.env.map.*) catch unreachable;
-        Output.flush();
-    }
-
     fn buildWithResolveResultEager(
         transpiler: *Transpiler,
         resolve_result: _resolver.Result,

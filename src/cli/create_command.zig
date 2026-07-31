@@ -826,14 +826,10 @@ pub const CreateCommand = struct {
                 const InjectionPrefill = struct {
                     const dependencies_string = "dependencies";
                     const dev_dependencies_string = "devDependencies";
-                    const bun_string = "bun";
-                    const macros_string = "macros";
                     const bun_macros_relay_path = "bun-macro-relay";
 
                     pub var dependencies_e_string = E.String.init(dependencies_string);
                     pub var devDependencies_e_string = E.String.init(dev_dependencies_string);
-                    pub var bun_e_string = E.String.init(bun_string);
-                    pub var macros_e_string = E.String.init(macros_string);
                     pub var react_relay_string = E.String.init("react-relay");
                     pub var bun_macros_relay_path_string = E.String.init("bun-macro-relay");
                     pub var babel_plugin_relay_macro = E.String.init("babel-plugin-relay/macro");
@@ -1011,8 +1007,6 @@ pub const CreateCommand = struct {
                         .data = .{ .e_string = &dependencies_e_string },
                         .loc = logger.Loc.Empty,
                     };
-
-                    pub const bun_bun_for_nextjs_task: string = "bun bun --use next";
                 };
 
                 InjectionPrefill.bun_macro_relay_object.properties = js_ast.G.Property.List

@@ -107,9 +107,6 @@ pub fn addNTPathPrefixIfNeeded(wbuf: []u16, utf16: []const u16) [:0]u16 {
     return addNTPathPrefix(wbuf, utf16);
 }
 
-// These are the same because they don't have rules like needing a trailing slash
-pub const toNTDir = toNTPath;
-
 pub fn toExtendedPathNormalized(wbuf: []u16, utf8: []const u8) [:0]const u16 {
     bun.unsafeAssert(wbuf.len > 4);
     if (hasPrefixComptime(utf8, bun.windows.long_path_prefix_u8) or

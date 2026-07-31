@@ -2298,8 +2298,6 @@ pub fn NewLexer(comptime encoding: StringEncoding) type {
             CodepointTooLarge,
         };
 
-        pub const js_objref_prefix = "$__bun_";
-
         const State = Chars.State;
 
         const InputChar = Chars.InputChar;

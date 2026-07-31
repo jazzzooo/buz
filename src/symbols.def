@@ -1,10 +1,5 @@
-; To update this list, use:
-;
-; dumpbin /symbols .\src\deps\libuv.lib | Where-Object { $_.Contains('| uv_') } | foreach-object { (($_ -split "\|")[1] -split " ")[1] } | Where-Object { $_ -match 'uv_[a-z]' } | ForEach-Object { "  ${_}" } > out.txt; dumpbin /symbols .\build\CMakeFiles\bun-zig.o | Where-Object { $_.Contains('| napi_') } | foreach-object { (($_ -split "\|")[1] -split " ")[1] } | ForEach-Object { "  ${_}" } >> out.txt
-; -> out.txt
-;
-; the above will include extra symbols that do not exist, remember
-; to double check a local build
+; Regenerate this from the uv_ symbols in libuv and the napi_ symbols in the
+; Zig object, then verify it against a local Windows build.
 EXPORTS
   uv_fs_poll_init
   uv_fs_poll_start

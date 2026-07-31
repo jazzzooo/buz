@@ -1544,12 +1544,6 @@ pub const JSZlib = struct {
     export fn global_deallocator(_: ?*anyopaque, ctx: ?*anyopaque) void {
         bun.allocators.freeWithoutSize(ctx);
     }
-    export fn compressor_deallocator(_: ?*anyopaque, ctx: ?*anyopaque) void {
-        var compressor: *zlib.ZlibCompressorArrayList = bun.cast(*zlib.ZlibCompressorArrayList, ctx.?);
-        compressor.list.deinit(compressor.allocator);
-        compressor.deinit();
-    }
-
     const Library = enum {
         zlib,
         libdeflate,

@@ -765,8 +765,6 @@ pub const Reader = struct {
         this.connection.read_buffer.head = this.connection.last_message_start + @as(u32, @truncate(offset));
     }
 
-    pub const ensureLength = ensureCapacity;
-
     pub fn peek(this: Reader) []const u8 {
         return this.connection.read_buffer.remaining();
     }

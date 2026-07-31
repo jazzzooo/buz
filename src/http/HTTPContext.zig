@@ -121,11 +121,6 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
 
         const kind: uws.SocketKind = if (ssl) .http_client_tls else .http_client;
 
-        /// `dispatch.zig` reaches `Handler` via this name. The ext stores
-        /// `*anyopaque` (the `ActiveSocket` tagged pointer), so dispatch reads
-        /// it as `**anyopaque` and `Handler` decodes the tag.
-        pub const ActiveSocketHandler = Handler;
-
         const MAX_KEEPALIVE_HOSTNAME = 128;
 
         pub fn registerH2(this: *@This(), session: *H2.ClientSession) void {

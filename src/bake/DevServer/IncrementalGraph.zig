@@ -1837,12 +1837,6 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
             };
         }
 
-        pub const SourceMapGeneration = struct {
-            json: []u8,
-            mappings: bun.StringPointer,
-            file_paths: [][]const u8,
-        };
-
         /// Uses `arena` as a temporary allocator, fills in all fields of `out` except ref_count
         pub fn takeSourceMap(g: *@This(), _: std.mem.Allocator, gpa: Allocator, out: *SourceMapStore.Entry) bun.OOM!void {
             const paths = g.bundled_files.keys();

@@ -1,5 +1,5 @@
 //! JSC host fns extracted from `src/install/npm.zig` so that `install/` has
-//! no `JSValue`/`JSGlobalObject`/`CallFrame` references. Each enum keeps a
+//! no `JSValue`/`JSGlobalObject`/`CallFrame` references. Registered enums keep a
 //! `pub const jsFunction… = @import(...)` alias so call sites and the
 //! `$newZigFunction("npm.zig", "…")` codegen path are unchanged.
 
@@ -15,20 +15,6 @@ pub fn operatingSystemIsMatch(globalObject: *jsc.JSGlobalObject, callframe: *jsc
     }
     if (globalObject.hasException()) return .zero;
     return jsc.JSValue.jsBoolean(operating_system.combine().isMatch(npm.OperatingSystem.current));
-}
-
-pub fn libcIsMatch(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const args = callframe.arguments_old(1);
-    var libc = npm.Libc.negatable(.none);
-    var iter = args.ptr[0].arrayIterator(globalObject);
-    while (iter.next()) |item| {
-        const slice = item.toSlice(globalObject, bun.default_allocator);
-        defer slice.deinit();
-        libc.apply(slice.slice());
-        if (globalObject.hasException()) return .zero;
-    }
-    if (globalObject.hasException()) return .zero;
-    return jsc.JSValue.jsBoolean(libc.combine().isMatch(npm.Libc.current));
 }
 
 pub fn architectureIsMatch(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {

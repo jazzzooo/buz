@@ -1674,8 +1674,6 @@ pub fn ShellTask(
         ref: bun.Async.KeepAlive = .{},
         concurrent_task: jsc.EventLoopTask,
 
-        pub const InnerShellTask = @This();
-
         pub fn schedule(this: *@This()) void {
             debug("schedule", .{});
 

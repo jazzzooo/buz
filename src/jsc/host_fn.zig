@@ -370,7 +370,6 @@ pub fn DOMCall(
 ) type {
     return extern struct {
         const className = class_name;
-        pub const is_dom_call = true;
         const Slowpath = @field(Container, functionName);
         const SlowpathType = @TypeOf(@field(Container, functionName));
 

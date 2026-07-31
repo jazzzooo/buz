@@ -732,9 +732,6 @@ pub const JSType = enum(u8) {
         };
     }
 
-    pub const LastValueCompareCell = JSType.HeapBigInt;
-    pub const LastJSCObject = JSType.InternalFieldTuple; // This is the last "JSC" Object type. After this, we have embedder's (e.g., WebCore) extended object types.
-
     pub inline fn isString(this: JSType) bool {
         return this == .String;
     }
