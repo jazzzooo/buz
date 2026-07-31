@@ -10,9 +10,11 @@
 //!   zig build --release=fast           release → zig-out/bin/{bun-profile,bun}
 //!   zig build check --watch -fincremental   type-check only, no binary
 //!
-//! Compile steps must leave `incremental` unset: -fincremental trades
+//! Product compile steps leave `incremental` unset: -fincremental trades
 //! content-based caching for in-process state, which only pays off under
-//! --watch (where the CLI flag enables it).
+//! --watch (where the CLI flag enables it). Host executables that the graph
+//! immediately runs disable incremental compilation so their output is not
+//! held open by a persistent compiler.
 //!
 //! Builds on x86_64-linux only; the check-* steps type-check other targets.
 
@@ -36,6 +38,7 @@ const OperatingSystem = @import("src/bun_core/env.zig").OperatingSystem;
 const bun_exe = @import("src/build/exe.zig");
 const bun_webkit = @import("src/build/webkit.zig");
 const bun_icu = @import("src/build/icu.zig");
+const bun_unicode_data = @import("src/build/unicode_data.zig");
 
 const zero_sha = "0000000000000000000000000000000000000000";
 
@@ -76,6 +79,7 @@ const BunBuildOptions = struct {
 
     /// The codegen graph; codegen_path is its stable synced dir.
     codegen: *const bun_exe.Codegen,
+    unicode_data: *Module,
 
     pub fn isBaseline(this: *const BunBuildOptions) bool {
         return this.arch.isX86() and
@@ -227,6 +231,7 @@ pub fn build(b: *Build) !void {
     webkit_ctx.* = bun_webkit.addLibs(b, pkgs, mode, optimize, webkit_derived);
     const icu_ctx = b.graph.arena.create(bun_icu.Ctx) catch @panic("OOM");
     icu_ctx.* = bun_icu.addLibs(b, pkgs, optimize);
+    const unicode_data = bun_unicode_data.addModule(b, pkgs.icu);
 
     const codegen_embed = b.option(bool, "codegen_embed", "Embed generated runtime assets in Debug builds") orelse false;
 
@@ -298,6 +303,7 @@ pub fn build(b: *Build) !void {
         .freebsd_sysroot_x86_64 = freebsd_sysroot_x86_64,
         .freebsd_sysroot_aarch64 = freebsd_sysroot_aarch64,
         .codegen = cg,
+        .unicode_data = unicode_data,
     };
 
     // The bun executable: codegen, C/C++, link, smoke test. Default step.
@@ -502,6 +508,7 @@ pub fn build(b: *Build) !void {
                 .codegen_embed = build_options.codegen_embed,
                 .codegen_path = build_options.codegen_path,
                 .codegen = build_options.codegen,
+                .unicode_data = build_options.unicode_data,
                 .override_no_export_cpp_apis = true,
             };
             var obj = addBunWasmObject(b, &options);
@@ -521,146 +528,6 @@ pub fn build(b: *Build) !void {
         // });
         // const run = b.addRunArtifact(exe);
         // step.dependOn(&run.step);
-    }
-
-    // zig build generate-grapheme-tables
-    // Regenerates src/string/immutable/grapheme_tables.zig from the vendored uucode.
-    // Run this when updating src/unicode/uucode_lib. Normal builds use the committed file.
-    {
-        const step = b.step("generate-grapheme-tables", "Regenerate grapheme property tables from vendored uucode");
-
-        // --- Phase 1: Build uucode tables (separate module graph, no tables dependency) ---
-        const bt_config_mod = b.createModule(.{
-            .root_source_file = b.path("src/unicode/uucode_lib/src/config.zig"),
-            .target = b.graph.host,
-        });
-        const bt_types_mod = b.createModule(.{
-            .root_source_file = b.path("src/unicode/uucode_lib/src/types.zig"),
-            .target = b.graph.host,
-        });
-        bt_types_mod.addImport("config.zig", bt_config_mod);
-        bt_config_mod.addImport("types.zig", bt_types_mod);
-
-        const bt_config_x_mod = b.createModule(.{
-            .root_source_file = b.path("src/unicode/uucode_lib/src/x/config.x.zig"),
-            .target = b.graph.host,
-        });
-        const bt_types_x_mod = b.createModule(.{
-            .root_source_file = b.path("src/unicode/uucode_lib/src/x/types.x.zig"),
-            .target = b.graph.host,
-        });
-        bt_types_x_mod.addImport("config.x.zig", bt_config_x_mod);
-        bt_config_x_mod.addImport("types.x.zig", bt_types_x_mod);
-        bt_config_x_mod.addImport("types.zig", bt_types_mod);
-        bt_config_x_mod.addImport("config.zig", bt_config_mod);
-
-        const bt_build_config_mod = b.createModule(.{
-            .root_source_file = b.path("src/unicode/uucode/uucode_config.zig"),
-            .target = b.graph.host,
-        });
-        bt_build_config_mod.addImport("types.zig", bt_types_mod);
-        bt_build_config_mod.addImport("config.zig", bt_config_mod);
-        bt_build_config_mod.addImport("types.x.zig", bt_types_x_mod);
-        bt_build_config_mod.addImport("config.x.zig", bt_config_x_mod);
-
-        const build_tables_mod = b.createModule(.{
-            .root_source_file = b.path("src/unicode/uucode_lib/src/build/tables.zig"),
-            .target = b.graph.host,
-            .optimize = .debug,
-        });
-        build_tables_mod.addImport("config.zig", bt_config_mod);
-        build_tables_mod.addImport("build_config", bt_build_config_mod);
-        build_tables_mod.addImport("types.zig", bt_types_mod);
-
-        const build_tables_exe = b.addExecutable(.{
-            .name = "uucode_build_tables",
-            .root_module = build_tables_mod,
-            .use_llvm = true,
-        });
-        const run_build_tables = b.addRunArtifact(build_tables_exe);
-        run_build_tables.setCwd(b.path("src/unicode/uucode_lib"));
-        const tables_path = run_build_tables.addOutputFileArg("tables.zig");
-
-        // --- Phase 2: Build grapheme-gen with full uucode (separate module graph) ---
-        const rt_config_mod = b.createModule(.{
-            .root_source_file = b.path("src/unicode/uucode_lib/src/config.zig"),
-            .target = b.graph.host,
-        });
-        const rt_types_mod = b.createModule(.{
-            .root_source_file = b.path("src/unicode/uucode_lib/src/types.zig"),
-            .target = b.graph.host,
-        });
-        rt_types_mod.addImport("config.zig", rt_config_mod);
-        rt_config_mod.addImport("types.zig", rt_types_mod);
-
-        const rt_config_x_mod = b.createModule(.{
-            .root_source_file = b.path("src/unicode/uucode_lib/src/x/config.x.zig"),
-            .target = b.graph.host,
-        });
-        const rt_types_x_mod = b.createModule(.{
-            .root_source_file = b.path("src/unicode/uucode_lib/src/x/types.x.zig"),
-            .target = b.graph.host,
-        });
-        rt_types_x_mod.addImport("config.x.zig", rt_config_x_mod);
-        rt_config_x_mod.addImport("types.x.zig", rt_types_x_mod);
-        rt_config_x_mod.addImport("types.zig", rt_types_mod);
-        rt_config_x_mod.addImport("config.zig", rt_config_mod);
-
-        const rt_build_config_mod = b.createModule(.{
-            .root_source_file = b.path("src/unicode/uucode/uucode_config.zig"),
-            .target = b.graph.host,
-        });
-        rt_build_config_mod.addImport("types.zig", rt_types_mod);
-        rt_build_config_mod.addImport("config.zig", rt_config_mod);
-        rt_build_config_mod.addImport("types.x.zig", rt_types_x_mod);
-        rt_build_config_mod.addImport("config.x.zig", rt_config_x_mod);
-
-        const rt_tables_mod = b.createModule(.{
-            .root_source_file = tables_path,
-            .target = b.graph.host,
-        });
-        rt_tables_mod.addImport("types.zig", rt_types_mod);
-        rt_tables_mod.addImport("types.x.zig", rt_types_x_mod);
-        rt_tables_mod.addImport("config.zig", rt_config_mod);
-        rt_tables_mod.addImport("build_config", rt_build_config_mod);
-
-        const rt_get_mod = b.createModule(.{
-            .root_source_file = b.path("src/unicode/uucode_lib/src/get.zig"),
-            .target = b.graph.host,
-        });
-        rt_get_mod.addImport("types.zig", rt_types_mod);
-        rt_get_mod.addImport("tables", rt_tables_mod);
-        rt_types_mod.addImport("get.zig", rt_get_mod);
-
-        const uucode_mod = b.createModule(.{
-            .root_source_file = b.path("src/unicode/uucode_lib/src/root.zig"),
-            .target = b.graph.host,
-        });
-        uucode_mod.addImport("types.zig", rt_types_mod);
-        uucode_mod.addImport("config.zig", rt_config_mod);
-        uucode_mod.addImport("types.x.zig", rt_types_x_mod);
-        uucode_mod.addImport("tables", rt_tables_mod);
-        uucode_mod.addImport("get.zig", rt_get_mod);
-
-        // grapheme_gen executable
-        const gen_exe = b.addExecutable(.{
-            .name = "grapheme-gen",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/unicode/uucode/grapheme_gen.zig"),
-                .target = b.graph.host,
-                .optimize = .debug,
-                .imports = &.{
-                    .{ .name = "uucode", .module = uucode_mod },
-                },
-            }),
-            .use_llvm = true,
-        });
-
-        const run_gen = b.addRunArtifact(gen_exe);
-        const gen_output = run_gen.captureStdOut(.{});
-
-        const install = b.addInstallFile(gen_output, "../src/string/immutable/grapheme_tables.zig");
-        step.dependOn(&install.step);
     }
 }
 
@@ -709,6 +576,7 @@ fn addMultiCheck(
                 .freebsd_sysroot_x86_64 = root_build_options.freebsd_sysroot_x86_64,
                 .freebsd_sysroot_aarch64 = root_build_options.freebsd_sysroot_aarch64,
                 .codegen = root_build_options.codegen,
+                .unicode_data = root_build_options.unicode_data,
             };
 
             var obj = addBunObject(b, &options);
@@ -804,6 +672,7 @@ fn getTranslateC(b: *Build, initial_target: std.Build.ResolvedTarget, optimize: 
                 .optimize = .debug,
             }),
         });
+        helper_exe.incremental = false;
         const in = translate_c.getOutput();
         const run = b.addRunArtifact(helper_exe);
         run.addFileArg(in);
@@ -922,6 +791,7 @@ fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions) void {
     const os = opts.os;
 
     mod.addImport("build_options", opts.buildOptionsModule(b));
+    mod.addImport("unicode_data", opts.unicode_data);
 
     const translated_c = if (os == .wasm)
         b.path("src/codegen/translated_c_stub.zig")

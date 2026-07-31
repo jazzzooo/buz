@@ -16,8 +16,8 @@
             .lazy = true,
         },
         .icu = .{
-            .url = "https://github.com/unicode-org/icu/releases/download/release-75-1/icu4c-75_1-src.tgz",
-            .hash = "N-V-__8AAKebvgZiFhAsCjKnxb6B05zegiMNdtqNr1l-q7LA",
+            .url = "https://github.com/unicode-org/icu/releases/download/release-78.3/icu4c-78.3-sources.tgz",
+            .hash = "N-V-__8AAHaxOAfWEjebpyCep0waRxnfLBFrjchRCHsgQ_NL",
             .lazy = true,
         },
         .mold = .{

@@ -1,8 +1,8 @@
-//! ICU 75.1 compiled from the pinned source tarball, replacing the archives
+//! ICU 78.3 compiled from the pinned source tarball, replacing the archives
 //! that came with the WebKit prebuilt: libicuuc is every common/*.cpp,
 //! libicui18n every i18n/*.cpp (the upstream archives match those sets
-//! exactly), and the data archive wraps the shipped icudt75l.dat blob via
-//! .incbin, reproducing genccode's single `icudt75_dat` rodata symbol.
+//! exactly), and the data archive wraps the shipped icudt78l.dat blob via
+//! .incbin, reproducing genccode's single `icudt78_dat` rodata symbol.
 //! Flags mirror the oven-sh CI invocation (-Os, no legacy conversion,
 //! exceptions off); Debug also uses ICU's ReleaseFast configuration.
 
@@ -12,6 +12,9 @@ const exe = @import("exe.zig");
 const Build = std.Build;
 const Step = Build.Step;
 const LazyPath = Build.LazyPath;
+
+const data_file_name = "icudt78l.dat";
+const data_symbol_name = "icudt78_dat";
 
 const common_flags = [_][]const u8{
     "-Os",
@@ -70,16 +73,16 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, optimize: std.builtin.Optimi
             .optimize = library_optimize,
         });
         const wf = b.addWriteFiles();
-        _ = wf.addCopyFile(filtered_dat, "icudt75l.dat");
-        const asm_file = wf.add("icudata.S",
+        _ = wf.addCopyFile(filtered_dat, data_file_name);
+        const asm_file = wf.add("icudata.S", b.fmt(
             \\    .section .note.GNU-stack,"",%progbits
             \\    .section .rodata
             \\    .balign 16
-            \\    .globl icudt75_dat
-            \\icudt75_dat:
-            \\    .incbin "icudt75l.dat"
+            \\    .globl {s}
+            \\{s}:
+            \\    .incbin "{s}"
             \\
-        );
+        , .{ data_symbol_name, data_symbol_name, data_file_name }));
         // .incbin resolves through the assembler include path.
         mod.addIncludePath(wf.getDirectory());
         mod.addAssemblyFile(asm_file);
@@ -116,7 +119,7 @@ fn filterData(b: *Build, deps: *const exe.DepPkgs, uc: *Step.Compile, i18n: *Ste
     link.addArg("-Wl,--end-group");
     link.step.name = "link icupkg";
 
-    const dat = deps.icu.path("icu/source/data/in/icudt75l.dat");
+    const dat = deps.icu.path("icu/source/data/in/" ++ data_file_name);
 
     const list = b.addSystemCommand(&.{
         "sh", "-c",
@@ -132,7 +135,7 @@ fn filterData(b: *Build, deps: *const exe.DepPkgs, uc: *Step.Compile, i18n: *Ste
     filter.addArg("-r");
     filter.addFileArg(rm_lst);
     filter.addFileArg(dat);
-    return filter.addOutputFileArg("icudt75l.dat");
+    return filter.addOutputFileArg(data_file_name);
 }
 
 fn newLib(b: *Build, name: []const u8, optimize: std.builtin.Optimize) *Step.Compile {

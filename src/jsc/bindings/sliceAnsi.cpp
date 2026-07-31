@@ -10,7 +10,7 @@
 extern "C" uint8_t Bun__codepointWidth(uint32_t cp, bool ambiguous_as_wide);
 extern "C" bool Bun__graphemeBreak(uint32_t cp1, uint32_t cp2, uint8_t* state);
 extern "C" bool Bun__isEmojiPresentation(uint32_t cp);
-extern "C" size_t Bun__visibleWidthExcludeANSI_latin1(const uint8_t* ptr, size_t len);
+extern "C" size_t Bun__visibleWidthExcludeANSI_latin1(const uint8_t* ptr, size_t len, bool ambiguous_as_wide);
 extern "C" size_t Bun__visibleWidthExcludeANSI_utf16(const uint16_t* ptr, size_t len, bool ambiguous_as_wide);
 
 namespace Bun {
@@ -27,8 +27,6 @@ using namespace WTF;
 // ============================================================================
 
 struct GraphemeWidthState {
-    uint32_t firstCp = 0;
-    uint32_t lastCp = 0;
     uint16_t nonEmojiWidth = 0;
     uint8_t baseWidth = 0;
     uint8_t count = 0;
@@ -42,8 +40,6 @@ struct GraphemeWidthState {
 
     void reset(uint32_t cp, bool ambiguousIsWide)
     {
-        firstCp = cp;
-        lastCp = cp;
         count = 1;
         keycap = (cp == 0x20E3);
         regionalIndicator = (cp >= 0x1F1E6 && cp <= 0x1F1FF);
@@ -60,7 +56,6 @@ struct GraphemeWidthState {
 
     void add(uint32_t cp, bool ambiguousIsWide)
     {
-        lastCp = cp;
         if (count < 255)
             count++;
         keycap = keycap || (cp == 0x20E3);
@@ -92,14 +87,9 @@ struct GraphemeWidthState {
         if (vs15 || vs16) {
             if (baseWidth == 2)
                 return 2;
-            if (vs16) {
-                if ((firstCp >= 0x30 && firstCp <= 0x39) || firstCp == 0x23 || firstCp == 0x2A)
-                    return 1;
-                if (firstCp < 0x80)
-                    return 1;
+            if (vs16 && emojiBase)
                 return 2;
-            }
-            return 1;
+            return static_cast<uint8_t>(nonEmojiWidth);
         }
         // Match visible.zig GraphemeState.width() exactly: return accumulated width
         // (may be 0 for zero-width-only clusters like U+200B ZWSP).
@@ -744,16 +734,7 @@ static size_t computeTotalWidth(std::span<const Char> input, size_t asciiPrefix,
             cp = ANSI::decodeUTF16(p, dataEnd - p, charLen);
         }
 
-        bool shouldBreak;
-        if (!hasPrev)
-            shouldBreak = true;
-        else if (prevCp == 0x0D && cp == 0x0A)
-            shouldBreak = false;
-        else if (prevCp == 0x0D || prevCp == 0x0A || cp == 0x0D || cp == 0x0A) {
-            shouldBreak = true;
-            breakState = 0;
-        } else
-            shouldBreak = Bun__graphemeBreak(prevCp, cp, &breakState);
+        bool shouldBreak = !hasPrev || Bun__graphemeBreak(prevCp, cp, &breakState);
 
         if (shouldBreak) {
             if (hasPrev) totalW += gs.width();
@@ -939,16 +920,7 @@ static WTF::String emitSliceStreaming(
     // the SIMD-skipped tight loop and the false-positive fallback. Returns
     // false if we should stop (past end).
     auto processVisibleCp = [&](char32_t cp, size_t charLen) -> bool {
-        bool shouldBreak;
-        if (!hasPrev)
-            shouldBreak = true;
-        else if (prevVisCp == 0x0D && cp == 0x0A)
-            shouldBreak = false;
-        else if (prevVisCp == 0x0D || prevVisCp == 0x0A || cp == 0x0D || cp == 0x0A) {
-            shouldBreak = true;
-            breakState = 0;
-        } else
-            shouldBreak = Bun__graphemeBreak(prevVisCp, cp, &breakState);
+        bool shouldBreak = !hasPrev || Bun__graphemeBreak(prevVisCp, cp, &breakState);
 
         if (shouldBreak) {
             if (hasPrev) position += gs.width();
@@ -1318,7 +1290,7 @@ static WTF::String sliceAnsiImpl(std::span<const Char> input, double startD, dou
         SliceBounds b = resolveSliceBounds(startD, endD, totalW);
         if (b.empty) return emptyString();
         start = b.start;
-        end = b.end;
+        end = b.cutEnd ? b.end : SIZE_MAX;
         cutEndKnown = true;
         cutEndHint = b.cutEnd;
     }
@@ -1412,7 +1384,7 @@ JSC_DEFINE_HOST_FUNCTION(jsFunctionBunSliceAnsi, (JSC::JSGlobalObject * globalOb
     size_t ellipsisWidth = 0;
     if (!ellipsis.isEmpty()) {
         ellipsisWidth = ellipsis.is8Bit()
-            ? Bun__visibleWidthExcludeANSI_latin1(reinterpret_cast<const uint8_t*>(ellipsis.span8().data()), ellipsis.length())
+            ? Bun__visibleWidthExcludeANSI_latin1(reinterpret_cast<const uint8_t*>(ellipsis.span8().data()), ellipsis.length(), ambiguousIsWide)
             : Bun__visibleWidthExcludeANSI_utf16(reinterpret_cast<const uint16_t*>(ellipsis.span16().data()), ellipsis.length(), ambiguousIsWide);
     }
 

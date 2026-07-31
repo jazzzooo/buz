@@ -843,21 +843,21 @@ pub const String = extern struct {
 
     pub fn visibleWidth(this: *const String, ambiguousAsWide: bool) usize {
         if (this.isUTF8()) {
-            return bun.strings.visible.width.utf8(this.utf8());
+            return bun.strings.visible.width.utf8(this.utf8(), ambiguousAsWide);
         } else if (this.isUTF16()) {
             return bun.strings.visible.width.utf16(this.utf16(), ambiguousAsWide);
         } else {
-            return bun.strings.visible.width.latin1(this.latin1());
+            return bun.strings.visible.width.latin1(this.latin1(), ambiguousAsWide);
         }
     }
 
     pub fn visibleWidthExcludeANSIColors(this: *const String, ambiguousAsWide: bool) usize {
         if (this.isUTF8()) {
-            return bun.strings.visible.width.exclude_ansi_colors.utf8(this.utf8());
+            return bun.strings.visible.width.exclude_ansi_colors.utf8(this.utf8(), ambiguousAsWide);
         } else if (this.isUTF16()) {
             return bun.strings.visible.width.exclude_ansi_colors.utf16(this.utf16(), ambiguousAsWide);
         } else {
-            return bun.strings.visible.width.exclude_ansi_colors.latin1(this.latin1());
+            return bun.strings.visible.width.exclude_ansi_colors.latin1(this.latin1(), ambiguousAsWide);
         }
     }
 

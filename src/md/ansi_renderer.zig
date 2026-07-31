@@ -1973,7 +1973,7 @@ fn codeSpanOpen(light: bool) []const u8 {
 /// Visible printable width of a UTF-8 byte slice, excluding ANSI escape
 /// sequences. Correctly handles multi-width graphemes (CJK, emoji).
 fn visibleWidth(s: []const u8) usize {
-    return bun.strings.visible.width.exclude_ansi_colors.utf8(s);
+    return bun.strings.visible.width.exclude_ansi_colors.utf8(s, false);
 }
 
 /// Byte index of the longest prefix of `s` whose visible width is <=

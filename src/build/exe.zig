@@ -1156,6 +1156,7 @@ fn makeGenDirs(b: *Build, deps: *const DepPkgs) std.StringArrayHashMapUnmanaged(
             .language = .c,
         });
         const tool = b.addExecutable(.{ .name = "tinycc-conftest", .root_module = tool_mod });
+        tool.incremental = false;
         const run = b.addRunArtifact(tool);
         run.setCwd(root);
         run.addFileArg(root.path(b, "include/tccdefs.h"));

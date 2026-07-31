@@ -1907,13 +1907,8 @@ pub const withoutUTF8BOM = unicode.withoutUTF8BOM;
 pub const wtf8ByteSequenceLength = unicode.wtf8ByteSequenceLength;
 pub const wtf8Sequence = unicode.wtf8Sequence;
 
-pub const isAmgiguousCodepointType = visible_.isAmgiguousCodepointType;
-pub const isFullWidthCodepointType = visible_.isFullWidthCodepointType;
-pub const isZeroWidthCodepointType = visible_.isZeroWidthCodepointType;
 pub const visible = visible_.visible;
 pub const visibleCodepointWidth = visible_.visibleCodepointWidth;
-pub const visibleCodepointWidthMaybeEmoji = visible_.visibleCodepointWidthMaybeEmoji;
-pub const visibleCodepointWidthType = visible_.visibleCodepointWidthType;
 
 pub const escapeHTMLForLatin1Input = escapeHTML_.escapeHTMLForLatin1Input;
 pub const escapeHTMLForUTF16Input = escapeHTML_.escapeHTMLForUTF16Input;

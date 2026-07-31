@@ -68,7 +68,6 @@ for (const abs of zigSources) {
   const source = path.relative(root, abs);
   if (/^src[/\\][a-z_]+_sys[/\\]/.test(source)) continue;
   if (source.startsWith("src" + path.sep + "codegen")) continue;
-  if (source.startsWith("src" + path.sep + "unicode" + path.sep + "uucode")) continue;
   const content = await file(abs).text();
   for (const word of words_keys) {
     let regex = words[word].regex ? new RegExp(word, "gm") : undefined;

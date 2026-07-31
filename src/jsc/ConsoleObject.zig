@@ -319,7 +319,7 @@ pub const TablePrinter = struct {
         }
 
         fn countBytes(this: *VisibleCharacterCounter, bytes: []const u8) void {
-            this.width.* += strings.visible.width.exclude_ansi_colors.utf8(bytes);
+            this.width.* += strings.visible.width.exclude_ansi_colors.utf8(bytes, false);
         }
 
         fn drain(writer: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {

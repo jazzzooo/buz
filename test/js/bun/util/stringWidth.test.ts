@@ -262,7 +262,7 @@ describe("stringWidth extended", () => {
 
     test("combining diacritical marks extended", () => {
       expect(Bun.stringWidth("\u1AB0")).toBe(0);
-      expect(Bun.stringWidth("\u1AFF")).toBe(0);
+      expect(Bun.stringWidth("\u1AEB")).toBe(0);
     });
 
     test("combining diacritical marks supplement", () => {
@@ -272,7 +272,7 @@ describe("stringWidth extended", () => {
 
     test("combining diacritical marks for symbols", () => {
       expect(Bun.stringWidth("\u20D0")).toBe(0);
-      expect(Bun.stringWidth("\u20FF")).toBe(0);
+      expect(Bun.stringWidth("\u20F0")).toBe(0);
     });
 
     test("combining half marks", () => {
