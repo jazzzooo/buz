@@ -130,7 +130,11 @@ pub fn verify(options: VerifyOptions) bool {
 
             const outlen = bun.base64.decodeLen(slice);
             if (outlen > buf.len) return false;
-            const wrote = bun.base64.decode(buf[0..outlen], slice).count;
+            const wrote = switch (encoding) {
+                .base64 => bun.base64.decodeNode(buf[0..outlen], slice).count,
+                .base64url => bun.base64.decodeNodeUrl(buf[0..outlen], slice).count,
+                .hex => unreachable,
+            };
             break :brk buf[0..wrote];
         },
         .hex => {

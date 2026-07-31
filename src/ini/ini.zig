@@ -679,22 +679,21 @@ pub const ConfigIterator = struct {
         ) OOM!?[]const u8 {
             if (this.optname.isBase64Encoded()) {
                 if (this.value.len == 0) return "";
-                const len = bun.base64.decodeLen(this.value);
-                var slice = try allocator.alloc(u8, len);
-                const result = bun.base64.decode(slice[0..], this.value);
-                if (result.status != .success) {
-                    try log.addErrorFmtOpts(
-                        allocator,
-                        "{s} is not valid base64",
-                        .{@tagName(this.optname)},
-                        .{
-                            .source = source,
-                            .loc = this.loc,
-                        },
-                    );
-                    return null;
-                }
-                return try allocator.dupe(u8, slice[0..result.count]);
+                return bun.base64.decodeAlloc(allocator, this.value) catch |err| switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    error.DecodingFailed => {
+                        try log.addErrorFmtOpts(
+                            allocator,
+                            "{s} is not valid base64",
+                            .{@tagName(this.optname)},
+                            .{
+                                .source = source,
+                                .loc = this.loc,
+                            },
+                        );
+                        return null;
+                    },
+                };
             }
             return try allocator.dupe(u8, this.value);
         }
@@ -1298,22 +1297,20 @@ fn @"handle _auth"(
         );
         return;
     }
-    const decode_len = bun.base64.decodeLen(conf_item.value);
-    const decoded = try allocator.alloc(u8, decode_len);
-    const result = bun.base64.decode(decoded[0..], conf_item.value);
-    if (!result.isSuccessful()) {
-        defer allocator.free(decoded);
-        try log.addErrorOpts(
-            "invalid _auth value, expected valid base64",
-            .{
-                .source = source,
-                .loc = conf_item.loc,
-                .redact_sensitive_information = true,
-            },
-        );
-        return;
-    }
-    const @"username:password" = decoded[0..result.count];
+    const @"username:password" = bun.base64.decodeAlloc(allocator, conf_item.value) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.DecodingFailed => {
+            try log.addErrorOpts(
+                "invalid _auth value, expected valid base64",
+                .{
+                    .source = source,
+                    .loc = conf_item.loc,
+                    .redact_sensitive_information = true,
+                },
+            );
+            return;
+        },
+    };
     const colon_idx = std.mem.indexOfScalar(u8, @"username:password", ':') orelse {
         defer allocator.free(@"username:password");
         try log.addErrorOpts(

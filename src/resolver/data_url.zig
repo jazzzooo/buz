@@ -108,14 +108,10 @@ pub const DataURL = struct {
         const percent_decoded: []const u8 = percent_decoded_owned orelse url.data;
 
         if (url.is_base64) {
-            const len = bun.base64.decodeLen(percent_decoded);
-            const buf = try allocator.alloc(u8, len);
-            errdefer allocator.free(buf);
-            const result = bun.base64.decode(buf, percent_decoded);
-            if (!result.isSuccessful() or result.count != len) {
-                return error.Base64DecodeError;
-            }
-            return buf;
+            return bun.base64.decodeAllocForgiving(allocator, percent_decoded) catch |err| switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.DecodingFailed => error.Base64DecodeError,
+            };
         }
 
         return try allocator.dupe(u8, percent_decoded);

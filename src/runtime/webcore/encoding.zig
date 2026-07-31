@@ -323,9 +323,10 @@ pub fn writeU8(input: [*]const u8, len: usize, to_ptr: [*]u8, to_len: usize, com
             return strings.decodeHexToBytesTruncate(to_ptr[0..to_len], u8, input[0..len]);
         },
 
-        .base64, .base64url => {
-            return bun.base64.decode(to_ptr[0..to_len], input[0..len]).count;
+        .base64 => {
+            return bun.base64.decodeNode(to_ptr[0..to_len], input[0..len]).count;
         },
+        .base64url => return bun.base64.decodeNodeUrl(to_ptr[0..to_len], input[0..len]).count,
     }
 }
 
@@ -407,14 +408,7 @@ pub fn writeU16(input: [*]const u16, len: usize, to: [*]u8, to_len: usize, compt
         },
 
         .base64, .base64url => {
-            if (to_len < 2 or len == 0)
-                return 0;
-
-            // very very slow case!
-            // shouldn't really happen though
-            const transcoded = strings.toUTF8Alloc(bun.default_allocator, input[0..len]) catch return 0;
-            defer bun.default_allocator.free(transcoded);
-            return writeU8(transcoded.ptr, transcoded.len, to, to_len, encoding);
+            return bun.base64.decodeNodeUtf16(to[0..to_len], input[0..len]).count;
         },
         // else => return &[_]u8{};
     }
@@ -471,13 +465,15 @@ pub fn constructFromU8(input: [*]const u8, len: usize, allocator: std.mem.Alloca
         },
 
         .base64, .base64url => {
-            const slice = strings.trim(input[0..len], "\r\n\t " ++ [_]u8{std.ascii.control_code.vt});
-            if (slice.len == 0) return &[_]u8{};
+            const source = input[0..len];
 
-            const outlen = bun.base64.decodeLen(slice);
+            const outlen = bun.base64.decodeLen(source);
             const to = allocator.alloc(u8, outlen) catch return &[_]u8{};
 
-            const wrote = bun.base64.decode(to[0..outlen], slice).count;
+            const wrote = if (comptime encoding == .base64)
+                bun.base64.decodeNode(to, source).count
+            else
+                bun.base64.decodeNodeUrl(to, source).count;
             if (wrote == 0) {
                 allocator.free(to);
                 return &[_]u8{};
@@ -521,11 +517,16 @@ pub fn constructFromU16(input: [*]const u16, len: usize, allocator: std.mem.Allo
         },
 
         .base64, .base64url => {
-            // very very slow case!
-            // shouldn't really happen though
-            const transcoded = strings.toUTF8Alloc(allocator, input[0..len]) catch return &[_]u8{};
-            defer allocator.free(transcoded);
-            return constructFromU8(transcoded.ptr, transcoded.len, allocator, encoding);
+            const source = input[0..len];
+            const outlen = bun.base64.decodeLen(source);
+            const to = allocator.alloc(u8, outlen) catch return &[_]u8{};
+
+            const wrote = bun.base64.decodeNodeUtf16(to, source).count;
+            if (wrote == 0) {
+                allocator.free(to);
+                return &[_]u8{};
+            }
+            return to[0..wrote];
         },
     }
 }

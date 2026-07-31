@@ -396,14 +396,14 @@ pub fn hash(allocator: Allocator, comptime fmt: []const u8, args: anytype, at_st
     var h_bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, &h_bytes, h, .little);
 
-    const encode_len = bun.base64.simdutfEncodeLenUrlSafe(h_bytes[0..].len);
+    const encode_len = bun.base64.urlSafeEncodeLen(&h_bytes);
 
     var slice_to_write = if (encode_len <= 128 - @as(usize, @intFromBool(at_start)))
         bun.handleOom(allocator.alloc(u8, encode_len + @as(usize, @intFromBool(at_start))))
     else
         fmt_str[0..];
 
-    const base64_encoded_hash_len = bun.base64.simdutfEncodeUrlSafe(slice_to_write, &h_bytes);
+    const base64_encoded_hash_len = bun.base64.encodeURLSafe(slice_to_write, &h_bytes);
 
     const base64_encoded_hash = slice_to_write[0..base64_encoded_hash_len];
 

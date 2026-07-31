@@ -217,13 +217,11 @@ fn sourceFromJS(global: *jsc.JSGlobalObject, value: jsc.JSValue, this_value: jsc
             const payload = s[comma + 1 ..];
             if (!bun.strings.contains(meta, ";base64"))
                 return global.throwInvalidArguments("Image(): only base64 data: URLs are supported", .{});
-            const out = try bun.default_allocator.alloc(u8, bun.base64.decodeLen(payload));
-            const r = bun.base64.decode(out, payload);
-            if (!r.isSuccessful()) {
-                bun.default_allocator.free(out);
-                return global.throwInvalidArguments("Image(): invalid base64 in data: URL", .{});
-            }
-            return .{ .owned = out[0..r.count] };
+            const out = bun.base64.decodeAllocForgiving(bun.default_allocator, payload) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.DecodingFailed => return global.throwInvalidArguments("Image(): invalid base64 in data: URL", .{}),
+            };
+            return .{ .owned = out };
         }
         return .{ .path = try bun.default_allocator.dupeSentinel(u8, s, 0) };
     }

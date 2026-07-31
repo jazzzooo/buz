@@ -5,6 +5,12 @@ typedef struct SIMDUTFResult {
     size_t count;
 } SIMDUTFResult;
 
+typedef struct SIMDUTFBase64Result {
+    int error;
+    size_t input_count;
+    size_t output_count;
+} SIMDUTFBase64Result;
+
 extern "C" {
 
 int simdutf__detect_encodings(const char* input, size_t length)
@@ -339,11 +345,6 @@ size_t simdutf__base64_encode(const char* input, size_t length, char* output, in
     return simdutf::binary_to_base64(input, length, output, is_urlsafe ? simdutf::base64_url : simdutf::base64_default);
 }
 
-size_t simdutf__base64_length_from_binary(size_t length, int is_urlsafe)
-{
-    return simdutf::base64_length_from_binary(length, is_urlsafe ? simdutf::base64_url : simdutf::base64_default);
-}
-
 SIMDUTFResult simdutf__base64_decode_from_binary(const char* input, size_t length, char* output, size_t outlen_, int is_urlsafe)
 {
     size_t outlen = outlen_;
@@ -356,16 +357,25 @@ SIMDUTFResult simdutf__base64_decode_from_binary(const char* input, size_t lengt
     return { .error = res.error, .count = res.count };
 }
 
-SIMDUTFResult simdutf__base64_decode_from_binary16(const char16_t* input, size_t length, char* output, size_t outlen_, int is_urlsafe)
+SIMDUTFBase64Result simdutf__base64_decode_from_binary_options(
+    const char* input,
+    size_t length,
+    char* output,
+    size_t outlen_,
+    int options,
+    int last_chunk_handling,
+    int decode_up_to_bad_char)
 {
     size_t outlen = outlen_;
-    auto res = simdutf::base64_to_binary_safe(input, length, output, outlen, is_urlsafe ? simdutf::base64_url : simdutf::base64_default);
-
-    if (res.error == simdutf::error_code::SUCCESS) {
-        return { .error = 0, .count = outlen };
-    }
-
-    return { .error = res.error, .count = res.count };
+    auto res = simdutf::base64_to_binary_safe(
+        input,
+        length,
+        output,
+        outlen,
+        static_cast<simdutf::base64_options>(options),
+        static_cast<simdutf::last_chunk_handling_options>(last_chunk_handling),
+        decode_up_to_bad_char);
+    return { .error = res.error, .input_count = res.count, .output_count = outlen };
 }
 
 size_t simdutf__utf16_length_from_latin1(const char* input, size_t length)

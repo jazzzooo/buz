@@ -73,7 +73,7 @@ pub fn parseUrl(
 
                     const len = bun.base64.decodeLen(base64_data);
                     const bytes = bun.handleOom(arena.alloc(u8, len));
-                    const decoded = bun.base64.decode(bytes, base64_data);
+                    const decoded = bun.base64.decodeForgiving(bytes, base64_data);
                     if (!decoded.isSuccessful()) {
                         return error.InvalidBase64;
                     }
