@@ -1443,7 +1443,7 @@ fn listFilesAny(b: *Build, dir: []const u8, suffixes: []const []const u8, recurs
     defer handle.close(io);
     if (recursive) {
         var walker = handle.walk(arena) catch @panic("OOM");
-        defer walker.deinit();
+        defer walker.deinit(io);
         while (walker.next(io) catch @panic("walk failed")) |entry| {
             if (entry.kind != .file) continue;
             if (std.mem.indexOf(u8, entry.path, "node_modules") != null) continue;

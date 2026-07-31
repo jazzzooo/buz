@@ -783,7 +783,7 @@ fn addTreeInputs(b: *Build, run: *Step.Run, root: []const u8) void {
     var dir = std.Io.Dir.openDirAbsolute(io, rootJoin(b, root), .{ .iterate = true }) catch std.debug.panic("open {s}", .{root});
     defer dir.close(io);
     var walker = dir.walk(b.graph.arena) catch @panic("OOM");
-    defer walker.deinit();
+    defer walker.deinit(io);
     while (walker.next(io) catch @panic("walk")) |entry| {
         if (entry.kind != .file) continue;
         if (std.mem.indexOf(u8, entry.path, "__pycache__") != null) continue;

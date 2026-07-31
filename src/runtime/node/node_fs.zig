@@ -6336,7 +6336,7 @@ pub const NodeFS = struct {
         defer fd.close();
 
         var walker = fd.stdDir().walkSelectively(bun.default_allocator) catch |err| bun.handleOom(err);
-        defer walker.deinit();
+        defer walker.deinit(this.io());
 
         while (walker.next(this.io()) catch |err| {
             return .{ .err = this.cpWalkError(err, src_buf[0..src_root_len]) };
