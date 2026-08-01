@@ -39,10 +39,8 @@ pub const xxHash64 = hashWrap(struct {
     }
 });
 pub const xxHash3 = hashWrap(struct {
-    pub fn hash(seed: u32, bytes: []const u8) u64 {
-        // sidestep .hash taking in anytype breaking ArgTuple
-        // downstream by forcing a type signature on the input
-        return std.hash.XxHash3.hash(seed, bytes);
+    pub fn hash(seed: u64, bytes: []const u8) u64 {
+        return bun.highway.xxHash3(seed, bytes);
     }
 });
 pub const murmur32v2 = hashWrap(std.hash.murmur.Murmur2_32);

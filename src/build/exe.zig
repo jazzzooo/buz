@@ -99,6 +99,9 @@ const no_unify = [_][]const u8{
     "packages/bun-usockets/src/crypto/root_certs_windows.cpp",
     "packages/bun-usockets/src/crypto/root_certs_darwin.cpp",
     "src/jsc/bindings/image_resize.cpp",
+    // Highway's per-target include guards require each dispatching kernel to
+    // compile in its own translation unit.
+    "src/jsc/bindings/xxhash3.cpp",
     "src/jsc/bindings/image_coregraphics_shim.cpp",
     "src/jsc/bindings/image_wic_shim.cpp",
 };

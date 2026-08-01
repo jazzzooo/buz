@@ -64,6 +64,16 @@ extern "c" fn highway_fill_with_skip_mask(
     skip_mask: bool,
 ) void;
 
+extern "c" fn highway_xxhash3_64(
+    input: [*]const u8,
+    len: usize,
+    seed: u64,
+) u64;
+
+pub fn xxHash3(seed: u64, input: string) u64 {
+    return highway_xxhash3_64(input.ptr, input.len, seed);
+}
+
 /// Count frequencies of [a-zA-Z0-9_$] characters in a string
 /// Updates the provided frequency array with counts (adds delta for each occurrence)
 pub fn scanCharFrequency(text: string, freqs: *[64]i32, delta: i32) void {
