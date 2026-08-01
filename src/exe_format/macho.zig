@@ -3,7 +3,7 @@ const std = @import("std");
 const bun = @import("bun");
 
 const Allocator = std.mem.Allocator;
-const Sha256 = std.crypto.hash.sha2.Sha256;
+const Sha256 = bun.sha.Hashers.SHA256;
 const macho = std.macho;
 const mem = std.mem;
 
@@ -709,7 +709,7 @@ const AdhocSignaturePlan = struct {
         const hashes_size = std.math.mul(
             usize,
             page_count,
-            Sha256.digest_length,
+            Sha256.digest,
         ) catch return error.OffsetOverflow;
         const code_directory_size = std.math.add(
             usize,
@@ -769,7 +769,7 @@ const AdhocSignaturePlan = struct {
             .nSpecialSlots = 0,
             .nCodeSlots = @intCast(plan.page_count),
             .codeLimit = @intCast(plan.start),
-            .hashSize = Sha256.digest_length,
+            .hashSize = Sha256.digest,
             .hashType = macho.CS_HASHTYPE_SHA256,
             .platform = 0,
             .pageSize = @as(u8, @truncate(std.math.log2(plan.page_size))),
@@ -791,8 +791,8 @@ const AdhocSignaturePlan = struct {
                 plan.page_size,
                 plan.start - page_start,
             );
-            var digest: [Sha256.digest_length]u8 = undefined;
-            Sha256.hash(output[page_start..page_end], &digest, .{});
+            var digest: Sha256.Digest = undefined;
+            Sha256.hash(output[page_start..page_end], &digest);
             try writer.writeAll(&digest);
             page_start = page_end;
         }
