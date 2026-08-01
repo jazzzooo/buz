@@ -84,7 +84,6 @@ pub const EVP = struct {
     pub const SHA384 = NewEVP(std.crypto.hash.sha2.Sha384.digest_length, "EVP_sha384");
     pub const SHA256 = NewEVP(std.crypto.hash.sha2.Sha256.digest_length, "EVP_sha256");
     pub const SHA512_256 = NewEVP(std.crypto.hash.sha2.Sha512T256.digest_length, "EVP_sha512_256");
-    pub const MD5_SHA1 = NewEVP(std.crypto.hash.Sha1.digest_length, "EVP_md5_sha1");
     pub const Blake2 = NewEVP(256 / 8, "EVP_blake2b256");
 };
 
@@ -96,7 +95,6 @@ pub const SHA512 = EVP.SHA512;
 pub const SHA384 = EVP.SHA384;
 pub const SHA256 = EVP.SHA256;
 pub const SHA512_256 = EVP.SHA512_256;
-pub const MD5_SHA1 = EVP.MD5_SHA1;
 
 /// API that OpenSSL 3 deprecated
 pub const Hashers = struct {
@@ -153,47 +151,6 @@ pub const Hashers = struct {
         BoringSSL.RIPEMD160_Update,
         BoringSSL.RIPEMD160_Final,
     );
-};
-
-const boring = [_]type{
-    Hashers.SHA1,
-    Hashers.SHA512,
-    Hashers.SHA384,
-    Hashers.SHA256,
-    // Hashers.SHA512_224,
-    Hashers.SHA512_256,
-    void,
-    void,
-};
-
-const zig = [_]type{
-    std.crypto.hash.Sha1,
-    std.crypto.hash.sha2.Sha512,
-    std.crypto.hash.sha2.Sha384,
-    std.crypto.hash.sha2.Sha256,
-    std.crypto.hash.sha2.Sha512T256,
-    std.crypto.hash.blake2.Blake2b256,
-    std.crypto.hash.Blake3,
-};
-
-const evp = [_]type{
-    EVP.SHA1,
-    EVP.SHA512,
-    EVP.SHA384,
-    EVP.SHA256,
-    EVP.SHA512_256,
-    EVP.Blake2,
-    void,
-};
-
-const labels = [_][]const u8{
-    "SHA1",
-    "SHA512",
-    "SHA384",
-    "SHA256",
-    "SHA512_256",
-    "Blake2",
-    "Blake3",
 };
 
 const std = @import("std");
