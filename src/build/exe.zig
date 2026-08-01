@@ -1,5 +1,5 @@
-//! The `zig build` graph for the bun executable: codegen (pinned bootstrap
-//! bun) → C/C++ (zig cc) → link (pinned mold) → smoke test. x86_64-linux.
+//! The `zig build` graph for the bun executable: pinned inputs, vendored
+//! dependencies, codegen, Bun C/C++, link, and smoke test. x86_64-linux.
 //!
 //! Downloaded inputs are pinned in build.zig.zon: the bootstrap bun, Node.js
 //! headers, mold, and the ICU and dep source archives; WebKit is vendored
@@ -404,7 +404,7 @@ const SyncPairs = struct {
     }
 };
 
-pub fn addCodegen(b: *Build, deps: *const DepPkgs, mode: Mode) *Codegen {
+pub fn addCodegen(b: *Build, deps: *const DepPkgs, mode: Mode, zstd: *Step.Compile) *Codegen {
     const arena = b.graph.arena;
     const cg = arena.create(Codegen) catch @panic("OOM");
 
@@ -432,6 +432,26 @@ pub fn addCodegen(b: *Build, deps: *const DepPkgs, mode: Mode) *Codegen {
 
     const esbuild = b.path("node_modules/.bin/esbuild");
     const debug_flag = if (mode == .debug) "--debug=ON" else "--debug=OFF";
+
+    // ─── compress-add-completions <input> <output> ───
+    {
+        const tool = b.addExecutable(.{
+            .name = "compress-add-completions",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/build/compress-add-completions.zig"),
+                .target = cppTarget(b, &.{}),
+                .optimize = .debug,
+                .link_libc = true,
+            }),
+        });
+        tool.incremental = false;
+        tool.root_module.linkLibrary(zstd);
+
+        const run = b.addRunArtifact(tool);
+        run.addFileArg(b.path("src/cli/add_completions.txt"));
+        const out = run.addOutputFileArg("add-completions.txt.zst");
+        sp.addFile(out, "codegen/add-completions.txt.zst");
+    }
 
     // ─── generate-node-errors.ts <outdir> ───
     const node_errors_dir = blk: {
@@ -720,27 +740,96 @@ fn usesInstall(run: *Step.Run, inst: Install) void {
 // C/C++ compilation
 // ───────────────────────────────────────────────────────────────────────────
 
+fn baseCFlags(b: *Build, mode: Mode, optimize: std.builtin.Optimize) []const []const u8 {
+    const arena = b.graph.arena;
+    const mode_flags: []const []const u8 = switch (mode) {
+        .debug => recipes.base_flags_debug,
+        .release => recipes.base_flags_release,
+    };
+    var flags: std.ArrayList([]const u8) = .empty;
+    if (optimize == .safe or optimize == .fast) {
+        flags.append(arena, "-O3") catch @panic("OOM");
+    }
+    flags.appendSlice(arena, mode_flags) catch @panic("OOM");
+    flags.append(arena, "-Wno-date-time") catch @panic("OOM");
+    return flags.items;
+}
+
+pub const CppDeps = struct {
+    archives: []const *Step.Compile,
+    zstd: *Step.Compile,
+    gen_dirs: std.StringArrayHashMapUnmanaged(LazyPath),
+};
+
+pub fn addCppDeps(
+    b: *Build,
+    deps: *const DepPkgs,
+    mode: Mode,
+    optimize: std.builtin.Optimize,
+) CppDeps {
+    const arena = b.graph.arena;
+    const base_flags = baseCFlags(b, mode, optimize);
+    const gen_dirs = makeGenDirs(b, deps);
+    var archives: std.ArrayList(*Step.Compile) = .empty;
+    var zstd: ?*Step.Compile = null;
+
+    for (recipes.all) |dep| {
+        const root: ?LazyPath = if (dep.in_tree) null else deps.srcs.get(dep.name).?;
+        for (dep.groups, 0..) |group, gi| {
+            const group_flags = if (mode == .release and group.flags_release != null)
+                group.flags_release.?
+            else
+                group.flags;
+            const cxx_lang = group.cxx or hasLangOverride(group_flags);
+            const name = if (dep.groups.len == 1) dep.name else b.fmt("{s}-{d}", .{ dep.name, gi });
+            const lib = newCppLib(b, name, optimize, cxx_lang, groupFeatures(b, group_flags));
+
+            var flags: std.ArrayList([]const u8) = .empty;
+            if (!group.no_base) flags.appendSlice(arena, base_flags) catch @panic("OOM");
+            var i: usize = 0;
+            while (i < group_flags.len) : (i += 1) {
+                if (std.mem.eql(u8, group_flags[i], "-x")) {
+                    i += 1;
+                    continue;
+                }
+                flags.append(arena, group_flags[i]) catch @panic("OOM");
+            }
+
+            for (group.includes) |inc| addCppDepInclude(b, lib, inc, deps, &gen_dirs);
+            for (group.files) |f| {
+                const file: LazyPath = if (root) |r| r.path(b, f) else b.path(f);
+                const language: Build.Module.CSourceLanguage = if (std.mem.endsWith(u8, f, ".S"))
+                    .assembly_with_preprocessor
+                else if (cxx_lang)
+                    .cpp
+                else
+                    .c;
+                lib.root_module.addCSourceFile(.{ .file = file, .flags = flags.items, .language = language });
+            }
+            archives.append(arena, lib) catch @panic("OOM");
+            if (std.mem.eql(u8, dep.name, recipes.zstd.name)) zstd = lib;
+        }
+    }
+
+    return .{
+        .archives = archives.items,
+        .zstd = zstd.?,
+        .gen_dirs = gen_dirs,
+    };
+}
+
 /// Static archives in link order (whole-archive).
-pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options) []const *Step.Compile {
+pub fn addCpp(
+    b: *Build,
+    deps: *const DepPkgs,
+    cg: *const Codegen,
+    cpp_deps: CppDeps,
+    opts: Options,
+) []const *Step.Compile {
     const arena = b.graph.arena;
     var archives: std.ArrayList(*Step.Compile) = .empty;
 
-    const base_flags: []const []const u8 = blk: {
-        const mode_flags: []const []const u8 = switch (opts.mode) {
-            .debug => recipes.base_flags_debug,
-            .release => recipes.base_flags_release,
-        };
-        var list: std.ArrayList([]const u8) = .empty;
-        // Zig uses -O2 for C/C++; Bun's performance-oriented modes use -O3.
-        if (opts.optimize == .safe or opts.optimize == .fast) {
-            list.append(arena, "-O3") catch @panic("OOM");
-        }
-        list.appendSlice(arena, mode_flags) catch @panic("OOM");
-        // zig injects -Werror=date-time; mimalloc's release config uses __DATE__.
-        list.append(arena, "-Wno-date-time") catch @panic("OOM");
-        break :blk list.items;
-    };
-    const gen_dirs = makeGenDirs(b, deps);
+    const base_flags = baseCFlags(b, opts.mode, opts.optimize);
     const versions_dir = makeDepVersionsHeader(b, opts);
 
     // ─── bun's own C++ and C ───
@@ -754,10 +843,10 @@ pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options
             .release => recipes.bun_c_flags_release,
         };
 
-        const lib_cxx = newCppLib(b, "bun-cxx", opts, true, &.{});
-        const lib_c = newCppLib(b, "bun-c", opts, false, &.{});
-        for (recipes.bun_includes) |inc| addInclude(b, lib_cxx, inc, deps, cg, opts.webkit, &gen_dirs, versions_dir);
-        for (recipes.bun_c_includes) |inc| addInclude(b, lib_c, inc, deps, cg, opts.webkit, &gen_dirs, versions_dir);
+        const lib_cxx = newCppLib(b, "bun-cxx", opts.optimize, true, &.{});
+        const lib_c = newCppLib(b, "bun-c", opts.optimize, false, &.{});
+        for (recipes.bun_includes) |inc| addInclude(b, lib_cxx, inc, deps, cg, opts.webkit, &cpp_deps.gen_dirs, versions_dir);
+        for (recipes.bun_c_includes) |inc| addInclude(b, lib_c, inc, deps, cg, opts.webkit, &cpp_deps.gen_dirs, versions_dir);
 
         var cxx_flags: std.ArrayList([]const u8) = .empty;
         cxx_flags.appendSlice(arena, base_flags) catch @panic("OOM");
@@ -775,7 +864,7 @@ pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options
         if (opts.mode == .debug) {
             cxx_flags.append(arena, "-include") catch @panic("OOM");
             cxx_flags.append(arena, std.fs.path.join(arena, &.{ cg.pch_install_abs, "root-pch.h" }) catch @panic("OOM")) catch @panic("OOM");
-            const pch_step = addPch(b, deps, cg, opts.webkit, cxx_flags.items, &gen_dirs, versions_dir);
+            const pch_step = addPch(b, deps, cg, opts.webkit, cxx_flags.items, &cpp_deps.gen_dirs, versions_dir);
             lib_cxx.step.dependOn(pch_step);
         }
 
@@ -809,49 +898,7 @@ pub fn addCpp(b: *Build, deps: *const DepPkgs, cg: *const Codegen, opts: Options
         archives.append(arena, lib_c) catch @panic("OOM");
     }
 
-    // ─── vendored deps ───
-    // One static lib per compile group: zig models CPU features per module,
-    // so SIMD variant groups (zlib, libwebp) need their own module targets.
-    for (recipes.all) |dep| {
-        const root: ?LazyPath = if (dep.in_tree) null else deps.srcs.get(dep.name).?;
-        for (dep.groups, 0..) |group, gi| {
-            const group_flags = if (opts.mode == .release and group.flags_release != null)
-                group.flags_release.?
-            else
-                group.flags;
-            const cxx_lang = group.cxx or hasLangOverride(group_flags);
-            const name = if (dep.groups.len == 1) dep.name else b.fmt("{s}-{d}", .{ dep.name, gi });
-            const lib = newCppLib(b, name, opts, cxx_lang, groupFeatures(b, group_flags));
-
-            var flags: std.ArrayList([]const u8) = .empty;
-            if (!group.no_base) flags.appendSlice(arena, base_flags) catch @panic("OOM");
-            {
-                // `-x <lang>` pairs are expressed via the `language` field:
-                // zig places source files before user flags, where a trailing
-                // -x has no effect.
-                var i: usize = 0;
-                while (i < group_flags.len) : (i += 1) {
-                    if (std.mem.eql(u8, group_flags[i], "-x")) {
-                        i += 1;
-                        continue;
-                    }
-                    flags.append(arena, group_flags[i]) catch @panic("OOM");
-                }
-            }
-            for (group.includes) |inc| addInclude(b, lib, inc, deps, cg, opts.webkit, &gen_dirs, versions_dir);
-            for (group.files) |f| {
-                const file: LazyPath = if (root) |r| r.path(b, f) else b.path(f);
-                const language: Build.Module.CSourceLanguage = if (std.mem.endsWith(u8, f, ".S"))
-                    .assembly_with_preprocessor
-                else if (cxx_lang)
-                    .cpp
-                else
-                    .c;
-                lib.root_module.addCSourceFile(.{ .file = file, .flags = flags.items, .language = language });
-            }
-            archives.append(arena, lib) catch @panic("OOM");
-        }
-    }
+    archives.appendSlice(arena, cpp_deps.archives) catch @panic("OOM");
 
     return archives.items;
 }
@@ -955,10 +1002,10 @@ fn hasLangOverride(flags: []const []const u8) bool {
     return false;
 }
 
-fn newCppLib(b: *Build, name: []const u8, opts: Options, is_cxx: bool, extra_features: []const []const u8) *Step.Compile {
+fn newCppLib(b: *Build, name: []const u8, optimize: std.builtin.Optimize, is_cxx: bool, extra_features: []const []const u8) *Step.Compile {
     const mod = b.createModule(.{
         .target = cppTarget(b, extra_features),
-        .optimize = opts.optimize,
+        .optimize = optimize,
         // The whole C++ world (WebKit, ICU, deps, bun-cxx) compiles against
         // zig's bundled libc++; the C++ ABI must stay uniform across it.
         // link_libcpp does not imply the libc headers.
@@ -1246,6 +1293,27 @@ fn makeDepVersionsHeader(b: *Build, opts: Options) LazyPath {
     return wf.getDirectory();
 }
 
+fn addCppDepInclude(
+    b: *Build,
+    lib: *Step.Compile,
+    inc: recipes.Include,
+    deps: *const DepPkgs,
+    gen_dirs: *const std.StringArrayHashMapUnmanaged(LazyPath),
+) void {
+    switch (inc) {
+        .dep => |d| {
+            const root = deps.srcs.get(d[0]) orelse std.debug.panic("unknown dep include: {s}", .{d[0]});
+            lib.root_module.addIncludePath(if (d[1].len == 0) root else root.path(b, d[1]));
+        },
+        .gen => |g| {
+            const dir = gen_dirs.get(g[0]) orelse std.debug.panic("no gen dir for dep: {s}", .{g[0]});
+            lib.root_module.addIncludePath(if (g[1].len == 0) dir else dir.path(b, g[1]));
+        },
+        .repo => |path| lib.root_module.addIncludePath(b.path(path)),
+        else => @panic("vendored dependency has a late-bound include"),
+    }
+}
+
 fn addInclude(
     b: *Build,
     lib: *Step.Compile,
@@ -1257,15 +1325,7 @@ fn addInclude(
     versions_dir: LazyPath,
 ) void {
     switch (inc) {
-        .dep => |d| {
-            const root = deps.srcs.get(d[0]) orelse std.debug.panic("unknown dep include: {s}", .{d[0]});
-            lib.root_module.addIncludePath(if (d[1].len == 0) root else root.path(b, d[1]));
-        },
-        .gen => |g| {
-            const dir = gen_dirs.get(g[0]) orelse std.debug.panic("no gen dir for dep: {s}", .{g[0]});
-            lib.root_module.addIncludePath(if (g[1].len == 0) dir else dir.path(b, g[1]));
-        },
-        .repo => |p| lib.root_module.addIncludePath(b.path(p)),
+        .dep, .gen, .repo => addCppDepInclude(b, lib, inc, deps, gen_dirs),
         .webkit => {
             for (wk.includes) |dir| lib.root_module.addIncludePath(dir);
             lib.step.dependOn(wk.sync);

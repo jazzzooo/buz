@@ -44,10 +44,12 @@ pub const Dep = struct {
 };
 
 /// Static link order: providers come after users.
+pub const zstd = @import("zstd.zig").dep;
+
 pub const all = [_]Dep{
     @import("picohttpparser.zig").dep,
     @import("zlib.zig").dep,
-    @import("zstd.zig").dep,
+    zstd,
     @import("brotli.zig").dep,
     @import("libdeflate.zig").dep,
     @import("libarchive.zig").dep,

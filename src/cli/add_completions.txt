@@ -202,7 +202,6 @@ animated-scroll-to
 animation-frame-polyfill
 anser
 ansi
-ansi_up
 ansi-bgblack
 ansi-bgblue
 ansi-bgcyan
@@ -230,6 +229,7 @@ ansi-term
 ansi-to-html
 ansi-to-react
 ansi-underline
+ansi_up
 ansicolors
 ansimd
 ansistyles
@@ -1182,8 +1182,8 @@ checksum
 checkup
 cheerio
 chevrotain
-child_process
 child-process-ext
+child_process
 chmodr
 choices-separator
 chokidar-cli
@@ -2482,7 +2482,6 @@ esdoc-standard-plugin
 esdoc-type-inference-plugin
 esdoc-undocumented-identifier-plugin
 esdoc-unexported-identifier-plugin
-eslint_d
 eslint-ast-utils
 eslint-config-airbnb-base
 eslint-config-airbnb-typescript
@@ -2614,6 +2613,7 @@ eslint-template-visitor
 eslint-utils
 eslint-visitor-keys
 eslint-watch
+eslint_d
 esm
 esm-utils
 esmangle-evaluator
@@ -3566,8 +3566,8 @@ h3-js
 hamburgers
 hamljs
 hammerjs
-hamt_plus
 hamt-sharding
+hamt_plus
 handle-thing
 handlebars
 handlebars-helper-create-frame
@@ -3722,7 +3722,6 @@ hsl-to-hex
 hsla-regex
 hsluv
 html
-html_codesniffer
 html-attributes
 html-comment-regex
 html-dom-parser
@@ -3758,6 +3757,7 @@ html-whitespace-sensitive-tag-names
 html2canvas
 html2pdf.js
 html4-id
+html_codesniffer
 htmllint
 htmlnano
 htmlparser
@@ -5051,10 +5051,10 @@ lower-case
 lower-case-first
 lowercase-keys
 lowlight
-lru_map
 lru-cache
 lru-memoizer
 lru-queue
+lru_map
 ltgt
 ltx
 lum_lokijs
@@ -6292,8 +6292,8 @@ penner
 penthouse
 pepjs
 percy
-perf_hooks
 perf-marks
+perf_hooks
 perfect-freehand
 perfect-scrollbar
 performance-now
@@ -6868,13 +6868,13 @@ raml-parser
 rand-token
 randexp
 random
-random_quote_ts
 random-bytes
 random-item
 random-js
 random-string
 random-useragent
 random-words
+random_quote_ts
 randomatic
 randomfill
 randomhex
@@ -7690,7 +7690,6 @@ request-progress
 request-promise
 request-stats
 requestretry
-require_optional
 require-ancestors
 require-at
 require-context.macro
@@ -7705,6 +7704,7 @@ require-relative
 require-resolve
 require-tree
 require-uncached
+require_optional
 requireg
 requireindex
 requirejs-config-file
@@ -8472,7 +8472,6 @@ streamroller
 streamsink
 strict-event-emitter-types
 string
-string_decoder
 string-argv
 string-character-is-astral-surrogate
 string-collapse-leading-whitespace
@@ -8509,6 +8508,7 @@ string.prototype.trimend
 string.prototype.trimleft
 string.prototype.trimright
 string.prototype.trimstart
+string_decoder
 stringcase
 stringifier
 stringify-author
@@ -8549,12 +8549,12 @@ style-loader
 style-to-js
 style-utils
 style-value-types
-styled_string
 styled-components
 styled-icons
 styled-jsx
 styled-media-query
 styled-react-modal
+styled_string
 stylefire
 stylehacks
 stylelint

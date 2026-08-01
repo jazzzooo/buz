@@ -225,7 +225,8 @@ pub fn build(b: *Build) !void {
     const resolved = bun_exe.resolveDeps(b) orelse return;
     const pkgs = b.graph.arena.create(bun_exe.DepPkgs) catch @panic("OOM");
     pkgs.* = resolved;
-    const cg = bun_exe.addCodegen(b, pkgs, mode);
+    const cpp_deps = bun_exe.addCppDeps(b, pkgs, mode, optimize);
+    const cg = bun_exe.addCodegen(b, pkgs, mode, cpp_deps.zstd);
     const webkit_derived = bun_webkit.addStep(b, pkgs, mode, optimize);
     const webkit_ctx = b.graph.arena.create(bun_webkit.Ctx) catch @panic("OOM");
     webkit_ctx.* = bun_webkit.addLibs(b, pkgs, mode, optimize, webkit_derived);
@@ -325,7 +326,7 @@ pub fn build(b: *Build) !void {
             .webkit = webkit_ctx,
             .icu = icu_ctx,
         };
-        const archives = bun_exe.addCpp(b, pkgs, cg, exe_opts);
+        const archives = bun_exe.addCpp(b, pkgs, cg, cpp_deps, exe_opts);
         const built = bun_exe.addLink(b, pkgs, archives, obj.getEmittedBin(), cg, exe_opts);
         // The executable is pinned to this target; fail loudly rather than
         // silently overriding an explicit -Dtarget/-Dcpu.
@@ -832,6 +833,7 @@ fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions) void {
         .{ .file = "bun-error/index.js", .enable = opts.shouldEmbedCode() },
         .{ .file = "bun-error/bun-error.css", .enable = opts.shouldEmbedCode() },
         .{ .file = "fallback-decoder.js", .enable = opts.shouldEmbedCode() },
+        .{ .file = "add-completions.txt.zst" },
         .{ .file = "node-fallbacks/react-refresh.js", .enable = opts.shouldEmbedCode() },
         .{ .file = "node-fallbacks/assert.js", .enable = opts.shouldEmbedCode() },
         .{ .file = "node-fallbacks/buffer.js", .enable = opts.shouldEmbedCode() },
