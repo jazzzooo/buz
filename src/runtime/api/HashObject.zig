@@ -1,7 +1,11 @@
 const HashObject = @This();
 
 pub const wyhash = hashWrap(std.hash.Wyhash);
-pub const adler32 = hashWrap(std.hash.Adler32);
+pub const adler32 = hashWrap(struct {
+    pub fn hash(bytes: []const u8) u32 {
+        return bun.libdeflate.libdeflate_adler32(1, bytes.ptr, bytes.len);
+    }
+});
 /// Use hardware-accelerated CRC32 from zlib
 pub const crc32 = hashWrap(struct {
     pub fn hash(seed: u32, bytes: []const u8) u32 {
